@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "python-polaris"
-version = "0.1.0"
+version = "0.1.1"
 description = "Initial build of Polaris"
 authors = [
     { name = "Atilla Saadat", email = "atillaabc@gmail.com" }
