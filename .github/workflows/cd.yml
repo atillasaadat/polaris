@@ -29,7 +29,6 @@ jobs:
         run: python -m build         # Build the package
         
       - name: Upload to PyPI
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'  # Only deploy on push to main
         run: |
           pip install twine
           twine upload dist/* -u __token__ -p ${{ secrets.PYPI_TOKEN }}
