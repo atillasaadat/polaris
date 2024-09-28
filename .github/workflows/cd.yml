@@ -1,12 +1,8 @@
-name: CI
+name: CD
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+  release:
+    types: [published]  # Trigger on published releases
 
 jobs:
   build:
@@ -29,11 +25,11 @@ jobs:
       - name: Run tests
         run: PYTHONPATH=. pytest tests         # Run the tests in the tests directory
 
-      # - name: Build package
-      #   run: python -m build         # Build the package
+      - name: Build package
+        run: python -m build         # Build the package
         
-      # - name: Upload to PyPI
-      #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'  # Only deploy on push to main
-      #   run: |
-      #     pip install twine
-      #     twine upload dist/* -u __token__ -p ${{ secrets.PYPI_TOKEN }}
+      - name: Upload to PyPI
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'  # Only deploy on push to main
+        run: |
+          pip install twine
+          twine upload dist/* -u __token__ -p ${{ secrets.PYPI_TOKEN }}
