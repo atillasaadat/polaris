@@ -23,14 +23,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt  # If you have a requirements file
+          pip install -r requirements.txt     # If you have a requirements file
           pip install build twine pytest      # Install necessary packages
 
-      - name: Install the package
-        run: pip install .           # Install the package from the current directory
-
       - name: Run tests
-        run: pytest tests/           # Run the tests in the tests directory
+        run: PYTHONPATH=. pytest tests         # Run the tests in the tests directory
 
       - name: Build package
         run: python -m build         # Build the package
