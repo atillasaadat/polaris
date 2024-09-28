@@ -24,17 +24,17 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt  # If you have a requirements file
-          #pip install build twine pytest      # Install necessary packages
+          pip install build twine pytest      # Install necessary packages
 
-      - name: Build package
-        run: python -m build
-
-      - name: Install the package in editable mode
-        run: pip install dist/*.whl
+      - name: Install the package
+        run: pip install .           # Install the package from the current directory
 
       - name: Run tests
-        run: pytest tests/
+        run: pytest tests/           # Run the tests in the tests directory
 
+      - name: Build package
+        run: python -m build         # Build the package
+        
       #- name: Upload to PyPI
       #  if: github.event_name == 'push' && github.ref == 'refs/heads/main'  # Only deploy on push to main
       #  run: |
