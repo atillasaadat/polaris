@@ -3,6 +3,9 @@
 import datetime as dt
 from typing import Optional
 
+import pytz
+import skyfield
+
 
 class Satellite:
     """
@@ -20,7 +23,7 @@ class Satellite:
 
     def __init__(
         self,
-        name: str,
+        name: Optional[str] = None,
         norad_id: Optional[int] = None,
         epoch_utc_dt: Optional[dt.datetime] = None,
     ) -> None:
@@ -36,6 +39,10 @@ class Satellite:
         epoch_utc_dt : Optional[datetime.datetime], optional
             The epoch UTC datetime of the satellite, by default None.
         """
+        if name is None and norad_id is not None:
+            name = str(norad_id)
+        if name is None and norad_id is None:
+            raise ValueError('Satellite init values for name or norad_id must be provided')
         self.name = name
         self.norad_id = norad_id
         self.epoch_utc_dt = epoch_utc_dt
