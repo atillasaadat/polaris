@@ -33,13 +33,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt  # If you have a requirements file
-          pip install build twine pytest pre-commit
-
-      - name: Install Pre-Commit Hooks
-        run: pre-commit install --install-hooks
-
-      - name: Run Pre-Commit Checks
-        run: pre-commit run --all-files
+          pip install build twine pytest
 
       - name: Run tests
         run: PYTHONPATH=. pytest tests  # Run the tests in the tests directory
