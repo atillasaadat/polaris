@@ -11,7 +11,7 @@ def test_satellite_initialization():
     satellite = Satellite(
         name="Sentinel-6", norad_id=12345, epoch_utc_dt=dt.datetime(2023, 9, 28, 14, 30)
     )
-    assert satellite.name == "Sentinel-6"
+    assert satellite.name == "Sentinel-7"
     assert satellite.norad_id == 12345
     assert satellite.epoch_utc_dt == dt.datetime(2023, 9, 28, 14, 30)
 
