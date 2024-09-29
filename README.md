@@ -28,7 +28,6 @@
   - `numpy`
   - `scipy`
   - `matplotlib`
-  - `astropy`
 
 Install the required dependencies using `pip`:
 
