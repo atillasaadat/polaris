@@ -2,7 +2,7 @@
 import datetime as dt
 
 import pytest
-from satellite import Satellite
+from polaris.satellite import Satellite
 
 
 def test_satellite_initialization():
