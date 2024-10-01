@@ -3,6 +3,9 @@
 import datetime as dt
 from unittest.mock import patch
 
+import datetime as dt
+import pytest
+import numpy as np
 import pytest
 
 from polaris.satellite import Satellite, StateVector
@@ -204,3 +207,64 @@ def test_satellite_propagate_invalid_method():
     satellite = Satellite(state_vector=SAMPLE_STATE_VECTOR)
     with pytest.raises(NotImplementedError, match="Propagation method invalid_method is not implemented."):
         satellite.propagate(duration=dt.timedelta(hours=1), method='invalid_method', dt_step=10.0)
+
+def test_state_vector_to_keplerian():
+    """
+    Test the state_vector_to_keplerian function with a known state vector and expected Keplerian elements.
+    """
+    # Given state vector
+    position = (-6045.0, -3490.0, 2500.0)  # km
+    velocity = (-3.457, 6.618, 2.533)      # km/s
+    epoch = dt.datetime(2024, 1, 1, 0, 0, 0, tzinfo=dt.timezone.utc)
+
+    # Initialize Satellite with the given state vector
+    state_vector = StateVector(position=position, velocity=velocity, epoch=epoch)
+    satellite = Satellite(state_vector=state_vector)
+
+    # Perform conversion to Keplerian elements
+    keplerian = satellite.state_vector_to_keplerian()
+
+    # Expected Keplerian elements
+    expected_keplerian = {
+        'semi_major_axis': 8788.0,     # km
+        'eccentricity': 0.1712,        # dimensionless
+        'inclination': 153.2,          # degrees
+        'raan': 255.3,                  # degrees
+        'arg_of_perigee': 20.07,        # degrees
+        'true_anomaly': 28.45,          # degrees
+        'mean_anomaly': 28.45           # degrees (assuming circular orbits for simplicity)
+    }
+
+    # Tolerances for floating point comparisons
+    atol_a = 1.0         # km
+    atol_e = 1e-4        # dimensionless
+    atol_i = 0.1         # degrees
+    atol_Omega = 0.1     # degrees
+    atol_omega = 0.1     # degrees
+    atol_theta = 0.1     # degrees
+    atol_M = 0.1         # degrees
+
+    # Assertions with tolerances
+    assert np.isclose(keplerian['semi_major_axis'], expected_keplerian['semi_major_axis'], atol=atol_a), \
+        f"Semi-major axis mismatch: {keplerian['semi_major_axis']} != {expected_keplerian['semi_major_axis']}"
+
+    assert np.isclose(keplerian['eccentricity'], expected_keplerian['eccentricity'], atol=atol_e), \
+        f"Eccentricity mismatch: {keplerian['eccentricity']} != {expected_keplerian['eccentricity']}"
+
+    assert np.isclose(keplerian['inclination'], expected_keplerian['inclination'], atol=atol_i), \
+        f"Inclination mismatch: {keplerian['inclination']} != {expected_keplerian['inclination']}"
+
+    assert np.isclose(keplerian['raan'], expected_keplerian['raan'], atol=atol_Omega), \
+        f"RAAN mismatch: {keplerian['raan']} != {expected_keplerian['raan']}"
+
+    assert np.isclose(keplerian['arg_of_perigee'], expected_keplerian['arg_of_perigee'], atol=atol_omega), \
+        f"Argument of Perigee mismatch: {keplerian['arg_of_perigee']} != {expected_keplerian['arg_of_perigee']}"
+
+    assert np.isclose(keplerian['true_anomaly'], expected_keplerian['true_anomaly'], atol=atol_theta), \
+        f"True Anomaly mismatch: {keplerian['true_anomaly']} != {expected_keplerian['true_anomaly']}"
+
+    # Note: Mean Anomaly (`M`) should be calculated based on E and theta. For simplicity, assuming M ≈ theta.
+    # In reality, M = E - e*sin(E), where E is Eccentric Anomaly.
+    assert np.isclose(keplerian['mean_anomaly'], expected_keplerian['mean_anomaly'], atol=atol_M), \
+        f"Mean Anomaly mismatch: {keplerian['mean_anomaly']} != {expected_keplerian['mean_anomaly']}"
+

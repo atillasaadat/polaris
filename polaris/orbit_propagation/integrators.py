@@ -1,10 +1,10 @@
 from numba import njit
 import numpy as np
 import datetime as dt
+import pandas as pd
 
 # Constants
 MU_EARTH = 398600.4418  # km^3/s^2
-
 
 @njit(cache=True)
 def compute_acceleration(position):
@@ -24,7 +24,6 @@ def compute_acceleration(position):
     r = np.linalg.norm(position)
     accel = -MU_EARTH / r**3 * position
     return accel
-
 
 @njit(cache=True)
 def rk89_step(position, velocity, dt_step):
@@ -64,7 +63,6 @@ def rk89_step(position, velocity, dt_step):
 
     return new_position, new_velocity
 
-
 @njit(cache=True)
 def propagate_rk89(position, velocity, duration_sec, dt_step):
     """
@@ -90,3 +88,52 @@ def propagate_rk89(position, velocity, duration_sec, dt_step):
     for _ in range(num_steps):
         position, velocity = rk89_step(position, velocity, dt_step)
     return position, velocity
+
+def propagate_multiple(initial_position, initial_velocity, initial_time, target_times, dt_step):
+    """
+    Propagates the state vector to multiple target times.
+
+    Parameters
+    ----------
+    initial_position : np.ndarray
+        Initial position vector (km).
+    initial_velocity : np.ndarray
+        Initial velocity vector (km/s).
+    initial_time : datetime.datetime
+        Initial time.
+    target_times : list, pd.Series, or np.ndarray of datetime.datetime
+        Target times to propagate to.
+    dt_step : float
+        Time step for integration (s).
+
+    Returns
+    -------
+    tuple of np.ndarray
+        - positions: Array of position vectors at each target time (shape: [N, 3]).
+        - velocities: Array of velocity vectors at each target time (shape: [N, 3]).
+    """
+    # Convert target_times to a list if it's a pandas Series or NumPy array
+    if isinstance(target_times, pd.Series):
+        target_times = target_times.tolist()
+    elif isinstance(target_times, np.ndarray):
+        target_times = target_times.tolist()
+    elif not isinstance(target_times, list):
+        raise TypeError("target_times must be a list, pandas Series, or numpy array of datetime objects.")
+
+    # Calculate durations in seconds from the initial_time
+    durations = np.array([(t - initial_time).total_seconds() for t in target_times])
+
+    # Initialize arrays to store positions and velocities
+    num_targets = len(durations)
+    positions = np.empty((num_targets, 3))
+    velocities = np.empty((num_targets, 3))
+
+    # Iterate over each duration and propagate the state
+    for i, duration in enumerate(durations):
+        if duration < 0:
+            raise ValueError("Target times must be after the initial_time.")
+        pos, vel = propagate_rk89(initial_position.copy(), initial_velocity.copy(), duration, dt_step)
+        positions[i] = pos
+        velocities[i] = vel
+
+    return positions, velocities

@@ -13,6 +13,8 @@ from skyfield.api import Time as SkyfieldTime
 from skyfield.sgp4lib import Satrec
 from orbit_propagation.integrators import propagate_rk89
 
+# Importing additional libraries for Keplerian conversion
+from math import sqrt, atan2, degrees, radians, cos, sin
 
 @dataclass
 class StateVector:
@@ -154,9 +156,7 @@ class Satellite:
             if elem not in keplerian:
                 raise ValueError(f"Missing Keplerian element: {elem}")
 
-        ts = load.timescale()
         epoch = keplerian['epoch']
-        t = ts.utc(epoch.year, epoch.month, epoch.day, epoch.hour, epoch.minute, epoch.second)
 
         # Convert Keplerian elements to state vector
         state_vec = self._keplerian_to_state_vector(keplerian)
@@ -220,34 +220,34 @@ class Satellite:
         true_anomaly = keplerian['true_anomaly']  # degrees
 
         # Convert angles to radians
-        i_rad = np.radians(i)
-        raan_rad = np.radians(raan)
-        arg_perigee_rad = np.radians(arg_perigee)
-        true_anomaly_rad = np.radians(true_anomaly)
+        i_rad = radians(i)
+        raan_rad = radians(raan)
+        arg_perigee_rad = radians(arg_perigee)
+        true_anomaly_rad = radians(true_anomaly)
 
         # Gravitational parameter for Earth (km^3/s^2)
         mu = 398600.4418
 
         # Compute distance
-        r = a * (1 - e**2) / (1 + e * np.cos(true_anomaly_rad))
+        r = a * (1 - e**2) / (1 + e * cos(true_anomaly_rad))
 
         # Position in orbital plane
-        x_orb = r * np.cos(true_anomaly_rad)
-        y_orb = r * np.sin(true_anomaly_rad)
+        x_orb = r * cos(true_anomaly_rad)
+        y_orb = r * sin(true_anomaly_rad)
         z_orb = 0.0
 
         # Specific angular momentum
-        h = np.sqrt(mu * a * (1 - e**2))
+        h = sqrt(mu * a * (1 - e**2))
 
         # Velocity in orbital plane
-        vx_orb = -mu / h * np.sin(true_anomaly_rad)
-        vy_orb = mu / h * (e + np.cos(true_anomaly_rad))
+        vx_orb = -mu / h * sin(true_anomaly_rad)
+        vy_orb = mu / h * (e + cos(true_anomaly_rad))
         vz_orb = 0.0
 
         # Rotation matrices as NumPy arrays
-        R_z_raan = rotation_matrix_z(raan_rad)
-        R_x_i = rotation_matrix_x(i_rad)
-        R_z_arg_perigee = rotation_matrix_z(arg_perigee_rad)
+        R_z_raan = self._rotation_matrix_z(raan_rad)
+        R_x_i = self._rotation_matrix_x(i_rad)
+        R_z_arg_perigee = self._rotation_matrix_z(arg_perigee_rad)
 
         # Combined rotation matrix
         rotation_matrix = R_z_raan @ R_x_i @ R_z_arg_perigee
@@ -260,6 +260,52 @@ class Satellite:
             'position': tuple(position_eci),
             'velocity': tuple(velocity_eci)
         }
+
+    @staticmethod
+    def _rotation_matrix_x(angle_rad: float) -> np.ndarray:
+        """
+        Creates a rotation matrix for a rotation around the X-axis.
+
+        Parameters
+        ----------
+        angle_rad : float
+            Rotation angle in radians.
+
+        Returns
+        -------
+        np.ndarray
+            3x3 rotation matrix.
+        """
+        c = cos(angle_rad)
+        s = sin(angle_rad)
+        return np.array([
+            [1, 0,  0],
+            [0, c, -s],
+            [0, s,  c]
+        ])
+
+    @staticmethod
+    def _rotation_matrix_z(angle_rad: float) -> np.ndarray:
+        """
+        Creates a rotation matrix for a rotation around the Z-axis.
+
+        Parameters
+        ----------
+        angle_rad : float
+            Rotation angle in radians.
+
+        Returns
+        -------
+        np.ndarray
+            3x3 rotation matrix.
+        """
+        c = cos(angle_rad)
+        s = sin(angle_rad)
+        return np.array([
+            [c, -s, 0],
+            [s,  c, 0],
+            [0,  0, 1]
+        ])
 
     def update_state_vector(self):
         """
@@ -319,6 +365,102 @@ class Satellite:
             )
         else:
             raise NotImplementedError(f"Propagation method {method} is not implemented.")
+
+    def state_vector_to_keplerian(self) -> dict:
+        """
+        Converts the current state vector to Keplerian orbital elements.
+
+        Returns
+        -------
+        dict
+            Dictionary containing Keplerian elements:
+            - semi_major_axis (km)
+            - eccentricity
+            - inclination (degrees)
+            - raan (degrees)
+            - arg_of_perigee (degrees)
+            - true_anomaly (degrees)
+            - mean_anomaly (degrees)
+        """
+        if self.state_vector is None:
+            raise ValueError("State vector is not initialized.")
+
+        r_vec = np.array(self.state_vector.position)
+        v_vec = np.array(self.state_vector.velocity)
+        mu = 398600.4418  # Earth's gravitational parameter, km^3/s^2
+
+        r = np.linalg.norm(r_vec)
+        v = np.linalg.norm(v_vec)
+        vr = np.dot(r_vec, v_vec) / r
+
+        # Specific angular momentum
+        h_vec = np.cross(r_vec, v_vec)
+        h = np.linalg.norm(h_vec)
+
+        # Inclination
+        i = degrees(np.arccos(h_vec[2] / h))
+
+        # Node vector
+        K = np.array([0, 0, 1])
+        N_vec = np.cross(K, h_vec)
+        N = np.linalg.norm(N_vec)
+
+        # RAAN
+        if N != 0:
+            Omega = degrees(np.arccos(N_vec[0] / N))
+            if N_vec[1] < 0:
+                Omega = 360 - Omega
+        else:
+            Omega = 0
+
+        # Eccentricity vector
+        e_vec = (1/mu) * ((v**2 - mu/r) * r_vec - r * vr * v_vec)
+        e = np.linalg.norm(e_vec)
+
+        # Argument of perigee
+        if N != 0 and e > 1e-8:
+            omega = degrees(np.arccos(np.dot(N_vec, e_vec) / (N * e)))
+            if e_vec[2] < 0:
+                omega = 360 - omega
+        else:
+            omega = 0
+
+        # True anomaly
+        if e > 1e-8:
+            theta = degrees(np.arccos(np.dot(e_vec, r_vec) / (e * r)))
+            if vr < 0:
+                theta = 360 - theta
+        else:
+            # Circular orbit
+            cp = np.cross(N_vec, r_vec)
+            if cp[2] >= 0:
+                theta = degrees(np.arccos(np.dot(N_vec, r_vec) / (N * r)))
+            else:
+                theta = 360 - degrees(np.arccos(np.dot(N_vec, r_vec) / (N * r)))
+
+        # Semi-major axis
+        a = 1 / ((2/r) - (v**2 / mu))
+
+        # Eccentric anomaly
+        if e < 1e-8:
+            E = np.arctan2(np.sqrt(1 - e**2) * np.sin(radians(theta)), np.cos(radians(theta)) + e)
+        else:
+            E = 2 * np.arctan(np.tan(radians(theta)/2) / sqrt((1 + e)/(1 - e)))
+
+        # Mean anomaly
+        M = degrees(E - e * sin(E)) % 360
+
+        keplerian_elements = {
+            'semi_major_axis': a,         # km
+            'eccentricity': e,            # dimensionless
+            'inclination': i,             # degrees
+            'raan': Omega,                # degrees
+            'arg_of_perigee': omega,      # degrees
+            'true_anomaly': theta,        # degrees
+            'mean_anomaly': M             # degrees
+        }
+
+        return keplerian_elements
 
     def __str__(self) -> str:
         return f"Satellite {self.name}, NORAD ID: {self.norad_id or 'Unknown'}"
