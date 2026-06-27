@@ -1,0 +1,51 @@
+# ── Build (C++/CMake/F´) ───────────────────────────────────────────────
+build/
+build-fprime-automatic-native*/
+cmake-build-*/
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.exe
+compile_commands.json
+CMakeCache.txt
+CMakeFiles/
+
+# ── Python ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ── Virtual environments ───────────────────────────────────────────────
+*-venv/
+.venv/
+venv/
+fprime-venv/
+docs-venv/
+
+# ── Documentation build ────────────────────────────────────────────────
+docs/_build/
+docs/doxygen/
+docs/_generated/*.json
+
+# ── Tooling / external installs (not vendored) ─────────────────────────
+tools/gmat/GMAT/
+tools/gmat/*.tar.gz
+*.log
+
+# ── Editor / OS ────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+
+# Keep generated-dir placeholders tracked
+!docs/_generated/.gitkeep

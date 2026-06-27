@@ -1,0 +1,55 @@
+name: docs
+
+# Build the unified Sphinx site (numpydoc + Breathe/Doxygen + bibtex + sphinx-needs).
+# The build is a CI gate: `sphinx-build -W` fails on broken docstrings, missing
+# citations, or baselined requirements without a verifying test (design doc §21.2, §22.2).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Doxygen
+        run: sudo apt-get update && sudo apt-get install -y doxygen
+      - name: Install docs toolchain
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r docs/requirements.txt
+      - name: Build docs (warnings are errors)
+        run: bash tools/dev/build_docs.sh
+      - name: Upload site artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_build/html
+
+  # Publish to GitHub Pages on main (enable Pages: Settings -> Pages -> GitHub Actions).
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

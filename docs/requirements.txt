@@ -1,0 +1,10 @@
+# Documentation toolchain (design doc Sec. 21.2). Pinned majors; the build
+# is a CI gate (sphinx-build -W). Install into a dedicated venv:
+#   python3 -m venv docs-venv && . docs-venv/bin/activate
+#   pip install -r docs/requirements.txt
+sphinx>=7.4,<9
+pydata-sphinx-theme>=0.16,<0.17
+numpydoc>=1.8,<2
+breathe>=4.35,<5
+sphinxcontrib-bibtex>=2.6,<3
+sphinx-needs>=4.1,<5

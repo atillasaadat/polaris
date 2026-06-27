@@ -1,0 +1,36 @@
+# Pre-commit hooks for Polaris (design doc §23.3 — format + quick lint).
+# Install once:  pip install pre-commit && pre-commit install
+# Run on demand: pre-commit run --all-files
+minimum_pre_commit_version: "3.5.0"
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+        exclude: '^LICENSE$'
+      - id: end-of-file-fixer
+        exclude: '^LICENSE$'
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: [--maxkb=2048]
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  # C++ formatting — pinned clang-format wheel (matches .clang-format, target 18).
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v18.1.8
+    hooks:
+      - id: clang-format
+        types_or: [c++, c]
+
+  # Python lint + format for analysis/, bindings/, tools/, mc/.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format

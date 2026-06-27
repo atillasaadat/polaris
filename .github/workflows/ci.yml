@@ -1,0 +1,36 @@
+name: ci
+
+# Polaris CI pipeline (design doc §23.2). The lint gate is active now; the build
+# and test stages are stubbed and activate as code lands in later Phase-0 pushes.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run pre-commit (format + quick lint)
+        run: |
+          python -m pip install --upgrade pip pre-commit
+          pre-commit run --all-files --show-diff-on-failure
+
+  # ── Staged §23.2 pipeline — each activates when its code exists ──────────────
+  #   build:            CMake + F´ build, warnings-as-errors          (Push 4)
+  #   static-analysis:  clang-tidy, cppcheck, ASan/UBSan test builds   (Push 2)
+  #   unit-component:   ctest (GoogleTest) + pytest                    (Push 2)
+  #   integration-sitl: two-process closed-loop SITL scenarios         (Push 4+)
+  #   mc-smoke:         Monte Carlo smoke subset                       (Push 11)
+  #   golden:           GMAT golden-fixture regression                 (Push 5)
+  #   coverage:         line + branch thresholds                       (Push 6)
+  pipeline-stub:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Build/test/golden stages activate as code lands (design doc §23.2)."
