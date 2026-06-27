@@ -1,0 +1,17 @@
+# lib/ — shared C++ (design doc §22.3). Flight paths obey the flight memory/
+# exception rules (Golden Rule 6). Include root is lib/, so headers are included
+# as "constants/...", "math/...".
+
+# --- Physical-constants registry (header-only) ------------------------------
+add_library(polaris_constants INTERFACE)
+target_include_directories(polaris_constants INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+add_library(polaris::constants ALIAS polaris_constants)
+
+# --- Math: frame tags, typed vectors, quaternion library --------------------
+add_library(polaris_math
+  math/quaternion.cpp)
+target_include_directories(polaris_math PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(polaris_math
+  PUBLIC Eigen3::Eigen polaris_constants
+  PRIVATE polaris_flags)
+add_library(polaris::math ALIAS polaris_math)
