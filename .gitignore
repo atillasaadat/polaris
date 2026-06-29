@@ -1,6 +1,7 @@
 # ── Build (C++/CMake/F´) ───────────────────────────────────────────────
 build/
 build-fprime-automatic-native*/
+build-artifacts/
 cmake-build-*/
 *.o
 *.obj
