@@ -84,6 +84,7 @@ Per-directory `CLAUDE.md` files exist in `flight/`, `sim/`, and `analysis/` — 
 
 - Feature branches; CI must be green before self-merge to `main` (no review gate, solo repo).
 - Pre-commit hooks: format + quick lint. Conventional-commit messages. SemVer + tagged releases; maintain CHANGELOG.
+- **Commit attribution:** every commit — including those an AI assistant makes on the owner's behalf — is authored **and** committed as **Atilla Saadat `<atillaabc@gmail.com>`** (set as repo-local `git config user.name`/`user.email`). **Never** add Claude/AI co-authorship trailers (`Co-Authored-By: Claude …`) or "Generated with Claude Code" footers to commit messages or PR bodies. This is enforced by `includeCoAuthoredBy: false` in `.claude/settings.json`; do not re-enable it. If the project's git identity ever reads anything other than the owner's, stop and fix it before committing.
 - **Requirements traceability:** every capability maps to a `REQ-###` in `docs/requirements/` and to ≥1 test. Aim for high coverage and **all REQs met with margin** (record method, result, margin).
 
 ---
