@@ -50,3 +50,17 @@ tools/gmat/*.tar.gz
 
 # Keep generated-dir placeholders tracked
 !docs/_generated/.gitkeep
+
+# ── Claude Code / ruflo tooling ────────────────────────────────────────
+# Tracked (the glue that enables ruflo for the repo): .mcp.json, CLAUDE.md,
+# .claude/settings.json. The vendored agent/command/skill assets under .claude/
+# are regenerable via `npx ruflo init`, so they are intentionally NOT tracked.
+# Runtime state and local overrides are never tracked.
+.claude-flow/
+.claude/agents/
+.claude/commands/
+.claude/helpers/
+.claude/skills/
+.claude/settings.local.json
+CLAUDE.md.pre-ruflo
+*local-command-caveat*.txt
