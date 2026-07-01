@@ -15,3 +15,13 @@ target_link_libraries(polaris_math
   PUBLIC Eigen3::Eigen polaris_constants
   PRIVATE polaris_flags)
 add_library(polaris::math ALIAS polaris_math)
+
+# --- Time: TAI master clock, GPS/TT scales, leap seconds, UTC derivation -----
+add_library(polaris_time
+  time/leap_seconds.cpp
+  time/utc.cpp)
+target_include_directories(polaris_time PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(polaris_time
+  PUBLIC polaris_constants
+  PRIVATE polaris_flags)
+add_library(polaris::time ALIAS polaris_time)
