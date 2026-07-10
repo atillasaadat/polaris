@@ -62,5 +62,9 @@ tools/gmat/*.tar.gz
 .claude/helpers/
 .claude/skills/
 .claude/settings.local.json
+.claude/proven-config.json
+.claude/.proven-config-version
 CLAUDE.md.pre-ruflo
 *local-command-caveat*.txt
+# Claude Code conversation exports (/export): date-prefixed .txt dumps at root.
+/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.txt

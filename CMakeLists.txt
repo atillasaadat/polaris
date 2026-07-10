@@ -6,8 +6,8 @@
 # shared C++ library (lib/) is a plain CMake target linked into both the F´ flight
 # deployment and (later) the sim; the GoogleTest unit suite runs under the F´ build.
 #
-# Build:   . fprime-venv/bin/activate && fprime-util generate && fprime-util build
-# Tests:   fprime-util generate --ut && fprime-util build --ut && fprime-util check
+# Build:   uv sync && uv run fprime-util generate && uv run fprime-util build
+# Tests:   uv run fprime-util build --ut && uv run fprime-util check
 ####
 cmake_minimum_required(VERSION 3.24.2)
 project(Polaris C CXX)

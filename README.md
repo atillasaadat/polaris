@@ -57,23 +57,26 @@ cd polaris
 git submodule update --init --recursive
 ```
 
-### 2. Set up the F´ toolchain (one-time)
+### 2. Set up the toolchain (one-time)
+
+Dependencies are managed with [uv](https://docs.astral.sh/uv/). One command
+creates the environment (`.venv`), provisions Python 3.12, and installs the
+pinned F´ toolchain — `cmake` and `ninja` arrive as wheels, so nothing else is
+needed on `PATH`:
 
 ```bash
-python3.12 -m venv fprime-venv
-. fprime-venv/bin/activate
-pip install -U pip
-pip install -r requirements.txt        # fprime-tools / fprime-gds / fprime-fpp, pinned to the submodule
-pip install cmake ninja                # skip if cmake≥3.24 + ninja are already on PATH
+uv sync                                # F´ toolchain + dev tools, from uv.lock
 ```
 
-Activate the venv (`. fprime-venv/bin/activate`) in every shell that runs `fprime-util` / `fprime-gds`.
+`uv run <cmd>` runs a tool inside that environment; add `--group docs` to pull
+in the documentation toolchain. Only `doxygen` (for the C++ API) is a system
+package: `sudo apt-get install -y doxygen`.
 
 ### 3. Build
 
 ```bash
-fprime-util generate                   # configure the build cache (one-time per cache)
-fprime-util build                      # compile F´ core + the PolarisFsw deployment
+uv run fprime-util generate            # configure the build cache (one-time per cache)
+uv run fprime-util build               # compile F´ core + the PolarisFsw deployment
 ```
 
 The binary lands at `build-artifacts/Linux/flight_PolarisFsw/bin/flight_PolarisFsw`.
@@ -82,14 +85,14 @@ The binary lands at `build-artifacts/Linux/flight_PolarisFsw/bin/flight_PolarisF
 
 ```bash
 cd flight/PolarisFsw
-fprime-gds                             # launches the GDS web UI (http://127.0.0.1:5000) and the app
+uv run fprime-gds                      # launches the GDS web UI (http://127.0.0.1:5000) and the app
 ```
 
 The GDS lets you send commands and watch live telemetry/events. To run the pieces
 separately — GDS in one shell, the binary in another:
 
 ```bash
-cd flight/PolarisFsw && fprime-gds --no-app          # ground system only (TCP server on :50000)
+cd flight/PolarisFsw && uv run fprime-gds --no-app    # ground system only (TCP server on :50000)
 # in a second shell, from the repo root:
 ./build-artifacts/Linux/flight_PolarisFsw/bin/flight_PolarisFsw -a 127.0.0.1 -p 50000
 ```
@@ -97,9 +100,15 @@ cd flight/PolarisFsw && fprime-gds --no-app          # ground system only (TCP s
 ### 5. Test
 
 ```bash
-fprime-util check                      # runs the Polaris lib unit suite (GoogleTest via ctest)
-# equivalently:
-ctest --test-dir build-fprime-automatic-native --output-on-failure
+uv run fprime-util build --ut          # build the Polaris lib unit suite
+uv run fprime-util check               # run it (GoogleTest via ctest) — 39/39
+```
+
+### 6. Docs (optional)
+
+```bash
+sudo apt-get install -y doxygen        # one-time; C++ API extraction
+uv run --group docs bash tools/dev/build_docs.sh   # -> docs/_build/html/index.html
 ```
 
 > The shared `lib/` (math, quaternions, typed vectors, constants) is plain CMake linked

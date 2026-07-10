@@ -148,20 +148,22 @@ RVTM.
 
 ## Build & verify locally
 
+Dependencies are managed with [uv](https://docs.astral.sh/uv/); `uv sync`
+creates `.venv`, provisions Python 3.12, and installs the pinned toolchain
+(`cmake`/`ninja` as wheels). Only `doxygen` is a system package.
+
 ```bash
-# C++ build + unit tests
-cmake -S . -B build && cmake --build build -j
-(cd build && ctest --output-on-failure)
+# One-time
+uv sync                             # F´ toolchain + dev tools (from uv.lock)
 
-# Requirements traceability (after tests)
-./build/tests/unit/polaris_unit_tests --gtest_output=json:build/gtest.json
-python tools/dev/collect_gtest_trace.py build/gtest.json
+# F´ build + unit tests
+uv run fprime-util generate && uv run fprime-util build
+uv run fprime-util build --ut && uv run fprime-util check   # 39/39
 
-# Docs site (warnings are errors; same gate as CI)
-python3 -m venv docs-venv && . docs-venv/bin/activate
-pip install -r docs/requirements.txt
-bash tools/dev/build_docs.sh        # -> docs/_build/html/index.html
+# Docs site (warnings are errors; same gate as CI — renders the lib/ C++ API)
+sudo apt-get install -y doxygen     # one-time
+uv run --group docs bash tools/dev/build_docs.sh            # -> docs/_build/html/index.html
 
 # Lint
-pre-commit run --all-files
+uv run --only-group dev pre-commit run --all-files
 ```

@@ -26,17 +26,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
       - name: Install Doxygen
         run: sudo apt-get update && sudo apt-get install -y doxygen
+      - name: Set up uv (provisions Python from .python-version)
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
       - name: Install docs toolchain
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r docs/requirements.txt
+        run: uv sync --only-group docs
       - name: Build docs (warnings are errors)
-        run: bash tools/dev/build_docs.sh
+        run: uv run --only-group docs bash tools/dev/build_docs.sh
       - name: Upload site artifact
         uses: actions/upload-pages-artifact@v3
         with:

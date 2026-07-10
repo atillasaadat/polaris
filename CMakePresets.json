@@ -4,11 +4,11 @@
       {
         "name": "fprime",
         "displayName": "F´ Release Preset",
-        "description": "F´ release build using local fprime-venv",
+        "description": "F´ release build using the uv-managed .venv",
         "binaryDir": "${sourceDir}/build-fprime-automatic-native",
         "generator": "Ninja",
         "environment": {
-          "VIRTUAL_ENV": "${fileDir}/fprime-venv",
+          "VIRTUAL_ENV": "${fileDir}/.venv",
           "PATH": "$env{VIRTUAL_ENV}/bin:$penv{PATH}"
         },
         "cacheVariables": {
@@ -20,7 +20,7 @@
         "name": "fprime-debug",
         "inherits": "fprime",
         "displayName": "F´ Debug Preset",
-        "description": "F´ debug build using local fprime-venv",
+        "description": "F´ debug build using the uv-managed .venv",
         "cacheVariables": {
             "CMAKE_BUILD_TYPE": "Debug"
         }
@@ -29,7 +29,7 @@
         "name": "fprime-ut",
         "inherits": "fprime-debug",
         "displayName": "F´ Unit Test Preset",
-        "description": "F´ debug build including unit tests using local fprime-venv",
+        "description": "F´ debug build including unit tests using the uv-managed .venv",
         "binaryDir": "${sourceDir}/build-fprime-automatic-native-ut",
         "cacheVariables": {
             "BUILD_TESTING": "ON"

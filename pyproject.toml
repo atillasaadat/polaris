@@ -1,0 +1,72 @@
+# Polaris — Python project & tooling dependencies (design doc §23).
+#
+# Polaris is a C++ flight-software + simulation project; there is no Python
+# package to distribute. This file exists solely to manage the *tooling* Python
+# environment reproducibly with `uv` (https://docs.astral.sh/uv):
+#
+#   uv sync                     # default env: build/test tooling (fprime + dev)
+#   uv sync --group docs        # add the documentation toolchain
+#   uv run fprime-util build    # run a tool inside the managed env
+#
+# `uv.lock` pins the full transitive graph for byte-reproducible installs across
+# developers and CI. Python is pinned to 3.12 (`.python-version`) — the version
+# the vendored F´ v4.2.2 toolchain targets.
+[project]
+name = "polaris-tooling"
+version = "0.0.0"
+description = "Polaris spacecraft GNC flight software + 6DOF simulation — Python tooling environment"
+requires-python = ">=3.12,<3.13"
+# No runtime dependencies: the flight/sim code is C++. All Python deps are
+# development tooling, declared as dependency groups below (PEP 735).
+dependencies = []
+
+[tool.uv]
+# Virtual (non-package) project: install the dependency groups, but do not try
+# to build/install Polaris itself as a wheel.
+package = false
+# Install these groups by default on a bare `uv sync`.
+default-groups = ["fprime", "dev"]
+
+[dependency-groups]
+# F´ (F Prime) flight-software toolchain. Top-level tools pinned to the versions
+# shipped by the vendored submodule (fprime/requirements.txt, tied to F´ v4.2.2);
+# uv resolves and locks the transitive graph into uv.lock. `cmake`/`ninja`/`gcovr`
+# arrive here as wheels — most of the "build toolchain" is Python-managed.
+fprime = [
+    "fprime-tools==4.2.1",
+    "fprime-gds==4.2.1",
+    "fprime-fpp==3.2.0",
+    "fprime-fpl-layout==1.0.4",
+    "fprime-fpl-write-pic==1.0.4",
+    "fprime-visual==1.0.2",
+    "cmake==3.26.0",
+    "ninja==1.11.1.4",
+    "gcovr==8.2",
+    # F´ tooling imports the deprecated `pkg_resources` (setuptools) and `pip`
+    # directly; uv's minimal venvs ship neither by default (classic venvs do),
+    # so pin them explicitly.
+    "setuptools==78.1.1",
+    "pip>=24",
+]
+
+# Documentation site (design doc §21.2). Kept as ranges (majors pinned); uv.lock
+# fixes the exact resolved versions. The docs build is a CI gate (sphinx-build -W).
+docs = [
+    "sphinx>=7.4,<9",
+    "pydata-sphinx-theme>=0.16,<0.17",
+    "numpydoc>=1.8,<2",
+    "breathe>=4.35,<5",
+    "sphinxcontrib-bibtex>=2.6,<3",
+    "sphinx-needs>=4.1,<5",
+]
+
+# Local developer tooling: test runner, formatter/linter, and pre-commit driver.
+# clang-format is pinned to 18.1.8 to match `.clang-format` (target 18) and the
+# pinned pre-commit hook — NOT the 20.1.8 that F´'s aggregate requirements list,
+# so manual `clang-format` runs agree with the CI hook.
+dev = [
+    "pytest==8.3.3",
+    "pre-commit>=3.5,<5",
+    "ruff==0.8.4",
+    "clang-format==18.1.8",
+]

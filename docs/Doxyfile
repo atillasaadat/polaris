@@ -6,7 +6,10 @@ PROJECT_NAME           = "Polaris"
 PROJECT_BRIEF          = "Spacecraft GNC flight software & simulation"
 OUTPUT_DIRECTORY       = doxygen
 
-INPUT                  = ../lib ../flight ../sim
+# Scoped to lib/ for now — the shared Polaris C++ library is what the API page
+# documents. flight/ and sim/ are added here once they carry documented,
+# non-F´-generated code; parsing the F´ topology now only adds framework noise.
+INPUT                  = ../lib
 FILE_PATTERNS          = *.h *.hpp *.hh *.hxx *.cpp *.cc *.cxx
 RECURSIVE              = YES
 EXCLUDE_PATTERNS       = */fprime/* */build/* */_build/*

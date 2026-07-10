@@ -1,8 +1,0 @@
-# F´ flight-software toolchain (fprime-util, fprime-gds, fprime-fpp, ...).
-# Versions are sourced transitively from the pinned fprime submodule (currently
-# v4.2.2), so the Python tooling always matches the checked-out framework.
-#
-# Install into the project venv:
-#   python3.12 -m venv fprime-venv && . fprime-venv/bin/activate
-#   pip install -U pip && pip install -r requirements.txt
--r ./fprime/requirements.txt
