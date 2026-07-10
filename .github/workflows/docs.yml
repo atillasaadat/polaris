@@ -41,10 +41,18 @@ jobs:
         with:
           path: docs/_build/html
 
-  # Publish to GitHub Pages on main (enable Pages: Settings -> Pages -> GitHub Actions).
+  # Publish to GitHub Pages on main. Gated behind the ENABLE_PAGES repo variable
+  # because Pages is unavailable on a private repo under the Free plan (the
+  # deploy-pages API returns 422 / "plan does not support Pages"). Turn publishing
+  # on once the repo is public *or* the plan supports private Pages:
+  #   1. Settings -> Pages -> Build and deployment -> Source: GitHub Actions
+  #   2. Settings -> Secrets and variables -> Actions -> Variables:
+  #        ENABLE_PAGES = true
+  # Until then this job is skipped (not failed), so main stays green. The `build`
+  # job above still validates the docs under -W and uploads the site artifact.
   deploy:
     needs: build
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && vars.ENABLE_PAGES == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
