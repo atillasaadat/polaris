@@ -50,6 +50,18 @@ fixed-capacity leap-second table, and ground-only UTC derivation.
 .. doxygennamespace:: polaris::time
    :members:
 
+Canonical state — ``polaris::state``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The single navigation product (design doc §8.0): ``EstimatedState`` (onboard —
+attitude/rates/position/velocity with frame tags, biases, 15-state covariance,
+per-field validity, estimation mode) and ``TruthState`` (sim-only). The
+truth-vs-onboard split is a type distinction, so flight code cannot consume
+truth.
+
+.. doxygennamespace:: polaris::state
+   :members:
+
 Python
 ------
 

@@ -6,7 +6,7 @@ phasing (`docs/design/Polaris_Design_Document.md` §24). This file summarizes
 baseline (`docs/requirements/`) remain the sources of truth.
 
 **Current phase:** Phase 0 — Foundations (in progress)
-**Last updated:** Phase 0, Push 2a + early F´ integration (Push 4 pulled forward)
+**Last updated:** Phase 0, Push 2c (frames + canonical state); toolchain on uv
 
 ---
 
@@ -21,12 +21,15 @@ baseline (`docs/requirements/`) remain the sources of truth.
 | `lib/` math foundations (constants, typed vectors, quaternion) | ✅ done + tested |
 | `lib/` time (TAI clock, GPS/TT scales, leap seconds, UTC) | ✅ done + tested |
 | F´ v4.2.2 barebones deployment (buildable/runnable) | ✅ done (Push 4 pulled forward) |
-| `lib/` frames, canonical state, ephemeris | ⏳ next (Push 2c–2d) |
+| `lib/` geometric frames (LVLH/RIC) + canonical state (`EstimatedState`/`TruthState`) | ✅ done + tested |
+| `lib/` ephemeris (Chebyshev/SPICE) + TDB | ⏳ next (Push 2d) |
 | Config compiler · GMAT golden harness | ⏳ Pushes 3, 5 |
 
 **Build/test health:** C++ builds clean under a strict `-Werror` warning set;
-**39/39 unit tests pass** (also green under ASan/UBSan); docs build is green;
-pre-commit (clang-format + ruff) is clean.
+**50/50 unit tests pass** (also green under ASan/UBSan); docs build is green
+(with the `lib/` C++ API rendered); pre-commit (clang-format + ruff) is clean.
+Dependencies + Python/build toolchain are managed by **uv** (`pyproject.toml` +
+`uv.lock`, Python 3.12); CI runs the same via `setup-uv`.
 
 ---
 
@@ -128,14 +131,47 @@ pre-commit (clang-format + ruff) is clean.
 (adds REQ-CONV-001, REQ-CONV-005 to the Push 2a set) — 39 verifying tests in the
 RVTM.
 
+### Push 2c — geometric frames + canonical state
+- **`lib/math/frame_geometry`** — the two orbit-relative frames built from an ECI
+  position/velocity, returned as boundary-tagged passive rotations:
+  - **RIC** (Hill/RTN): `ricFromEci(r,v) → Quat<RIC,ECI>` with R = r̂,
+    C = ĥ = (r×v)̂, I = C×R.
+  - **LVLH** (nadir pointing): `lvlhFromEci(r,v) → Quat<LVLH,ECI>` with ẑ = −r̂,
+    ŷ = −ĥ, x̂ = ŷ×ẑ (≈ +velocity).
+  - Pure functions of the orbit state (no EOP/time) — exact and always available;
+    the full time-dependent ECI↔ECEF (IAU 2006/2000A) is the separate Push-5
+    frames library. Degenerate inputs (non-finite, zero radius, r∥v) return
+    `false` and leave the output untouched — §3.6 return-code discipline, no throw.
+    Cited [vallado2013] / [wertz1978].
+- **`lib/state`** — the single nav product (§8.0):
+  - **`EstimatedState`** — TAI epoch, `Quat<Body,ECI>` attitude, body rate,
+    ECI position/velocity, gyro/accel bias, a **15-state error covariance**
+    (documented block order δθ/δb_g/δr/δv/δb_a), per-field validity flags, the
+    active `EstimationMode` (Fine/Coarse/Invalid), and a schema version. Every
+    vector is frame-tagged (§3.1).
+  - **`TruthState`** — the sim-only analogue with the same kinematics but no
+    covariance/validity, so truth-vs-onboard is a **type distinction** — flight
+    code is structurally unable to consume truth (enforced by `static_assert`).
+- **11 new unit tests, all REQ-traced**, 100% pass (50/50 total; green under
+  ASan/UBSan): known-orbit geometry (RIC identity for the canonical equatorial
+  state; LVLH nadir/velocity axes), radial/cross-track exactness for a general
+  orbit, the degenerate/finiteness guards, and the state defaults/covariance
+  layout/type-distinction.
+- **Reviewed** with the `fsw-code-reviewer`.
+
+**Requirements coverage:** 11 of 72 requirements now have a verifying test
+(adds REQ-SYS-005 canonical state, REQ-SYS-013 multi-frame views) — 50 verifying
+tests in the RVTM.
+
 ---
 
 ## What's next
 
 - ~~**Push 2b** — time library: TAI/UTC/GPS/TT, int64-ns master clock + two-part
   high-precision form, leap-second handling.~~ ✅ **done** (TDB moved to 2d).
-- **Push 2c** — frames (LVLH/RIC geometric now; full ECI↔ECEF reduction with
-  GMAT in Push 5) + the canonical `EstimatedState` / `TruthState` structs.
+- ~~**Push 2c** — frames (LVLH/RIC geometric now; full ECI↔ECEF reduction with
+  GMAT in Push 5) + the canonical `EstimatedState` / `TruthState` structs.~~
+  ✅ **done** (see above; ECI↔ECEF reduction still deferred to Push 5).
 - **Push 2d** — onboard Chebyshev / ground SPICE ephemeris interfaces; **TDB**
   (TT↔TDB periodic term) lands here where ephemeris consumes it.
 - **Push 3** — config schema + hardware-model library + config-compiler stub.
