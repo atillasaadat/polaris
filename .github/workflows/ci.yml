@@ -42,6 +42,7 @@ jobs:
           uv run fprime-util build
       - name: Build + run lib unit tests (GoogleTest via ctest)
         run: |
+          uv run fprime-util generate --ut
           uv run fprime-util build --ut
           uv run fprime-util check
 
