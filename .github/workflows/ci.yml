@@ -1,0 +1,54 @@
+name: ci
+
+# Polaris CI pipeline (design doc §23.2). The lint gate is active now; the build
+# and test stages are stubbed and activate as code lands in later Phase-0 pushes.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up uv (provisions Python from .python-version)
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Run pre-commit (format + quick lint)
+        run: uv run --only-group dev pre-commit run --all-files --show-diff-on-failure
+
+  # Build the F´ flight-software baseline (F´ core + PolarisFsw deployment) and run
+  # the lib unit suite. Warnings-as-errors on Polaris targets (polaris_flags).
+  build:
+    name: build + unit tests (F´)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive          # fprime + its nested submodules
+      - name: Set up uv (provisions Python from .python-version)
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install F´ toolchain (cmake + ninja arrive as wheels)
+        run: uv sync                     # default groups: fprime + dev
+      - name: Build (F´ core + PolarisFsw deployment)
+        run: |
+          uv run fprime-util generate
+          uv run fprime-util build
+      - name: Build + run lib unit tests (GoogleTest via ctest)
+        run: |
+          uv run fprime-util generate --ut
+          uv run fprime-util build --ut
+          uv run fprime-util check
+
+  # ── Remaining §23.2 stages — each activates when its code exists ─────────────
+  #   static-analysis:  clang-tidy, cppcheck, ASan/UBSan test builds   (Push 2)
+  #   integration-sitl: two-process closed-loop SITL scenarios         (Push 4+)
+  #   mc-smoke:         Monte Carlo smoke subset                       (Push 11)
+  #   golden:           GMAT golden-fixture regression                 (Push 5)
+  #   coverage:         line + branch thresholds                       (Push 6)

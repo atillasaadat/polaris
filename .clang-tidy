@@ -1,0 +1,36 @@
+# Polaris static-analysis checks (design doc §3.6 JPL "Power of Ten", §23.2).
+# Target: clang-tidy 18. Scoped to lib/ flight/ sim/ via HeaderFilterRegex.
+# WarningsAsErrors is empty during scaffolding; CI tightens it per phase as
+# flight code lands (no-heap, no-recursion, checked returns become hard gates).
+---
+Checks: >
+  -*,
+  bugprone-*,
+  cert-*,
+  concurrency-*,
+  cppcoreguidelines-*,
+  misc-*,
+  modernize-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -modernize-use-trailing-return-type,
+  -readability-magic-numbers,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -readability-identifier-length,
+  -misc-include-cleaner,
+  -cppcoreguidelines-avoid-const-or-ref-data-members
+
+WarningsAsErrors: ''
+HeaderFilterRegex: '(lib|flight|sim)/.*'
+FormatStyle: file
+
+CheckOptions:
+  # Power-of-Ten flight emphasis (escalated to errors in flight-path CI):
+  #   misc-no-recursion              — no recursion in flight paths
+  #   bugprone-unused-return-value   — check every return code
+  #   cert-err33-c                   — check return values of library calls
+  #   cppcoreguidelines-no-malloc    — no dynamic allocation after init
+  #   cppcoreguidelines-owning-memory
+  readability-function-cognitive-complexity.Threshold: '25'
+  cppcoreguidelines-no-malloc.Allocations: '::malloc;::calloc;::realloc'
