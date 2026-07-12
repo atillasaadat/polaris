@@ -53,7 +53,42 @@ inline constexpr double kTtMinusTai = 32.184;
 /// Seconds per day [s].
 inline constexpr double kSecondsPerDay = 86'400.0;
 
+/// Julian Date of the J2000.0 epoch (2000-01-01T12:00:00 TT) [days] — the
+/// reference epoch for the astronomical time arguments (Vallado §3.5).
+inline constexpr double kJulianDateJ2000 = 2'451'545.0;
+
+/// Julian Date of the uniform-scale epoch 1970-01-01T00:00:00 [days]. Bridges
+/// the onboard nanosecond count (since 1970) to the JD-based astronomical
+/// arguments; JD is a scale-agnostic calendar count (Vallado §3.5).
+inline constexpr double kJulianDate1970 = 2'440'587.5;
+
+/// Days per Julian century [days] — the unit of the astronomical time argument
+/// `T = (JD - JD_J2000) / 36525`.
+inline constexpr double kDaysPerJulianCentury = 36'525.0;
+
 }  // namespace time
+
+/// @brief TDB−TT periodic-term series (Astronomical Almanac / Vallado eq. 3-49).
+///
+/// Barycentric Dynamical Time differs from Terrestrial Time by a mainly annual
+/// periodic term (no secular drift), driven by Earth's orbital eccentricity.
+/// This low-precision two-harmonic series is accurate to ~30 µs — ample for
+/// onboard Sun/Moon/planet ephemeris evaluation (design doc §3.2, §11.3).
+namespace tdb {
+
+/// Amplitude of the fundamental (annual) TDB−TT term [s].
+inline constexpr double kAmplitude1 = 0.001'658;
+
+/// Amplitude of the second harmonic [s].
+inline constexpr double kAmplitude2 = 0.000'014;
+
+/// Earth mean-anomaly constant term at J2000 [deg] (`g = kMeanAnomalyDeg + …`).
+inline constexpr double kMeanAnomalyDeg = 357.53;
+
+/// Earth mean-anomaly rate [deg/day].
+inline constexpr double kMeanAnomalyRateDegPerDay = 0.985'600'28;
+
+}  // namespace tdb
 
 /// @brief Universal physical constants (CODATA / IAU defining values).
 namespace physical {

@@ -47,6 +47,14 @@ struct Gps {
 struct Tt {
   static constexpr const char* kName = "TT";
 };
+
+/// Barycentric Dynamical Time — the independent argument of the JPL planetary
+/// ephemerides. It differs from TT by a *periodic* (not constant) term, so the
+/// TT↔TDB conversion is a function (see `time/tdb.hpp`), not one of the constant
+/// offsets below.
+struct Tdb {
+  static constexpr const char* kName = "TDB";
+};
 }  // namespace scale
 
 /// Two-part high-precision time: whole seconds plus a fraction in `[0, 1)`
@@ -129,6 +137,9 @@ using Tai = Instant<scale::Tai>;
 using Gps = Instant<scale::Gps>;
 /// Terrestrial Time — the ephemeris scale (design doc §3.2).
 using Tt = Instant<scale::Tt>;
+/// Barycentric Dynamical Time — the argument of the planetary ephemerides
+/// (design doc §11.3). Reached from TT via the periodic term in `time/tdb.hpp`.
+using Tdb = Instant<scale::Tdb>;
 
 /// @name Constant-offset scale conversions
 ///

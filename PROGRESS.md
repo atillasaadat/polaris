@@ -6,7 +6,7 @@ phasing (`docs/design/Polaris_Design_Document.md` §24). This file summarizes
 baseline (`docs/requirements/`) remain the sources of truth.
 
 **Current phase:** Phase 0 — Foundations (in progress)
-**Last updated:** Phase 0, Push 2c (frames + canonical state); toolchain on uv
+**Last updated:** Phase 0, Push 2d (onboard Chebyshev ephemeris + TDB)
 
 ---
 
@@ -22,11 +22,12 @@ baseline (`docs/requirements/`) remain the sources of truth.
 | `lib/` time (TAI clock, GPS/TT scales, leap seconds, UTC) | ✅ done + tested |
 | F´ v4.2.2 barebones deployment (buildable/runnable) | ✅ done (Push 4 pulled forward) |
 | `lib/` geometric frames (LVLH/RIC) + canonical state (`EstimatedState`/`TruthState`) | ✅ done + tested |
-| `lib/` ephemeris (Chebyshev/SPICE) + TDB | ⏳ next (Push 2d) |
+| `lib/` onboard ephemeris (Chebyshev) + TDB time argument | ✅ done + tested |
+| `lib/` ground SPICE ephemeris source (DE440) | ⏳ deferred to sim/Push 5 (never onboard) |
 | Config compiler · GMAT golden harness | ⏳ Pushes 3, 5 |
 
 **Build/test health:** C++ builds clean under a strict `-Werror` warning set;
-**50/50 unit tests pass** (also green under ASan/UBSan); docs build is green
+**66/66 unit tests pass** (also green under ASan/UBSan); docs build is green
 (with the `lib/` C++ API rendered); pre-commit (clang-format + ruff) is clean.
 Dependencies + Python/build toolchain are managed by **uv** (`pyproject.toml` +
 `uv.lock`, Python 3.12); CI runs the same via `setup-uv`.
@@ -163,6 +164,40 @@ RVTM.
 (adds REQ-SYS-005 canonical state, REQ-SYS-013 multi-frame views) — 50 verifying
 tests in the RVTM.
 
+### Push 2d — onboard Chebyshev ephemeris + TDB
+- **`lib/time` TDB** — the periodic dynamical-time argument the ephemerides run
+  on (design doc §3.2, §11.3), the piece deferred from Push 2b "where ephemeris
+  consumes it":
+  - `scale::Tdb` / `Tdb` join the strongly-typed uniform scales; because TDB−TT
+    is a **periodic** term (mainly annual, peak ≈ 1.66 ms, no secular drift) and
+    not a constant offset, the conversion is a function (`time/tdb.hpp`), not one
+    of the `constexpr` offsets.
+  - `toTdb(Tt)` / `toTt(Tdb)` via the standard two-harmonic series (Vallado
+    eq. 3-49), accurate to ~30 µs — far below the onboard ephemeris budget. The
+    inverse is a self-consistent single shot (< 1 µs, no iteration). Cited
+    [vallado2013].
+- **`lib/ephemeris` onboard Chebyshev evaluator** (design doc §11.3, REQ-CDH-002):
+  - `ChebyshevSegment` — one uploaded coefficient set (fixed-capacity, degree ≤ 15,
+    no heap) covering a TDB interval, mirroring an SPK Type 2 record.
+  - `evaluate(...)` returns position (and, via the analytic derivative, velocity)
+    in **ECI/J2000 metres** at a **TDB** query epoch. Out-of-coverage, malformed,
+    or non-finite → `false` with the output untouched (§3.6 return-code discipline).
+  - `EphemerisTable<Capacity>` — a body's consecutive segments in fixed-capacity
+    storage; a query selects the covering interval (no extrapolation across gaps).
+  - **SPICE stays ground/sim-only** and is never linked into flight; the DE440
+    ground source + the SPICE→Chebyshev fitting land in the sim / Push-5 golden
+    harness where they are consumed. Cited [newhall1989] / [vallado2013].
+- **16 new unit tests, all REQ-CDH-002-traced**, 100% pass (66/66 total; green
+  under ASan/UBSan): independent recomputation of the TDB series at known epochs
+  (validating the 1970→J2000 day conversion), the bounded/periodic/round-trip
+  properties; exact recovery of a hand-evaluated Chebyshev polynomial and its
+  derivative (with a finite-difference velocity cross-check), interval-boundary
+  and out-of-coverage guards, and the table's interval selection/overflow.
+- **Reviewed** with the `fsw-code-reviewer`.
+
+**Requirements coverage:** 12 of 72 requirements now have a verifying test
+(adds REQ-CDH-002 onboard ephemeris/TDB) — 66 verifying tests in the RVTM.
+
 ---
 
 ## What's next
@@ -172,8 +207,10 @@ tests in the RVTM.
 - ~~**Push 2c** — frames (LVLH/RIC geometric now; full ECI↔ECEF reduction with
   GMAT in Push 5) + the canonical `EstimatedState` / `TruthState` structs.~~
   ✅ **done** (see above; ECI↔ECEF reduction still deferred to Push 5).
-- **Push 2d** — onboard Chebyshev / ground SPICE ephemeris interfaces; **TDB**
-  (TT↔TDB periodic term) lands here where ephemeris consumes it.
+- ~~**Push 2d** — onboard Chebyshev ephemeris interface; **TDB** (TT↔TDB periodic
+  term) where ephemeris consumes it.~~ ✅ **done** (see above; the ground SPICE /
+  DE440 source + SPICE→Chebyshev fitting stay ground-only, deferred to the sim /
+  Push 5 where they are consumed).
 - **Push 3** — config schema + hardware-model library + config-compiler stub.
 - ~~**Push 4** — F´ submodule + buildable deployment.~~ ✅ **done early** (F´
   `v4.2.2`, see above).
