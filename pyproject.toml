@@ -25,7 +25,7 @@ dependencies = []
 # to build/install Polaris itself as a wheel.
 package = false
 # Install these groups by default on a bare `uv sync`.
-default-groups = ["fprime", "dev"]
+default-groups = ["fprime", "dev", "config"]
 
 [dependency-groups]
 # F´ (F Prime) flight-software toolchain. Top-level tools pinned to the versions
@@ -69,4 +69,14 @@ dev = [
     "pre-commit>=3.5,<5",
     "ruff==0.8.4",
     "clang-format==18.1.8",
+]
+
+# Config compiler (design doc §19.3, tools/configc/). The single source-of-truth
+# spacecraft/scenario/hardware config is YAML, validated through Pydantic models
+# and resolved into F´-param / sim / analysis artifacts. Both already resolve in
+# the locked graph (transitive of the toolchain); declared here so the tool's
+# runtime deps are explicit rather than borrowed.
+config = [
+    "pydantic>=2.11,<3",
+    "pyyaml>=6,<7",
 ]

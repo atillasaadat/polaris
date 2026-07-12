@@ -80,3 +80,10 @@ Python
 
 No Python modules under ``analysis/`` or ``bindings/`` yet; numpydoc/autodoc
 directives land here with the first analysis code.
+
+The **config compiler** (``tools/configc/``, design doc §19.3) is the first
+Python tool: it validates the single-source-of-truth spacecraft/scenario YAML
+against a Pydantic schema, resolves hardware model-IDs against the library in
+``config/hardware/``, and emits provenance-stamped F´-param / sim / analysis
+artifacts from one resolved object (REQ-CFG-001/002/003). Run it with
+``PYTHONPATH=tools uv run python -m configc --help``.

@@ -6,7 +6,7 @@ phasing (`docs/design/Polaris_Design_Document.md` §24). This file summarizes
 baseline (`docs/requirements/`) remain the sources of truth.
 
 **Current phase:** Phase 0 — Foundations (in progress)
-**Last updated:** Phase 0, Push 2d (onboard Chebyshev ephemeris + TDB)
+**Last updated:** Phase 0, Push 3 (config schema + hardware library + config compiler)
 
 ---
 
@@ -24,11 +24,13 @@ baseline (`docs/requirements/`) remain the sources of truth.
 | `lib/` geometric frames (LVLH/RIC) + canonical state (`EstimatedState`/`TruthState`) | ✅ done + tested |
 | `lib/` onboard ephemeris (Chebyshev) + TDB time argument | ✅ done + tested |
 | `lib/` ground SPICE ephemeris source (DE440) | ⏳ deferred to sim/Push 5 (never onboard) |
-| Config compiler · GMAT golden harness | ⏳ Pushes 3, 5 |
+| Config schema + hardware-model library + config compiler (`tools/configc/`) | ✅ done + tested |
+| GMAT golden harness | ⏳ Push 5 |
 
 **Build/test health:** C++ builds clean under a strict `-Werror` warning set;
-**66/66 unit tests pass** (also green under ASan/UBSan); docs build is green
-(with the `lib/` C++ API rendered); pre-commit (clang-format + ruff) is clean.
+**66/66 C++ unit tests** + **12 Python config-compiler tests** pass (C++ also
+green under ASan/UBSan); docs build is green (with the `lib/` C++ API rendered);
+pre-commit (clang-format + ruff) is clean.
 Dependencies + Python/build toolchain are managed by **uv** (`pyproject.toml` +
 `uv.lock`, Python 3.12); CI runs the same via `setup-uv`.
 
@@ -200,6 +202,40 @@ tests in the RVTM.
 
 ---
 
+### Push 3 — config schema + hardware-model library + config compiler
+- **Single source-of-truth config** (design doc §19.1): a spacecraft + scenario
+  YAML validated by a **Pydantic schema** (`tools/configc/schema.py`) with
+  `extra='forbid'` so a typo'd key fails the build instead of being silently
+  dropped (validation at the boundary). GNC-core scope: mass/CoM/inertia, the
+  sensor/actuator suite referenced by hardware model-ID, per-mode control gains,
+  epoch/environment, ground network, and Monte-Carlo dispersion hooks (RF/power/
+  thermal deferred until a consumer needs them).
+- **Hardware-model library** (`config/hardware/`, §19.2, REQ-CFG-002): parameterized
+  entries keyed by model ID (`STIM300` IMU, `ST-16` star tracker, `RW-X` reaction
+  wheel). A spacecraft references hardware by model-ID string — swapping the string
+  swaps the modeled unit.
+- **Config compiler** (`tools/configc/`, §19.3, REQ-CFG-001/003): one pipeline —
+  load library → validate config → resolve model-IDs into **one resolved object**
+  → SHA-256 provenance hash → emit F´-param / sim / analysis **stub artifacts**.
+  All three derive from the single resolved object (no consumer re-parses raw
+  YAML); each carries the config hash for traceability. The emitters are stubs
+  (JSON, not a real `ParameterDb` binary); the pipeline/validation/provenance are
+  real. CLI: `PYTHONPATH=tools uv run python -m configc`.
+- **One LEO template config** (`config/spacecraft/leo_smallsat.yaml`): a 6U-class
+  vehicle in a 500 km SSO — a ready compile/test setup.
+- **12 Python tests, REQ-CFG-001/002/003-traced** (pytest, 100% pass): three-artifact
+  emission, single-resolved-object provenance shared across all artifacts,
+  model-ID resolution + swap, unknown-model-ID and unknown-key rejection, and
+  deterministic value-sensitive hashing.
+- pydantic + pyyaml declared explicitly in a `config` dependency group (both
+  already in the locked graph). **Reviewed** with the `python-reviewer`.
+
+**Requirements coverage:** 15 of 72 requirements now have a verifying test
+(adds REQ-CFG-001/002/003 config compiler) — 78 verifying tests in the RVTM
+(66 C++ + 12 Python).
+
+---
+
 ## What's next
 
 - ~~**Push 2b** — time library: TAI/UTC/GPS/TT, int64-ns master clock + two-part
@@ -211,7 +247,9 @@ tests in the RVTM.
   term) where ephemeris consumes it.~~ ✅ **done** (see above; the ground SPICE /
   DE440 source + SPICE→Chebyshev fitting stay ground-only, deferred to the sim /
   Push 5 where they are consumed).
-- **Push 3** — config schema + hardware-model library + config-compiler stub.
+- ~~**Push 3** — config schema + hardware-model library + config-compiler stub.~~
+  ✅ **done** (see above; GNC-core schema, RF/power/thermal + real F´-param/sim
+  artifact encoders deferred to their consuming pushes).
 - ~~**Push 4** — F´ submodule + buildable deployment.~~ ✅ **done early** (F´
   `v4.2.2`, see above).
 - **Push 5** — GMAT golden-data harness + first fixtures.
