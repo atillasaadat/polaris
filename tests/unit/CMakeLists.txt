@@ -5,6 +5,8 @@ add_executable(polaris_unit_tests
   quaternion_test.cpp
   frame_geometry_test.cpp
   time_test.cpp
+  tdb_test.cpp
+  chebyshev_test.cpp
   state_test.cpp)
 
 target_link_libraries(polaris_unit_tests
@@ -12,6 +14,7 @@ target_link_libraries(polaris_unit_tests
     polaris::math
     polaris::constants
     polaris::time
+    polaris::ephemeris
     polaris::state
     polaris_test_flags
     GTest::gtest_main)

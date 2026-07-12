@@ -17,15 +17,25 @@ target_link_libraries(polaris_math
   PRIVATE polaris_flags)
 add_library(polaris::math ALIAS polaris_math)
 
-# --- Time: TAI master clock, GPS/TT scales, leap seconds, UTC derivation -----
+# --- Time: TAI master clock, GPS/TT/TDB scales, leap seconds, UTC derivation --
 add_library(polaris_time
   time/leap_seconds.cpp
+  time/tdb.cpp
   time/utc.cpp)
 target_include_directories(polaris_time PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_time
   PUBLIC polaris_constants
   PRIVATE polaris_flags)
 add_library(polaris::time ALIAS polaris_time)
+
+# --- Ephemeris: onboard Chebyshev evaluation of Sun/Moon/planet positions -----
+add_library(polaris_ephemeris
+  ephemeris/chebyshev.cpp)
+target_include_directories(polaris_ephemeris PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(polaris_ephemeris
+  PUBLIC Eigen3::Eigen polaris_math polaris_time polaris_constants
+  PRIVATE polaris_flags)
+add_library(polaris::ephemeris ALIAS polaris_ephemeris)
 
 # --- State: canonical nav product (EstimatedState / TruthState; header-only) -
 add_library(polaris_state INTERFACE)

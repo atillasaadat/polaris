@@ -44,10 +44,23 @@ Time — ``polaris::time``
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The onboard time foundation (design doc §3.2): the TAI master clock and the
-strongly-typed uniform scales (GPS/TT), the signed-nanosecond ``Duration``, the
-fixed-capacity leap-second table, and ground-only UTC derivation.
+strongly-typed uniform scales (GPS/TT/TDB), the signed-nanosecond ``Duration``,
+the fixed-capacity leap-second table, ground-only UTC derivation, and the
+TT↔TDB periodic-term conversion that feeds the planetary ephemerides.
 
 .. doxygennamespace:: polaris::time
+   :members:
+
+Ephemeris — ``polaris::ephemeris``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Onboard Sun/Moon/planet positions (design doc §11.3): the flight-side Chebyshev
+evaluator (``ChebyshevSegment`` + ``evaluate``) that reads ground-generated
+coefficient sets, and the fixed-capacity ``EphemerisTable`` that selects the
+covering interval. Queried at **TDB**; positions are ECI/J2000 metres. SPICE is
+ground/sim-only and never linked into flight (REQ-CDH-002).
+
+.. doxygennamespace:: polaris::ephemeris
    :members:
 
 Canonical state — ``polaris::state``
