@@ -1,0 +1,10 @@
+# Generic small reaction wheel "RW-X" (design doc §19.2).
+# Representative smallsat-class values; refine against the unit spec.
+model_id: RW-X
+kind: reaction_wheel
+description: Generic smallsat reaction wheel
+params:
+  max_torque_nm: 0.025       # peak output torque [N·m]
+  max_momentum_nms: 0.5      # momentum storage at max speed [N·m·s]
+  max_speed_rpm: 6000.0      # maximum wheel speed [rpm]
+  friction_nm: 0.0001        # static/coulomb friction torque [N·m]

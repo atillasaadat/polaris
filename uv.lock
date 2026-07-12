@@ -859,6 +859,10 @@ version = "0.0.0"
 source = { virtual = "." }
 
 [package.dev-dependencies]
+config = [
+    { name = "pydantic" },
+    { name = "pyyaml" },
+]
 dev = [
     { name = "clang-format" },
     { name = "pre-commit" },
@@ -890,6 +894,10 @@ fprime = [
 [package.metadata]
 
 [package.metadata.requires-dev]
+config = [
+    { name = "pydantic", specifier = ">=2.11,<3" },
+    { name = "pyyaml", specifier = ">=6,<7" },
+]
 dev = [
     { name = "clang-format", specifier = "==18.1.8" },
     { name = "pre-commit", specifier = ">=3.5,<5" },

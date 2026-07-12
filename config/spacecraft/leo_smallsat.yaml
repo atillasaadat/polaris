@@ -1,0 +1,65 @@
+# Reference LEO smallsat — template config (design doc §19.1, §19.2).
+#
+# A ready 6U-class test vehicle: IMU + star tracker, a pyramidal reaction-wheel
+# set, in a 500 km sun-synchronous orbit. Hardware is referenced by model-ID
+# (resolved against config/hardware/ by the config compiler); swap a model_id
+# string to re-fly the same vehicle with a different unit (REQ-CFG-002).
+#
+# Compile:
+#   PYTHONPATH=tools uv run python -m configc \
+#     --config config/spacecraft/leo_smallsat.yaml \
+#     --hardware config/hardware --out build/config
+
+spacecraft:
+  name: LEO-Smallsat-Ref
+  mass_kg: 12.0
+  com_m: [0.0, 0.0, 0.0]            # body frame [m]
+  inertia_kgm2:                     # body frame [kg·m²]
+    ixx: 0.12
+    iyy: 0.12
+    izz: 0.10
+  sensors:
+    - name: imu_a
+      model_id: STIM300
+    - name: st_a
+      model_id: ST-16
+  actuators:                        # pyramidal 4-wheel set
+    - name: rw_1
+      model_id: RW-X
+    - name: rw_2
+      model_id: RW-X
+    - name: rw_3
+      model_id: RW-X
+    - name: rw_4
+      model_id: RW-X
+  gains:
+    detumble:
+      k_bdot: 10000.0                # B-dot gain
+    pointing:
+      kp: 0.2                        # proportional (attitude)
+      kd: 0.8                        # derivative (rate)
+
+scenario:
+  name: leo-sso-500km
+  epoch_utc: "2026-01-01T00:00:00Z"
+  environment:
+    gravity_degree: 8
+    drag_enabled: true
+    srp_enabled: true
+    third_bodies: [sun, moon]
+  ground_stations:
+    - name: svalbard
+      lat_deg: 78.23
+      lon_deg: 15.39
+      alt_m: 450.0
+    - name: fairbanks
+      lat_deg: 64.86
+      lon_deg: -147.85
+      alt_m: 130.0
+  mc_dispersions:
+    - param: spacecraft.mass_kg
+      distribution: normal
+      sigma: 0.2
+    - param: spacecraft.inertia_kgm2.izz
+      distribution: normal
+      sigma: 0.005

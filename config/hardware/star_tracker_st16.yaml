@@ -1,0 +1,10 @@
+# Sinclair/Rocket Lab ST-16RT2 star tracker (design doc §19.2).
+# Representative performance-class values; refine against the unit spec.
+model_id: ST-16
+kind: star_tracker
+description: Sinclair ST-16RT2 star tracker
+params:
+  cross_axis_arcsec: 5.0     # cross-boresight accuracy, 1-sigma [arcsec]
+  boresight_arcsec: 30.0     # about-boresight accuracy, 1-sigma [arcsec]
+  update_rate_hz: 2.0        # attitude solution rate [Hz]
+  fov_deg: 15.0              # circular field of view [deg]
