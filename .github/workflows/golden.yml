@@ -1,0 +1,31 @@
+name: golden
+
+# GMAT golden-fixture drift check (design doc §23.2). GMAT is a ~300 MB NASA
+# desktop tool, not a package — so this lane is deliberately OUT of the per-PR
+# path: it runs on demand and weekly, installs GMAT, and fails if the committed
+# fixtures (tests/golden/*.json) drift from what GMAT independently recomputes.
+# The inner build/PR loop (ci.yml) never touches GMAT.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"   # weekly, Monday 06:00 UTC
+
+jobs:
+  golden-drift:
+    name: GMAT fixture drift check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up uv (provisions Python from .python-version)
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Cache GMAT install
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/polaris-gmat
+          key: gmat-${{ runner.os }}-R2022a
+      - name: Install GMAT
+        run: echo "GMAT_CONSOLE=$(bash tools/gmat/install_gmat.sh)" >> "$GITHUB_ENV"
+      - name: Drift-check committed fixtures against GMAT
+        run: uv run pytest tests/tools/test_gmat_drift.py -v

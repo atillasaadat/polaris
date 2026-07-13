@@ -8,14 +8,21 @@ TT−TAI = 32.184 s at the GPS epoch.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
 
 from gmat import (
     build_time_scales_fixture,
+    compare_time_scales,
     offsets_from_rows,
     parse_report,
+    regenerate_time_scales_fixture,
     write_time_scales_script,
 )
+from gmat import golden
 from gmat.golden import GMAT_MJD_TOL_S, SECONDS_PER_DAY
 
 _UTC_1980 = {
@@ -141,3 +148,65 @@ def test_build_fixture_default_tol_is_the_mjd_precision_floor():
     tol = fixture["cases"][0]["quantities"]["tai_minus_utc_s"]["tol_abs"]
     assert tol == GMAT_MJD_TOL_S == pytest.approx(1.0e-6)
     assert 1.0 * SECONDS_PER_DAY == pytest.approx(86400.0)
+
+
+# Report for the two canonical TIME_SCALES_CASES: 1980-01-06 (TAI−UTC=19) and
+# 2020-01-01 (TAI−UTC=37); TT−TAI=32.184 s (=0.0003725 day) in both.
+_TWO_CASE_REPORT = (
+    "sat.TAIModJulian sat.UTCModJulian sat.TTModJulian\n"
+    "44244.0002199074074 44244.0000000000000 44244.0005924074074\n"
+    "51544.0004282407407 51544.0000000000000 51544.0008007407407\n"
+)
+
+
+@pytest.mark.verifies("REQ-VV-002")
+def test_regenerate_runs_gmat_and_builds_two_case_fixture(monkeypatch, tmp_path):
+    def fake_run(cmd, **kwargs):
+        # regenerate writes the report next to the script it hands GMAT
+        (Path(cmd[1]).parent / "time_scales_report.txt").write_text(_TWO_CASE_REPORT)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(golden.subprocess, "run", fake_run)
+    fixture = regenerate_time_scales_fixture("GmatConsole", str(tmp_path))
+    assert [c["name"] for c in fixture["cases"]] == [
+        "gps_epoch_1980",
+        "post_2017_epoch_2020",
+    ]
+    assert fixture["cases"][1]["quantities"]["tai_minus_utc_s"]["expected"] == (
+        pytest.approx(37.0, abs=1e-4)
+    )
+
+
+@pytest.mark.verifies("REQ-VV-002")
+def test_regenerate_raises_when_gmat_writes_no_report(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        golden.subprocess,
+        "run",
+        lambda cmd, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr="boom"),
+    )
+    with pytest.raises(RuntimeError, match="no report"):
+        regenerate_time_scales_fixture("GmatConsole", str(tmp_path))
+
+
+@pytest.mark.verifies("REQ-VV-002")
+def test_compare_passes_on_agreement_and_flags_drift():
+    committed = build_time_scales_fixture(
+        ["gps_epoch_1980"], [_UTC_1980], parse_report(_SAMPLE_REPORT)
+    )
+    assert compare_time_scales(committed, committed) == []
+
+    drifted = json.loads(json.dumps(committed))  # deep copy
+    drifted["cases"][0]["quantities"]["tai_minus_utc_s"]["expected"] += 1.0
+    messages = compare_time_scales(committed, drifted)
+    assert messages and "tai_minus_utc_s" in messages[0]
+
+
+@pytest.mark.verifies("REQ-VV-002")
+def test_compare_flags_missing_quantity():
+    committed = build_time_scales_fixture(
+        ["gps_epoch_1980"], [_UTC_1980], parse_report(_SAMPLE_REPORT)
+    )
+    regenerated = json.loads(json.dumps(committed))
+    del regenerated["cases"][0]["quantities"]["tt_minus_tai_s"]
+    messages = compare_time_scales(committed, regenerated)
+    assert any("missing" in m for m in messages)

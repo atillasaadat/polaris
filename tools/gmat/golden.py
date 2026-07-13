@@ -25,6 +25,8 @@ carried as a constant, not parsed.
 from __future__ import annotations
 
 import math
+import subprocess
+from pathlib import Path
 
 # GMAT reports Modified Julian dates in days; 1 day = 86400 SI seconds in a
 # uniform scale, which is what the TAI/TT/UTC ModJulian columns are.
@@ -148,3 +150,109 @@ def build_time_scales_fixture(
         "provenance": {"reference": "GMAT", "gmat_regeneratable": True},
         "cases": cases,
     }
+
+
+# Canonical epochs the time-scale fixture covers — the single source of truth the
+# regenerate and drift-check paths share, so a GMAT run reproduces exactly the two
+# committed cases. Each carries the UTCGregorian string GMAT reads plus the
+# UtcDateTime fields the C++ loader expects.
+TIME_SCALES_CASES = (
+    {
+        "name": "gps_epoch_1980",
+        "epoch_utc": "06 Jan 1980 00:00:00.000",
+        "utc": {
+            "year": 1980,
+            "month": 1,
+            "day": 6,
+            "hour": 0,
+            "minute": 0,
+            "second": 0,
+            "nanosecond": 0,
+        },
+    },
+    {
+        "name": "post_2017_epoch_2020",
+        "epoch_utc": "01 Jan 2020 00:00:00.000",
+        "utc": {
+            "year": 2020,
+            "month": 1,
+            "day": 1,
+            "hour": 0,
+            "minute": 0,
+            "second": 0,
+            "nanosecond": 0,
+        },
+    },
+)
+
+
+def regenerate_time_scales_fixture(
+    gmat_console: str,
+    workdir: str,
+    cases: tuple[dict, ...] = TIME_SCALES_CASES,
+    timeout_s: float = 300.0,
+) -> dict:
+    """Run GMAT (``gmat_console``) to regenerate the time-scale fixture dict.
+
+    Emits the script for @p cases into @p workdir, runs ``GmatConsole`` on it, then
+    parses the report into the fixture. Requires the GMAT binary — callers must gate
+    on its presence. Raises ``RuntimeError`` if GMAT produces no report.
+    """
+    work = Path(workdir)
+    report_path = work / "time_scales_report.txt"
+    script_path = work / "time_scales.script"
+    script_path.write_text(
+        write_time_scales_script([c["epoch_utc"] for c in cases], str(report_path))
+    )
+    # ponytail: some GMAT builds resolve gmat_startup_file.txt relative to their own
+    # bin/ — if a bare invocation can't find it, point gmat_console at a wrapper that
+    # cd's into GMAT's bin first, or pass an absolute console path.
+    result = subprocess.run(  # noqa: S603 — console path is operator-supplied, not user input
+        [gmat_console, str(script_path)],
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
+        check=False,
+    )
+    if not report_path.exists():
+        raise RuntimeError(
+            f"GMAT produced no report at {report_path} (exit={result.returncode}).\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+    rows = parse_report(report_path.read_text())
+    return build_time_scales_fixture(
+        case_names=[c["name"] for c in cases],
+        utc_fields=[c["utc"] for c in cases],
+        rows=rows,
+    )
+
+
+def compare_time_scales(committed: dict, regenerated: dict) -> list[str]:
+    """Return drift messages; empty means GMAT agrees with the committed fixture.
+
+    Each committed quantity must match the GMAT-regenerated value within the looser
+    of the two tolerance bands — GMAT's ~µs ModJulian floor dominates the committed
+    fixture's tighter 1 ns claim, so the check is honest about GMAT's own precision.
+    """
+
+    def index(fixture: dict) -> dict:
+        return {
+            (case["name"], qname): spec
+            for case in fixture["cases"]
+            for qname, spec in case["quantities"].items()
+        }
+
+    want, got = index(committed), index(regenerated)
+    messages: list[str] = []
+    for key, spec in want.items():
+        if key not in got:
+            messages.append(f"{key}: missing from GMAT regeneration")
+            continue
+        tol = max(spec["tol_abs"], got[key]["tol_abs"])
+        diff = abs(spec["expected"] - got[key]["expected"])
+        if diff > tol:
+            messages.append(
+                f"{key}: committed {spec['expected']} vs GMAT {got[key]['expected']} "
+                f"(|Δ|={diff:.3e} > tol {tol:.1e})"
+            )
+    return messages
