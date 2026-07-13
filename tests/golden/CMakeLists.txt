@@ -26,7 +26,10 @@ gtest_discover_tests(polaris_golden_tests)
 # and the committed-fixture comparison above still runs. The work lives in the
 # skip-gated pytest test (pure GMAT↔JSON, no C++), driven here so `fprime-util
 # check` surfaces it for anyone who has GMAT installed.
-find_program(GMAT_CONSOLE NAMES GmatConsole)
+# GMAT ships the console binary version-suffixed (GmatConsole-R2026a); list the
+# bare and current-release names. Setting $GMAT_CONSOLE / running the pytest test
+# directly is the version-agnostic path.
+find_program(GMAT_CONSOLE NAMES GmatConsole GmatConsole-R2026a)
 if(GMAT_CONSOLE)
   get_filename_component(_polaris_root "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
   add_test(

@@ -59,6 +59,22 @@ def test_offsets_recover_known_scale_differences():
 
 
 @pytest.mark.verifies("REQ-VV-002")
+def test_parse_report_skips_repeated_headers():
+    # GMAT (WriteHeaders=true) re-emits the header before each Report command.
+    interleaved = (
+        "sat.TAIModJulian sat.UTCModJulian sat.TTModJulian\n"
+        "14244.50021990741 14244.5 14244.50059240741\n"
+        "sat.TAIModJulian sat.UTCModJulian sat.TTModJulian\n"
+        "28849.50042824074 28849.5 28849.50080074074\n"
+    )
+    rows = parse_report(interleaved)
+    assert len(rows) == 2
+    off = offsets_from_rows(rows)
+    assert off[0]["tai_minus_utc_s"] == pytest.approx(19.0, abs=1e-4)
+    assert off[1]["tai_minus_utc_s"] == pytest.approx(37.0, abs=1e-4)
+
+
+@pytest.mark.verifies("REQ-VV-002")
 def test_parse_report_rejects_ragged_rows():
     with pytest.raises(ValueError, match="cols, header has"):
         parse_report("a b c\n1.0 2.0\n")
@@ -98,6 +114,15 @@ def test_write_script_emits_epoch_and_report_lines():
     assert "sat.Epoch = '06 Jan 1980 00:00:00.000';" in script
     assert "Report rf sat.TAIModJulian sat.UTCModJulian sat.TTModJulian;" in script
     assert "BeginMissionSequence;" in script
+
+
+@pytest.mark.verifies("REQ-VV-002")
+def test_write_script_is_ascii_only():
+    # GMAT R2026a rejects any non-ASCII byte in a script file (em-dashes, etc.).
+    script = write_time_scales_script(
+        ["06 Jan 1980 00:00:00.000", "01 Jan 2020 00:00:00.000"], report_path="rf.txt"
+    )
+    assert script.isascii(), "GMAT script must be pure ASCII"
 
 
 @pytest.mark.verifies("REQ-VV-002")

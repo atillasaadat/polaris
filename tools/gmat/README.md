@@ -27,7 +27,7 @@ against <https://sourceforge.net/projects/gmat/files/GMAT/> before trusting a ru
 ## Regenerating a fixture (requires GMAT)
 
 ```bash
-GMAT_CONSOLE=… uv run python -m gmat regenerate --out tests/golden/time_scales.json
+GMAT_CONSOLE=… PYTHONPATH=tools uv run python -m gmat regenerate --out tests/golden/time_scales.json
 ```
 
 A GMAT-regenerated fixture uses the harness default tolerance (`GMAT_MJD_TOL_S`,
@@ -40,7 +40,7 @@ the tighter tolerances if the epochs are constant-derived.
 
 ```bash
 # One-shot, from the CLI:
-GMAT_CONSOLE=… uv run python -m gmat drift-check --fixture tests/golden/time_scales.json
+GMAT_CONSOLE=… PYTHONPATH=tools uv run python -m gmat drift-check --fixture tests/golden/time_scales.json
 
 # Or via the skip-gated pytest test (skips cleanly when GMAT is absent):
 GMAT_CONSOLE=… uv run pytest tests/tools/test_gmat_drift.py

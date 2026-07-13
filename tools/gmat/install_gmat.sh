@@ -19,7 +19,9 @@ GMAT_VERSION="${GMAT_VERSION:-R2026a}"
 GMAT_URL="${GMAT_URL:-https://downloads.sourceforge.net/project/gmat/GMAT/GMAT-${GMAT_VERSION}/gmat-ubuntu-x64-${GMAT_VERSION}.tar.gz}"
 GMAT_DIR="${GMAT_DIR:-${HOME}/.cache/polaris-gmat/${GMAT_VERSION}}"
 
-find_console() { find "${GMAT_DIR}" -name GmatConsole -type f 2>/dev/null | head -1; }
+# GMAT ships the console binary version-suffixed (e.g. GmatConsole-R2026a), so
+# match the prefix rather than a bare name.
+find_console() { find "${GMAT_DIR}" -name 'GmatConsole*' -type f 2>/dev/null | head -1; }
 
 console="$(find_console || true)"
 if [[ -n "${console}" ]]; then
