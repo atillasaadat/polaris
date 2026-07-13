@@ -9,3 +9,4 @@ if(POLARIS_WERROR)
 endif()
 
 add_subdirectory(unit)
+add_subdirectory(golden)

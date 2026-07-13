@@ -6,7 +6,7 @@ phasing (`docs/design/Polaris_Design_Document.md` §24). This file summarizes
 baseline (`docs/requirements/`) remain the sources of truth.
 
 **Current phase:** Phase 0 — Foundations (in progress)
-**Last updated:** Phase 0, Push 3 (config schema + hardware library + config compiler)
+**Last updated:** Phase 0, Push 5 (GMAT golden-data harness + first fixture)
 
 ---
 
@@ -25,12 +25,12 @@ baseline (`docs/requirements/`) remain the sources of truth.
 | `lib/` onboard ephemeris (Chebyshev) + TDB time argument | ✅ done + tested |
 | `lib/` ground SPICE ephemeris source (DE440) | ⏳ deferred to sim/Push 5 (never onboard) |
 | Config schema + hardware-model library + config compiler (`tools/configc/`) | ✅ done + tested |
-| GMAT golden harness | ⏳ Push 5 |
+| GMAT golden-data harness (`tools/gmat/`) + first fixture (`tests/golden/`) | ✅ done + tested |
 
 **Build/test health:** C++ builds clean under a strict `-Werror` warning set;
-**66/66 C++ unit tests** + **12 Python config-compiler tests** pass (C++ also
-green under ASan/UBSan); docs build is green (with the `lib/` C++ API rendered);
-pre-commit (clang-format + ruff) is clean.
+**67 C++ tests** (66 unit + 1 golden) + **17 Python tests** (12 config-compiler,
+5 GMAT-harness) pass (C++ also green under ASan/UBSan); docs build is green (with
+the `lib/` C++ API rendered); pre-commit (clang-format + ruff) is clean.
 Dependencies + Python/build toolchain are managed by **uv** (`pyproject.toml` +
 `uv.lock`, Python 3.12); CI runs the same via `setup-uv`.
 
@@ -236,6 +236,40 @@ tests in the RVTM.
 
 ---
 
+### Push 5 — GMAT golden-data harness + first fixture
+- **GMAT is the V&V reference tool** (design doc §23.1, REQ-SYS-010 / REQ-VV-002):
+  it generates versioned "golden" datasets that Polaris numerical functions are
+  checked against within documented per-quantity tolerance bands. The fixtures
+  are **committed data — CI never runs GMAT**; GMAT is only used to *regenerate*
+  them. (GMAT is a large NASA GSFC app and is not installed here, so the binary
+  is deferred — same pattern as the CSPICE/DE440 deferral; the harness and the
+  comparison path are complete and the first fixture is seeded from independent
+  published constants, GMAT-regeneratable in place.)
+- **Golden-fixture format** (`tests/golden/*.json`): versioned JSON carrying
+  provenance (reference source + `gmat_regeneratable` + the generating script),
+  input epochs, and per-quantity `expected` + `tol_abs` bands.
+- **First fixture** (`tests/golden/time_scales.json`): TAI/GPS/TT offsets vs UTC
+  at the GPS epoch (1980) and a post-2017 epoch (2020), validating `lib/time`
+  (Push 2b, whose GMAT cross-check was deferred here). Reference values are
+  **published constants** (IERS leap seconds; IAU definitional TT−TAI = 32.184 s,
+  TAI−GPS = 19 s) — independent of the Polaris code they verify.
+- **C++ comparison harness** (`tests/golden/`, nlohmann/json header-only via
+  FetchContent): loads the committed fixture and checks `lib/time` within each
+  band. TAI−UTC is recovered from public API (`historical` vs `frozen(0)` leap
+  tables), exercising the leap-second table content against the published steps.
+- **Regenerate harness** (`tools/gmat/`): emits the GMAT `.script` and parses its
+  `ReportFile` output into the fixture format; the parser/offset math is
+  unit-tested without GMAT (only the GMAT run itself needs the binary).
+- **6 REQ-VV-002-traced tests, 100% pass**: 1 C++ golden comparison (67 C++
+  total) + 5 Python harness tests (report parsing, offset recovery, ragged-row
+  rejection, fixture schema, script emission).
+
+**Requirements coverage:** 16 of 72 requirements now have a verifying test
+(adds REQ-VV-002 GMAT golden regression) — 84 verifying tests in the RVTM
+(67 C++ + 17 Python).
+
+---
+
 ## What's next
 
 - ~~**Push 2b** — time library: TAI/UTC/GPS/TT, int64-ns master clock + two-part
@@ -252,7 +286,10 @@ tests in the RVTM.
   artifact encoders deferred to their consuming pushes).
 - ~~**Push 4** — F´ submodule + buildable deployment.~~ ✅ **done early** (F´
   `v4.2.2`, see above).
-- **Push 5** — GMAT golden-data harness + first fixtures.
+- ~~**Push 5** — GMAT golden-data harness + first fixtures.~~ ✅ **done** (see
+  above; GMAT binary deferred, harness + first fixture from independent published
+  references, GMAT-regeneratable). Broader golden cases (propagation, ECI↔ECEF,
+  eclipse, contacts) land with the sim/GNC layers that implement those functions.
 - **Push 6** — activate the full §23.2 CI pipeline.
 
 ---
