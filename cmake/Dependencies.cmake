@@ -36,4 +36,20 @@ if(POLARIS_BUILD_TESTS)
     FetchContent_MakeAvailable(googletest)
   endif()
   include(GoogleTest)
+
+  # --- nlohmann/json (header-only) ------------------------------------------
+  # Reads the versioned GMAT golden fixtures (tests/golden/*.json) in the C++
+  # comparison harness (§23.1, REQ-VV-002). Test-only; SYSTEM so its headers are
+  # exempt from Polaris's -Werror set.
+  if(NOT TARGET nlohmann_json::nlohmann_json)
+    set(JSON_BuildTests OFF CACHE INTERNAL "")
+    FetchContent_Declare(
+      nlohmann_json
+      GIT_REPOSITORY https://github.com/nlohmann/json.git
+      GIT_TAG v3.11.3
+      GIT_SHALLOW TRUE
+      SYSTEM
+    )
+    FetchContent_MakeAvailable(nlohmann_json)
+  endif()
 endif()

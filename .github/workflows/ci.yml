@@ -50,5 +50,5 @@ jobs:
   #   static-analysis:  clang-tidy, cppcheck, ASan/UBSan test builds   (Push 2)
   #   integration-sitl: two-process closed-loop SITL scenarios         (Push 4+)
   #   mc-smoke:         Monte Carlo smoke subset                       (Push 11)
-  #   golden:           GMAT golden-fixture regression                 (Push 5)
+  #   golden:           GMAT golden-fixture regression → golden.yml    (Push 5, nightly)
   #   coverage:         line + branch thresholds                       (Push 6)

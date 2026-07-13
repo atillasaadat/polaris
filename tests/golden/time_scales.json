@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0",
+  "case": "time_scales",
+  "category": "time_conversion",
+  "description": "TAI/GPS/TT scale offsets vs UTC at canonical epochs. Validates lib/time (Push 2b) — TAI-UTC exercises the leap-second table; TT-TAI and TAI-GPS are the definitional offsets.",
+  "provenance": {
+    "reference": "IERS Bulletin C historical TAI-UTC steps; IAU/IERS definitional offsets TT-TAI=32.184 s and TAI-GPS=19 s",
+    "gmat_regeneratable": true,
+    "gmat_script": "tools/gmat/scripts/time_scales.script",
+    "generated_utc": "2026-07-12",
+    "note": "Values are independent of the Polaris implementation (published constants); GMAT reproduces the same conversions and can regenerate this fixture."
+  },
+  "cases": [
+    {
+      "name": "gps_epoch_1980",
+      "utc": {"year": 1980, "month": 1, "day": 6, "hour": 0, "minute": 0, "second": 0, "nanosecond": 0},
+      "quantities": {
+        "tai_minus_utc_s": {"expected": 19.0, "tol_abs": 1.0e-9, "unit": "s"},
+        "tt_minus_tai_s": {"expected": 32.184, "tol_abs": 1.0e-9, "unit": "s"},
+        "tai_minus_gps_s": {"expected": 19.0, "tol_abs": 1.0e-9, "unit": "s"}
+      }
+    },
+    {
+      "name": "post_2017_epoch_2020",
+      "utc": {"year": 2020, "month": 1, "day": 1, "hour": 0, "minute": 0, "second": 0, "nanosecond": 0},
+      "quantities": {
+        "tai_minus_utc_s": {"expected": 37.0, "tol_abs": 1.0e-9, "unit": "s"},
+        "tt_minus_tai_s": {"expected": 32.184, "tol_abs": 1.0e-9, "unit": "s"},
+        "tai_minus_gps_s": {"expected": 19.0, "tol_abs": 1.0e-9, "unit": "s"}
+      }
+    }
+  ]
+}
