@@ -13,7 +13,9 @@ on:
 jobs:
   golden-drift:
     name: GMAT fixture drift check
-    runs-on: ubuntu-latest
+    # GMAT R2026a's ubuntu-x64 tarball is built on Ubuntu 22.04 LTS — pin the
+    # runner to match, so the prebuilt binary's shared libs resolve.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - name: Set up uv (provisions Python from .python-version)
@@ -24,7 +26,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/polaris-gmat
-          key: gmat-${{ runner.os }}-R2022a
+          key: gmat-${{ runner.os }}-R2026a
       - name: Install GMAT
         run: echo "GMAT_CONSOLE=$(bash tools/gmat/install_gmat.sh)" >> "$GITHUB_ENV"
       - name: Drift-check committed fixtures against GMAT

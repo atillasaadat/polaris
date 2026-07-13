@@ -12,9 +12,10 @@
 # ponytail: verify GMAT_VERSION/GMAT_URL against the releases page before trusting
 # a run — https://sourceforge.net/projects/gmat/files/GMAT/ . GMAT's Linux tarball
 # name and target Ubuntu version change per release; override via env if they move.
+# R2026a's ubuntu-x64 tarball was built on Ubuntu 22.04 LTS.
 set -euo pipefail
 
-GMAT_VERSION="${GMAT_VERSION:-R2022a}"
+GMAT_VERSION="${GMAT_VERSION:-R2026a}"
 GMAT_URL="${GMAT_URL:-https://downloads.sourceforge.net/project/gmat/GMAT/GMAT-${GMAT_VERSION}/gmat-ubuntu-x64-${GMAT_VERSION}.tar.gz}"
 GMAT_DIR="${GMAT_DIR:-${HOME}/.cache/polaris-gmat/${GMAT_VERSION}}"
 
