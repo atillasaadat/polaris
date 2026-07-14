@@ -53,6 +53,9 @@ include(cmake/Dependencies.cmake)
 # --- Polaris shared library (plain CMake; consumed by F´ components + sim) ---
 add_subdirectory(lib)
 
+# --- Truth / environment simulation (plain CMake; Phase 1+, design doc §5) ---
+add_subdirectory(sim)
+
 # --- F´ flight deployment(s) + project-wide components ----------------------
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/flight")
 
