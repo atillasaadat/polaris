@@ -8,7 +8,8 @@ add_executable(polaris_unit_tests
   tdb_test.cpp
   chebyshev_test.cpp
   state_test.cpp
-  sim_dynamics_test.cpp)
+  sim_dynamics_test.cpp
+  sim_world_gravity_test.cpp)
 
 target_link_libraries(polaris_unit_tests
   PRIVATE
@@ -18,6 +19,7 @@ target_link_libraries(polaris_unit_tests
     polaris::ephemeris
     polaris::state
     polaris::dynamics
+    polaris::world
     polaris_test_flags
     GTest::gtest_main)
 
