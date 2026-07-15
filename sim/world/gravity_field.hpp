@@ -5,26 +5,41 @@
 /// @brief Spherical-harmonic gravity + gravity-gradient torque (REQ-SIM-002).
 ///
 /// `SphericalHarmonicGravity` is a `ForceTorqueModel`: it returns the geopotential
-/// acceleration (ECI) and the gravity-gradient torque (Body). The acceleration is
-/// the gradient of the harmonic potential
-///   U = (GM/Re) sum_{n,m} (Re/r)^{n+1} P_{nm}(sin phi) [C_{nm} cos m.lambda + S_{nm} sin m.lambda]
-/// evaluated with the Cunningham/Montenbruck-Gill V/W recursion (M&G §3.2.4), so
-/// the same code serves point-mass, J2, or a full EGM2008 field once coefficients
-/// are loaded. Degree and order are settable per run (truth is deliberately a
-/// higher fidelity than the onboard model — `sim/CLAUDE.md`).
+/// acceleration (ECI) and the gravity-gradient torque (Body). The field uses
+/// FULLY-NORMALIZED coefficients Cbar_nm/Sbar_nm and the singularity-free
+/// **normalized Gottlieb** recursion, ported from NASA/TP-2016-218604 Appendix
+/// C.9 (`gottliebnorm.m`). This is numerically stable to high degree/order
+/// (verified at 200x200, incl. the poles), unlike the old unnormalized
+/// Cunningham V/W whose sectoral term grows like (2n-1)!! and overflows past
+/// ~degree 40. Two INDEPENDENT engines cross-validate one another:
+///   - `potential()`   — normalized-ALF sum of the geopotential (Eq. 1.20),
+///                       via the Holmes-Featherstone forward-column recursion.
+///   - `gradient()`    — Gottlieb's direct Cartesian acceleration assembly.
+/// So `a = grad U` checks the two against each other by finite difference.
+/// The same code serves point-mass, J2, or a full EGM2008 field once
+/// coefficients are loaded. Degree and order are settable per run (truth is
+/// deliberately a higher fidelity than the onboard model — `sim/CLAUDE.md`).
+///
+/// Potential (Eq. 1.20): with sin(phi)=z/r, lambda=atan2(y,x),
+///   U = (GM/r) sum_{n>=0} (Re/r)^n sum_{m=0..n} Pbar_nm(sin phi)
+///         [Cbar_nm cos(m.lambda) + Sbar_nm sin(m.lambda)],
+/// and Cbar_00 = 1 supplies the leading GM/r; a = grad U.
 ///
 /// Frame caveat: the recursion is defined in the Earth-fixed frame, but the field
-/// is evaluated here directly on the ECI position. That is exact for the **zonal**
-/// (axisymmetric, m=0) field — which is longitude-independent and shares Earth's
-/// pole/Z axis — and the embedded coefficient set is zonal (J2..J6). Tesseral
-/// (m>0) terms additionally require the ECI->ECEF rotation (EOP), which lands with
-/// EGM2008 file loading; the recursion already supports order>0 so only the frame
-/// rotation is missing. ponytail: unnormalized V/W is numerically clean to ~degree
-/// 40; switch to normalized Gottlieb when high-degree EGM2008 lands.
+/// is evaluated here directly on the ECI position (rnp = I). That is exact for the
+/// **zonal** (axisymmetric, m=0) field — which is longitude-independent and shares
+/// Earth's pole/Z axis — and the embedded coefficient set is zonal (J2..J6).
+/// Tesseral (m>0) terms additionally require the ECI->ECEF rotation (EOP), which
+/// lands with EGM2008 file loading; the recursion already supports arbitrary
+/// order>0 so only the frame rotation is missing.
 ///
 /// References:
-///  - Montenbruck & Gill, *Satellite Orbits*, 2000, §3.2 (V/W recursion).
-///    [montenbruck2000]
+///  - Eckman, Brown & Adamo, *Normalization and Implementation of Three
+///    Gravitational Acceleration Models*, NASA/TP-2016-218604, 2016, Ch. 3 +
+///    Appendix C.9 (normalized Gottlieb). [eckman2016]
+///  - Gottlieb, *Fast Gravity...*, NASA CR-188243, 1993. [gottlieb1993]
+///  - Holmes & Featherstone, *A unified approach...*, J. Geodesy 76, 2002
+///    (normalized ALF forward-column recursion for `potential()`). [holmes2002]
 ///  - Vallado, *Fundamentals of Astrodynamics and Applications*, 4th ed., 2013,
 ///    §8 (zonal coefficients, gravity-gradient torque). [vallado2013]
 
@@ -39,25 +54,30 @@
 
 namespace polaris::sim::world {
 
-/// Unnormalized zonal harmonic coefficients J_n (Vallado 2013, Table; EGM/JGM).
-/// C_{n,0} = -J_n. Only these are embedded until an EGM2008 file loader lands.
+/// Unnormalized physical zonal harmonic coefficients J_n (Vallado 2013, Table;
+/// EGM/JGM). The unnormalized zonal C_{n,0} = -J_n; `earthZonal()` converts these
+/// to the FULLY-NORMALIZED Cbar_{n,0} = -J_n / sqrt(2n+1) actually stored. Only
+/// these are embedded until an EGM2008 file loader lands.
 inline constexpr double kJ2 = 1.082'626'683'5e-3;
 inline constexpr double kJ3 = -2.532'656'485'3e-6;
 inline constexpr double kJ4 = -1.619'621'591'4e-6;
 inline constexpr double kJ5 = -2.272'721'801'1e-7;
 inline constexpr double kJ6 = 5.406'815'991'0e-7;
 
-/// Dense unnormalized coefficient table: `C[n][m]`, `S[n][m]` for n in [0,nmax],
-/// m in [0,n]. `C[0][0] = 1` is the point-mass term.
+/// Dense FULLY-NORMALIZED coefficient table: `C[n][m]` = Cbar_{n,m}, `S[n][m]` =
+/// Sbar_{n,m} for n in [0,nmax], m in [0,n]. `C[0][0] = 1` is the point-mass term.
+/// These are the overbarred coefficients EGM models ship; the recursion in
+/// `gradient()`/`potential()` expects them normalized (see @file).
 struct GravityCoeffs {
   int nmax = 0;
   std::vector<std::vector<double>> C;
   std::vector<std::vector<double>> S;
 
-  /// Point mass only (`C[0][0] = 1`).
+  /// Point mass only (`C[0][0] = Cbar_00 = 1`).
   static GravityCoeffs pointMass();
 
-  /// Earth zonal field through degree 6 (J2..J6), tesserals zero.
+  /// Earth zonal field through degree 6 (J2..J6), tesserals zero. Stores the
+  /// normalized Cbar_{n,0} = -J_n / sqrt(2n+1).
   static GravityCoeffs earthZonal();
 };
 
@@ -91,8 +111,13 @@ class SphericalHarmonicGravity : public dynamics::ForceTorqueModel {
   int order() const { return order_; }
 
  private:
-  /// Geopotential gradient (acceleration) via the M&G V/W recursion.
+  /// Geopotential gradient (acceleration) via the normalized Gottlieb recursion
+  /// (NASA/TP-2016-218604 App. C.9). Independent of `potential()`.
   Eigen::Vector3d gradient(const Eigen::Vector3d& r) const;
+
+  /// Precompute the degree/order-only normalization ratios used by `gradient()`
+  /// so the per-call recursion holds no sqrt() (they depend on n,m alone).
+  void buildNormTables();
 
   GravityCoeffs coeffs_;
   Eigen::Matrix3d inertia_;
@@ -100,6 +125,11 @@ class SphericalHarmonicGravity : public dynamics::ForceTorqueModel {
   int order_;
   double mu_;
   double re_;
+
+  // Gottlieb normalization ratio tables, indexed by degree n (and order m),
+  // sized [degree_+2]. See NASA/TP-2016-218604 App. C.9. [eckman2016]
+  std::vector<double> norm1_, norm2_, norm11_, normn10_;
+  std::vector<std::vector<double>> norm1m_, norm2m_, normn1_;
 
   static constexpr double kMinRadius_ = 1.0;  ///< [m] singular-radius guard
 };
