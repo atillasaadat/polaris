@@ -37,6 +37,19 @@ target_link_libraries(polaris_ephemeris
   PRIVATE polaris_flags)
 add_library(polaris::ephemeris ALIAS polaris_ephemeris)
 
+# --- Frames: the single transform library (ECI<->ECEF, IAU 2006/2000A) + EOP --
+# Links ERFA (the BSD translation of the IAU SOFA reference implementation) for
+# the reduction itself; REQ-CONV-002 requires one transform library, not ad-hoc
+# rotations. ERFA is PUBLIC-free: it is an implementation detail, kept out of the
+# public headers, so it links PRIVATE.
+add_library(polaris_frames
+  frames/eci_ecef.cpp)
+target_include_directories(polaris_frames PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(polaris_frames
+  PUBLIC Eigen3::Eigen polaris_math polaris_time polaris_constants
+  PRIVATE ERFA::erfa polaris_flags)
+add_library(polaris::frames ALIAS polaris_frames)
+
 # --- State: canonical nav product (EstimatedState / TruthState; header-only) -
 add_library(polaris_state INTERFACE)
 target_include_directories(polaris_state INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
