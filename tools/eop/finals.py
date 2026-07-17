@@ -1,30 +1,29 @@
-"""IERS ``finals2000A.all`` fetch + parse into the committed EOP fixture.
+"""Fetch the IERS ``finals.all.iau2000`` product for the committed EOP fixture.
 
 Ground-side only (design doc §23.1; REQ-CONV-002). IERS publishes the Earth
-Orientation Parameters daily in the fixed-width ``finals2000A.all`` product; the
-onboard/sim ``polaris::frames::EopTable`` consumes UT1-UTC and polar motion.
-This trims the full product to a JSON fixture that is **committed data** — CI
-never downloads (same policy as ``tests/golden/``); regenerate deliberately with
-``python -m eop``.
+Orientation Parameters daily in this fixed-width text product; the sim/test
+``polaris::frames::EopTable`` consumes UT1-UTC and polar motion. We commit the
+file **verbatim** as upstream serves it (``tests/golden/finals.all.iau2000.txt``)
+— so updating is just re-downloading and overwriting, with no bespoke format in
+between — and parse the fixed-width columns on the C++ side. CI never downloads.
 
-The Bulletin A columns (always present, predictions included) are parsed, per the
-IERS ``finals2000A.all`` format:
+The Bulletin A columns (always present, predictions included) live at, per the
+IERS ``finals.all.iau2000`` format (0-indexed [start, stop) here):
 
-    8-15   F8.2   fractional MJD (UTC)
-    19-27  F9.6   Bull. A PM-x [arcsec]
-    38-46  F9.6   Bull. A PM-y [arcsec]
-    59-68  F10.7  Bull. A UT1-UTC [s]
+    [7, 15)   MJD (UTC)
+    [18, 27)  Bull. A PM-x [arcsec]
+    [37, 46)  Bull. A PM-y [arcsec]
+    [58, 68)  Bull. A UT1-UTC [s]
 
-Rows past the prediction span leave these blank; parsing stops at the first row
-with no UT1-UTC value.
+`parse_finals2000a` is kept only to sanity-check a fetch (the authoritative parse
+is the C++ one in tests/golden/eop_golden_test.cpp); rows past the prediction span
+leave UT1-UTC blank, so parsing stops at the first such row.
 """
 
 from __future__ import annotations
 
-import json
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
 
 # IERS *produces* EOP; JPL/NAIF and everyone else derive Earth orientation from
 # it, so these are the same numbers served by different hosts. Tried in order,
@@ -99,45 +98,11 @@ def fetch_finals2000a(url: str | None = None) -> str:
     raise OSError(f"all EOP mirrors failed; last error: {last_err}")
 
 
-def trim(rows: list[EopRow], start_mjd: float, end_mjd: float) -> list[EopRow]:
-    """Keep the inclusive [start_mjd, end_mjd] window, ascending."""
-    kept = [r for r in rows if start_mjd <= r.mjd_utc <= end_mjd]
-    return sorted(kept, key=lambda r: r.mjd_utc)
-
-
-def build_fixture(rows: list[EopRow], url: str) -> dict:
-    """The committed-fixture shape: provenance + ascending daily entries."""
-    return {
-        "source": url,
-        "product": "IERS finals2000A.all (Bulletin A)",
-        "units": {
-            "mjd_utc": "day",
-            "dut1": "s (UT1-UTC)",
-            "xp_arcsec": "arcsec",
-            "yp_arcsec": "arcsec",
-        },
-        "entries": [
-            {
-                "mjd_utc": r.mjd_utc,
-                "dut1": r.dut1,
-                "xp_arcsec": r.xp_arcsec,
-                "yp_arcsec": r.yp_arcsec,
-            }
-            for r in rows
-        ],
-    }
-
-
-def write_fixture(path: Path, fixture: dict) -> None:
-    path.write_text(json.dumps(fixture, indent=2) + "\n")
-
-
 def _self_check() -> None:
-    """Parse a synthetic finals2000A row and a blank-tail row (assert-based)."""
+    """Parse a synthetic finals row and a blank-tail row (assert-based)."""
     # A real 2020-06-01 line (MJD 59001), truncated after the Bull. A UT1-UTC field.
     line = (
-        "20 6 1 59001.00 I  0.073000 0.000100  0.285000 0.000100  "
-        "I-0.1770000 0.0000100"
+        "20 6 1 59001.00 I  0.073000 0.000100  0.285000 0.000100  I-0.1770000 0.0000100"
     )
     rows = parse_finals2000a(line + "\n" + " " * 70)
     assert len(rows) == 1, rows
@@ -146,7 +111,6 @@ def _self_check() -> None:
     assert abs(r.xp_arcsec - 0.073) < 1e-9, r
     assert abs(r.yp_arcsec - 0.285) < 1e-9, r
     assert abs(r.dut1 - (-0.177)) < 1e-9, r
-    assert trim(rows, 59000, 59000) == [], "out-of-window row must be dropped"
     print("eop.finals self-check: ok")
 
 

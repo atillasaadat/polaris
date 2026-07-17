@@ -1,13 +1,11 @@
-"""Regenerate the committed IERS EOP fixture (ground-side; never run in CI).
+"""Refresh the committed IERS EOP fixture (ground-side; never run in CI).
 
-    PYTHONPATH=tools uv run python -m eop \
-        --start-mjd 58849 --end-mjd 61041 \
-        --out tests/golden/eop.json
+    PYTHONPATH=tools uv run python -m eop --out tests/golden/finals.all.iau2000.txt
 
-Downloads IERS ``finals2000A.all`` (or reads ``--input`` for an offline copy),
-parses the Bulletin A columns, trims to the MJD window, and writes the JSON
-fixture the C++ ``EopTable`` consumes. The fixture is committed data — see
-``tools/eop/finals.py``.
+Downloads ``finals.all.iau2000`` (trying the mirrors in order), sanity-checks
+that it parses, and writes it **verbatim** to ``--out``. The file is committed as
+static data and parsed on the C++ side — see ``tools/eop/finals.py``. Equivalent
+to ``curl <url> -o <out>`` but with mirror fallback.
 """
 
 from __future__ import annotations
@@ -16,14 +14,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .finals import (
-    MIRRORS,
-    build_fixture,
-    fetch_finals2000a,
-    parse_finals2000a,
-    trim,
-    write_fixture,
-)
+from .finals import fetch_finals2000a, parse_finals2000a
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,38 +25,25 @@ def main(argv: list[str] | None = None) -> int:
         help="force a single EOP URL (default: try MIRRORS in order)",
     )
     parser.add_argument(
-        "--input", type=Path, help="local finals2000A.all (skips download)"
-    )
-    parser.add_argument(
-        "--start-mjd", type=float, required=True, help="inclusive start MJD (UTC)"
-    )
-    parser.add_argument(
-        "--end-mjd", type=float, required=True, help="inclusive end MJD (UTC)"
-    )
-    parser.add_argument(
-        "--out", type=Path, required=True, help="output JSON fixture path"
+        "--out", type=Path, required=True, help="output path for the raw product"
     )
     args = parser.parse_args(argv)
 
     try:
-        text = args.input.read_text() if args.input else fetch_finals2000a(args.url)
+        text = fetch_finals2000a(args.url)
     except OSError as exc:
-        print(f"eop: cannot read EOP source: {exc}", file=sys.stderr)
+        print(f"eop: download failed: {exc}", file=sys.stderr)
         return 1
 
-    rows = trim(parse_finals2000a(text), args.start_mjd, args.end_mjd)
+    rows = parse_finals2000a(text)
     if len(rows) < 2:
         print(
-            f"eop: only {len(rows)} row(s) in [{args.start_mjd}, {args.end_mjd}]; "
-            "EopTable needs >=2 to interpolate",
+            f"eop: downloaded content parsed to only {len(rows)} row(s) — not a finals file?",
             file=sys.stderr,
         )
         return 1
 
-    # Provenance records where the data *originates*: an explicit --url, else the
-    # canonical IERS endpoint — even when read from a local --input copy.
-    source = args.url or MIRRORS[0]
-    write_fixture(args.out, build_fixture(rows, source))
+    args.out.write_text(text)
     print(
         f"eop: ok — {len(rows)} rows [{rows[0].mjd_utc:.0f}, {rows[-1].mjd_utc:.0f}] -> {args.out}"
     )
