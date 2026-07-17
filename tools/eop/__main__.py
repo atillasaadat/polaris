@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 from .finals import (
-    DEFAULT_URL,
+    MIRRORS,
     build_fixture,
     fetch_finals2000a,
     parse_finals2000a,
@@ -28,7 +28,11 @@ from .finals import (
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="eop", description=__doc__)
-    parser.add_argument("--url", default=DEFAULT_URL, help="IERS finals2000A.all URL")
+    parser.add_argument(
+        "--url",
+        default=None,
+        help="force a single EOP URL (default: try MIRRORS in order)",
+    )
     parser.add_argument(
         "--input", type=Path, help="local finals2000A.all (skips download)"
     )
@@ -58,7 +62,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    source = str(args.input) if args.input else args.url
+    # Provenance records where the data *originates*: an explicit --url, else the
+    # canonical IERS endpoint — even when read from a local --input copy.
+    source = args.url or MIRRORS[0]
     write_fixture(args.out, build_fixture(rows, source))
     print(
         f"eop: ok — {len(rows)} rows [{rows[0].mjd_utc:.0f}, {rows[-1].mjd_utc:.0f}] -> {args.out}"

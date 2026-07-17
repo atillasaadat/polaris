@@ -26,8 +26,23 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-# IERS Rapid Service/Prediction Center; the maia.usno mirror is the fallback.
-DEFAULT_URL = "https://datacenter.iers.org/data/9/finals2000A.all"
+# IERS *produces* EOP; JPL/NAIF and everyone else derive Earth orientation from
+# it, so these are the same numbers served by different hosts. Tried in order,
+# first success wins — so a manual regeneration never hangs on one flaky host.
+# (CI never fetches: the fixture is committed static data.) JPL's own product is
+# the binary SPICE kernel earth_latest_high_prec.bpc, which needs SPICE to read
+# and yields the same EOP — not worth the dependency for a text table.
+MIRRORS = (
+    "https://datacenter.iers.org/data/latestVersion/finals.all.iau2000.txt",
+    "https://datacenter.iers.org/data/9/finals2000A.all",
+    # NASA CDDIS mirror (may require an Earthdata login; skipped on auth failure).
+    "https://cddis.nasa.gov/archive/products/iers/finals2000A.all",
+    # USNO / maia classic mirror.
+    "https://maia.usno.navy.mil/ser7/finals2000A.all",
+)
+
+# Back-compat alias for the primary endpoint.
+DEFAULT_URL = MIRRORS[0]
 
 # 0-indexed [start, stop) slices of the Bulletin A fixed-width columns above.
 _MJD = slice(7, 15)
@@ -66,10 +81,22 @@ def parse_finals2000a(text: str) -> list[EopRow]:
     return rows
 
 
-def fetch_finals2000a(url: str = DEFAULT_URL) -> str:
-    """Download the raw product. Ground-side only; never called from CI."""
-    with urllib.request.urlopen(url, timeout=60) as resp:  # noqa: S310 (trusted IERS host)
-        return resp.read().decode("ascii", errors="replace")
+def fetch_finals2000a(url: str | None = None) -> str:
+    """Download the raw product, trying mirrors in order until one succeeds.
+
+    Ground-side only; never called from CI. Pass @p url to force a single
+    endpoint; otherwise every entry in ``MIRRORS`` is tried and the first
+    success wins. Raises the last error if all mirrors fail.
+    """
+    urls = [url] if url else list(MIRRORS)
+    last_err: Exception | None = None
+    for candidate in urls:
+        try:
+            with urllib.request.urlopen(candidate, timeout=60) as resp:  # noqa: S310 (trusted IERS/NASA hosts)
+                return resp.read().decode("ascii", errors="replace")
+        except OSError as exc:  # DNS, timeout, HTTP error, auth failure
+            last_err = exc
+    raise OSError(f"all EOP mirrors failed; last error: {last_err}")
 
 
 def trim(rows: list[EopRow], start_mjd: float, end_mjd: float) -> list[EopRow]:

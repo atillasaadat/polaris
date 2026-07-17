@@ -2,6 +2,7 @@
 
 from .finals import (
     DEFAULT_URL,
+    MIRRORS,
     EopRow,
     build_fixture,
     fetch_finals2000a,
@@ -12,6 +13,7 @@ from .finals import (
 
 __all__ = [
     "DEFAULT_URL",
+    "MIRRORS",
     "EopRow",
     "build_fixture",
     "fetch_finals2000a",
