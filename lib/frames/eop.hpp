@@ -8,7 +8,9 @@
 /// ECI↔ECEF reduction needs beyond theory: **UT1 - TAI** (Earth's actual
 /// rotation phase, which no model predicts) and the **polar motion** `x_p, y_p`
 /// (the wander of the rotation pole in the crust). IERS publishes them daily in
-/// `finals2000A.all`; `tools/eop/` trims that to the committed JSON fixture.
+/// the fixed-width `finals.all.iau2000` product, committed verbatim as ground/
+/// test reference data (`tests/golden/`, fetched by `tools/eop/`) — the FSW never
+/// reads that file; it receives this table by upload (see below).
 ///
 /// Onboard this is an **uploaded** low-rate table (design doc §11.3, REQ-CDH-002),
 /// not a file the FSW reads: entries are pushed in via `addEntry()`, exactly as
