@@ -11,6 +11,7 @@
 - NEVER add a `Co-Authored-By` trailer to user commits unless this project's `.claude/settings.json` has `attribution.commit` set (#2078). The Claude Code Bash tool may suggest one in its default commit-message template — ignore it. `Co-Authored-By` is semantic authorship attribution under git/GitHub convention; the tool is the facilitator, not a co-author.
 - Keep files under 500 lines
 - Validate input at system boundaries
+- External reference data (EOP, TLEs, space weather, gravity/EGM, SPICE/JPL kernels, IGRF, leap seconds, …) is committed **verbatim in its original upstream format** and parsed as-is — never pre-processed into a bespoke intermediate as the committed artifact. Fetch tools auto-download from the authoritative source (record its URL); any trimming/derivation is computed *from* the committed original, not substituted for it. See design doc §3.7. Note the >500-line rule does not apply to these verbatim data files.
 
 ## Agent Comms (SendMessage-First Coordination)
 

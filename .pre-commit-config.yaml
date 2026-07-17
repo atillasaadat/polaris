@@ -7,18 +7,24 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
+      # The IERS finals product is committed verbatim so it updates by plain
+      # re-download; its fixed-width lines carry trailing pad that must be kept.
       - id: trailing-whitespace
         args: [--markdown-linebreak-ext=md]
-        exclude: '^LICENSE$'
+        exclude: '^(LICENSE|tests/golden/finals\.all\.iau2000\.txt)$'
       - id: end-of-file-fixer
-        exclude: '^LICENSE$'
+        exclude: '^(LICENSE|tests/golden/finals\.all\.iau2000\.txt)$'
       - id: check-yaml
       - id: check-toml
       - id: check-added-large-files
         args: [--maxkb=2048]
+        # The IERS finals product is committed verbatim (3.6 MB) so it updates by
+        # plain re-download; it is static reference data, not source (REQ-CONV-002).
+        exclude: ^tests/golden/finals\.all\.iau2000\.txt$
       - id: check-merge-conflict
       - id: mixed-line-ending
         args: [--fix=lf]
+        exclude: '^tests/golden/finals\.all\.iau2000\.txt$'
 
   # C++ formatting — pinned clang-format wheel (matches .clang-format, target 18).
   - repo: https://github.com/pre-commit/mirrors-clang-format

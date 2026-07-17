@@ -192,6 +192,18 @@ Decided once, documented here, enforced everywhere. Inconsistency here is the si
 - **Reference provenance:** every algorithm, method, model, or numerical technique cites its source (textbook chapter preferred, else paper) in the code header/docstring, keyed into the project bibliography (§21). No unsourced "magic" formulas.
 - Static analysis is part of the gate (§23.2): `clang-tidy`, `cppcheck`, warnings-as-errors, sanitizers in test builds.
 
+### 3.7 External Reference Data (Original Format Is the Source of Truth)
+
+External reference data — IERS Earth-orientation (`finals.all.iau2000`), TLEs, space-weather (F10.7 / Ap / Kp), EGM/gravity coefficient files, SPICE/JPL ephemeris and PCK kernels, magnetic-field models (IGRF), leap seconds, etc. — is committed and consumed **in the original format its authoritative source publishes**, byte-for-byte. We do **not** invent a pre-processed intermediate (a bespoke JSON/CSV/binary) as the committed artifact.
+
+- **Source of truth = the upstream file, verbatim.** What we commit is what the source serves, so it is trivially refreshable by re-download and diff-able against upstream. Provenance (the source URL) is recorded next to it.
+- **Parsers consume the native format as-is.** Each format gets a small parser in this repo; the format spec (fixed-width columns, record layout) is the contract. This lets a fetch tool auto-download straight from the source with **no pre-processing step** between "downloaded" and "committed."
+- **Processing/derivation is allowed, but downstream of the original — never a replacement for it.** Deriving trimmed windows, unit conversions, continuous-quantity reconstructions (e.g. UT1−TAI from UT1−UTC + ΔAT), or uploadable tables is fine; those are computed *from* the committed original, not substituted *for* it.
+- **Fetch tools live in `tools/`, data in `tests/golden/` (or the relevant data dir), and CI never downloads** — committed data is static; downloads are a manual, mirror-tolerant regeneration step.
+- **Rationale:** one canonical artifact, no drift between "what the URL says" and "what we ship," and updates that are a plain overwrite. See §11.3 (onboard EOP/ephemeris are *uploaded* tables derived ground-side; flight never reads these files) and §21.1 (reference provenance).
+
+Worked example (Push 9): `tests/golden/finals.all.iau2000.txt` is the raw IERS product committed verbatim; `tools/eop/` fetches it (with mirror fallback); the fixed-width Bulletin-A columns are parsed directly in C++/Python; and the flight `EopTable` is populated by upload (`addEntry`), never by reading the file.
+
 ---
 
 ## 4. Flight Software (F´ / C++) & C&DH

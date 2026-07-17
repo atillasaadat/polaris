@@ -66,7 +66,32 @@ inline constexpr double kJulianDate1970 = 2'440'587.5;
 /// `T = (JD - JD_J2000) / 36525`.
 inline constexpr double kDaysPerJulianCentury = 36'525.0;
 
+/// Modified Julian Date offset [days]: `MJD = JD - 2400000.5` (IERS/IAU
+/// convention; MJD 0 = 1858-11-17T00:00). EOP tables are published on MJD.
+inline constexpr double kJulianDateToMjd = 2'400'000.5;
+
+/// Seconds from the uniform-scale epoch (1970-01-01T00:00:00) to J2000.0 [s].
+/// The single definition of the 1970→J2000 span: the astronomical time arguments
+/// count from J2000 while the master clock counts from 1970 (Vallado §3.5).
+inline constexpr double kSecondsToJ2000 = (kJulianDateJ2000 - kJulianDate1970) * kSecondsPerDay;
+
 }  // namespace time
+
+/// @brief IAU/IERS reduction constants (SOFA/ERFA defining values).
+///
+/// Used by the IAU 2006/2000A ECI↔ECEF reduction (`lib/frames`, REQ-CONV-002).
+/// IERS publishes polar motion in arcseconds; ERFA consumes radians.
+///
+/// References:
+///  - IERS Conventions (2010), IERS TN 36, §5 (Earth orientation). [iers2010]
+///  - IAU SOFA / ERFA `erfam.h`, `ERFA_DAS2R`. [erfa2021]
+namespace iau {
+
+/// Arcseconds to radians [rad/arcsec] = π / (180 × 3600). Matches SOFA/ERFA's
+/// `ERFA_DAS2R` bit-for-bit.
+inline constexpr double kArcsecToRad = 4.848'136'811'095'359'935'899'141e-6;
+
+}  // namespace iau
 
 /// @brief TDB−TT periodic-term series (Astronomical Almanac / Vallado eq. 3-49).
 ///

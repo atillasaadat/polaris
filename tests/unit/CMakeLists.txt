@@ -4,6 +4,8 @@ add_executable(polaris_unit_tests
   typed_vector_test.cpp
   quaternion_test.cpp
   frame_geometry_test.cpp
+  eop_test.cpp
+  eci_ecef_test.cpp
   time_test.cpp
   tdb_test.cpp
   chebyshev_test.cpp
@@ -20,6 +22,7 @@ target_link_libraries(polaris_unit_tests
     polaris::state
     polaris::dynamics
     polaris::world
+    polaris::frames
     polaris_test_flags
     GTest::gtest_main)
 
