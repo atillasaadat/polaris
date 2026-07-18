@@ -288,6 +288,30 @@ math::Vec3<math::frames::ECI> SphericalHarmonicGravity::acceleration(
   if (r.norm() < kMinRadius_) {
     return math::Vec3<math::frames::ECI>::Zero();
   }
+
+  // The harmonic recursion is defined in the Earth-fixed frame. The zonal part
+  // (order 0) is axisymmetric about the pole and so is identical evaluated in ECI
+  // or ECEF — no rotation needed. Tesserals (order > 0) are longitude-dependent
+  // and must be evaluated in ECEF: rotate the position into ECEF at the state
+  // epoch, take the gradient there, then rotate the acceleration (a plain vector,
+  // no transport term) back to ECI.
+  //
+  // Reaching the final ECI-eval return with order_ > 0 means EITHER no resolver was
+  // installed (a deliberate low-fidelity / test mode: the caller owns wiring
+  // setEciToEcef() for a physically-correct tesseral field) OR the resolver failed
+  // for this epoch (fallback below). Both leave the tesseral field longitude-wrong;
+  // only the zonal part stays exact.
+  if (order_ > 0 && eci_to_ecef_) {
+    math::Quat<math::frames::ECEF, math::frames::ECI> q;
+    if (eci_to_ecef_(s.epoch, q)) {
+      const Eigen::Vector3d r_ecef = q.rotate(s.position).eigen();
+      const math::Vec3<math::frames::ECEF> a_ecef(gradient(r_ecef));
+      return q.inverse().rotate(a_ecef);
+    }
+    // ponytail: resolver installed but epoch outside the EOP span -> fall back to
+    // ECI eval (zonal part still exact). A truth run keeps epochs inside the table;
+    // this avoids a hard failure mid-integration rather than masking a real gap.
+  }
   return math::Vec3<math::frames::ECI>(gradient(r));
 }
 
