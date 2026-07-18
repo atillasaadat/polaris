@@ -44,13 +44,17 @@
 ///    §8 (zonal coefficients, gravity-gradient torque). [vallado2013]
 
 #include <Eigen/Core>
+#include <functional>
+#include <utility>
 #include <vector>
 
 #include "constants/constants.hpp"
 #include "dynamics/force_torque.hpp"
 #include "math/frames.hpp"
+#include "math/quaternion.hpp"
 #include "math/typed_vector.hpp"
 #include "state/truth_state.hpp"
+#include "time/timescales.hpp"
 
 namespace polaris::sim::world {
 
@@ -110,6 +114,21 @@ class SphericalHarmonicGravity : public dynamics::ForceTorqueModel {
 
   int order() const { return order_; }
 
+  /// Resolver for the ECI->ECEF rotation at a TAI epoch, used to evaluate tesseral
+  /// (m>0) terms in the Earth-fixed frame where they are physically defined.
+  using EciToEcefFn =
+      std::function<bool(const time::Tai&, math::Quat<math::frames::ECEF, math::frames::ECI>&)>;
+
+  /// Install the ECI->ECEF resolver (typically wrapping `frames::ecefFromEci` over
+  /// an EOP table). Without it — or for a purely zonal field (order 0) — the field
+  /// is evaluated directly on the ECI position, which is exact for the
+  /// axisymmetric zonal part but wrong for tesserals. Sim-side wiring, e.g.:
+  ///   g.setEciToEcef([&](const time::Tai& t,
+  ///                      math::Quat<math::frames::ECEF, math::frames::ECI>& q) {
+  ///     return frames::ecefFromEci(t, eop_table, leap, q);
+  ///   });
+  void setEciToEcef(EciToEcefFn fn) { eci_to_ecef_ = std::move(fn); }
+
  private:
   /// Geopotential gradient (acceleration) via the normalized Gottlieb recursion
   /// (NASA/TP-2016-218604 App. C.9). Independent of `potential()`.
@@ -130,6 +149,8 @@ class SphericalHarmonicGravity : public dynamics::ForceTorqueModel {
   // sized [degree_+2]. See NASA/TP-2016-218604 App. C.9. [eckman2016]
   std::vector<double> norm1_, norm2_, norm11_, normn10_;
   std::vector<std::vector<double>> norm1m_, norm2m_, normn1_;
+
+  EciToEcefFn eci_to_ecef_;  ///< optional; see setEciToEcef()
 
   static constexpr double kMinRadius_ = 1.0;  ///< [m] singular-radius guard
 };
