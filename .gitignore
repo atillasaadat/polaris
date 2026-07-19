@@ -68,3 +68,7 @@ CLAUDE.md.pre-ruflo
 *local-command-caveat*.txt
 # Claude Code conversation exports (/export): date-prefixed .txt dumps at root.
 /20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.txt
+
+# Full EGM2008 model (fetch input for tools/gravity; only the degree-truncated
+# tests/golden/EGM2008_to200.gfc is committed)
+/EGM2008.gfc

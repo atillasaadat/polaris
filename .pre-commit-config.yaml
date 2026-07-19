@@ -7,24 +7,24 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
-      # The IERS finals product is committed verbatim so it updates by plain
-      # re-download; its fixed-width lines carry trailing pad that must be kept.
+      # Committed reference data in its native upstream format (IERS finals; the
+      # EGM2008 .gfc degree-window) is kept byte-stable so it stays reproducible
+      # from its tool — excluded from the whitespace/size normalizers.
       - id: trailing-whitespace
         args: [--markdown-linebreak-ext=md]
-        exclude: '^(LICENSE|tests/golden/finals\.all\.iau2000\.txt)$'
+        exclude: '^(LICENSE|tests/golden/(finals\.all\.iau2000\.txt|EGM2008_to200\.gfc))$'
       - id: end-of-file-fixer
-        exclude: '^(LICENSE|tests/golden/finals\.all\.iau2000\.txt)$'
+        exclude: '^(LICENSE|tests/golden/(finals\.all\.iau2000\.txt|EGM2008_to200\.gfc))$'
       - id: check-yaml
       - id: check-toml
       - id: check-added-large-files
         args: [--maxkb=2048]
-        # The IERS finals product is committed verbatim (3.6 MB) so it updates by
-        # plain re-download; it is static reference data, not source (REQ-CONV-002).
-        exclude: ^tests/golden/finals\.all\.iau2000\.txt$
+        # Static reference data, not source (REQ-CONV-002 / REQ-SIM-002).
+        exclude: '^tests/golden/(finals\.all\.iau2000\.txt|EGM2008_to200\.gfc)$'
       - id: check-merge-conflict
       - id: mixed-line-ending
         args: [--fix=lf]
-        exclude: '^tests/golden/finals\.all\.iau2000\.txt$'
+        exclude: '^tests/golden/(finals\.all\.iau2000\.txt|EGM2008_to200\.gfc)$'
 
   # C++ formatting — pinned clang-format wheel (matches .clang-format, target 18).
   - repo: https://github.com/pre-commit/mirrors-clang-format

@@ -52,11 +52,14 @@ def truncate(text: str, max_degree: int) -> str:
     in_head = True
     for line in text.splitlines():
         if in_head:
-            if line.split()[:1] == ["max_degree"]:
+            tok = line.split()[:1]
+            if tok == ["max_degree"]:
                 out.append(f"max_degree {max_degree}")
             else:
                 out.append(line)
-            if line.strip() == "end_of_head":
+            # The terminator's first token is `end_of_head`; some ICGEM files pad
+            # it with `=` (`end_of_head ====...`), so match the token, not the line.
+            if tok == ["end_of_head"]:
                 in_head = False
             continue
         deg = _degree_of(line)
@@ -74,8 +77,9 @@ def _self_check() -> None:
     """Truncate a synthetic `.gfc` and verify header + degree filtering."""
     gfc = (
         "earth_gravity_constant 3.986004415E+14\nradius 6378136.3\n"
-        "max_degree 2190\nnorm fully_normalized\nend_of_head\n"
-        "gfc 0 0 1.0 0.0\ngfc 2 0 -4.84e-4 0.0\ngfc 2 2 2.4e-6 -1.4e-6\n"
+        "max_degree 2190\nnorm fully_normalized\n"
+        "end_of_head ==============================\n"  # padded terminator, as ICGEM ships it
+        "gfc 0 0 1.0d0 0.0d0\ngfc 2 0 -4.84e-4 0.0\ngfc 2 2 2.4e-6 -1.4e-6\n"
         "gfc 3 0 9.5e-7 0.0\ngfc 5 0 2.0e-7 0.0\n"
     )
     trimmed = truncate(gfc, 2)
