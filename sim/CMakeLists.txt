@@ -19,7 +19,9 @@ add_library(polaris::dynamics ALIAS polaris_dynamics)
 add_library(polaris_world
   world/gravity_field.cpp
   world/egm2008.cpp
-  world/third_body.cpp)
+  world/third_body.cpp
+  world/eclipse.cpp
+  world/srp.cpp)
 target_include_directories(polaris_world PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_world
   PUBLIC Eigen3::Eigen polaris_dynamics polaris_math polaris_state polaris_time polaris_constants

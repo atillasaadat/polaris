@@ -55,6 +55,10 @@ inline constexpr double kMoonGM = 4.902'800'066'163'796e12;
 /// Astronomical unit [m] (IAU 2012 defining value, exact).
 inline constexpr double kAstronomicalUnit = 1.495'978'707e11;
 
+/// Nominal solar radius [m] (IAU 2015 Resolution B3, `R_sun^N`). Sets the
+/// angular size of the solar disk in the conical eclipse model.
+inline constexpr double kSunRadius = 6.957e8;
+
 }  // namespace bodies
 
 /// @brief Time-scale constants (Vallado §3).
@@ -142,6 +146,20 @@ inline constexpr double kSpeedOfLight = 299'792'458.0;
 inline constexpr double kStandardGravity = 9.806'65;
 
 }  // namespace physical
+
+/// @brief Solar radiation constants (IAU 2015 Res. B3; design doc §5.2).
+namespace srp {
+
+/// Nominal total solar irradiance at 1 AU [W/m^2] (IAU 2015 Resolution B3,
+/// `S_sun^N`) — the modern TSI value, superseding the older 1367 W/m^2.
+inline constexpr double kSolarConstant = 1361.0;
+
+/// Solar radiation pressure at 1 AU [N/m^2] = S/c, for a fully absorbing
+/// surface. Derived rather than tabulated so it can never drift from the
+/// irradiance and speed of light above (Montenbruck & Gill §3.4).
+inline constexpr double kPressureAt1Au = kSolarConstant / physical::kSpeedOfLight;
+
+}  // namespace srp
 
 }  // namespace polaris::constants
 
