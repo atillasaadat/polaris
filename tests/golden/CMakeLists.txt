@@ -7,7 +7,8 @@
 # so they load the checked-in fixtures at runtime.
 add_executable(polaris_golden_tests
   time_scales_golden_test.cpp
-  eop_golden_test.cpp)
+  eop_golden_test.cpp
+  egm2008_golden_test.cpp)
 
 target_compile_definitions(polaris_golden_tests
   PRIVATE GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
@@ -16,6 +17,7 @@ target_link_libraries(polaris_golden_tests
   PRIVATE
     polaris::time  # transitively brings polaris::constants
     polaris::frames  # ECI<->ECEF reduction + EopTable (eop_golden_test)
+    polaris::world  # EGM2008 loader + gravity (egm2008_golden_test)
     polaris_test_flags
     nlohmann_json::nlohmann_json
     GTest::gtest_main)
