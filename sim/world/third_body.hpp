@@ -33,7 +33,6 @@
 ///    AJ 161, 2021 (GM values, ephemeris source). [park2021]
 
 #include <cstddef>
-#include <functional>
 #include <vector>
 
 #include "dynamics/force_torque.hpp"
@@ -41,15 +40,16 @@
 #include "math/typed_vector.hpp"
 #include "state/truth_state.hpp"
 #include "time/timescales.hpp"
+#include "world/body_position.hpp"
 
 namespace polaris::sim::world {
 
 /// Sum of third-body point-mass perturbations from injected body ephemerides.
 class ThirdBodyGravity : public dynamics::ForceTorqueModel {
  public:
-  /// Geocentric ECI position [m] of a body at a TDB epoch. Returns false —
-  /// leaving @p out untouched — if the epoch is outside the ephemeris coverage.
-  using PositionFn = std::function<bool(const time::Tdb&, math::Vec3<math::frames::ECI>& out)>;
+  /// Body position resolver — the shared `BodyPositionFn` contract
+  /// (`body_position.hpp`), aliased here for readability at the call site.
+  using PositionFn = BodyPositionFn;
 
   /// Add one perturbing body: its gravitational parameter @p gm [m^3/s^2] and a
   /// position resolver. A body whose resolver has no coverage at an epoch is

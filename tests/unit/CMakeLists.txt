@@ -13,7 +13,8 @@ add_executable(polaris_unit_tests
   sim_dynamics_test.cpp
   sim_world_gravity_test.cpp
   sim_world_egm2008_test.cpp
-  sim_world_third_body_test.cpp)
+  sim_world_third_body_test.cpp
+  sim_world_srp_test.cpp)
 
 target_link_libraries(polaris_unit_tests
   PRIVATE
