@@ -14,6 +14,8 @@
 ///
 /// Sim-side (`sim/CLAUDE.md`): virtual dispatch/heap are fine here.
 
+#include <vector>
+
 #include "constants/constants.hpp"
 #include "math/frames.hpp"
 #include "math/typed_vector.hpp"
@@ -72,6 +74,44 @@ class TwoBodyGravity : public ForceTorqueModel {
  private:
   static constexpr double kMinRadius_ = 1.0;  ///< [m]
   double mu_;
+};
+
+/// Sum of several `ForceTorqueModel`s — the superposition the plant actually
+/// flies (e.g. EGM2008 gravity + third-body + drag + SRP). Acceleration and
+/// torque are both linear in the sources, so each is the sum of the parts.
+///
+/// Holds **non-owning** pointers; every added model must outlive the composite
+/// (same lifetime rule the plant already imposes on its model). Sim-side, so heap
+/// and `std::vector` are fine (`sim/CLAUDE.md`).
+class CompositeForceModel : public ForceTorqueModel {
+ public:
+  /// Append a component. Null is ignored (a no-op source).
+  void add(const ForceTorqueModel* model) {
+    if (model != nullptr) {
+      models_.push_back(model);
+    }
+  }
+
+  std::size_t size() const { return models_.size(); }
+
+  math::Vec3<math::frames::ECI> acceleration(const state::TruthState& s) const override {
+    Eigen::Vector3d a = Eigen::Vector3d::Zero();
+    for (const ForceTorqueModel* m : models_) {
+      a += m->acceleration(s).eigen();
+    }
+    return math::Vec3<math::frames::ECI>(a);
+  }
+
+  math::Vec3<math::frames::Body> torque(const state::TruthState& s) const override {
+    Eigen::Vector3d t = Eigen::Vector3d::Zero();
+    for (const ForceTorqueModel* m : models_) {
+      t += m->torque(s).eigen();
+    }
+    return math::Vec3<math::frames::Body>(t);
+  }
+
+ private:
+  std::vector<const ForceTorqueModel*> models_;
 };
 
 }  // namespace polaris::sim::dynamics

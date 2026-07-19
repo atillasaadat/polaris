@@ -18,9 +18,10 @@ add_library(polaris::dynamics ALIAS polaris_dynamics)
 # --- World: environment models (gravity, ... ) (REQ-SIM-002) -----------------
 add_library(polaris_world
   world/gravity_field.cpp
-  world/egm2008.cpp)
+  world/egm2008.cpp
+  world/third_body.cpp)
 target_include_directories(polaris_world PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_world
-  PUBLIC Eigen3::Eigen polaris_dynamics polaris_math polaris_state polaris_constants
+  PUBLIC Eigen3::Eigen polaris_dynamics polaris_math polaris_state polaris_time polaris_constants
   PRIVATE polaris_flags)
 add_library(polaris::world ALIAS polaris_world)

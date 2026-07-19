@@ -40,6 +40,23 @@ inline constexpr double kEarthRate = 7.292'115e-5;
 
 }  // namespace wgs84
 
+/// @brief Third-body gravitational parameters and scale (JPL DE440 / IAU).
+///
+/// GM values consistent with the JPL DE440 ephemeris, for third-body point-mass
+/// perturbations in the truth sim (design doc §5.2). [bibkey: park2021]
+namespace bodies {
+
+/// Heliocentric gravitational constant GM_sun [m^3/s^2] (DE440).
+inline constexpr double kSunGM = 1.327'124'400'412'794'19e20;
+
+/// Selenocentric gravitational constant GM_moon [m^3/s^2] (DE440).
+inline constexpr double kMoonGM = 4.902'800'066'163'796e12;
+
+/// Astronomical unit [m] (IAU 2012 defining value, exact).
+inline constexpr double kAstronomicalUnit = 1.495'978'707e11;
+
+}  // namespace bodies
+
 /// @brief Time-scale constants (Vallado §3).
 namespace time {
 
