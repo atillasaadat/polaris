@@ -44,6 +44,63 @@ set_target_properties(erfa PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(ERFA::erfa ALIAS erfa)
 unset(_erfa_sources)
 
+# --- NRLMSIS 2.1 (truth atmospheric density, REQ-SIM-002) --------------------
+# Fetched, deliberately NOT vendored into the tree. NRLMSIS is licensed under
+# NRL's MSIS(R) Open Source Academic Research License Agreement: research,
+# academic and non-profit use only, and it forbids licensing derivative works
+# for a fee without NRL's written consent. Polaris's own commercial tier
+# (LICENSING.md) is therefore incompatible with shipping it, so MSIS must be
+# removed — or NRL consent obtained — before any Polaris commercial license is
+# sold. Keeping the source out of git history is what makes that removal a
+# deletion of this block rather than a history rewrite. See
+# THIRD_PARTY_NOTICES.md and sim/world/nrlmsis.hpp.
+#
+# Upstream is a plain tarball of Fortran 90 with no build system, so as with
+# ERFA we populate the source and compile it ourselves. msis2.1_test.F90 is
+# upstream's test program (its own main()) and is excluded.
+if(POLARIS_BUILD_NRLMSIS)
+  FetchContent_Declare(
+    nrlmsis
+    URL https://map.nrl.navy.mil/map/pub/nrl/NRLMSIS/NRLMSIS2.1/nrlmsis2.1.tar.gz
+    URL_HASH SHA256=41e47b29f795d36a5cc252b2858aa2a384c4a7323ace3d48d3ea2f2b37a1a6a8
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  )
+  FetchContent_MakeAvailable(nrlmsis)
+
+  # Module dependencies force a fixed compile order, so the sources are listed
+  # explicitly rather than globbed (a GLOB would hand gfortran msis_calc before
+  # the modules it uses).
+  add_library(nrlmsis STATIC
+    "${nrlmsis_SOURCE_DIR}/msis_constants.F90"
+    "${nrlmsis_SOURCE_DIR}/msis_utils.F90"
+    "${nrlmsis_SOURCE_DIR}/msis_init.F90"
+    "${nrlmsis_SOURCE_DIR}/msis_gfn.F90"
+    "${nrlmsis_SOURCE_DIR}/msis_tfn.F90"
+    "${nrlmsis_SOURCE_DIR}/msis_dfn.F90"
+    "${nrlmsis_SOURCE_DIR}/msis_calc.F90"
+    "${nrlmsis_SOURCE_DIR}/msis_gtd8d.F90"
+    "${CMAKE_SOURCE_DIR}/sim/world/msis_shim.F90")
+  set_target_properties(nrlmsis PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/nrlmsis_modules")
+  # -DDBLE selects the model's double-precision path (msis_constants.F90 sets
+  # `rp = 8` under it). Upstream calls double precision unnecessary for most
+  # applications, but it is what makes the output "exactly match the expected
+  # output in msis2.1_test_ref_dp.txt, regardless of the compiler or compiler
+  # settings" (readme.txt) — i.e. it is the difference between a golden test that
+  # is reproducible across toolchains and one that is not. It also matches the
+  # `double` the C++ side and the integrator use throughout.
+  #
+  # Upstream's own warning profile is not ours; do not apply Polaris's -Werror.
+  target_compile_options(nrlmsis PRIVATE -DDBLE -w)
+
+  # The model reads its ~2.5 MB coefficient file at init. It is data shipped in
+  # the tarball, not something we commit, so its path is baked in at configure
+  # time and surfaced to C++ as POLARIS_MSIS_PARM_PATH.
+  set(POLARIS_MSIS_PARM_PATH "${nrlmsis_SOURCE_DIR}/msis21.parm" CACHE FILEPATH
+      "Path to the NRLMSIS 2.1 msis21.parm coefficient file")
+endif()
+
 # --- GoogleTest -------------------------------------------------------------
 # The F´ framework can vendor GoogleTest via its own submodule (when framework UTs
 # are enabled), so reuse that target when present to avoid a duplicate-target
