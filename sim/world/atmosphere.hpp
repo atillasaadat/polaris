@@ -11,12 +11,14 @@
 /// decoupling `BodyPositionFn` gives the ephemeris consumers: drag is written,
 /// built and tested without any atmosphere data on disk.
 ///
-/// REQ-SIM-002 specifies **NRLMSIS 2.1** driven by space-weather files as the
-/// truth atmosphere. That model is a separate deliverable (its source and the
-/// F10.7/Ap history are committed verbatim per §3.7); when it lands it becomes
-/// another `DensityFn` and nothing in `drag.hpp` changes.
+/// REQ-SIM-002 specifies **NRLMSIS 2.1** as the truth atmosphere, and it is
+/// implemented in `nrlmsis.hpp` as exactly such a resolver — nothing in
+/// `drag.hpp` knows which of the two it is holding. NRLMSIS is optional at build
+/// time (research-only license, plus a Fortran toolchain; see
+/// `THIRD_PARTY_NOTICES.md`), so the exponential model below is both the coarse
+/// tier and the fallback when it is not built.
 ///
-/// `ExponentialAtmosphere` is the model available *without* external data: the
+/// The exponential model is the one available *without* external data: the
 /// piecewise-exponential fit to the US Standard Atmosphere 1976 / CIRA-72,
 /// rho = rho_0 exp(-(h - h_0)/H) over 28 tabulated altitude bands (Vallado
 /// Table 8-4). It carries no space-weather dependence at all, so it cannot
@@ -42,6 +44,7 @@
 ///  - Vallado, 4th ed., §3.2 / Algorithm 12 (ECEF to geodetic latitude and
 ///    height, the fixed-point iteration used here). [vallado2013]
 
+#include <Eigen/Core>
 #include <functional>
 
 #include "math/frames.hpp"
@@ -55,6 +58,23 @@ namespace polaris::sim::world {
 /// diurnal bulge; a static model simply ignores it. Never negative; a model with
 /// no valid answer (e.g. below the ground) returns 0, meaning "no drag here".
 using DensityFn = std::function<double(const time::Tai&, const math::Vec3<math::frames::ECI>&)>;
+
+/// Geodetic position on the WGS84 ellipsoid.
+struct Geodetic {
+  double latitude_rad{0.0};   ///< Geodetic latitude, [-pi/2, pi/2].
+  double longitude_rad{0.0};  ///< Longitude east of the frame's prime meridian.
+  double altitude_m{0.0};     ///< Height above the ellipsoid; negative inside it.
+};
+
+/// Convert a Cartesian position to geodetic coordinates on the WGS84 ellipsoid.
+///
+/// The **longitude is only meaningful for an ECEF input**; given an ECI vector it
+/// comes out as right ascension, not longitude. Latitude and altitude are valid
+/// for either, since both are invariant under rotation about the spin axis (see
+/// the file header) — which is exactly why `geodeticAltitude()` below can take an
+/// ECI position with no reduction, while NRLMSIS (`nrlmsis.hpp`) must first go to
+/// ECEF to get a longitude it can turn into local solar time.
+Geodetic geodetic(const Eigen::Vector3d& r);
 
 /// Geodetic altitude above the WGS84 ellipsoid [m] for an ECI position.
 /// Negative below the ellipsoid. See the file header on why no EOP is needed.

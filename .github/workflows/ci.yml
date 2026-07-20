@@ -36,6 +36,8 @@ jobs:
           enable-cache: true
       - name: Install F´ toolchain (cmake + ninja arrive as wheels)
         run: uv sync                     # default groups: fprime + dev
+      - name: Install gfortran (NRLMSIS 2.1 is Fortran; see THIRD_PARTY_NOTICES.md)
+        run: sudo apt-get update && sudo apt-get install -y gfortran
       - name: Build (F´ core + PolarisFsw deployment)
         run: |
           uv run fprime-util generate

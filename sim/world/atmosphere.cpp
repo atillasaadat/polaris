@@ -62,21 +62,25 @@ constexpr std::size_t kBandCount = sizeof(kBands) / sizeof(kBands[0]);
 /// last metre is strictly the more accurate split.
 constexpr double kPolarTolerance = 1.0;
 
+/// pi/2 — the geodetic latitude at the poles, where the iteration is skipped.
+constexpr double kHalfPi = 1.570'796'326'794'896'619'23;
+
 }  // namespace
 
-double geodeticAltitude(const math::Vec3<math::frames::ECI>& r_eci) {
+Geodetic geodetic(const Eigen::Vector3d& r) {
   constexpr double kA = constants::wgs84::kSemiMajorAxis;
   constexpr double kB = constants::wgs84::kSemiMinorAxis;
   constexpr double kE2 = constants::wgs84::kEccentricitySq;
 
-  const Eigen::Vector3d r = r_eci.eigen();
   const double z = r.z();
   const double p = std::hypot(r.x(), r.y());
+  const double longitude = std::atan2(r.y(), r.x());
 
   // On the spin axis the ellipsoid normal is the axis itself, and the iteration
   // below divides by cos(lat) -> 0. Handle it in closed form instead.
   if (p < kPolarTolerance) {
-    return std::abs(z) - kB;
+    const double pole = z >= 0.0 ? kHalfPi : -kHalfPi;
+    return Geodetic{pole, longitude, std::abs(z) - kB};
   }
 
   // Fixed-point iteration on geodetic latitude (Vallado Alg. 12). The update
@@ -93,7 +97,11 @@ double geodeticAltitude(const math::Vec3<math::frames::ECI>& r_eci) {
     altitude = p / std::cos(lat) - n;
     lat = std::atan2(z, p * (1.0 - kE2 * n / (n + altitude)));
   }
-  return altitude;
+  return Geodetic{lat, longitude, altitude};
+}
+
+double geodeticAltitude(const math::Vec3<math::frames::ECI>& r_eci) {
+  return geodetic(r_eci.eigen()).altitude_m;
 }
 
 double exponentialDensity(double altitude_m) {

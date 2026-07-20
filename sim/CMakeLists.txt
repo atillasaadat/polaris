@@ -29,3 +29,15 @@ target_link_libraries(polaris_world
   PUBLIC Eigen3::Eigen polaris_dynamics polaris_math polaris_state polaris_time polaris_constants
   PRIVATE polaris_flags)
 add_library(polaris::world ALIAS polaris_world)
+
+# NRLMSIS 2.1 is optional (research-only license + Fortran toolchain; see
+# cmake/Dependencies.cmake and THIRD_PARTY_NOTICES.md). Without it polaris_world
+# still builds and the sim uses the exponential atmosphere. POLARIS_HAS_NRLMSIS
+# lets dependents compile the model out entirely.
+if(POLARIS_BUILD_NRLMSIS)
+  target_sources(polaris_world PRIVATE world/nrlmsis.cpp)
+  target_link_libraries(polaris_world PUBLIC nrlmsis polaris_frames)
+  target_compile_definitions(polaris_world
+    PRIVATE POLARIS_MSIS_PARM_PATH="${POLARIS_MSIS_PARM_PATH}"
+    PUBLIC POLARIS_HAS_NRLMSIS=1)
+endif()

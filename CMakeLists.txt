@@ -22,6 +22,24 @@ option(POLARIS_BUILD_TESTS "Build Polaris lib unit tests under the F´ UT build"
 option(POLARIS_WERROR "Treat warnings as errors on Polaris targets" ON)
 option(POLARIS_SANITIZE "Enable ASan/UBSan on Polaris test builds" OFF)
 
+# NRLMSIS 2.1 is the truth atmosphere (REQ-SIM-002) but carries a research-only
+# license and needs a Fortran compiler, so it is opt-out: the sim degrades to the
+# exponential atmosphere without it (sim/world/atmosphere.hpp). See
+# THIRD_PARTY_NOTICES.md for the licensing constraint.
+option(POLARIS_BUILD_NRLMSIS "Fetch and build the NRLMSIS 2.1 atmosphere model" ON)
+if(POLARIS_BUILD_NRLMSIS)
+  include(CheckLanguage)
+  check_language(Fortran)
+  if(CMAKE_Fortran_COMPILER)
+    enable_language(Fortran)
+  else()
+    message(WARNING
+      "No Fortran compiler found; building without NRLMSIS 2.1. The sim will "
+      "fall back to the exponential atmosphere. Install gfortran to enable it.")
+    set(POLARIS_BUILD_NRLMSIS OFF)
+  endif()
+endif()
+
 # --- Polaris strict warning set (applied to Polaris targets only) -----------
 # JPL-aligned (design doc §3.6, §23.2). Third-party + F´ headers are NOT compiled
 # with these; only targets that link polaris_flags get them.
