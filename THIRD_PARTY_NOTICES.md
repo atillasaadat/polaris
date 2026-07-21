@@ -22,6 +22,7 @@ later phase (listed here so the attribution policy is set from the start).
 | **GoogleTest** | C++ unit/component tests | BSD-3-Clause | planned (Push 2) |
 | **pybind11** | Python bindings (`bindings/`) | BSD-3-Clause | planned |
 | **SGP4** (Vallado reference implementation) | TLE propagation | Public / permissive (cite Vallado) | planned |
+| **pyIGRF14** — Ciaran Beggan, British Geological Survey | IAGA reference implementation used to generate the IGRF golden fixture (`tools/igrf/`); fetch input, not committed | MIT (© 2024 Ciaran Beggan) | integrated (Push 15) |
 | **Sphinx, sphinx-needs, Breathe, numpydoc, PyData Sphinx Theme, sphinxcontrib-bibtex** | Documentation site & requirements traceability | BSD / MIT / Apache-2.0 | integrated |
 | **Doxygen** | C++ API extraction for Breathe | GPL-2.0 (tool only; not linked/distributed) | integrated |
 | **clang-format / clang-tidy / cppcheck, pre-commit, ruff** | Static analysis & formatting (dev/CI only) | Apache-2.0 (LLVM) / MIT | integrated |
@@ -30,7 +31,7 @@ later phase (listed here so the attribution policy is set from the start).
 
 | Data set | Use in Polaris | Source / terms | Status |
 |---|---|---|---|
-| **IGRF-14** geomagnetic coefficients | Onboard modeled field, magnetometer checks, coarse attitude | IAGA, public domain (cite) | planned |
+| **IGRF-14** geomagnetic coefficients (`tests/golden/igrf14coeffs.txt`, committed verbatim) | Onboard modeled field, magnetometer checks, coarse attitude | IAGA / NOAA NCEI: "The information and software may be used freely by the public… in the public domain and not licensed or under copyright." Cite Alken, Thébault, Beggan et al.; 17 U.S.C. 403 notice applies to derivative works | integrated (Push 15) |
 | **WMM** (backup geomagnetic) | Alternative modeled field | NOAA/NGA, public | planned |
 | **EGM2008** gravity coefficients | Truth gravity field | NGA, public (cite) | planned |
 | **NRLMSIS 2.1** — U.S. NRL | Truth atmospheric density (`sim/world/nrlmsis.cpp`) | **MSIS® Open Source Academic Research License Agreement — noncommercial only.** See the blocker below. | integrated (Push 13) |
