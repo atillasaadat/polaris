@@ -35,7 +35,7 @@ bool SolarRadiationPressure::solarAcceleration(const state::TruthState& s,
     return false;  // singular range guard (§3.6)
   }
 
-  const double nu = shadowFactor(r, r_sun);
+  const double nu = eclipse_enabled_ ? shadowFactor(r, r_sun) : 1.0;
   if (nu <= 0.0) {
     return false;  // umbra — nothing to add
   }

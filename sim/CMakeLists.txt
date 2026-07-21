@@ -26,7 +26,8 @@ add_library(polaris_world
   world/drag.cpp
   world/ephemeris_file.cpp
   world/igrf_file.cpp
-  world/magnetic_field.cpp)
+  world/magnetic_field.cpp
+  world/eop_file.cpp)
 target_include_directories(polaris_world PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_world
   PUBLIC Eigen3::Eigen polaris_dynamics polaris_math polaris_state polaris_time polaris_constants
@@ -45,3 +46,21 @@ if(POLARIS_BUILD_NRLMSIS)
     PRIVATE POLARIS_MSIS_PARM_PATH="${POLARIS_MSIS_PARM_PATH}"
     PUBLIC POLARIS_HAS_NRLMSIS=1)
 endif()
+
+# --- Scenario: compiled-config -> wired environment -> propagation -----------
+# Reads the `sim_setup.json` emitted by tools/configc (design doc §19.3 — the
+# sim never re-parses the authoritative YAML) and assembles every enabled
+# environment model behind one CompositeForceModel.
+add_library(polaris_scenario
+  scenario/sim_config.cpp
+  scenario/sim_runner.cpp)
+target_include_directories(polaris_scenario PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(polaris_scenario
+  PUBLIC polaris_world polaris_dynamics polaris_frames polaris_state polaris_time
+         polaris_constants polaris_environment nlohmann_json::nlohmann_json
+  PRIVATE polaris_flags)
+add_library(polaris::scenario ALIAS polaris_scenario)
+
+# --- The truth-sim executable ------------------------------------------------
+add_executable(polaris_sim main.cpp)
+target_link_libraries(polaris_sim PRIVATE polaris_scenario polaris_flags)

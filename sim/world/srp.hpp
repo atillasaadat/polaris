@@ -71,6 +71,14 @@ class SolarRadiationPressure : public dynamics::ForceTorqueModel {
   /// offset is what makes SRP an attitude disturbance rather than a pure force.
   void setCenterOfPressureOffset(const math::Vec3<math::frames::Body>& r_cp) { r_cp_ = r_cp; }
 
+  /// Enable or disable the conical shadow. Default is enabled — eclipse is the
+  /// physical behaviour, and disabling it is a deliberate analysis choice
+  /// (isolating the secular SRP effect, or matching a reference tool run that
+  /// models no shadow), not a fidelity shortcut.
+  void setEclipseEnabled(bool enabled) { eclipse_enabled_ = enabled; }
+
+  bool eclipseEnabled() const { return eclipse_enabled_; }
+
   /// The lumped orbit-determination parameter A/m [m^2/kg].
   double areaToMass() const { return area_ / mass_; }
 
@@ -86,6 +94,7 @@ class SolarRadiationPressure : public dynamics::ForceTorqueModel {
   double cr_;
   BodyPositionFn sun_;
   math::Vec3<math::frames::Body> r_cp_{};  ///< default zero -> torque-free
+  bool eclipse_enabled_{true};
 
   static constexpr double kMinDistance_ = 1.0;  ///< [m] singular-range guard
 };

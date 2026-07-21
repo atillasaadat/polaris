@@ -28,6 +28,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
+from .orbit import keplerian_to_cartesian
 from .schema import Config, HardwareModel, MountedUnit
 
 
@@ -165,11 +166,39 @@ def emit_fprime_params(resolved: dict[str, Any]) -> dict[str, Any]:
 
 
 def emit_sim_setup(resolved: dict[str, Any]) -> dict[str, Any]:
-    """Truth/plant setup: mass properties, sensor/actuator truth params, epoch (stub)."""
+    """Truth/plant setup: everything the sim executable needs to propagate a run.
+
+    The Keplerian elements are converted to an ECI state here (§19.3: the compiler
+    resolves, consumers do not re-derive) and emitted alongside the original
+    elements, which are kept purely for traceability. Inertia is emitted as the
+    six unique components of the symmetric body-frame tensor, matching the schema.
+    """
+    sc = resolved["spacecraft"]
+    scn = resolved["scenario"]
+    init = scn["initial_state"]
+    orb = init["orbit"]
+    position_m, velocity_m_s = keplerian_to_cartesian(
+        sma_m=orb["sma_km"] * 1000.0,
+        ecc=orb["ecc"],
+        inc_deg=orb["inc_deg"],
+        raan_deg=orb["raan_deg"],
+        argp_deg=orb["argp_deg"],
+        true_anomaly_deg=orb["true_anomaly_deg"],
+    )
     return {
         "provenance": _provenance(resolved),
-        "spacecraft": resolved["spacecraft"],
-        "scenario": resolved["scenario"],
+        "scenario_name": scn["name"],
+        "epoch_utc": scn["epoch_utc"],
+        "spacecraft": sc,
+        "initial_state": {
+            "position_m": list(position_m),
+            "velocity_m_s": list(velocity_m_s),
+            "attitude_quaternion": init["attitude_quaternion"],
+            "body_rate_rad_s": init["body_rate_rad_s"],
+            "keplerian": orb,
+        },
+        "propagation": scn["propagation"],
+        "environment": scn["environment"],
     }
 
 
