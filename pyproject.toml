@@ -71,6 +71,13 @@ dev = [
     "clang-format==18.1.8",
 ]
 
+# DE440 ephemeris fitting (design doc §11.3, tools/ephem/). Reads a JPL SPK
+# kernel and emits the committed Chebyshev fit; ground-side only, never CI.
+ephem = [
+    "jplephem>=2.21,<3",
+    "numpy>=1.26,<3",
+]
+
 # Config compiler (design doc §19.3, tools/configc/). The single source-of-truth
 # spacecraft/scenario/hardware config is YAML, validated through Pydantic models
 # and resolved into F´-param / sim / analysis artifacts. Both already resolve in

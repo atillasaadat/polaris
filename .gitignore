@@ -72,3 +72,7 @@ CLAUDE.md.pre-ruflo
 # Full EGM2008 model (fetch input for tools/gravity; only the degree-truncated
 # tests/golden/EGM2008_to200.gfc is committed)
 /EGM2008.gfc
+
+# JPL DE440 SPK kernels (fetch input for tools/ephem; only the derived Chebyshev
+# fit tests/golden/de440_sun_moon.cheb is committed — design doc §3.7)
+/de440*.bsp

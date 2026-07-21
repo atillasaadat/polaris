@@ -15,7 +15,12 @@ add_executable(polaris_unit_tests
   sim_world_egm2008_test.cpp
   sim_world_third_body_test.cpp
   sim_world_srp_test.cpp
-  sim_world_drag_test.cpp)
+  sim_world_drag_test.cpp
+  sim_world_ephemeris_file_test.cpp)
+
+# The committed DE440 Chebyshev fit (tests/golden/de440_sun_moon.cheb).
+target_compile_definitions(polaris_unit_tests
+  PRIVATE POLARIS_EPHEMERIS_FIXTURE="${CMAKE_SOURCE_DIR}/tests/golden/de440_sun_moon.cheb")
 
 # NRLMSIS tests only exist when the model was fetched and built; the golden case
 # reads upstream's own input/reference files straight from the fetched tree, so
