@@ -925,6 +925,9 @@ fprime = [
     { name = "pip" },
     { name = "setuptools" },
 ]
+igrf = [
+    { name = "numpy" },
+]
 
 [package.metadata]
 
@@ -964,6 +967,7 @@ fprime = [
     { name = "pip", specifier = ">=24" },
     { name = "setuptools", specifier = "==78.1.1" },
 ]
+igrf = [{ name = "numpy", specifier = ">=1.26,<3" }]
 
 [[package]]
 name = "pre-commit"

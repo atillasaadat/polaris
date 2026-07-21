@@ -78,6 +78,13 @@ ephem = [
     "numpy>=1.26,<3",
 ]
 
+# IGRF-14 golden generation (design doc §3.7, tools/igrf/). Fetches the IAGA
+# coefficient table and drives the pyIGRF14 reference implementation (itself a
+# fetch input, never committed); ground-side only, never CI.
+igrf = [
+    "numpy>=1.26,<3",
+]
+
 # Config compiler (design doc §19.3, tools/configc/). The single source-of-truth
 # spacecraft/scenario/hardware config is YAML, validated through Pydantic models
 # and resolved into F´-param / sim / analysis artifacts. Both already resolve in

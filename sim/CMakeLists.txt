@@ -24,11 +24,13 @@ add_library(polaris_world
   world/srp.cpp
   world/atmosphere.cpp
   world/drag.cpp
-  world/ephemeris_file.cpp)
+  world/ephemeris_file.cpp
+  world/igrf_file.cpp
+  world/magnetic_field.cpp)
 target_include_directories(polaris_world PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_world
   PUBLIC Eigen3::Eigen polaris_dynamics polaris_math polaris_state polaris_time polaris_constants
-         polaris_ephemeris
+         polaris_ephemeris polaris_environment polaris_frames
   PRIVATE polaris_flags)
 add_library(polaris::world ALIAS polaris_world)
 

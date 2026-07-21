@@ -50,6 +50,20 @@ target_link_libraries(polaris_frames
   PRIVATE ERFA::erfa polaris_flags)
 add_library(polaris::frames ALIAS polaris_frames)
 
+# --- Environment: shared flight/sim environment models (IGRF-14 geomagnetic) --
+# Dual-use by design: the truth sim needs the field for magnetometer truth and
+# residual-dipole torque, and the FSW needs the same model onboard as the
+# inertial reference for measured-vs-modelled checks and coarse attitude (§6.2).
+# Flight path, so it obeys the flight memory/exception rules; file parsing lives
+# on the sim side (sim/world/igrf_file.cpp).
+add_library(polaris_environment
+  environment/igrf.cpp)
+target_include_directories(polaris_environment PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(polaris_environment
+  PUBLIC Eigen3::Eigen polaris_math polaris_constants
+  PRIVATE polaris_flags)
+add_library(polaris::environment ALIAS polaris_environment)
+
 # --- State: canonical nav product (EstimatedState / TruthState; header-only) -
 add_library(polaris_state INTERFACE)
 target_include_directories(polaris_state INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
