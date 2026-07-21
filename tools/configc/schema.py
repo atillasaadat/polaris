@@ -18,6 +18,7 @@ ground stations, and Monte-Carlo dispersion hooks. RF / power / thermal sections
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Literal
 
@@ -100,6 +101,25 @@ class Spacecraft(_Strict):
         default_factory=dict,
         description="control gains keyed by mode, e.g. gains['detumble']['k_bdot']",
     )
+    drag_area_m2: float = Field(
+        default=0.06, gt=0.0, description="drag reference area [m²]"
+    )
+    drag_cd: float = Field(default=2.2, gt=0.0, description="drag coefficient [-]")
+    srp_area_m2: float = Field(
+        default=0.06, gt=0.0, description="SRP reference area [m²]"
+    )
+    srp_cr: float = Field(
+        default=1.3, gt=0.0, description="SRP reflectivity coefficient [-]"
+    )
+    cp_offset_m: Vec3 = Field(
+        default=(0.0, 0.0, 0.0),
+        description="center of pressure offset from CoM, body frame [m]; "
+        "the moment arm for aero/SRP disturbance torques",
+    )
+    residual_dipole_am2: Vec3 = Field(
+        default=(0.0, 0.0, 0.0),
+        description="residual magnetic dipole moment, body frame [A·m²]",
+    )
 
 
 class GroundStation(_Strict):
@@ -126,6 +146,70 @@ class Environment(_Strict):
         default_factory=lambda: ["sun", "moon"],
         description="third-body point-mass perturbers",
     )
+    atmosphere: Literal["exponential", "nrlmsis"] = Field(
+        default="exponential", description="density model backing the drag force"
+    )
+    magnetic_field: Literal["none", "igrf"] = Field(
+        default="igrf", description="geomagnetic field model"
+    )
+    eclipse_enabled: bool = Field(
+        default=True, description="apply the conical eclipse shadow factor to SRP"
+    )
+
+
+class OrbitElements(_Strict):
+    """Initial osculating Keplerian elements, Earth-centered inertial (§19.1)."""
+
+    sma_km: float = Field(gt=0.0, description="semi-major axis [km]")
+    ecc: float = Field(ge=0.0, lt=1.0, description="eccentricity [-], closed orbits")
+    inc_deg: float = Field(ge=0.0, le=180.0, description="inclination [deg]")
+    raan_deg: float = Field(description="right ascension of the ascending node [deg]")
+    argp_deg: float = Field(description="argument of periapsis [deg]")
+    true_anomaly_deg: float = Field(description="true anomaly at epoch [deg]")
+
+
+class InitialState(_Strict):
+    """Vehicle state at the scenario epoch: orbit + attitude + body rate (§19.1)."""
+
+    orbit: OrbitElements = Field(description="initial osculating orbit")
+    attitude_quaternion: tuple[float, float, float, float] = Field(
+        default=(1.0, 0.0, 0.0, 0.0),
+        description="body←ECI attitude quaternion, scalar-first (q0,q1,q2,q3) "
+        "per the repo's JPL convention [-]",
+    )
+    body_rate_rad_s: Vec3 = Field(
+        default=(0.0, 0.0, 0.0),
+        description="body angular rate w.r.t. ECI, body frame [rad/s]",
+    )
+
+    @field_validator("attitude_quaternion")
+    @classmethod
+    def _check_normalised(
+        cls, v: tuple[float, float, float, float]
+    ) -> tuple[float, float, float, float]:
+        norm = math.sqrt(sum(c * c for c in v))
+        if abs(norm - 1.0) > 1e-9:
+            raise ValueError(
+                f"attitude_quaternion must be normalised to within 1e-9, "
+                f"got norm {norm!r} for {v!r}"
+            )
+        return v
+
+
+class Propagation(_Strict):
+    """Run duration, sample cadence, and RK89 step control (§19.1)."""
+
+    duration_s: float = Field(gt=0.0, description="propagation duration [s]")
+    output_step_s: float = Field(gt=0.0, description="trajectory sample cadence [s]")
+    abs_tol: float = Field(
+        default=1e-12, gt=0.0, description="integrator absolute tolerance [-]"
+    )
+    rel_tol: float = Field(
+        default=1e-12, gt=0.0, description="integrator relative tolerance [-]"
+    )
+    max_step_s: float = Field(
+        default=60.0, gt=0.0, description="integrator maximum step size [s]"
+    )
 
 
 class McDispersion(_Strict):
@@ -145,6 +229,8 @@ class Scenario(_Strict):
     epoch_utc: str = Field(
         description="scenario start epoch, ISO-8601 UTC, e.g. '2026-01-01T00:00:00Z'"
     )
+    initial_state: InitialState = Field(description="vehicle state at the epoch")
+    propagation: Propagation = Field(description="how long and how finely to run")
     environment: Environment = Field(default_factory=Environment)
     ground_stations: list[GroundStation] = Field(default_factory=list)
     mc_dispersions: list[McDispersion] = Field(default_factory=list)

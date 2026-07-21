@@ -38,15 +38,40 @@ spacecraft:
     pointing:
       kp: 0.2                        # proportional (attitude)
       kd: 0.8                        # derivative (rate)
+  drag_area_m2: 0.06                 # 6U broadside, ~0.2 x 0.3 m
+  drag_cd: 2.2
+  srp_area_m2: 0.06
+  srp_cr: 1.3
+  cp_offset_m: [0.01, 0.0, 0.0]      # CoP 1 cm off the CoM -> disturbance torque
+  residual_dipole_am2: [0.002, -0.001, 0.0015]
 
 scenario:
   name: leo-sso-500km
   epoch_utc: "2026-01-01T00:00:00Z"
+  initial_state:
+    orbit:                            # 500 km circular sun-synchronous
+      sma_km: 6878.137                # 6378.137 + 500
+      ecc: 0.0
+      inc_deg: 97.4018                # SSO: nodal precession = 360°/tropical year
+      raan_deg: 0.0
+      argp_deg: 0.0
+      true_anomaly_deg: 0.0
+    attitude_quaternion: [1.0, 0.0, 0.0, 0.0]   # scalar-first, body←ECI identity
+    body_rate_rad_s: [0.001, -0.002, 0.0015]    # small tumble to exercise attitude
+  propagation:
+    duration_s: 5677.0                # one orbit period at this altitude
+    output_step_s: 10.0
+    abs_tol: 1.0e-12
+    rel_tol: 1.0e-12
+    max_step_s: 60.0
   environment:
     gravity_degree: 8
     drag_enabled: true
     srp_enabled: true
     third_bodies: [sun, moon]
+    atmosphere: exponential
+    magnetic_field: igrf
+    eclipse_enabled: true
   ground_stations:
     - name: svalbard
       lat_deg: 78.23

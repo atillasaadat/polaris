@@ -103,11 +103,19 @@ class RigidBody6Dof {
     if (dt <= 0.0) {
       return s0;
     }
-    // The static models here are epoch-invariant, so the derivative is evaluated
-    // at the fixed start epoch. ponytail: pass epoch + t to the model once a
-    // time-varying environment (REQ-SIM-002) needs the running epoch.
+    // The derivative is evaluated at the RUNNING epoch, s0.epoch + t, not at the
+    // fixed start epoch. Every environment model that actually varies with time
+    // depends on this: the ephemeris resolvers move the Sun and Moon, the
+    // Earth-rotation reduction turns the geomagnetic and atmospheric fields
+    // underneath the vehicle, and eclipse geometry follows the Sun. Freezing the
+    // epoch across a step would hold all of them still — over a single call
+    // spanning an orbit that is a gross error, and even over a short step it
+    // biases the result in a way that shrinks with step size and so hides as
+    // "integration error" rather than showing up as a wrong model.
     const time::Tai epoch = s0.epoch;
-    auto f = [this, &epoch](double /*t*/, const State& y) { return derivative(epoch, y); };
+    auto f = [this, &epoch](double t, const State& y) {
+      return derivative(epoch + time::Duration::fromSecondsF(t), y);
+    };
     const State y1 = integrate<kStateDim>(verner89(), f, 0.0, dt, pack(s0), ctl, QuatProjector{});
     return unpack(y1, epoch + time::Duration::fromSecondsF(dt));
   }

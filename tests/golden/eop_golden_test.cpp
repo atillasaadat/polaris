@@ -29,6 +29,7 @@
 #include "time/civil.hpp"
 #include "time/leap_seconds.hpp"
 #include "time/timescales.hpp"
+#include "world/eop_file.hpp"
 
 namespace pf = polaris::frames;
 namespace pm = polaris::math;
@@ -42,40 +43,20 @@ namespace {
 /// (1973→~2027 daily ≈ 20k). Heap-allocated in the test (not flight).
 constexpr std::size_t kEopCapacity = 20480;
 
-/// One parsed Bulletin A record. Fixed-width columns of finals.all.iau2000
-/// (0-indexed [start, stop)): MJD [7,15), PM-x [18,27), PM-y [37,46),
-/// UT1-UTC [58,68). Rows past the prediction span leave UT1-UTC blank — parsing
-/// stops there. Mirrors `tools/eop/finals.py`.
-struct FinalsRow {
-  double mjd_utc;
-  double dut1;
-  double xp_arcsec;
-  double yp_arcsec;
-};
-
-bool AllSpace(const std::string& s) {
-  return s.find_first_not_of(' ') == std::string::npos;
-}
+/// The Bulletin A column spec lives in `sim/world/eop_file.{hpp,cpp}` — this
+/// test used to carry its own transcription of the same fixed-width offsets,
+/// which is exactly the kind of duplication that gets fixed in one copy and not
+/// the other. It now loads through the shared parser, so this fixture and the
+/// running sim demonstrably agree on how to read the file.
+using polaris::sim::world::FinalsRow;
 
 std::vector<FinalsRow> LoadFinals(const std::string& name) {
   const std::string path = std::string(GOLDEN_DIR) + "/" + name;
-  std::ifstream file(path);
   std::vector<FinalsRow> rows;
-  if (!file.is_open()) {
-    ADD_FAILURE() << "cannot open golden fixture: " << path;
-    return rows;
-  }
-  std::string line;
-  while (std::getline(file, line)) {
-    if (line.size() < 68) {
-      break;
-    }
-    const std::string dut1 = line.substr(58, 10);
-    if (AllSpace(dut1)) {  // past the Bulletin A prediction span
-      break;
-    }
-    rows.push_back({std::stod(line.substr(7, 8)), std::stod(dut1), std::stod(line.substr(18, 9)),
-                    std::stod(line.substr(37, 9))});
+  std::string error;
+  // An inverted window means "keep every record".
+  if (!polaris::sim::world::parseFinals(path, 1.0, 0.0, 0.0, rows, &error)) {
+    ADD_FAILURE() << error;
   }
   return rows;
 }
@@ -106,7 +87,7 @@ TEST(EopGolden, CommittedFixtureIngestsAndDrivesTheReduction) {
   // Every committed row loads — ascending MJD, all finite, none rejected.
   auto table = std::make_unique<pf::EopTable<kEopCapacity>>();
   for (const FinalsRow& r : rows) {
-    ASSERT_TRUE(table->addEntry({r.mjd_utc, r.dut1, r.xp_arcsec, r.yp_arcsec}))
+    ASSERT_TRUE(table->addEntry({r.mjd_utc, r.dut1_s, r.xp_arcsec, r.yp_arcsec}))
         << "row rejected at mjd " << r.mjd_utc;
   }
   EXPECT_EQ(table->size(), rows.size());
@@ -121,7 +102,7 @@ TEST(EopGolden, CommittedFixtureIngestsAndDrivesTheReduction) {
   const pt::Tai t = TaiAtMjdUtc(mid.mjd_utc, dat_mid);
   pf::EopValue v;
   ASSERT_TRUE(table->lookup(t, leap, v));
-  EXPECT_NEAR(v.ut1_minus_tai, mid.dut1 - dat_mid, 1e-9);
+  EXPECT_NEAR(v.ut1_minus_tai, mid.dut1_s - dat_mid, 1e-9);
   EXPECT_NEAR(v.xp_arcsec, mid.xp_arcsec, 1e-12);
   EXPECT_NEAR(v.yp_arcsec, mid.yp_arcsec, 1e-12);
 

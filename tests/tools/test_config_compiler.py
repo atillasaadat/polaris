@@ -36,7 +36,21 @@ def _minimal_config_dict(model_id: str = "STIM300") -> dict:
             "inertia_kgm2": {"ixx": 0.1, "iyy": 0.1, "izz": 0.1},
             "sensors": [{"name": "imu_a", "model_id": model_id}],
         },
-        "scenario": {"name": "s", "epoch_utc": "2026-01-01T00:00:00Z"},
+        "scenario": {
+            "name": "s",
+            "epoch_utc": "2026-01-01T00:00:00Z",
+            "initial_state": {
+                "orbit": {
+                    "sma_km": 6878.137,
+                    "ecc": 0.0,
+                    "inc_deg": 97.4,
+                    "raan_deg": 0.0,
+                    "argp_deg": 0.0,
+                    "true_anomaly_deg": 0.0,
+                }
+            },
+            "propagation": {"duration_s": 60.0, "output_step_s": 10.0},
+        },
     }
 
 
@@ -144,6 +158,31 @@ def test_provenance_hash_is_deterministic_and_value_sensitive():
     changed["spacecraft"]["mass_kg"] = 11.0
     h3 = resolve(Config.model_validate(changed), library)["provenance"]["config_hash"]
     assert h3 != h1  # a changed value changes the hash
+
+
+@pytest.mark.verifies("REQ-CFG-001")
+def test_sim_setup_carries_the_resolved_cartesian_initial_state(tmp_path):
+    # The compiler resolves elements -> ECI state so no consumer re-derives it.
+    compile_config(_TEMPLATE, _HARDWARE, tmp_path)
+    setup = json.loads((tmp_path / "sim_setup.json").read_text())
+    init = setup["initial_state"]
+    assert len(init["position_m"]) == 3 and len(init["velocity_m_s"]) == 3
+    # 500 km circular: |r| is the semi-major axis, and the elements are kept.
+    radius = sum(c * c for c in init["position_m"]) ** 0.5
+    assert radius == pytest.approx(6_878_137.0, rel=1e-9)
+    assert init["keplerian"]["inc_deg"] == 97.4018
+    assert setup["propagation"]["duration_s"] == 5677.0
+    assert setup["environment"]["atmosphere"] == "exponential"
+    assert setup["spacecraft"]["residual_dipole_am2"] == [0.002, -0.001, 0.0015]
+    assert setup["epoch_utc"] == "2026-01-01T00:00:00Z"
+
+
+@pytest.mark.verifies("REQ-CFG-001")
+def test_unnormalised_attitude_quaternion_is_rejected():
+    bad = _minimal_config_dict()
+    bad["scenario"]["initial_state"]["attitude_quaternion"] = [1.0, 0.5, 0.0, 0.0]
+    with pytest.raises(ValidationError, match="normalised to within 1e-9"):
+        Config.model_validate(bad)
 
 
 @pytest.mark.verifies("REQ-CFG-001")
