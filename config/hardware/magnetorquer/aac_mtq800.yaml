@@ -1,0 +1,17 @@
+# AAC Clyde Space MTQ800 magnetorquer (design doc §19.2 hardware library).
+#
+# Source: https://www.aac-clyde.space/wp-content/uploads/2021/11/MTQ800.pdf
+# (datasheet, released 2021-11). A driven rod (includes drive electronics) for
+# 50–200 kg satellites with a boost mode. Same keys as the C++
+# MagnetorquerSpec::fromParams (sim/actuators/magnetorquer.cpp); in-code twin is
+# catalog::aacMtq800(). Fine 1 mA·m² dipole resolution is treated as continuous
+# (the model has no dipole quantization). Residual moment is not quoted by the
+# datasheet and is a small representative value.
+model_id: MTQ800
+kind: magnetorquer
+description: AAC Clyde Space MTQ800 magnetorquer (15 A·m² design, 30 A·m² boost)
+params:
+  max_dipole_am2: 30.0          # boost/peak limit (nominal design moment 15 A·m²)
+  residual_dipole_am2: 0.1      # not in datasheet — representative remanence
+  linearity: 0.02               # ±2% control accuracy at the design dipole
+  power_max_w: 13.2             # 13200 mW at peak dipole (drive electronics incl.)

@@ -155,6 +155,12 @@ def test_actuator_catalog_entries_carry_the_full_spec():
     assert nss.params["linearity"] == 0.05  # ±5% datasheet
     assert mtq_required <= set(library["MTQ-GENERIC"].params)
 
+    mtq800 = library["MTQ800"]
+    assert mtq800.kind == "magnetorquer"
+    assert mtq_required <= set(mtq800.params)
+    assert mtq800.params["max_dipole_am2"] == 30.0  # boost limit (datasheet)
+    assert mtq800.params["linearity"] == 0.02  # ±2% design accuracy
+
 
 @pytest.mark.verifies("REQ-CFG-002")
 def test_swapping_model_id_swaps_resolved_params():

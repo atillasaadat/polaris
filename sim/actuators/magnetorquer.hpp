@@ -93,6 +93,12 @@ namespace catalog {
 /// this returns a representative unit sized by @p max_dipole_am2.
 MagnetorquerSpec nssTaurus(double max_dipole_am2 = 30.0);
 
+/// AAC Clyde Space **MTQ800** magnetorquer (datasheet, 2021-11): 15 A·m² design /
+/// 30 A·m² boost dipole, ±2% control accuracy at the design point, 13.2 W at the
+/// peak dipole (drive electronics included). max_dipole is the boost limit;
+/// residual moment is not quoted by the datasheet and is representative here.
+MagnetorquerSpec aacMtq800();
+
 /// A generic magnetorquer rod — round numbers to copy and refine.
 MagnetorquerSpec genericMagnetorquer();
 

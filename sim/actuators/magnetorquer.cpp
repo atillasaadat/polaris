@@ -86,6 +86,22 @@ MagnetorquerSpec nssTaurus(double max_dipole_am2) {
   });
 }
 
+MagnetorquerSpec aacMtq800() {
+  // AAC Clyde Space MTQ800 datasheet (2021-11): design dipole 15 A·m², boost 30
+  // A·m² (the saturation limit used here), ±2% control accuracy at the design
+  // point, 13.2 W at max dipole (drive electronics included). The model's dipole²
+  // power law matches the low-end point (~1.5 W @10 A·m²); the datasheet is
+  // deliberately sub-quadratic in the boost region (efficiency traded for peak
+  // moment), so mid-range power is approximate. Residual is not quoted for this
+  // driven rod and is a small representative value.
+  return MagnetorquerSpec::fromParams({
+      {"max_dipole_am2", 30.0},      // boost limit (nominal 15 A·m²)
+      {"residual_dipole_am2", 0.1},  // not in datasheet — representative
+      {"linearity", 0.02},           // ±2% at the design dipole
+      {"power_max_w", 13.2},         // 13200 mW at peak dipole
+  });
+}
+
 MagnetorquerSpec genericMagnetorquer() {
   return MagnetorquerSpec::fromParams({
       {"max_dipole_am2", 15.0},

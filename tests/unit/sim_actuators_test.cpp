@@ -234,4 +234,17 @@ TEST(Magnetorquer, CatalogEntriesCarryTheDatasheetBounds) {
   EXPECT_DOUBLE_EQ(nss.residual_dipole_am2, 1.0);  // < 1.5 A·m² bound
   EXPECT_DOUBLE_EQ(nss.linearity, 0.05);           // ±5%
   EXPECT_GT(act::catalog::genericMagnetorquer().max_dipole_am2, 0.0);
+
+  const auto mtq800 = act::catalog::aacMtq800();
+  EXPECT_DOUBLE_EQ(mtq800.max_dipole_am2, 30.0);  // boost limit
+  EXPECT_DOUBLE_EQ(mtq800.linearity, 0.02);       // ±2% design accuracy
+  // Peak power is the datasheet 13.2 W, and the dipole² law reproduces the low-end
+  // point (~1.54 W at 10 A·m² typ). The datasheet is deliberately sub-quadratic in
+  // the boost region (efficiency traded for peak moment), so the mid/high points
+  // are approximate — not pinned tightly here.
+  act::Magnetorquer m(mtq800);
+  m.commandDipole(Vec3B(Eigen::Vector3d(30.0, 0.0, 0.0)));
+  EXPECT_NEAR(m.busPower(), 13.2, 1e-9);
+  m.commandDipole(Vec3B(Eigen::Vector3d(10.0, 0.0, 0.0)));
+  EXPECT_NEAR(m.busPower(), 1.536, 0.15);
 }
