@@ -21,7 +21,8 @@ add_executable(polaris_unit_tests
   igrf_test.cpp
   sim_world_magnetic_field_test.cpp
   sim_world_space_weather_test.cpp
-  sim_sensors_magnetometer_test.cpp)
+  sim_sensors_magnetometer_test.cpp
+  sim_sensors_imu_test.cpp)
 
 # The committed DE440 Chebyshev fit (tests/golden/de440_sun_moon.cheb), the
 # verbatim IAGA IGRF-14 coefficients, and the pyIGRF14-generated golden values.

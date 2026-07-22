@@ -53,7 +53,8 @@ endif()
 # would actually read, through the shared §6.1 error stack and its own seeded
 # noise stream. Fault-injection hooks are built in for the FDIR suite.
 add_library(polaris_sensors
-  sensors/magnetometer.cpp)
+  sensors/magnetometer.cpp
+  sensors/imu.cpp)
 target_include_directories(polaris_sensors PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_sensors
   PUBLIC Eigen3::Eigen polaris_math polaris_state polaris_time polaris_random

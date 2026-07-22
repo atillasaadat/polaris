@@ -1,0 +1,33 @@
+# Generic tactical-grade IMU template (design doc §19.2 hardware library).
+#
+# Copy this entry and overwrite the params with a COTS unit's datasheet numbers to
+# add a new IMU to the catalog — the keys and units below are exactly what the C++
+# truth model consumes (ImuSpec::fromParams, sim/sensors/imu.cpp). Every key is a
+# per-axis-triad datasheet figure; leave a key out to disable that error term.
+# The in-code twin is catalog::genericTactical(). `*_bias_correlation_s` is a
+# modelling choice (Gauss-Markov in-run correlation time), not a datasheet field.
+model_id: IMU-GENERIC
+kind: imu
+description: Generic tactical-grade MEMS IMU (template — refine from a datasheet)
+params:
+  # --- Gyros ---
+  gyro_range_deg_s: 500.0               # output saturation [deg/s]
+  gyro_arw_deg_sqrt_hr: 0.2             # angular random walk [deg/sqrt(hr)]
+  gyro_bias_instability_deg_hr: 1.0     # in-run bias instability [deg/hr]
+  gyro_bias_correlation_s: 100.0        # GM correlation time [s] (modelling choice)
+  gyro_bias_repeatability_deg_hr: 20.0  # turn-on / over-temp bias, rms [deg/hr]
+  gyro_scale_factor_ppm: 1000.0         # scale-factor accuracy [ppm]
+  gyro_misalignment_mrad: 2.0           # axis misalignment [mrad]
+  gyro_resolution_deg_hr: 1.0           # quantization LSB [deg/hr]
+  gyro_g_sensitivity_deg_hr_g: 10.0     # linear-acceleration bias effect [deg/hr/g]
+  # --- Accelerometers ---
+  accel_range_g: 10.0                   # input range [g]
+  accel_vrw_m_s_sqrt_hr: 0.1            # velocity random walk [(m/s)/sqrt(hr)]
+  accel_bias_instability_mg: 0.1        # bias instability [mg]
+  accel_bias_correlation_s: 100.0       # GM correlation time [s] (modelling choice)
+  accel_bias_repeatability_mg: 5.0      # turn-on / over-temp bias, rms [mg]
+  accel_scale_factor_ppm: 500.0         # scale-factor accuracy [ppm]
+  accel_misalignment_mrad: 2.0          # axis misalignment [mrad]
+  accel_resolution_ug: 10.0             # quantization LSB [ug]
+  # --- Common ---
+  sample_rate_hz: 250.0                 # native output data rate [Hz]
