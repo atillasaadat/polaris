@@ -1,6 +1,7 @@
 # Unit tests for lib/ (design doc §23.1 — test pyramid base).
 add_executable(polaris_unit_tests
   constants_test.cpp
+  rng_test.cpp
   typed_vector_test.cpp
   quaternion_test.cpp
   frame_geometry_test.cpp
@@ -19,7 +20,8 @@ add_executable(polaris_unit_tests
   sim_world_ephemeris_file_test.cpp
   igrf_test.cpp
   sim_world_magnetic_field_test.cpp
-  sim_world_space_weather_test.cpp)
+  sim_world_space_weather_test.cpp
+  sim_sensors_magnetometer_test.cpp)
 
 # The committed DE440 Chebyshev fit (tests/golden/de440_sun_moon.cheb), the
 # verbatim IAGA IGRF-14 coefficients, and the pyIGRF14-generated golden values.
@@ -42,12 +44,14 @@ target_link_libraries(polaris_unit_tests
   PRIVATE
     polaris::math
     polaris::constants
+    polaris::random
     polaris::time
     polaris::ephemeris
     polaris::environment
     polaris::state
     polaris::dynamics
     polaris::world
+    polaris::sensors
     polaris::frames
     polaris_test_flags
     GTest::gtest_main)

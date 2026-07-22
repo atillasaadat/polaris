@@ -48,6 +48,18 @@ if(POLARIS_BUILD_NRLMSIS)
     PUBLIC POLARIS_HAS_NRLMSIS=1)
 endif()
 
+# --- Sensors: truth-in -> measurement-out sensor models (REQ-SIM-003) --------
+# The plant's sensor side: each model turns a truth quantity into what the FSW
+# would actually read, through the shared §6.1 error stack and its own seeded
+# noise stream. Fault-injection hooks are built in for the FDIR suite.
+add_library(polaris_sensors
+  sensors/magnetometer.cpp)
+target_include_directories(polaris_sensors PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(polaris_sensors
+  PUBLIC Eigen3::Eigen polaris_math polaris_state polaris_time polaris_random
+  PRIVATE polaris_flags)
+add_library(polaris::sensors ALIAS polaris_sensors)
+
 # --- Scenario: compiled-config -> wired environment -> propagation -----------
 # Reads the `sim_setup.json` emitted by tools/configc (design doc §19.3 — the
 # sim never re-parses the authoritative YAML) and assembles every enabled
