@@ -1,6 +1,6 @@
 # Safran/Sensonor STIM300 tactical-grade IMU (design doc §19.2 hardware library).
 #
-# Source: https://safran-navigation-timing.com/product/stim300
+# Source: https://safran-navigation-timing.com/product/stim300 , Rev K
 # Values transcribed from the STIM300 datasheet TS1524 rev.31 (Feb 2024): gyro
 # Table 5-3, and the standard 10 g accelerometer Table 5-5. Same keys as the C++
 # ImuSpec::fromParams (sim/sensors/imu.cpp), which converts them to SI.
