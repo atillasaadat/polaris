@@ -128,15 +128,25 @@ bool SimRunner::build(const SimConfig& config, const DataPaths& paths, std::stri
     composite_->add(d.two_body.get());
   } else if (env.gravity_degree > 0) {
     world::GravityCoeffs coeffs;
+    world::Egm2008Header header;
     try {
-      coeffs = world::loadEgm2008Gfc(paths.gravity, env.gravity_degree);
+      coeffs = world::loadEgm2008Gfc(paths.gravity, env.gravity_degree, &header);
     } catch (const std::exception& e) {
       // The .gfc loader signals a missing file or insufficient coverage by
       // exception; the runner's interface is exceptions-free, so it converts.
       return fail(error, std::string("gravity coefficients: ") + e.what());
     }
+    const int order = env.gravity_order < 0 ? env.gravity_degree : env.gravity_order;
+    // The model's OWN GM and reference radius, not WGS84's. The coefficients are
+    // scaled to the pair the model was solved with — EGM2008 uses
+    // GM = 3.986004415e14 and Re = 6378136.3 m, both slightly different from the
+    // WGS84 constants the constructor defaults to. Substituting WGS84 rescales
+    // every harmonic term by (Re_wgs84/Re_model)^n and shifts the central term,
+    // which is a systematic model error that conserves energy perfectly and so
+    // survives every self-consistency check. Cross-validation against GMAT is
+    // what surfaced it.
     d.gravity = std::make_unique<world::SphericalHarmonicGravity>(
-        std::move(coeffs), sc.inertia_kgm2, env.gravity_degree, env.gravity_degree);
+        std::move(coeffs), sc.inertia_kgm2, env.gravity_degree, order, header.gm, header.radius);
     d.gravity->setEciToEcef(d.eciToEcef());
     composite_->add(d.gravity.get());
   }
@@ -222,6 +232,10 @@ bool SimRunner::build(const SimConfig& config, const DataPaths& paths, std::stri
   return true;
 }
 
+const world::SphericalHarmonicGravity* SimRunner::gravityField() const {
+  return impl_ == nullptr ? nullptr : impl_->gravity.get();
+}
+
 std::size_t SimRunner::modelCount() const {
   return composite_ == nullptr ? 0 : composite_->size();
 }
@@ -266,6 +280,41 @@ bool SimRunner::run(std::vector<TrajectorySample>& out, std::string* error) cons
   if (remainder > 1.0e-9) {
     s = body_->propagate(s, remainder, control);
     out.push_back({prop.duration_s, s});
+  }
+  return true;
+}
+
+bool SimRunner::runAt(const std::vector<double>& times_s, std::vector<TrajectorySample>& out,
+                      std::string* error) const {
+  out.clear();
+  if (!ready()) {
+    return fail(error, "SimRunner::runAt called before a successful build()");
+  }
+
+  const PropagationConfig& prop = config_.propagation;
+  dynamics::StepControl control;
+  control.abs_tol = prop.abs_tol;
+  control.rel_tol = prop.rel_tol;
+  control.max_step = prop.max_step_s;
+
+  state::TruthState s = config_.initial_state;
+  double previous = 0.0;
+  bool first = true;
+  out.reserve(times_s.size());
+  for (const double t : times_s) {
+    // The first sample may be at t=0 (the epoch); every later one must strictly
+    // advance so each gap-step propagate() moves forward. `>= previous` silently
+    // accepted duplicate times, which the message claimed it rejected.
+    const bool ordered = first ? (t >= 0.0) : (t > previous);
+    if (!std::isfinite(t) || !ordered) {
+      return fail(error, "runAt times must be finite, non-negative, and strictly increasing");
+    }
+    first = false;
+    // Advance by the gap rather than restarting from the epoch each time, so the
+    // integrator sees one continuous trajectory.
+    s = body_->propagate(s, t - previous, control);
+    previous = t;
+    out.push_back({t, s});
   }
   return true;
 }

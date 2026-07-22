@@ -210,6 +210,10 @@ bool readEnvironment(const json& root, EnvironmentConfig& out, std::string* erro
   // Negative = no gravity (free-drift baseline), 0 = point mass, >0 = the
   // spherical-harmonic field to that degree. See SimRunner::build.
   out.gravity_degree = node->value("gravity_degree", 8);
+  out.gravity_order = node->value("gravity_order", -1);
+  if (out.gravity_order > out.gravity_degree) {
+    return fail(error, "environment.gravity_order exceeds gravity_degree");
+  }
   out.drag_enabled = node->value("drag_enabled", false);
   out.srp_enabled = node->value("srp_enabled", false);
   out.eclipse_enabled = node->value("eclipse_enabled", true);

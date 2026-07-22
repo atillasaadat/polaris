@@ -289,19 +289,27 @@ math::Vec3<math::frames::ECI> SphericalHarmonicGravity::acceleration(
     return math::Vec3<math::frames::ECI>::Zero();
   }
 
-  // The harmonic recursion is defined in the Earth-fixed frame. The zonal part
-  // (order 0) is axisymmetric about the pole and so is identical evaluated in ECI
-  // or ECEF — no rotation needed. Tesserals (order > 0) are longitude-dependent
-  // and must be evaluated in ECEF: rotate the position into ECEF at the state
-  // epoch, take the gradient there, then rotate the acceleration (a plain vector,
-  // no transport term) back to ECI.
+  // The harmonic recursion is defined in the Earth-fixed frame, so the position
+  // is rotated into ECEF, the gradient taken there, and the acceleration (a plain
+  // vector, no transport term) rotated back.
   //
-  // Reaching the final ECI-eval return with order_ > 0 means EITHER no resolver was
-  // installed (a deliberate low-fidelity / test mode: the caller owns wiring
-  // setEciToEcef() for a physically-correct tesseral field) OR the resolver failed
-  // for this epoch (fallback below). Both leave the tesseral field longitude-wrong;
-  // only the zonal part stays exact.
-  if (order_ > 0 && eci_to_ecef_) {
+  // This applies to the ZONAL part too, which is a correction: an earlier version
+  // skipped the rotation for order 0 on the reasoning that an axisymmetric field
+  // is identical in either frame. That is only true if the two frames share a Z
+  // axis, and they do not — ECI is J2000-mean-equator while ECEF follows Earth's
+  // TRUE pole, and precession plus nutation separate them by ~0.36 deg by 2026
+  // (general precession is ~50 arcsec/yr). Evaluating the zonal field in ECI
+  // therefore tilts the J2 bulge by that angle. The resulting orbit error is
+  // ~100 m per revolution in LEO, and because the mis-axed field is still
+  // perfectly conservative it conserves energy and angular momentum exactly —
+  // so no self-consistency check can see it. Cross-validation against GMAT is
+  // what surfaced it (design doc 23.1).
+  //
+  // Reaching the final ECI-eval return means EITHER no resolver was installed (a
+  // deliberate low-fidelity / test mode: the caller owns wiring setEciToEcef())
+  // OR the resolver failed for this epoch. Both leave the field referenced to the
+  // wrong pole; it is an approximation, not an exact path.
+  if (eci_to_ecef_) {
     math::Quat<math::frames::ECEF, math::frames::ECI> q;
     if (eci_to_ecef_(s.epoch, q)) {
       const Eigen::Vector3d r_ecef = q.rotate(s.position).eigen();
@@ -309,8 +317,9 @@ math::Vec3<math::frames::ECI> SphericalHarmonicGravity::acceleration(
       return q.inverse().rotate(a_ecef);
     }
     // ponytail: resolver installed but epoch outside the EOP span -> fall back to
-    // ECI eval (zonal part still exact). A truth run keeps epochs inside the table;
-    // this avoids a hard failure mid-integration rather than masking a real gap.
+    // an ECI evaluation, which is pole-misaligned as described above. A truth run
+    // keeps epochs inside the table; this avoids a hard failure mid-integration
+    // rather than masking a real gap.
   }
   return math::Vec3<math::frames::ECI>(gradient(r));
 }

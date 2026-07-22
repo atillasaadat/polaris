@@ -192,15 +192,35 @@ TEST(EcefGravity, TesseralEvaluatedInEcefMatchesRotatedGradient) {
   EXPECT_GT((actual - naive).norm(), 1e-6);
 }
 
-TEST(EcefGravity, ZonalFieldIsFrameInvariantSoRotationIsSkipped) {
+TEST(EcefGravity, ZonalFieldIsInvariantOnlyUnderRotationAboutItsOwnAxis) {
   RecordProperty("verifies", "REQ-SIM-002");
-  // order 0: the field is axisymmetric, so installing an ECEF rotation must not
-  // change the result (the model skips the rotation for a purely zonal field).
+  // A zonal (order 0) field is axisymmetric, so it is invariant under rotation
+  // ABOUT ITS SYMMETRY AXIS — and under nothing else.
+  //
+  // This test previously asserted that installing *any* ECI->ECEF rotation left
+  // a zonal result bit-identical, and the model skipped the rotation for order 0
+  // on that reasoning. That is wrong: the ECI->ECEF reduction is not a pure spin
+  // about a shared Z axis, it carries precession, nutation, and polar motion,
+  // all of which tilt the pole the field is symmetric about. Evaluating the
+  // zonal field in ECI therefore mis-orients the J2 bulge by ~0.36 deg at epoch
+  // 2026, worth ~100 m per revolution in LEO. The mis-axed field is still
+  // conservative, so no energy or momentum check can detect it; the error was
+  // found by cross-validation against GMAT (design doc §23.1).
   world::SphericalHarmonicGravity g(world::GravityCoeffs::earthZonal(), Eigen::Matrix3d::Identity(),
                                     6, 0);
   const Eigen::Vector3d r(5.5e6, 4.1e6, -2.7e6);
-  const Eigen::Vector3d before = g.acceleration(at(r)).eigen();
+  const Eigen::Vector3d unrotated = g.acceleration(at(r)).eigen();
 
+  // A pure spin about Z shares the symmetry axis: the result must be unchanged.
+  g.setEciToEcef([](const pt::Tai&, pm::Quat<pmf::ECEF, pmf::ECI>& q) {
+    q = pm::Quat<pmf::ECEF, pmf::ECI>(pm::Quaternion::FromAxisAngle(Eigen::Vector3d::UnitZ(), 1.3));
+    return true;
+  });
+  const Eigen::Vector3d spun = g.acceleration(at(r)).eigen();
+  EXPECT_LT((spun - unrotated).norm(), 1.0e-12 * unrotated.norm());
+
+  // A reduction that MOVES the pole must change the answer — that is the whole
+  // physical content of referencing the field to the true pole.
   pf::EopValue eop;
   eop.ut1_minus_tai = -37.0;
   eop.xp_arcsec = 0.20;
@@ -208,6 +228,7 @@ TEST(EcefGravity, ZonalFieldIsFrameInvariantSoRotationIsSkipped) {
   g.setEciToEcef([&](const pt::Tai& t, pm::Quat<pmf::ECEF, pmf::ECI>& q) {
     return pf::ecefFromEci(t, eop, q);
   });
-  const Eigen::Vector3d after = g.acceleration(at(r)).eigen();
-  EXPECT_EQ(before, after);  // bit-identical: rotation path not taken for order 0
+  const Eigen::Vector3d tilted = g.acceleration(at(r)).eigen();
+  EXPECT_GT((tilted - unrotated).norm(), 1.0e-9)
+      << "a pole-moving reduction must change a zonal field";
 }

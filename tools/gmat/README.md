@@ -54,7 +54,39 @@ locally, CMake registers the same test as `golden_regen_drift` when it finds
 
 `golden.py` is split so the parser, offset math, and drift comparison are
 unit-tested without GMAT (`tests/tools/test_gmat_golden.py`); only the GMAT run
-itself needs the binary.
+itself needs the binary. `propagation.py` follows the same split
+(`tests/tools/test_gmat_propagation.py`).
+
+## Propagation fixture (`tests/golden/gmat_propagation.json`)
+
+Cross-validates the Polaris orbit propagator against GMAT's RungeKutta89 over
+three force models — `two_body`, `zonal_j2` (degree 2, order 0), and
+`third_body` (Sun + Moon point masses).
+
+```bash
+GMAT_CONSOLE=… PYTHONPATH=tools uv run python -m gmat regenerate-propagation \
+  --out tests/golden/gmat_propagation.json --scripts-dir tools/gmat/scripts
+
+GMAT_CONSOLE=… PYTHONPATH=tools uv run python -m gmat drift-check-propagation \
+  --fixture tests/golden/gmat_propagation.json
+```
+
+`--scripts-dir` re-emits the committed `prop_*.script` files alongside the
+fixture, so the provenance record cannot drift from the generator; a unit test
+asserts they agree.
+
+Three things about GMAT this harness works around:
+
+- **Sample times overshoot.** `Propagate prop(sat) {sat.ElapsedSecs = 600}` stops
+  a few hundred nanoseconds late. The fixture records GMAT's actual
+  `ElapsedSecs`, so propagating to those exact times cancels the artifact.
+- **Report precision.** The default `rf.Precision` of 10 digits quantises
+  position to ~1 m; the scripts set 16.
+- **Ephemeris source is silent when wrong.** `SolarSystem.EphemerisSource = 'DE424'`
+  is required for the third-body case — GMAT falls back to DE405 without it, and
+  logs nothing at the point of failure. Confirm the run log contains
+  `Successfully set Planetary Source to use: DE424` (the earlier DE405 lines are
+  startup noise, emitted before the script is read).
 
 ## Provenance
 

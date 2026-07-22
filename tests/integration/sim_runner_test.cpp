@@ -401,3 +401,32 @@ TEST(SimIntegration, EclipseCanBeDisabled) {
   // trajectories must visibly diverge.
   EXPECT_GT((shadowed - sunlit).norm(), 1.0);
 }
+
+TEST(SimIntegration, GravityUsesTheCoefficientModelsOwnConstants) {
+  // Regression: the runner built the field with the constructor's WGS84 defaults
+  // instead of the GM and reference radius the .gfc itself declares. The
+  // coefficients are solved against a specific (GM, Re) pair — EGM2008 uses
+  // 3.986004415e14 and 6378136.3 m — so substituting WGS84's 3.986004418e14 and
+  // 6378137.0 m rescales every harmonic term by (Re_wgs84/Re_model)^n and shifts
+  // the central term. It is a systematic model error that conserves energy
+  // exactly, so no self-consistency test can see it; it was found by
+  // cross-validating against GMAT.
+  scenario::SimConfig config = circularOrbit(60.0, 60.0);
+  config.environment.gravity_degree = 8;
+
+  scenario::SimRunner runner;
+  std::string error;
+  ASSERT_TRUE(runner.build(config, dataPaths(), &error)) << error;
+
+  const polaris::sim::world::SphericalHarmonicGravity* field = runner.gravityField();
+  ASSERT_NE(field, nullptr);
+
+  // EGM2008's own header values, as committed in tests/golden/EGM2008_to200.gfc.
+  EXPECT_DOUBLE_EQ(field->mu(), 3.986004415e14);
+  EXPECT_DOUBLE_EQ(field->referenceRadius(), 6378136.3);
+
+  // And they are genuinely NOT the WGS84 constants — if the model ever adopted
+  // those values this test would silently become vacuous.
+  EXPECT_NE(field->mu(), polaris::constants::wgs84::kGM);
+  EXPECT_NE(field->referenceRadius(), polaris::constants::wgs84::kSemiMajorAxis);
+}
