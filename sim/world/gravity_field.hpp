@@ -25,13 +25,25 @@
 ///         [Cbar_nm cos(m.lambda) + Sbar_nm sin(m.lambda)],
 /// and Cbar_00 = 1 supplies the leading GM/r; a = grad U.
 ///
-/// Frame caveat: the recursion is defined in the Earth-fixed frame, but the field
-/// is evaluated here directly on the ECI position (rnp = I). That is exact for the
-/// **zonal** (axisymmetric, m=0) field — which is longitude-independent and shares
-/// Earth's pole/Z axis — and the embedded coefficient set is zonal (J2..J6).
-/// Tesseral (m>0) terms additionally require the ECI->ECEF rotation (EOP), which
-/// lands with EGM2008 file loading; the recursion already supports arbitrary
-/// order>0 so only the frame rotation is missing.
+/// Frame: the recursion is defined in the Earth-fixed frame, so an ECI->ECEF
+/// resolver must be installed (`setEciToEcef`) for the field to be physically
+/// correct — at EVERY order, including a purely zonal one.
+///
+/// An earlier version applied the rotation only for order > 0, on the reasoning
+/// that a zonal (m=0) field is axisymmetric and therefore frame-invariant. That
+/// is half true and the wrong half was assumed: a zonal field is invariant under
+/// rotation ABOUT ITS OWN AXIS — Earth's diurnal spin, harmlessly — but ECI is
+/// J2000 mean equator while ECEF follows the TRUE pole, and precession plus
+/// nutation separate the two by ~0.37 deg by 2026. Evaluating zonally in ECI
+/// therefore tilts the J2 bulge by that angle, worth ~100 m per revolution in
+/// LEO. Because a mis-axed field is still perfectly conservative, it conserves
+/// energy and angular momentum exactly and no self-consistency test can see it;
+/// cross-validation against GMAT is what exposed it (design doc §23.1).
+///
+/// Without a resolver the evaluation falls back to ECI, which is an
+/// approximation at every order — wrong in longitude for tesserals and wrong in
+/// pole orientation for zonals. It is a deliberate low-fidelity/test mode, not
+/// an exact path.
 ///
 /// References:
 ///  - Eckman, Brown & Adamo, *Normalization and Implementation of Three
@@ -120,14 +132,23 @@ class SphericalHarmonicGravity : public dynamics::ForceTorqueModel {
       std::function<bool(const time::Tai&, math::Quat<math::frames::ECEF, math::frames::ECI>&)>;
 
   /// Install the ECI->ECEF resolver (typically wrapping `frames::ecefFromEci` over
-  /// an EOP table). Without it — or for a purely zonal field (order 0) — the field
-  /// is evaluated directly on the ECI position, which is exact for the
-  /// axisymmetric zonal part but wrong for tesserals. Sim-side wiring, e.g.:
+  /// an EOP table). Required at every order, zonal included — see the file header
+  /// for why a zonal field is NOT frame-invariant under this transform. Without a
+  /// resolver the field is evaluated on the ECI position, which mis-orients the
+  /// pole for zonals and is additionally wrong in longitude for tesserals.
+  /// Sim-side wiring, e.g.:
   ///   g.setEciToEcef([&](const time::Tai& t,
   ///                      math::Quat<math::frames::ECEF, math::frames::ECI>& q) {
   ///     return frames::ecefFromEci(t, eop_table, leap, q);
   ///   });
   void setEciToEcef(EciToEcefFn fn) { eci_to_ecef_ = std::move(fn); }
+
+  /// Gravitational parameter the field was built with [m^3/s^2]. Must be the
+  /// value the COEFFICIENTS were solved with, not a generic WGS84 constant.
+  double mu() const { return mu_; }
+
+  /// Reference radius the coefficients are scaled to [m]. Same caveat as mu().
+  double referenceRadius() const { return re_; }
 
  private:
   /// Geopotential gradient (acceleration) via the normalized Gottlieb recursion

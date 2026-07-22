@@ -70,6 +70,12 @@ struct EnvironmentConfig {
   /// Negative: no gravity (free-drift baseline). 0: point mass. Positive: the
   /// EGM2008 spherical-harmonic field truncated to this degree and order.
   int gravity_degree{8};
+  /// Max harmonic order m. Negative means "same as the degree" — the usual
+  /// square field. Exposed separately because degree and order are genuinely
+  /// independent knobs: a zonal-only field (order 0) is the standard J2-class
+  /// comparison case, and the onboard model is deliberately run at a lower
+  /// fidelity than truth (`sim/CLAUDE.md`).
+  int gravity_order{-1};
   bool sun_third_body{false};
   bool moon_third_body{false};
   bool drag_enabled{false};

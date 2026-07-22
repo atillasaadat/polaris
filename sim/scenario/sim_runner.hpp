@@ -31,6 +31,7 @@
 #include "dynamics/rigid_body.hpp"
 #include "scenario/sim_config.hpp"
 #include "state/truth_state.hpp"
+#include "world/gravity_field.hpp"
 
 namespace polaris::sim::scenario {
 
@@ -88,11 +89,32 @@ class SimRunner {
   /// @return false if @ref ready() is false. @p out is cleared first.
   bool run(std::vector<TrajectorySample>& out, std::string* error = nullptr) const;
 
+  /// Propagate to an explicit, strictly increasing list of times (seconds since
+  /// the scenario epoch), sampling at exactly those instants.
+  ///
+  /// Exists for cross-validation: a reference tool reports states at the times
+  /// its own stop conditions actually landed on, not at round numbers — GMAT's
+  /// "600 s" sample is 600.0000003841706 s. Comparing at nominal times instead
+  /// would fold that offset into the residual as a spurious few millimetres of
+  /// disagreement, which at LEO speeds is the same size as the quantity being
+  /// measured.
+  ///
+  /// @return false if @ref ready() is false or @p times_s is not strictly
+  ///         increasing and non-negative. @p out is cleared first.
+  bool runAt(const std::vector<double>& times_s, std::vector<TrajectorySample>& out,
+             std::string* error = nullptr) const;
+
   /// The composed model, for tests that want to interrogate the force budget.
   const dynamics::ForceTorqueModel* forceModel() const { return composite_.get(); }
 
   /// Number of component models composed in.
   std::size_t modelCount() const;
+
+  /// The spherical-harmonic gravity field, or null if the scenario did not build
+  /// one (point-mass or free-drift). Exposed so tests can assert which constants
+  /// it was wired with — the coefficients' own GM and reference radius, not
+  /// WGS84's.
+  const world::SphericalHarmonicGravity* gravityField() const;
 
  private:
   struct Impl;

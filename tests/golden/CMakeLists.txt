@@ -6,6 +6,7 @@
 # regenerate them (tools/gmat/). GOLDEN_DIR points the tests at this directory
 # so they load the checked-in fixtures at runtime.
 add_executable(polaris_golden_tests
+  gmat_propagation_golden_test.cpp
   time_scales_golden_test.cpp
   eop_golden_test.cpp
   egm2008_golden_test.cpp)
@@ -18,6 +19,7 @@ target_link_libraries(polaris_golden_tests
     polaris::time  # transitively brings polaris::constants
     polaris::frames  # ECI<->ECEF reduction + EopTable (eop_golden_test)
     polaris::world  # EGM2008 loader + gravity (egm2008_golden_test)
+    polaris::scenario  # SimRunner, for the GMAT propagation cross-validation
     polaris_test_flags
     nlohmann_json::nlohmann_json
     GTest::gtest_main)
@@ -33,7 +35,8 @@ gtest_discover_tests(polaris_golden_tests)
 # GMAT ships the console binary version-suffixed (GmatConsole-R2026a); list the
 # bare and current-release names. Setting $GMAT_CONSOLE / running the pytest test
 # directly is the version-agnostic path.
-find_program(GMAT_CONSOLE NAMES GmatConsole GmatConsole-R2026a)
+find_program(GMAT_CONSOLE NAMES GmatConsole GmatConsole-R2026a
+  HINTS ENV GMAT_CONSOLE_DIR "$ENV{HOME}/.cache/polaris-gmat/R2026a/R2026a/bin")
 if(GMAT_CONSOLE)
   get_filename_component(_polaris_root "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
   add_test(
