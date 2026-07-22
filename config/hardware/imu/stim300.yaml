@@ -1,12 +1,34 @@
-# Sensonor STIM300 tactical-grade IMU (design doc §19.2 hardware-model library).
-# Params are representative datasheet-class values; refine against the unit's
-# calibration report before flight. SI-ish engineering units as noted per key.
+# Safran/Sensonor STIM300 tactical-grade IMU (design doc §19.2 hardware library).
+#
+# Source: https://safran-navigation-timing.com/product/stim300
+# Values transcribed from the STIM300 datasheet TS1524 rev.31 (Feb 2024): gyro
+# Table 5-3, and the standard 10 g accelerometer Table 5-5. Same keys as the C++
+# ImuSpec::fromParams (sim/sensors/imu.cpp), which converts them to SI.
+# `*_bias_correlation_s` is a modelling choice (Gauss-Markov in-run correlation
+# time), not a datasheet field. Bias-instability values are the datasheet
+# "Minimum" (Allan-variance floor).
 model_id: STIM300
 kind: imu
-description: Sensonor STIM300 tactical-grade MEMS IMU (gyro-focused for ADCS)
+description: Safran/Sensonor STIM300 tactical-grade MEMS IMU (10 g accelerometers)
 params:
-  gyro_arw_deg_sqrt_hr: 0.15        # angular random walk [deg/sqrt(hr)]
-  gyro_bias_instability_deg_hr: 0.3 # in-run bias stability [deg/hr]
-  gyro_range_deg_s: 400.0           # measurement range [deg/s]
-  accel_vrw_m_s_sqrt_hr: 0.06       # velocity random walk [m/s/sqrt(hr)]
-  sample_rate_hz: 250.0             # output data rate [Hz]
+  # --- Gyros (Table 5-3) ---
+  gyro_range_deg_s: 480.0                # output cap (±400 °/s input range)
+  gyro_arw_deg_sqrt_hr: 0.15             # angular random walk
+  gyro_bias_instability_deg_hr: 0.3      # bias instability (Allan minimum)
+  gyro_bias_correlation_s: 100.0         # GM correlation time (modelling choice)
+  gyro_bias_repeatability_deg_hr: 10.0   # bias error over temp gradients, rms
+  gyro_scale_factor_ppm: 500.0           # scale-factor accuracy
+  gyro_misalignment_mrad: 1.0            # electronic axis alignment
+  gyro_resolution_deg_hr: 0.22           # resolution
+  gyro_g_sensitivity_deg_hr_g: 7.0       # linear-acceleration bias effect (no g-comp)
+  # --- Accelerometers (Table 5-5, 10 g) ---
+  accel_range_g: 10.0                    # standard input range
+  accel_vrw_m_s_sqrt_hr: 0.024           # velocity random walk
+  accel_bias_instability_mg: 0.005       # bias instability (Allan minimum)
+  accel_bias_correlation_s: 100.0        # GM correlation time (modelling choice)
+  accel_bias_repeatability_mg: 1.1       # bias error over temp gradients, rms
+  accel_scale_factor_ppm: 200.0          # scale-factor accuracy
+  accel_misalignment_mrad: 1.0           # electronic axis alignment
+  accel_resolution_ug: 1.9               # resolution
+  # --- Common ---
+  sample_rate_hz: 2000.0                 # max sample rate
