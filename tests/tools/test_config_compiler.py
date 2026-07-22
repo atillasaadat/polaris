@@ -89,6 +89,40 @@ def test_resolves_hardware_model_ids_into_params():
     assert imu["params"]["gyro_arw_deg_sqrt_hr"] == 0.15
 
 
+def test_stim377h_catalog_entry_carries_the_full_imu_spec():
+    # The STIM377H catalog entry must expose every key the C++ ImuSpec::fromParams
+    # reads (sim/sensors/imu.cpp), so selecting it actually configures the model
+    # rather than silently falling back to zeros. A few datasheet values are pinned.
+    library = load_hardware_library(_HARDWARE)
+    stim = library["STIM377H"]
+    assert stim.kind == "imu"
+    required = {
+        "gyro_range_deg_s",
+        "gyro_arw_deg_sqrt_hr",
+        "gyro_bias_instability_deg_hr",
+        "gyro_bias_correlation_s",
+        "gyro_bias_repeatability_deg_hr",
+        "gyro_scale_factor_ppm",
+        "gyro_misalignment_mrad",
+        "gyro_resolution_deg_hr",
+        "gyro_g_sensitivity_deg_hr_g",
+        "accel_range_g",
+        "accel_vrw_m_s_sqrt_hr",
+        "accel_bias_instability_mg",
+        "accel_bias_correlation_s",
+        "accel_bias_repeatability_mg",
+        "accel_scale_factor_ppm",
+        "accel_misalignment_mrad",
+        "accel_resolution_ug",
+        "sample_rate_hz",
+    }
+    assert required <= set(stim.params), sorted(required - set(stim.params))
+    assert stim.params["gyro_bias_instability_deg_hr"] == 0.3  # datasheet
+    assert stim.params["accel_vrw_m_s_sqrt_hr"] == 0.07
+    # The generic template exposes the same keys, so it is a complete starting point.
+    assert required <= set(library["IMU-GENERIC"].params)
+
+
 @pytest.mark.verifies("REQ-CFG-002")
 def test_swapping_model_id_swaps_resolved_params():
     library = load_hardware_library(_HARDWARE)
