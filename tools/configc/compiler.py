@@ -54,6 +54,10 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 def load_hardware_library(hardware_dir: Path) -> dict[str, HardwareModel]:
     """Load every ``*.yaml`` under @p hardware_dir, keyed by model ID (REQ-CFG-002).
 
+    The search is recursive, so the library can be organized into per-kind
+    subdirectories (``imu/``, ``star_tracker/``, …); a model is located by its
+    ``model_id``, never its path, so the layout is free to change.
+
     Raises ConfigError on a missing directory, a duplicate model ID, or a
     malformed entry — so a typo'd ``--hardware`` path fails clearly here instead
     of surfacing later as a spurious "unknown model_id".
@@ -61,7 +65,7 @@ def load_hardware_library(hardware_dir: Path) -> dict[str, HardwareModel]:
     if not hardware_dir.is_dir():
         raise ConfigError(f"{hardware_dir}: hardware library directory not found")
     library: dict[str, HardwareModel] = {}
-    for path in sorted(hardware_dir.glob("*.yaml")):
+    for path in sorted(hardware_dir.rglob("*.yaml")):
         try:
             model = HardwareModel.model_validate(_load_yaml(path))
         except ValidationError as exc:
@@ -258,7 +262,9 @@ def _hardware_hash(hardware_dir: Path) -> str:
     """Content hash over the hardware library, so provenance identifies which
     library revision produced an artifact (not just the directory name)."""
     digest = hashlib.sha256()
-    for path in sorted(hardware_dir.glob("*.yaml")):
-        digest.update(path.name.encode("utf-8"))
+    for path in sorted(hardware_dir.rglob("*.yaml")):
+        # Relative path (not just the name) so the hash reflects the subdirectory
+        # layout and two same-named files in different kind folders never collide.
+        digest.update(path.relative_to(hardware_dir).as_posix().encode("utf-8"))
         digest.update(path.read_bytes())
     return digest.hexdigest()[:16]
