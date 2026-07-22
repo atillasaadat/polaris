@@ -123,6 +123,39 @@ def test_stim377h_catalog_entry_carries_the_full_imu_spec():
     assert required <= set(library["IMU-GENERIC"].params)
 
 
+def test_actuator_catalog_entries_carry_the_full_spec():
+    # The RW and MTQ catalog entries must expose the keys the C++ specs read
+    # (sim/actuators/*.cpp), so selecting one configures the model rather than
+    # defaulting silently to zeros.
+    library = load_hardware_library(_HARDWARE)
+    rw = library["RW-0.4"]
+    assert rw.kind == "reaction_wheel"
+    rw_required = {
+        "max_torque_nm",
+        "max_momentum_nms",
+        "max_speed_rpm",
+        "motor_kt_nm_a",
+        "motor_resistance_ohm",
+        "dry_friction_nm",
+        "viscous_friction_nm_s",
+        "aero_friction_nm_s2",
+        "torque_quantization_nm",
+        "static_imbalance_kg_m",
+        "dynamic_imbalance_kg_m2",
+        "idle_power_w",
+    }
+    assert rw_required <= set(rw.params), sorted(rw_required - set(rw.params))
+    assert rw.params["max_momentum_nms"] == 0.4  # datasheet
+    assert rw_required <= set(library["RW-X"].params)  # generic template is complete
+
+    nss = library["NSS-TAURUS-30"]
+    assert nss.kind == "magnetorquer"
+    mtq_required = {"max_dipole_am2", "residual_dipole_am2", "linearity", "power_max_w"}
+    assert mtq_required <= set(nss.params)
+    assert nss.params["linearity"] == 0.05  # ±5% datasheet
+    assert mtq_required <= set(library["MTQ-GENERIC"].params)
+
+
 @pytest.mark.verifies("REQ-CFG-002")
 def test_swapping_model_id_swaps_resolved_params():
     library = load_hardware_library(_HARDWARE)

@@ -1,0 +1,15 @@
+# NewSpace Systems Taurus magnetorquer rod (design doc §19.2 hardware library).
+#
+# Source: https://www.newspacesystems.com/ (NSS Taurus magnetorquer rods),
+# datasheet v26.10 (2025). Same keys as the C++ MagnetorquerSpec::fromParams
+# (sim/actuators/magnetorquer.cpp); in-code twin is catalog::nssTaurus(). The rod
+# is a product family (0.2–400 A·m², ±5% linearity, <1.5 A·m² residual, 0.1–24 W);
+# this entry is a representative 30 A·m² unit — set max_dipole_am2 for another size.
+model_id: NSS-TAURUS-30
+kind: magnetorquer
+description: NewSpace Systems Taurus magnetorquer rod (30 A·m² representative)
+params:
+  max_dipole_am2: 30.0          # rated moment (family 0.2–400 A·m²)
+  residual_dipole_am2: 1.0      # remanent moment = hysteresis half-width (< 1.5 bound)
+  linearity: 0.05               # ±5% scale-factor error
+  power_max_w: 1.2              # power at full dipole (family 0.1–24 W)

@@ -1,0 +1,25 @@
+# Rocket Lab RW-0.4 reaction wheel (design doc §19.2 hardware library).
+#
+# Source: https://www.rocketlabusa.com/space-systems/components/ (0.4 Nms wheel);
+# data sheet v3.2 (2025-09) + ICD RL-TOR-ICD-00063 v1.6. Same keys as the C++
+# ReactionWheelSpec::fromParams (sim/actuators/reaction_wheel.cpp); authoritative
+# in-code copy is catalog::rocketLabRw04(). The torque box and momentum are from
+# the datasheet; max_speed, Kt, resistance, friction, and quantization are
+# representative (unit calibration), and the static/dynamic imbalance defaults to
+# zero — fill it from the unit's balance report before any jitter/waterfall study.
+model_id: RW-0.4
+kind: reaction_wheel
+description: Rocket Lab RW-0.4 (0.4 Nms) reaction wheel
+params:
+  max_torque_nm: 0.1              # ±100 mNm nominal (datasheet)
+  max_momentum_nms: 0.4          # ±0.4 N·m·s nominal (datasheet)
+  max_speed_rpm: 6500.0          # representative (datasheet quotes momentum)
+  motor_kt_nm_a: 0.03            # representative torque constant
+  motor_resistance_ohm: 2.0      # representative winding resistance
+  dry_friction_nm: 0.0001        # Coulomb friction (ICD rundown model)
+  viscous_friction_nm_s: 0.000005  # viscous friction ∝ speed
+  aero_friction_nm_s2: 0.0         # negligible in vacuum
+  torque_quantization_nm: 0.0001   # representative drive LSB
+  static_imbalance_kg_m: 0.0       # Us [kg·m] — per-unit balance report (jitter)
+  dynamic_imbalance_kg_m2: 0.0     # Ud [kg·m²] — per-unit balance report (jitter)
+  idle_power_w: 0.5                # <2.8 W total @ 0.4 N·m·s steady state (datasheet)

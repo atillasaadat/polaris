@@ -294,6 +294,10 @@ Each sensor is a configurable module producing measurements from truth, with a s
 | **ACS thrusters (cold gas)** | on/off, **minimum impulse bit**, thrust rise/fall, multiple thrusters, plume/duty-cycle limits |
 | **Main propulsion** | chemical (Isp, thrust, mass flow) **and** electric (low-thrust, throttling); mass depletion + CG shift coupled back to dynamics |
 
+**Implemented (Push 21):** `sim/actuators/reaction_wheel` (torque box + momentum/speed ceiling, Coulomb+viscous+aero friction per the RW-0.4 rundown model, torque quantization, copper+mechanical/regenerative power, static/dynamic imbalance) and `sim/actuators/magnetorquer` (dipole limit, ±linearity, residual moment + hysteresis via a play operator; torque τ=m×B reuses the §5.2 field path). Catalog: Rocket Lab RW-0.4 and generic wheel; NewSpace Taurus rod and generic MTQ. Actuators are not yet wired into `sim_runner` — that arrives with the §2.4 macro-step loop (`sim/io`). CMGs and thrusters remain.
+
+**Reaction-wheel jitter (forward-looking).** The RW model carries **static imbalance `Us`** (radial force `Us·ω²`) and **dynamic imbalance `Ud`** (radial torque `Ud·ω²`) and emits both phase-resolved per step, specifically to feed a future **micro-vibration / jitter analysis**: the once-per-rev fundamental (plus structural/bearing harmonics to be added), rendered as **waterfall spectrograms** (disturbance amplitude vs frequency vs wheel speed over a spin sweep) to expose resonance crossings. Imbalance magnitudes are per-unit balance-report data (default zero in the catalog). See `sim/CLAUDE.md` "Reaction-wheel jitter".
+
 ---
 
 ## 8. GNC Algorithms
