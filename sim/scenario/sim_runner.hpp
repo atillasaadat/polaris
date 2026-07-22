@@ -38,10 +38,11 @@ namespace polaris::sim::scenario {
 /// Where the committed reference-data products live. Defaults match the repo
 /// layout; a deployment can point them elsewhere.
 struct DataPaths {
-  std::string eop;        ///< IERS finals.all.iau2000
-  std::string ephemeris;  ///< DE440 Chebyshev fit (.cheb)
-  std::string igrf;       ///< IAGA IGRF-14 coefficients
-  std::string gravity;    ///< ICGEM EGM2008 .gfc
+  std::string eop;            ///< IERS finals.all.iau2000
+  std::string ephemeris;      ///< DE440 Chebyshev fit (.cheb)
+  std::string igrf;           ///< IAGA IGRF-14 coefficients
+  std::string gravity;        ///< ICGEM EGM2008 .gfc
+  std::string space_weather;  ///< CelesTrak SW-All.csv (F10.7/Ap drivers)
 
   /// Paths relative to a repo/data root.
   static DataPaths under(const std::string& root);

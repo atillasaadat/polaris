@@ -241,6 +241,31 @@ TEST(SimIntegration, DragRemovesOrbitalEnergy) {
   EXPECT_LT(without_drag - with_drag, 50.0e3);
 }
 
+#ifdef POLARIS_HAS_NRLMSIS
+TEST(SimIntegration, NrlmsisDragLoadsSpaceWeatherAndRemovesEnergy) {
+  // Exercises the runner's whole space-weather path end to end: build() must load
+  // tests/golden/SW-All.csv, window it to the scenario span, and wire the
+  // per-epoch F10.7/Ap resolver into NRLMSIS (which also pulls in EOP for the
+  // longitude reduction). The physics check is the same as the exponential case —
+  // drag stays dissipative — so a mis-wired driver that zeroed the density would
+  // show up as no decay.
+  auto finalSma = [](bool drag_enabled) {
+    scenario::SimConfig config = circularOrbit(5677.0, 300.0);
+    config.environment.gravity_degree = 0;
+    config.environment.drag_enabled = drag_enabled;
+    config.environment.atmosphere = scenario::AtmosphereModel::kNrlmsis;
+    config.spacecraft.drag_area_m2 = 5.0;
+    scenario::SimRunner runner;
+    std::string error;
+    EXPECT_TRUE(runner.build(config, dataPaths(), &error)) << error;
+    std::vector<scenario::TrajectorySample> trajectory;
+    EXPECT_TRUE(runner.run(trajectory, &error)) << error;
+    return -kMu / (2.0 * specificEnergy(trajectory.back().state));
+  };
+  EXPECT_LT(finalSma(true), finalSma(false)) << "NRLMSIS drag must remove energy";
+}
+#endif
+
 TEST(SimIntegration, RunsAreBitReproducible) {
   // Determinism is mandatory (sim/CLAUDE.md): a run must be bit-reproducible
   // from {config, seed}. Nothing here is stochastic yet, so this pins that no

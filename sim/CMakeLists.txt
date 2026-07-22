@@ -27,7 +27,8 @@ add_library(polaris_world
   world/ephemeris_file.cpp
   world/igrf_file.cpp
   world/magnetic_field.cpp
-  world/eop_file.cpp)
+  world/eop_file.cpp
+  world/space_weather_file.cpp)
 target_include_directories(polaris_world PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_world
   PUBLIC Eigen3::Eigen polaris_dynamics polaris_math polaris_state polaris_time polaris_constants

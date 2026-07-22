@@ -18,14 +18,16 @@ add_executable(polaris_unit_tests
   sim_world_drag_test.cpp
   sim_world_ephemeris_file_test.cpp
   igrf_test.cpp
-  sim_world_magnetic_field_test.cpp)
+  sim_world_magnetic_field_test.cpp
+  sim_world_space_weather_test.cpp)
 
 # The committed DE440 Chebyshev fit (tests/golden/de440_sun_moon.cheb), the
 # verbatim IAGA IGRF-14 coefficients, and the pyIGRF14-generated golden values.
 target_compile_definitions(polaris_unit_tests
   PRIVATE POLARIS_EPHEMERIS_FIXTURE="${CMAKE_SOURCE_DIR}/tests/golden/de440_sun_moon.cheb"
           POLARIS_IGRF_COEFFS="${CMAKE_SOURCE_DIR}/tests/golden/igrf14coeffs.txt"
-          POLARIS_IGRF_REFERENCE="${CMAKE_SOURCE_DIR}/tests/golden/igrf14_reference.csv")
+          POLARIS_IGRF_REFERENCE="${CMAKE_SOURCE_DIR}/tests/golden/igrf14_reference.csv"
+          POLARIS_SW_FIXTURE="${CMAKE_SOURCE_DIR}/tests/golden/SW-All.csv")
 
 # NRLMSIS tests only exist when the model was fetched and built; the golden case
 # reads upstream's own input/reference files straight from the fetched tree, so
