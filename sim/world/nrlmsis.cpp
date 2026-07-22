@@ -121,14 +121,22 @@ double NrlmsisAtmosphere::density(const time::Tai& epoch,
                        static_cast<double>(utc.minute) * 60.0 + static_cast<double>(utc.second) +
                        static_cast<double>(utc.nanosecond) * 1e-9;
 
+  // Time-varying drivers when a file source is wired, else the static snapshot.
+  // A source that cannot cover this epoch means "no data here" -> zero density,
+  // like every other missing input above.
+  SpaceWeather sw = space_weather_;
+  if (space_weather_fn_ && !space_weather_fn_(epoch, sw)) {
+    return 0.0;
+  }
+
   double rho = 0.0;
   {
     // msiscalc caches its last evaluation in Fortran `save` variables shared by
     // the whole process, so the lock has to be process-wide, not per-object.
     const std::lock_guard<std::mutex> lock(msisMutex());
     polaris_msis_density(day_of_year, std::fmod(utsec, kSecondsPerDay), g.altitude_m * 1e-3,
-                         g.latitude_rad * kRadToDeg, g.longitude_rad * kRadToDeg,
-                         space_weather_.f107a, space_weather_.f107, space_weather_.ap.data(), &rho);
+                         g.latitude_rad * kRadToDeg, g.longitude_rad * kRadToDeg, sw.f107a, sw.f107,
+                         sw.ap.data(), &rho);
   }
 
   // The shim already maps MSIS's missing-value sentinel to zero; this is the

@@ -290,6 +290,45 @@ TEST(Nrlmsis, HigherSolarActivityRaisesThermosphericDensity) {
   EXPECT_GT(rho_high, rho_low * 3.0) << "solar-cycle response is far too weak";
 }
 
+TEST(Nrlmsis, SpaceWeatherSourceDrivesTheModelAndFailsClosed) {
+  // A wired source takes precedence over the static snapshot and is resolved at
+  // the evaluation epoch; a source that cannot cover the epoch yields zero
+  // density, matching the model's other missing-input behaviour.
+  const pt::LeapSecondTable leap = leapTable();
+  const pt::Tai epoch = epochAt(2020, 6, 1, 12, leap);
+  const Eci r{leoPosition(500e3)};
+
+  world::NrlmsisAtmosphere msis;
+  ASSERT_TRUE(msis.good()) << msis.error();
+  msis.setEciToEcef(identityRotation());
+  msis.setLeapSeconds(&leap);
+  world::SpaceWeather quiet;  // static fallback the source will override
+  quiet.f107a = 70.0;
+  quiet.f107 = 70.0;
+  msis.setSpaceWeather(quiet);
+
+  // Source reports active conditions -> denser than the quiet static snapshot.
+  msis.setSpaceWeatherSource([](const pt::Tai&, world::SpaceWeather& sw) {
+    sw.f107a = 240.0;
+    sw.f107 = 240.0;
+    sw.ap.fill(4.0);
+    return true;
+  });
+  const double rho_source = msis.density(epoch, r);
+  const double rho_static = [&] {
+    world::NrlmsisAtmosphere m;
+    m.setEciToEcef(identityRotation());
+    m.setLeapSeconds(&leap);
+    m.setSpaceWeather(quiet);
+    return m.density(epoch, r);
+  }();
+  EXPECT_GT(rho_source, rho_static * 3.0) << "source did not drive the model";
+
+  // Source that cannot cover the epoch -> no atmosphere, not the static value.
+  msis.setSpaceWeatherSource([](const pt::Tai&, world::SpaceWeather&) { return false; });
+  EXPECT_EQ(msis.density(epoch, r), 0.0);
+}
+
 TEST(Nrlmsis, TheEciToEcefReductionActuallyChangesTheAnswer) {
   // Longitude sets local solar time, which drives the diurnal bulge. Rotating the
   // frame under a fixed inertial position must therefore move the density. This

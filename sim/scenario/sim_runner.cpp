@@ -13,6 +13,7 @@
 #include "world/gravity_field.hpp"
 #include "world/igrf_file.hpp"
 #include "world/magnetic_field.hpp"
+#include "world/space_weather_file.hpp"
 #include "world/srp.hpp"
 #include "world/third_body.hpp"
 
@@ -50,7 +51,7 @@ SimRunner::~SimRunner() = default;
 
 DataPaths DataPaths::under(const std::string& root) {
   return DataPaths{root + "/finals.all.iau2000.txt", root + "/de440_sun_moon.cheb",
-                   root + "/igrf14coeffs.txt", root + "/EGM2008_to200.gfc"};
+                   root + "/igrf14coeffs.txt", root + "/EGM2008_to200.gfc", root + "/SW-All.csv"};
 }
 
 /// Everything the resolvers capture. Address-stable for the runner's lifetime.
@@ -68,6 +69,7 @@ struct SimRunner::Impl {
   std::unique_ptr<world::ResidualDipoleTorque> dipole;
 #ifdef POLARIS_HAS_NRLMSIS
   std::unique_ptr<world::NrlmsisAtmosphere> nrlmsis;
+  std::unique_ptr<world::SpaceWeatherTable> space_weather;
 #endif
 
   /// ECI->ECEF resolver over the loaded EOP window. Shared by the gravity field,
@@ -183,6 +185,28 @@ bool SimRunner::build(const SimConfig& config, const DataPaths& paths, std::stri
       }
       d.nrlmsis->setEciToEcef(d.eciToEcef());
       d.nrlmsis->setLeapSeconds(&d.leap);
+
+      // Drive F10.7/Ap from the committed CelesTrak record over the scenario
+      // span, so drag tracks the real solar cycle rather than a fixed snapshot.
+      const time::Tai start = config.initial_state.epoch;
+      const time::Tai end = start + time::Duration::fromSecondsF(config.propagation.duration_s);
+      d.space_weather = std::make_unique<world::SpaceWeatherTable>();
+      if (!d.space_weather->load(paths.space_weather, d.leap, start, end, error)) {
+        return false;
+      }
+      d.nrlmsis->setSpaceWeatherSource(
+          [tbl = d.space_weather.get()](const time::Tai& t, world::SpaceWeather& sw) {
+            double f107 = 0.0;
+            double f107a = 0.0;
+            double ap_daily = 0.0;
+            if (!tbl->at(t, f107, f107a, ap_daily)) {
+              return false;
+            }
+            sw.f107 = f107;
+            sw.f107a = f107a;
+            sw.ap.fill(ap_daily);  // only ap[0] is read; storm-time switches off
+            return true;
+          });
       density = d.nrlmsis->densityFn();
 #else
       // Refuse rather than quietly substituting the coarse model: a run that

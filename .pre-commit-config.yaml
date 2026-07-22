@@ -12,19 +12,19 @@ repos:
       # from its tool — excluded from the whitespace/size normalizers.
       - id: trailing-whitespace
         args: [--markdown-linebreak-ext=md]
-        exclude: '^(LICENSE|tests/golden/(finals\.all\.iau2000\.txt|EGM2008_to200\.gfc))$'
+        exclude: '^(LICENSE|tests/golden/(finals\.all\.iau2000\.txt|EGM2008_to200\.gfc|SW-All\.csv))$'
       - id: end-of-file-fixer
-        exclude: '^(LICENSE|tests/golden/(finals\.all\.iau2000\.txt|EGM2008_to200\.gfc))$'
+        exclude: '^(LICENSE|tests/golden/(finals\.all\.iau2000\.txt|EGM2008_to200\.gfc|SW-All\.csv))$'
       - id: check-yaml
       - id: check-toml
       - id: check-added-large-files
         args: [--maxkb=2048]
         # Static reference data, not source (REQ-CONV-002 / REQ-SIM-002).
-        exclude: '^tests/golden/(finals\.all\.iau2000\.txt|EGM2008_to200\.gfc)$'
+        exclude: '^tests/golden/(finals\.all\.iau2000\.txt|EGM2008_to200\.gfc|SW-All\.csv)$'
       - id: check-merge-conflict
       - id: mixed-line-ending
         args: [--fix=lf]
-        exclude: '^tests/golden/(finals\.all\.iau2000\.txt|EGM2008_to200\.gfc)$'
+        exclude: '^tests/golden/(finals\.all\.iau2000\.txt|EGM2008_to200\.gfc|SW-All\.csv)$'
 
   # C++ formatting — pinned clang-format wheel (matches .clang-format, target 18).
   - repo: https://github.com/pre-commit/mirrors-clang-format

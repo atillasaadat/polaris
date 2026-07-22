@@ -22,9 +22,11 @@
 ///  - **Leap seconds** (`setLeapSeconds`), to get day-of-year and UT seconds from
 ///    the state's TAI epoch. UTC is used where the model wants UT1; they differ
 ///    by under 0.9 s, far below anything the atmosphere resolves.
-///  - **Space weather** (`setSpaceWeather`), the F10.7 and Ap drivers. These are
-///    published daily (NOAA/CelesTrak); until that file layer exists they are set
-///    directly, defaulting to moderate activity.
+///  - **Space weather** (`setSpaceWeatherSource`), the F10.7 and Ap drivers,
+///    resolved per epoch from the committed CelesTrak `SW-All.csv`
+///    (`space_weather_file.hpp`) so a run tracks the real solar cycle. A static
+///    `setSpaceWeather` snapshot (moderate-activity default) is the fallback when
+///    no file source is wired.
 ///
 /// Any of these missing means the model reports zero density — "no atmosphere
 /// here" — rather than silently substituting a guess, so a half-wired sim
@@ -119,6 +121,16 @@ class NrlmsisAtmosphere {
 
   const SpaceWeather& spaceWeather() const { return space_weather_; }
 
+  /// Resolver for time-varying space weather at a TAI epoch — the file layer
+  /// (`space_weather_file.hpp`) drives this so a run tracks the real solar cycle
+  /// and geomagnetic history instead of one fixed snapshot. When set it takes
+  /// precedence over the static `setSpaceWeather` value; returning false for an
+  /// epoch outside the loaded coverage yields zero density there, consistent with
+  /// the model's other missing-input behaviour.
+  using SpaceWeatherFn = std::function<bool(const time::Tai&, SpaceWeather&)>;
+
+  void setSpaceWeatherSource(SpaceWeatherFn fn) { space_weather_fn_ = std::move(fn); }
+
   /// Total neutral mass density [kg/m^3]. Zero if the model is not initialized,
   /// a resolver is missing, or the point is outside the model's domain.
   double density(const time::Tai& epoch, const math::Vec3<math::frames::ECI>& r_eci) const;
@@ -140,6 +152,7 @@ class NrlmsisAtmosphere {
   EciToEcefFn eci_to_ecef_;
   const time::LeapSecondTable* leap_{nullptr};
   SpaceWeather space_weather_{};
+  SpaceWeatherFn space_weather_fn_;
 };
 
 }  // namespace polaris::sim::world
