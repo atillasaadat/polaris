@@ -84,10 +84,11 @@ StarTrackerSpec StarTrackerSpec::fromParams(const std::map<std::string, double>&
 }
 
 StarTracker::StarTracker(const StarTrackerSpec& spec, const Eigen::Matrix3d& mounting_dcm,
-                         std::uint64_t master_seed, std::uint64_t stream_id)
+                         std::uint64_t master_seed, std::uint64_t stream_id, bool noise_enabled)
     : spec_(spec),
       boresight_body_(mounting_dcm * spec.boresight_sensor),
-      rng_(random::streamRng(master_seed, stream_id)) {
+      rng_(random::streamRng(master_seed, stream_id)),
+      noise_enabled_(noise_enabled) {
   const Eigen::Vector3d bore = boresight_body_.normalized();
   cross_axis_1_ = anyPerpendicular(bore);
   cross_axis_2_ = bore.cross(cross_axis_1_);
@@ -211,8 +212,12 @@ StarTrackerMeasurement StarTracker::sample(const time::Tai& epoch, double dt,
   const Eigen::Vector3d thermo =
       thermo_axis_ * (spec_.thermo_elastic_per_k * input.temperature_delta_k);
 
+  // An ideal tracker reports the truth attitude: the states above still advance
+  // (so enabling noise mid-run is not a discontinuity) but no error is applied.
   const Eigen::Vector3d error_body =
-      unit_bias_ + thermo + low_freq + high_freq + temporal + fault_bias_;
+      noise_enabled_
+          ? Eigen::Vector3d(unit_bias_ + thermo + low_freq + high_freq + temporal + fault_bias_)
+          : Eigen::Vector3d(Eigen::Vector3d::Zero());
 
   // Small-angle rotation vector -> quaternion, applied on the body side:
   // q_meas = δq(error) ⊗ q_truth, so the error is expressed in body axes.

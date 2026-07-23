@@ -12,6 +12,7 @@
 - Keep files under 500 lines
 - Validate input at system boundaries
 - External reference data (EOP, TLEs, space weather, gravity/EGM, SPICE/JPL kernels, IGRF, leap seconds, …) is committed **verbatim in its original upstream format** and parsed as-is — never pre-processed into a bespoke intermediate as the committed artifact. Fetch tools auto-download from the authoritative source (record its URL); any trimming/derivation is computed *from* the committed original, not substituted for it. See design doc §3.7. Note the >500-line rule does not apply to these verbatim data files.
+- ALWAYS keep documentation in sync with every change. When you make a change, before considering it done, update **all** relevant documentation, code comments, and — when the branch has an open PR — the PR **title and description** so they match what the code now does. This includes the design doc (`docs/design/Polaris_Design_Document.md`), header/inline comments, `CLAUDE.md` files, config comments, and any README/guide the change touches. Stale docs/comments/PR text are treated as a defect, not an afterthought.
 
 ## Agent Comms (SendMessage-First Coordination)
 

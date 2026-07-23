@@ -220,8 +220,13 @@ struct SunSensorMeasurement {
 /// {spec, seed, stream_id} always builds the same physical unit.
 class SunSensor {
  public:
+  /// @param noise_enabled false builds an **ideal** sun sensor: exact truth Sun
+  ///        direction (vector part) or clean cosine-law counts (analogue part),
+  ///        with no per-diode miscalibration, dark current, noise, albedo, or
+  ///        quantization. The FOV cut-off and eclipse still apply — geometry, not
+  ///        noise (§6.2).
   SunSensor(const SunSensorSpec& spec, const Eigen::Matrix3d& mounting_dcm,
-            std::uint64_t master_seed, std::uint64_t stream_id);
+            std::uint64_t master_seed, std::uint64_t stream_id, bool noise_enabled = true);
 
   /// Read every diode at truth time @p epoch.
   SunSensorMeasurement sample(const time::Tai& epoch, const SunSensorInput& input);
@@ -250,6 +255,7 @@ class SunSensor {
 
   SunSensorSpec spec_;
   random::SplitMix64 rng_;
+  bool noise_enabled_ = true;
   std::vector<Eigen::Vector3d> normals_body_;
   std::vector<double> diode_scale_;  ///< realised per-diode scale factor (1 + ε)
   std::vector<bool> diode_failed_;

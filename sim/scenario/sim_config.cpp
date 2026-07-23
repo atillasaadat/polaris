@@ -217,6 +217,15 @@ bool readUnits(const json& parent, const char* key, const std::string& role,
         return fail(error, role + " '" + unit.name + "' spin_axis is a zero vector");
       }
     }
+
+    // Per-unit noise override is optional and emitted null when unset.
+    const auto noise = entry.find("noise_enabled");
+    if (noise != entry.end() && !noise->is_null()) {
+      if (!noise->is_boolean()) {
+        return fail(error, role + " '" + unit.name + "' noise_enabled must be a boolean");
+      }
+      unit.noise_enabled = noise->get<bool>();
+    }
     out.push_back(std::move(unit));
   }
   return true;
@@ -318,6 +327,7 @@ bool readEnvironment(const json& root, EnvironmentConfig& out, std::string* erro
     out.gnss_jamming_kml = jamming->get<std::string>();
   }
   out.gnss_jamming_enabled = node->value("gnss_jamming_enabled", true);
+  out.sensor_noise_enabled = node->value("sensor_noise_enabled", true);
   out.gnss_noise_enabled = node->value("gnss_noise_enabled", true);
 
   const auto faults = node->find("gnss_fault_events");

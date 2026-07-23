@@ -178,6 +178,18 @@ TEST(StarTracker, PerfectSpecPassesTheTruthAttitudeThrough) {
   EXPECT_LT(attitudeError(m.attitude, in.attitude), 1e-15);
 }
 
+TEST(StarTracker, NoiseDisabledReportsTruthAttitude) {
+  // Ideal build: once tracking, the reported attitude is exactly the truth — no
+  // bias, spatial, temporal, or thermo-elastic error. Availability still applies.
+  sensors::StarTracker st(aurigaSpec(), zenithMount(), 0xBEEF, 1, /*noise_enabled=*/false);
+  auto in = restingInput();
+  in.temperature_delta_k = 25.0;  // a large ΔT that would drive thermo-elastic error
+  bringUp(st, in);
+  const auto m = st.sample(kEpoch, 1.0, in);
+  ASSERT_TRUE(m.valid);
+  EXPECT_LT(attitudeError(m.attitude, in.attitude), 1e-12);
+}
+
 TEST(StarTracker, EveryErrorTermIsAnisotropicAboutTheBoresight) {
   // Roll is the weak axis for every mechanism, not just the noise. Measured along
   // the actual boresight rather than a body axis, so the assertion holds for any

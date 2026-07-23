@@ -191,8 +191,12 @@ struct StarTrackerMeasurement {
 /// {spec, seed, stream_id} always builds the same physical unit.
 class StarTracker {
  public:
+  /// @param noise_enabled false reports the **truth** attitude (no spatial,
+  ///        temporal, bias, or thermo-elastic error) whenever a solution is
+  ///        available — availability, occlusion and the rate/accel envelopes
+  ///        still apply, since those are geometry, not noise (§6.2).
   StarTracker(const StarTrackerSpec& spec, const Eigen::Matrix3d& mounting_dcm,
-              std::uint64_t master_seed, std::uint64_t stream_id);
+              std::uint64_t master_seed, std::uint64_t stream_id, bool noise_enabled = true);
 
   /// Solve over an interval of @p dt seconds ending at truth time @p epoch.
   ///
@@ -244,6 +248,7 @@ class StarTracker {
   Eigen::Vector3d cross_axis_1_;  ///< orthonormal basis completing the boresight
   Eigen::Vector3d cross_axis_2_;
   random::SplitMix64 rng_;
+  bool noise_enabled_ = true;
 
   // Fixed per-unit realisations, drawn once at construction.
   Eigen::Vector3d unit_bias_ = Eigen::Vector3d::Zero();

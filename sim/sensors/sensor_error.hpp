@@ -54,11 +54,20 @@ struct VectorErrorModel {
   double resolution = 0.0;
   /// Per-axis saturation limit |·| (0 disables).
   double range = 0.0;
+  /// Master switch (§6.2). False makes the sensor **ideal** — the measurement is
+  /// the truth, with no scale, misalignment, bias, noise, quantization, or
+  /// saturation — for runs that need a noise-free baseline (bring-up, algorithm
+  /// bring-up, with/without-noise comparisons). It disables the whole stack, not
+  /// only the random term, so an ideal sensor also has no fixed bias.
+  bool noise_enabled = true;
 
   /// Apply the full chain. @p rng is advanced once per axis **iff** any axis has
   /// noise, so whether a given axis is noisy does not shift another axis's draw —
   /// keeping the stream position stable as the noise config changes.
   Eigen::Vector3d apply(const Eigen::Vector3d& truth, random::SplitMix64& rng) const {
+    if (!noise_enabled) {
+      return truth;  // ideal sensor: measurement is the truth
+    }
     Eigen::Vector3d y = scale_misalignment * truth + bias;
 
     if ((noise_std.array() != 0.0).any()) {

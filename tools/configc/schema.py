@@ -81,6 +81,14 @@ class MountedUnit(_Strict):
             "matrix (design doc §7). Ignored for sensors, which use mounting_dcm"
         ),
     )
+    noise_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "per-unit override of the scenario's sensor_noise_enabled (§6.2): set "
+            "true/false to force this sensor's noise on/off regardless of the "
+            "global switch; omit (null) to inherit it. Ignored for actuators"
+        ),
+    )
 
 
 class InertiaTensor(_Strict):
@@ -224,11 +232,20 @@ class Environment(_Strict):
             "referenced but turn jamming off for a run (design doc §9.2)"
         ),
     )
+    sensor_noise_enabled: bool = Field(
+        default=True,
+        description=(
+            "master switch for ALL sensor noise (IMU, star tracker, sun sensor, "
+            "magnetometer, GNSS); false flies ideal sensors (measurement = truth) "
+            "for a noise-free baseline or with/without-noise comparison. Actuators "
+            "have no stochastic noise, so there is no equivalent switch for them"
+        ),
+    )
     gnss_noise_enabled: bool = Field(
         default=True,
         description=(
             "master switch for GNSS measurement noise; false flies a truth-perfect "
-            "receiver (position/velocity/clock error zeroed) for bring-up/debug"
+            "receiver. Applied on top of sensor_noise_enabled (both must be true)"
         ),
     )
     gnss_fault_events: list[GnssFaultEvent] = Field(

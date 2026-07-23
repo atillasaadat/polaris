@@ -83,8 +83,8 @@ SunSensorSpec SunSensorSpec::fromParams(const std::map<std::string, double>& p) 
 }
 
 SunSensor::SunSensor(const SunSensorSpec& spec, const Eigen::Matrix3d& mounting_dcm,
-                     std::uint64_t master_seed, std::uint64_t stream_id)
-    : spec_(spec), rng_(random::streamRng(master_seed, stream_id)) {
+                     std::uint64_t master_seed, std::uint64_t stream_id, bool noise_enabled)
+    : spec_(spec), rng_(random::streamRng(master_seed, stream_id)), noise_enabled_(noise_enabled) {
   boresight_body_ = (mounting_dcm * Eigen::Vector3d::UnitZ()).normalized();
   const int n = std::max(1, spec_.diode_count);
   normals_body_.reserve(static_cast<std::size_t>(n));
@@ -103,10 +103,12 @@ SunSensor::SunSensor(const SunSensorSpec& spec, const Eigen::Matrix3d& mounting_
                                       std::sin(cant) * std::sin(azimuth), std::cos(cant));
     }
     // Realise this unit: a fixed normal misalignment and scale error per diode,
-    // drawn once, so each seeded sensor is a distinct but in-spec device.
+    // drawn once, so each seeded sensor is a distinct but in-spec device. An ideal
+    // sensor keeps the nominal normal and unit scale (no per-diode error at all).
     const Eigen::Vector3d body_normal = (mounting_dcm * normal_sensor).normalized();
-    normals_body_.push_back(tilt(body_normal, spec_.alignment_sigma, rng_));
-    diode_scale_.push_back(1.0 + spec_.scale_factor * rng_.gaussian());
+    normals_body_.push_back(noise_enabled ? tilt(body_normal, spec_.alignment_sigma, rng_)
+                                          : body_normal);
+    diode_scale_.push_back(noise_enabled ? 1.0 + spec_.scale_factor * rng_.gaussian() : 1.0);
   }
 }
 
@@ -206,8 +208,9 @@ SunSensorMeasurement SunSensor::sample(const time::Tai& epoch, const SunSensorIn
           fovCoveredFraction(spec_.half_fov_rad, separation, earth_angular_radius);
       albedo_sigma = spec_.albedo_error_rad * fraction * dayside;
     }
-    // Independent mechanisms add in quadrature.
-    sigma = std::sqrt(sigma * sigma + albedo_sigma * albedo_sigma);
+    // Independent mechanisms add in quadrature. An ideal sensor reports the exact
+    // truth direction, so the whole error collapses to zero.
+    sigma = noise_enabled_ ? std::sqrt(sigma * sigma + albedo_sigma * albedo_sigma) : 0.0;
     m.accuracy_sigma_rad = sigma;
 
     // Two draws always, so the stream position does not depend on the geometry.
@@ -260,8 +263,8 @@ SunSensorMeasurement SunSensor::sample(const time::Tai& epoch, const SunSensorIn
     // sunlit that ground is. The occlusion model (§6.1) supplies the fraction,
     // so a diode and a star tracker cannot disagree about where the Earth is.
     double albedo = 0.0;
-    if (spec_.albedo_coefficient > 0.0 && dayside > 0.0 && spec_.half_fov_rad > 0.0 &&
-        earth_angular_radius > 0.0) {
+    if (noise_enabled_ && spec_.albedo_coefficient > 0.0 && dayside > 0.0 &&
+        spec_.half_fov_rad > 0.0 && earth_angular_radius > 0.0) {
       // Both vectors are in body axes, and the fraction depends only on the angle
       // between them, so no frame change is needed. The shared §6.1 helper does
       // the overlap, which is what keeps a diode and a star tracker from
@@ -273,17 +276,18 @@ SunSensorMeasurement SunSensor::sample(const time::Tai& epoch, const SunSensorIn
     }
     m.albedo_counts[i] = albedo;
 
-    double count = direct + albedo + spec_.dark_counts;
-    if (spec_.noise_counts > 0.0) {
-      count += spec_.noise_counts * rng_.gaussian();
-    } else {
-      (void)rng_.gaussian();  // fixed draw count per diode, whatever the config
+    // An ideal cell reports the clean cosine signal: no dark current, no noise,
+    // no quantization. The rng draw still happens so the stream stays aligned.
+    double count = direct + albedo + (noise_enabled_ ? spec_.dark_counts : 0.0);
+    const double noise_draw = rng_.gaussian();
+    if (noise_enabled_ && spec_.noise_counts > 0.0) {
+      count += spec_.noise_counts * noise_draw;
     }
     if (diode_failed_[i]) {
       count = 0.0;  // a dead cell reads dark, not noisy
       m.albedo_counts[i] = 0.0;
     }
-    if (spec_.resolution_counts > 0.0) {
+    if (noise_enabled_ && spec_.resolution_counts > 0.0) {
       count = std::round(count / spec_.resolution_counts) * spec_.resolution_counts;
     }
     // A photodiode reading cannot go negative, and cannot exceed the ADC range.

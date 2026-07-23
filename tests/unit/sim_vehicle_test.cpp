@@ -204,6 +204,89 @@ TEST(Vehicle, BuildsSunSensorsAndMagnetometersFromConfig) {
   EXPECT_EQ(v.magnetometers[0].model_id, "MAG-GENERIC");
 }
 
+TEST(Vehicle, NoiseSettingsBuildIdealSensors) {
+  // With sensor noise disabled the whole suite is ideal: a measurement equals the
+  // truth it was given. This is the with/without-noise switch, wired end to end
+  // through buildVehicle to every model.
+  scenario::UnitConfig mag;
+  mag.name = "mag_a";
+  mag.model_id = "MAG-GENERIC";
+  mag.kind = "magnetometer";
+  // Deliberately large bias/noise so a non-ideal build would be obviously off.
+  mag.params = {{"range_ut", 100.0}, {"bias_ut", 5.0}, {"noise_ut_rms", 1.0}};
+
+  scenario::SpacecraftConfig sc;
+  sc.sensors = {imuUnit("imu_a", 0.5), mag};
+
+  scenario::Vehicle v;
+  std::string error;
+  ASSERT_TRUE(scenario::buildVehicle(sc, 1234, v, &error, scenario::NoiseSettings{false, false}))
+      << error;
+
+  // Magnetometer: the measured field is exactly the truth field, no bias/noise.
+  const Vec3B b_truth(30.0e-6, -12.0e-6, 5.0e-6);
+  const auto m = v.magnetometers[0].model.sample(kEpoch, b_truth);
+  EXPECT_TRUE(m.field_tesla.eigen().isApprox(b_truth.eigen(), 1e-15));
+
+  // IMU: the measured rate is exactly the truth rate, no turn-on bias or ARW.
+  const Vec3B rate_truth(0.01, -0.02, 0.015);
+  const Vec3B sf_truth(0.0, 0.0, 0.0);
+  const auto s = v.imus[0].model.sample(kEpoch, 0.1, rate_truth, sf_truth);
+  ASSERT_TRUE(s.valid);
+  EXPECT_TRUE(s.angular_rate_rads.eigen().isApprox(rate_truth.eigen(), 1e-15));
+}
+
+TEST(Vehicle, PerUnitNoiseOverrideWinsOverTheGlobal) {
+  // A unit's own noise_enabled beats the scenario switch in both directions.
+  auto mag = [](const std::string& name) {
+    scenario::UnitConfig u;
+    u.name = name;
+    u.model_id = "MAG-GENERIC";
+    u.kind = "magnetometer";
+    u.params = {{"range_ut", 100.0}, {"bias_ut", 5.0}, {"noise_ut_rms", 0.0}};  // bias only
+    return u;
+  };
+  const Vec3B truth(30.0e-6, 0.0, 0.0);
+
+  // Global noise ON, but one unit forces it OFF: that one is ideal, the other has
+  // its 5 µT bias.
+  {
+    scenario::UnitConfig forced_off = mag("mag_off");
+    forced_off.noise_enabled = false;
+    scenario::SpacecraftConfig sc;
+    sc.sensors = {forced_off, mag("mag_on")};
+    scenario::Vehicle v;
+    ASSERT_TRUE(scenario::buildVehicle(sc, 1, v, nullptr));  // default NoiseSettings = on
+    EXPECT_TRUE(v.magnetometers[0]
+                    .model.sample(kEpoch, truth)
+                    .field_tesla.eigen()
+                    .isApprox(truth.eigen(), 1e-15));
+    EXPECT_FALSE(v.magnetometers[1]
+                     .model.sample(kEpoch, truth)
+                     .field_tesla.eigen()
+                     .isApprox(truth.eigen(), 1e-9))
+        << "the un-overridden unit still obeys the global switch";
+  }
+
+  // Global noise OFF, but one unit forces it ON: that one is noisy, the other ideal.
+  {
+    scenario::UnitConfig forced_on = mag("mag_on");
+    forced_on.noise_enabled = true;
+    scenario::SpacecraftConfig sc;
+    sc.sensors = {forced_on, mag("mag_off")};
+    scenario::Vehicle v;
+    ASSERT_TRUE(scenario::buildVehicle(sc, 1, v, nullptr, scenario::NoiseSettings{false, false}));
+    EXPECT_FALSE(v.magnetometers[0]
+                     .model.sample(kEpoch, truth)
+                     .field_tesla.eigen()
+                     .isApprox(truth.eigen(), 1e-9));
+    EXPECT_TRUE(v.magnetometers[1]
+                    .model.sample(kEpoch, truth)
+                    .field_tesla.eigen()
+                    .isApprox(truth.eigen(), 1e-15));
+  }
+}
+
 TEST(Vehicle, RejectsASunSensorWithNoFieldOfView) {
   // Without an acceptance cone the cosine cut-off never fires and a cell reports
   // sunlight while facing away from the Sun.

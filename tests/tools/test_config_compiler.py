@@ -69,6 +69,7 @@ def test_compiles_template_and_emits_three_artifacts(tmp_path):
     env = setup["environment"]
     assert env["gnss_jamming_kml"] == "config/scenario/jamming/eastern_europe.kml"
     assert env["gnss_jamming_enabled"] is True
+    assert env["sensor_noise_enabled"] is True
     assert env["gnss_noise_enabled"] is True
     events = env["gnss_fault_events"]
     assert [e["type"] for e in events] == ["outage", "spoof"]
@@ -476,6 +477,10 @@ def test_sim_setup_carries_the_resolved_hardware_suites(tmp_path):
     # Every emitted unit must be usable: an empty param map is rejected by the
     # C++ side rather than building an ideal, unlimited device.
     assert all(u["params"] for u in sc["sensors"] + sc["actuators"])
+    # The per-unit noise override is carried (null when unset) so the sim can
+    # apply it over the global switch.
+    assert all("noise_enabled" in u for u in sc["sensors"])
+    assert imu["noise_enabled"] is None
 
 
 @pytest.mark.verifies("REQ-CFG-003")
