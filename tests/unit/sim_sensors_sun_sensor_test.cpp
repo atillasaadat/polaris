@@ -327,6 +327,19 @@ TEST(SunSensor, VectorAccuracyRegimeSwitchesAtTheDatasheetAngle) {
   EXPECT_NEAR(just_outside.accuracy_sigma_rad, spec.accuracy_outer_sigma, 1e-15);
 }
 
+TEST(SunSensor, VectorOutputReportsNoCountsAtAll) {
+  // A digital part has no photocurrents on the bus. Reporting zeros would be
+  // indistinguishable from a set of dark cells; the array is empty so a consumer
+  // that reaches for counts on the wrong sort of part finds nothing rather than a
+  // plausible-looking reading that means nothing.
+  sensors::SunSensor ss(nanoSenseSpec(), Eigen::Matrix3d::Identity(), 1, 1);
+  const auto m = ss.sample(kEpoch, cleanSky(sunAtIncidence(20.0)));
+  ASSERT_TRUE(m.valid);
+  EXPECT_TRUE(m.counts.empty());
+  EXPECT_TRUE(m.albedo_counts.empty());
+  EXPECT_GT(m.sun_dir_body.eigen().norm(), 0.0) << "it reports a vector instead";
+}
+
 TEST(SunSensor, VectorOutputIsInvalidBeyondTheFieldOfView) {
   sensors::SunSensor ss(nanoSenseSpec(), Eigen::Matrix3d::Identity(), 1, 1);
   EXPECT_TRUE(ss.sample(epochPlus(0.0), cleanSky(sunAtIncidence(59.0))).valid);

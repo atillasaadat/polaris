@@ -18,8 +18,12 @@ kind: sun_sensor
 description: GomSpace NanoSense Fine Sun Sensor (quadrant diode, I2C vector output)
 params:
   # --- Geometry (datasheet section 8) ----------------------------------------
-  diode_count: 4               # quadrant diode behind a single aperture
-  diode_cant_deg: 0.0          # a shared aperture, not canted cells
+  #
+  # No diode_count here, deliberately. The part IS physically a quadrant diode
+  # behind a single aperture (datasheet section 3), but it reports a processed
+  # vector, so the diode geometry is not something this model uses — and a key
+  # the model ignores would imply behaviour that does not exist. The diode keys
+  # belong to analogue parts, where the counts are the actual output.
   half_fov_deg: 60.0           # "Field of view: half angle 60 deg"
 
   # --- Accuracy vs incidence angle (section 8, 3-sigma, no albedo) -----------

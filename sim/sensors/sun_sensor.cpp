@@ -228,6 +228,13 @@ SunSensorMeasurement SunSensor::sample(const time::Tai& epoch, const SunSensorIn
       any_illuminated = true;
     }
 
+    // No photocurrents to report. Left **empty** rather than zero-filled: a
+    // vector of zeros is indistinguishable from a set of dark cells, and a
+    // consumer reading counts[i] on a digital part deserves to find nothing
+    // there rather than a plausible-looking reading that means nothing.
+    m.counts.clear();
+    m.albedo_counts.clear();
+
     m.sun_present = sun_usable && in_fov;
     m.valid = m.sun_present && !fault_dropout_;
     last_measurement_ = m;
