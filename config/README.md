@@ -13,7 +13,14 @@ analysis inputs — don't hand-edit derived params.
   hardware/
   ├── imu/              # STIM300, STIM377H, generic template
   ├── star_tracker/     # ST-16
-  └── reaction_wheel/   # RW-X
+  ├── reaction_wheel/   # RW-0.4, RW-X generic
+  └── magnetorquer/     # NSS Taurus, MTQ800, generic
   ```
+
+  These entries are the **only** place a unit's parameters are written down: the
+  sim builds every model from the compiled params and carries no in-code hardware
+  catalog (design doc §19.4). A unit's `params` keys are the datasheet-native keys
+  the matching C++ `fromParams` reads, so a new key means editing the model spec
+  and the YAML — nowhere else.
 - `spacecraft/` — vehicle definitions (mass/inertia, sensor & actuator suite, gains).
 - `scenarios/` — scenario/epoch/environment + MC dispersions.

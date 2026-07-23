@@ -1,0 +1,208 @@
+/// @file Unit tests for config-driven vehicle assembly (REQ-CFG-001/002;
+/// design doc §19.3, §19.4).
+///
+/// The property under test is that **the config is the only source of hardware
+/// parameters**. There is no in-code catalog to fall back on, so these tests
+/// check the whole path a real run takes: a resolved unit's datasheet-native
+/// params reach the model's `fromParams` untouched, swapping a `model_id`'s
+/// params swaps the flown hardware, and a unit the config asked for is never
+/// silently dropped. The seeding contract is checked too — adding hardware must
+/// not perturb the random stream of hardware already there (§3.6/§182).
+
+#include <gtest/gtest.h>
+
+#include <cmath>
+#include <string>
+
+#include "math/frames.hpp"
+#include "math/typed_vector.hpp"
+#include "scenario/vehicle.hpp"
+#include "time/timescales.hpp"
+
+namespace {
+
+namespace scenario = polaris::sim::scenario;
+namespace pm = polaris::math;
+namespace pmf = polaris::math::frames;
+namespace pt = polaris::time;
+
+using Vec3B = pm::Vec3<pmf::Body>;
+const pt::Tai kEpoch = pt::Tai::fromNanosecondsSinceEpoch(1767225637000000000LL);
+
+/// A resolved IMU unit as the compiler would emit it (params inlined from the
+/// library entry, in the datasheet's own units).
+scenario::UnitConfig imuUnit(const std::string& name, double arw_deg_sqrt_hr) {
+  scenario::UnitConfig u;
+  u.name = name;
+  u.model_id = "TEST-IMU";
+  u.kind = "imu";
+  u.params = {{"gyro_range_deg_s", 400.0},
+              {"gyro_arw_deg_sqrt_hr", arw_deg_sqrt_hr},
+              {"sample_rate_hz", 250.0}};
+  return u;
+}
+
+scenario::UnitConfig wheelUnit(const std::string& name, double momentum_nms) {
+  scenario::UnitConfig u;
+  u.name = name;
+  u.model_id = "TEST-RW";
+  u.kind = "reaction_wheel";
+  u.params = {
+      {"max_torque_nm", 0.1}, {"max_momentum_nms", momentum_nms}, {"max_speed_rpm", 6000.0}};
+  return u;
+}
+
+scenario::UnitConfig mtqUnit(const std::string& name) {
+  scenario::UnitConfig u;
+  u.name = name;
+  u.model_id = "TEST-MTQ";
+  u.kind = "magnetorquer";
+  u.params = {{"max_dipole_am2", 15.0}, {"residual_dipole_am2", 0.5}};
+  return u;
+}
+
+}  // namespace
+
+TEST(Vehicle, BuildsEveryModelledKindFromResolvedParams) {
+  scenario::SpacecraftConfig sc;
+  sc.sensors = {imuUnit("imu_a", 0.15)};
+  sc.actuators = {wheelUnit("rw_1", 0.4), mtqUnit("mtq_x")};
+
+  scenario::Vehicle v;
+  std::string error;
+  ASSERT_TRUE(scenario::buildVehicle(sc, 1234, v, &error)) << error;
+  ASSERT_EQ(v.imus.size(), 1u);
+  ASSERT_EQ(v.wheels.size(), 1u);
+  ASSERT_EQ(v.magnetorquers.size(), 1u);
+  EXPECT_EQ(v.modelledCount(), 3u);
+  EXPECT_TRUE(v.unmodelled.empty());
+
+  // The identity survives, so telemetry and errors can name the unit.
+  EXPECT_EQ(v.wheels[0].name, "rw_1");
+  EXPECT_EQ(v.wheels[0].model_id, "TEST-RW");
+  // And the parameters actually reached the model: a wheel with this momentum and
+  // speed has this rotor inertia, so its stored momentum after a commanded torque
+  // is the config's physics, not a default.
+  v.wheels[0].model.commandTorque(0.01);
+  v.wheels[0].model.step(1.0);
+  EXPECT_NEAR(v.wheels[0].model.momentum(), 0.01, 1e-12);
+}
+
+TEST(Vehicle, ParamsChangeTheFlownHardware) {
+  // The point of the whole mechanism (REQ-CFG-002): the same code flies different
+  // hardware because the config said so. Two wheels differing only in the
+  // library's max_momentum_nms must spin up at different rates.
+  scenario::SpacecraftConfig small;
+  small.actuators = {wheelUnit("rw_1", 0.1)};
+  scenario::SpacecraftConfig large;
+  large.actuators = {wheelUnit("rw_1", 1.0)};
+
+  scenario::Vehicle a;
+  scenario::Vehicle b;
+  ASSERT_TRUE(scenario::buildVehicle(small, 1, a, nullptr));
+  ASSERT_TRUE(scenario::buildVehicle(large, 1, b, nullptr));
+  a.wheels[0].model.commandTorque(0.01);
+  b.wheels[0].model.commandTorque(0.01);
+  a.wheels[0].model.step(1.0);
+  b.wheels[0].model.step(1.0);
+  EXPECT_GT(a.wheels[0].model.speed(), b.wheels[0].model.speed() * 5.0)
+      << "a lighter rotor must accelerate faster under the same torque";
+}
+
+TEST(Vehicle, UnmodelledKindsAreReportedNotDropped) {
+  scenario::UnitConfig st;
+  st.name = "st_a";
+  st.model_id = "ST-16";
+  st.kind = "star_tracker";
+  st.params = {{"cross_axis_arcsec", 5.0}};
+
+  scenario::SpacecraftConfig sc;
+  sc.sensors = {imuUnit("imu_a", 0.15), st};
+
+  scenario::Vehicle v;
+  ASSERT_TRUE(scenario::buildVehicle(sc, 1, v, nullptr));
+  EXPECT_EQ(v.imus.size(), 1u);
+  ASSERT_EQ(v.unmodelled.size(), 1u);
+  EXPECT_EQ(v.unmodelled[0], "st_a:star_tracker");
+}
+
+TEST(Vehicle, RejectsDuplicateUnitNames) {
+  // Two units sharing a name share a noise stream, which would make nominally
+  // independent sensors perfectly correlated.
+  scenario::SpacecraftConfig sc;
+  sc.sensors = {imuUnit("imu_a", 0.15), imuUnit("imu_a", 0.15)};
+
+  scenario::Vehicle v;
+  std::string error;
+  EXPECT_FALSE(scenario::buildVehicle(sc, 1, v, &error));
+  EXPECT_NE(error.find("duplicate"), std::string::npos) << error;
+}
+
+TEST(Vehicle, RejectsAUnitThatResolvedToNoParameters) {
+  // An empty param map builds an ideal, unlimited device — a resolution failure
+  // that must not pass as a working unit.
+  scenario::UnitConfig bare;
+  bare.name = "rw_1";
+  bare.model_id = "RW-BROKEN";
+  bare.kind = "reaction_wheel";
+
+  scenario::SpacecraftConfig sc;
+  sc.actuators = {bare};
+  scenario::Vehicle v;
+  std::string error;
+  EXPECT_FALSE(scenario::buildVehicle(sc, 1, v, &error));
+  EXPECT_NE(error.find("no parameters"), std::string::npos) << error;
+}
+
+TEST(Vehicle, RejectsAWheelWithNoRotorInertia) {
+  scenario::UnitConfig u;
+  u.name = "rw_1";
+  u.model_id = "RW-BROKEN";
+  u.kind = "reaction_wheel";
+  u.params = {{"max_torque_nm", 0.1}};  // no momentum/speed and no inertia
+
+  scenario::SpacecraftConfig sc;
+  sc.actuators = {u};
+  scenario::Vehicle v;
+  std::string error;
+  EXPECT_FALSE(scenario::buildVehicle(sc, 1, v, &error));
+  EXPECT_NE(error.find("rotor inertia"), std::string::npos) << error;
+}
+
+TEST(Vehicle, AddingHardwareDoesNotPerturbExistingNoiseStreams) {
+  // §182: streams are keyed by unit name, not list position, so installing a
+  // second IMU ahead of the first must leave the first's samples bit-identical.
+  // Were this to fail, every Monte Carlo baseline would silently invalidate on a
+  // config edit that touched unrelated hardware.
+  scenario::SpacecraftConfig one;
+  one.sensors = {imuUnit("imu_a", 0.15)};
+  scenario::SpacecraftConfig two;
+  two.sensors = {imuUnit("imu_b", 0.15), imuUnit("imu_a", 0.15)};
+
+  scenario::Vehicle v1;
+  scenario::Vehicle v2;
+  ASSERT_TRUE(scenario::buildVehicle(one, 0xC0FFEE, v1, nullptr));
+  ASSERT_TRUE(scenario::buildVehicle(two, 0xC0FFEE, v2, nullptr));
+  ASSERT_EQ(v2.imus[1].name, "imu_a");
+
+  const Eigen::Vector3d rate(0.01, 0.0, 0.0);
+  const Eigen::Vector3d sf(0.0, 0.0, -9.80665);
+  for (int i = 0; i < 50; ++i) {
+    EXPECT_EQ(
+        v1.imus[0].model.sample(kEpoch, 0.01, Vec3B(rate), Vec3B(sf)).angular_rate_rads.eigen(),
+        v2.imus[1].model.sample(kEpoch, 0.01, Vec3B(rate), Vec3B(sf)).angular_rate_rads.eigen())
+        << "sample " << i;
+  }
+}
+
+TEST(Vehicle, DifferentUnitsGetIndependentStreams) {
+  scenario::SpacecraftConfig sc;
+  sc.sensors = {imuUnit("imu_a", 0.15), imuUnit("imu_b", 0.15)};
+  scenario::Vehicle v;
+  ASSERT_TRUE(scenario::buildVehicle(sc, 42, v, nullptr));
+
+  const Eigen::Vector3d zero = Eigen::Vector3d::Zero();
+  const auto a = v.imus[0].model.sample(kEpoch, 0.01, Vec3B(zero), Vec3B(zero));
+  const auto b = v.imus[1].model.sample(kEpoch, 0.01, Vec3B(zero), Vec3B(zero));
+  EXPECT_NE(a.angular_rate_rads.eigen(), b.angular_rate_rads.eigen());
+}

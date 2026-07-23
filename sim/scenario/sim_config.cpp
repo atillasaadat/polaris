@@ -133,6 +133,77 @@ bool parseMagnetic(const std::string& name, MagneticModel& out, std::string* err
   return fail(error, "unknown magnetic field model '" + name + "'");
 }
 
+/// Read one resolved hardware suite (`spacecraft.sensors` / `.actuators`).
+///
+/// The parameter map is copied verbatim: this layer deliberately knows no key
+/// names, so a catalog entry can gain a parameter without touching the sim. What
+/// it does enforce is that every value is a number and that the identifying
+/// fields are present — a unit with no `kind` cannot be dispatched to a model,
+/// and silently skipping it would fly a vehicle missing hardware the config asked
+/// for.
+bool readUnits(const json& parent, const char* key, const std::string& role,
+               std::vector<UnitConfig>& out, std::string* error) {
+  const auto node = parent.find(key);
+  if (node == parent.end()) {
+    return true;  // a vehicle with no units of this class is legal
+  }
+  if (!node->is_array()) {
+    return fail(error, "spacecraft." + std::string(key) + " must be an array");
+  }
+
+  for (const json& entry : *node) {
+    UnitConfig unit;
+    if (!entry.is_object()) {
+      return fail(error, role + " entry is not an object");
+    }
+    unit.name = entry.value("name", std::string{});
+    unit.model_id = entry.value("model_id", std::string{});
+    unit.kind = entry.value("kind", std::string{});
+    if (unit.name.empty() || unit.model_id.empty() || unit.kind.empty()) {
+      return fail(error, role + " entry needs a name, model_id, and kind");
+    }
+
+    const auto params = entry.find("params");
+    if (params != entry.end() && !params->is_null()) {
+      if (!params->is_object()) {
+        return fail(error, role + " '" + unit.name + "' params must be an object");
+      }
+      for (const auto& [name, value] : params->items()) {
+        if (!value.is_number()) {
+          return fail(error, role + " '" + unit.name + "' param '" + name + "' is not a number");
+        }
+        unit.params[name] = value.get<double>();
+      }
+    }
+
+    // Mounting is optional and emitted as JSON null when the config omitted it.
+    const auto dcm = entry.find("mounting_dcm_row_major");
+    if (dcm != entry.end() && !dcm->is_null()) {
+      if (!dcm->is_array() || dcm->size() != 9) {
+        return fail(error,
+                    role + " '" + unit.name + "' mounting_dcm_row_major must be a 9-element array");
+      }
+      for (std::size_t i = 0; i < 9; ++i) {
+        if (!(*dcm)[i].is_number()) {
+          return fail(error, role + " '" + unit.name + "' mounting_dcm_row_major is non-numeric");
+        }
+        unit.mounting_dcm(static_cast<Eigen::Index>(i / 3), static_cast<Eigen::Index>(i % 3)) =
+            (*dcm)[i].get<double>();
+      }
+      // A mounting that is not a rotation would silently scale or mirror every
+      // quantity passing through it, which reads downstream as a sensor error.
+      const Eigen::Matrix3d residual =
+          unit.mounting_dcm.transpose() * unit.mounting_dcm - Eigen::Matrix3d::Identity();
+      if (residual.cwiseAbs().maxCoeff() > 1.0e-9 || unit.mounting_dcm.determinant() < 0.0) {
+        return fail(error,
+                    role + " '" + unit.name + "' mounting_dcm_row_major is not a proper rotation");
+      }
+    }
+    out.push_back(std::move(unit));
+  }
+  return true;
+}
+
 bool readSpacecraft(const json& root, SpacecraftConfig& out, std::string* error) {
   const json* node = require(root, "spacecraft", "", error);
   if (node == nullptr) {
@@ -199,7 +270,9 @@ bool readSpacecraft(const json& root, SpacecraftConfig& out, std::string* error)
   }
   out.cp_offset_m = math::Vec3<math::frames::Body>(cp);
   out.residual_dipole_am2 = math::Vec3<math::frames::Body>(dipole);
-  return true;
+
+  return readUnits(*node, "sensors", "sensor", out.sensors, error) &&
+         readUnits(*node, "actuators", "actuator", out.actuators, error);
 }
 
 bool readEnvironment(const json& root, EnvironmentConfig& out, std::string* error) {
@@ -346,6 +419,9 @@ bool loadSimConfig(const std::string& path, const time::LeapSecondTable& leap, S
 
   out = SimConfig{};
   out.scenario_name = root.value("scenario_name", std::string{});
+  // Absent seed = 0, which is a valid run: the point is that the seed is an
+  // input, not that it is non-zero. A missing one must not fall back to entropy.
+  out.seed = root.value("seed", static_cast<std::uint64_t>(0));
   const auto provenance = root.find("provenance");
   if (provenance != root.end()) {
     out.config_hash = provenance->value("config_hash", std::string{});

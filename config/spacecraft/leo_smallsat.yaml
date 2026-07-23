@@ -32,6 +32,12 @@ spacecraft:
       model_id: RW-X
     - name: rw_4
       model_id: RW-X
+    - name: mtq_x                   # 3-axis torque rod set (detumble + desaturation)
+      model_id: MTQ-GENERIC
+    - name: mtq_y
+      model_id: MTQ-GENERIC
+    - name: mtq_z
+      model_id: MTQ-GENERIC
   gains:
     detumble:
       k_bdot: 10000.0                # B-dot gain
@@ -48,6 +54,7 @@ spacecraft:
 scenario:
   name: leo-sso-500km
   epoch_utc: "2026-01-01T00:00:00Z"
+  seed: 20260101                    # master RNG seed; run is reproducible from {config, seed}
   initial_state:
     orbit:                            # 500 km circular sun-synchronous
       sma_km: 6878.137                # 6378.137 + 500

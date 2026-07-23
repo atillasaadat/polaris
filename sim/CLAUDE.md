@@ -29,6 +29,15 @@ The simulation is the **plant** the FSW runs against. It is **not flight code** 
 - **Waterfall plots:** the standard product is a spectrogram of disturbance amplitude vs frequency vs wheel speed over a spin-up/spin-down sweep (the "waterfall"), which reveals structural resonances where a harmonic crosses a mode. Keep the disturbance outputs per-wheel and phase-resolved so this is a post-processing step over a swept run, not a model change.
 - **Imbalance values are per-unit balance-report data**, not datasheet values — they default to zero in the catalog and must be filled from a unit's measured imbalance before a jitter study means anything.
 
+## Hardware params come from YAML — there is no in-code catalog
+
+`config/hardware/**.yaml` → the config compiler resolves the `model_id` and inlines that unit's params → `sim_setup.json` → `SimConfig::UnitConfig` → the spec's `fromParams(map)` → the model. `scenario/vehicle.cpp` is the one place that runs that last hop. There are no `catalog::` factories; they were deleted in Push 22 (design doc §19.4).
+
+- **Never introduce a hardware or vehicle constant into C++/Python source.** It belongs in `config/`. To add a COTS unit, write the YAML entry; touch C++ only if the spec needs a new `fromParams` key.
+- Every layer between the compiler and `fromParams` passes the param map through **uninterpreted** — don't add key-name knowledge to `sim_config.cpp` or `vehicle.cpp`.
+- Hardcoded specs **are** fine inside `tests/` — a fixture that isolates one effect (frictionless wheel, exaggerated MTQ residual) is deliberately non-physical. A fixture mirroring a real catalog entry must say so and pin the *conversion*; the datasheet values are pinned against the YAML in `tests/tools/test_config_compiler.py`.
+- Unit **names** key the per-unit random streams (`vehicle.cpp`), so they must be unique across the vehicle, and adding hardware must never perturb an existing unit's stream.
+
 ## Validation
 
 New environment/dynamics/conversion functions are validated against **GMAT golden fixtures** (`tests/golden/`) within documented tolerances. Use the **test-vv** subagent / `/verify-golden` command.

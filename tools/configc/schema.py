@@ -231,6 +231,14 @@ class Scenario(_Strict):
     )
     initial_state: InitialState = Field(description="vehicle state at the epoch")
     propagation: Propagation = Field(description="how long and how finely to run")
+    seed: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "master RNG seed; every stochastic source derives its own stream from "
+            "it, so a run is bit-reproducible from {config, seed} (design doc §3.6)"
+        ),
+    )
     environment: Environment = Field(default_factory=Environment)
     ground_stations: list[GroundStation] = Field(default_factory=list)
     mc_dispersions: list[McDispersion] = Field(default_factory=list)

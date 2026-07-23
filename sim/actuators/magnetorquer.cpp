@@ -73,44 +73,4 @@ double Magnetorquer::busPower() const {
   return power;
 }
 
-namespace catalog {
-
-MagnetorquerSpec nssTaurus(double max_dipole_am2) {
-  // NSS Taurus datasheet v26.10: ±5% linearity, <1.5 A·m² residual, 0.1–24 W across
-  // the family. Residual and power here are representative for the chosen size.
-  return MagnetorquerSpec::fromParams({
-      {"max_dipole_am2", max_dipole_am2},
-      {"residual_dipole_am2", 1.0},            // datasheet bound < 1.5 A·m²
-      {"linearity", 0.05},                     // ±5%
-      {"power_max_w", 0.04 * max_dipole_am2},  // ~1.2 W at 30 A·m², within 0.1–24 W
-  });
-}
-
-MagnetorquerSpec aacMtq800() {
-  // AAC Clyde Space MTQ800 datasheet (2021-11): design dipole 15 A·m², boost 30
-  // A·m² (the saturation limit used here), ±2% control accuracy at the design
-  // point, 13.2 W at max dipole (drive electronics included). The model's dipole²
-  // power law matches the low-end point (~1.5 W @10 A·m²); the datasheet is
-  // deliberately sub-quadratic in the boost region (efficiency traded for peak
-  // moment), so mid-range power is approximate. Residual is not quoted for this
-  // driven rod and is a small representative value.
-  return MagnetorquerSpec::fromParams({
-      {"max_dipole_am2", 30.0},      // boost limit (nominal 15 A·m²)
-      {"residual_dipole_am2", 0.1},  // not in datasheet — representative
-      {"linearity", 0.02},           // ±2% at the design dipole
-      {"power_max_w", 13.2},         // 13200 mW at peak dipole
-  });
-}
-
-MagnetorquerSpec genericMagnetorquer() {
-  return MagnetorquerSpec::fromParams({
-      {"max_dipole_am2", 15.0},
-      {"residual_dipole_am2", 0.5},
-      {"linearity", 0.03},
-      {"power_max_w", 1.0},
-  });
-}
-
-}  // namespace catalog
-
 }  // namespace polaris::sim::actuators

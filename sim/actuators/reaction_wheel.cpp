@@ -112,47 +112,4 @@ ReactionWheelOutput ReactionWheel::step(double dt) {
   return out;
 }
 
-namespace catalog {
-
-ReactionWheelSpec rocketLabRw04() {
-  // Datasheet v3.2 (2025-09) + ICD RL-TOR-ICD-00063 v1.6. The torque box and
-  // momentum are datasheet; max_speed, Kt, friction, and quantization are
-  // representative (unit calibration), and imbalance defaults to zero — fill it
-  // from a balance report before any jitter study.
-  return ReactionWheelSpec::fromParams({
-      {"max_torque_nm", 0.1},              // ±100 mNm nominal
-      {"max_momentum_nms", 0.4},           // ±0.4 N·m·s nominal
-      {"max_speed_rpm", 6500.0},           // representative (datasheet gives momentum)
-      {"motor_kt_nm_a", 0.03},             // representative
-      {"motor_resistance_ohm", 2.0},       // representative
-      {"dry_friction_nm", 1.0e-4},         // representative Coulomb (rundown model)
-      {"viscous_friction_nm_s", 5.0e-6},   // representative wet
-      {"aero_friction_nm_s2", 0.0},        // negligible in vacuum
-      {"torque_quantization_nm", 1.0e-4},  // representative drive LSB
-      {"static_imbalance_kg_m", 0.0},      // per-unit balance report (jitter)
-      {"dynamic_imbalance_kg_m2", 0.0},    // per-unit balance report (jitter)
-      {"idle_power_w", 0.5},               // <2.8 W total @ 0.4 N·m·s steady state
-  });
-}
-
-ReactionWheelSpec genericReactionWheel() {
-  // Representative small-smallsat wheel — round numbers to copy and refine.
-  return ReactionWheelSpec::fromParams({
-      {"max_torque_nm", 0.025},
-      {"max_momentum_nms", 0.5},
-      {"max_speed_rpm", 6000.0},
-      {"motor_kt_nm_a", 0.03},
-      {"motor_resistance_ohm", 2.0},
-      {"dry_friction_nm", 1.0e-4},
-      {"viscous_friction_nm_s", 5.0e-6},
-      {"aero_friction_nm_s2", 0.0},
-      {"torque_quantization_nm", 1.0e-4},
-      {"static_imbalance_kg_m", 0.0},
-      {"dynamic_imbalance_kg_m2", 0.0},
-      {"idle_power_w", 0.5},
-  });
-}
-
-}  // namespace catalog
-
 }  // namespace polaris::sim::actuators
