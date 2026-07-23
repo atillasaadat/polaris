@@ -99,6 +99,18 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
         // range of zero simply means "no saturation modelled".
         out.magnetometers.push_back({unit.name, unit.model_id, unit.mounting_dcm,
                                      sensors::Magnetometer(model, seed, stream)});
+      } else if (unit.kind == "gnss") {
+        const auto spec = sensors::GnssSpec::fromParams(unit.params);
+        // A receiver with no quoted position accuracy would report truth-perfect
+        // fixes — worse than a config error, because it silently hands the OD
+        // filter the answer. Every real datasheet quotes a horizontal RMS.
+        if (!(spec.position_sigma_h_m > 0.0)) {
+          return fail(error, "gnss receiver '" + unit.name +
+                                 "' has no horizontal_position_rms_m — it would report "
+                                 "truth-perfect position fixes");
+        }
+        out.gnss_receivers.push_back(
+            {unit.name, unit.model_id, unit.mounting_dcm, sensors::Gnss(spec, seed, stream)});
       } else if (unit.kind == "reaction_wheel") {
         const auto spec = actuators::ReactionWheelSpec::fromParams(unit.params);
         if (!(spec.inertia() > 0.0)) {

@@ -1,0 +1,17 @@
+# Generic single-point GNSS receiver template (design doc §19.2).
+#
+# Round numbers representative of an unaided multi-frequency L1/L2 receiver of the
+# class flown on smallsats; replace them from a COTS datasheet. Same keys as the
+# C++ GnssSpec::fromParams (sim/sensors/gnss.cpp).
+model_id: GNSS-GENERIC
+kind: gnss
+description: Generic single-point GNSS receiver (PVT)
+params:
+  horizontal_position_rms_m: 2.0    # 2D horizontal RMS, unaided single point
+  vertical_position_rms_m: 3.0      # vertical is poorer; quoted explicitly here
+  velocity_accuracy_m_s_rms: 0.05
+  time_accuracy_ns_rms: 20.0
+  max_rate_hz: 10.0
+  cold_start_s: 40.0
+  hot_start_s: 25.0
+  reacquisition_s: 1.0

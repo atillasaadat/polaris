@@ -32,6 +32,7 @@ HardwareKind = Literal[
     "star_tracker",
     "sun_sensor",
     "magnetometer",
+    "gnss",
     "reaction_wheel",
     "magnetorquer",
     "thruster",
@@ -134,6 +135,40 @@ class GroundStation(_Strict):
     )
 
 
+class GnssFaultEvent(_Strict):
+    """A time-windowed GNSS fault to inject during a run (design doc §9.2/§23.1.1).
+
+    Distinct from the hardware catalog (what the receiver *is*): this is what the
+    scenario *does* to it. The sim applies the fault while ``start_s`` <= t <
+    ``stop_s`` (seconds since epoch) on the named receiver.
+    """
+
+    unit: str = Field(description="receiver instance name, e.g. 'gps_a'")
+    type: Literal["outage", "spoof", "clock_jump"] = Field(
+        description="outage=loss of fix; spoof=valid-but-offset fix; clock_jump=time-tag step"
+    )
+    start_s: float = Field(ge=0.0, description="fault onset [s since epoch]")
+    stop_s: float = Field(
+        gt=0.0, description="fault clears at this time [s since epoch]"
+    )
+    spoof_offset_ecef_m: Vec3 = Field(
+        default=(0.0, 0.0, 0.0),
+        description="ECEF position offset [m] for a spoof; ignored for other types",
+    )
+    clock_jump_s: float = Field(
+        default=0.0,
+        description="clock-bias step [s] for a clock_jump; ignored otherwise",
+    )
+
+    @field_validator("stop_s")
+    @classmethod
+    def _check_window(cls, v: float, info) -> float:
+        start = info.data.get("start_s")
+        if start is not None and v <= start:
+            raise ValueError(f"stop_s ({v}) must exceed start_s ({start})")
+        return v
+
+
 class Environment(_Strict):
     """Force/torque environment toggles and fidelity for the scenario (§19.1)."""
 
@@ -164,6 +199,32 @@ class Environment(_Strict):
             "100 km default is the Karman line, right for visible-band blinding; "
             "a horizon sensor in the 15 um CO2 band sees a higher limb"
         ),
+    )
+    gnss_jamming_kml: str | None = Field(
+        default=None,
+        description=(
+            "path to a KML of GNSS-jamming regions (design doc §9.2). When the "
+            "sub-satellite point is inside a region the GNSS receiver loses its "
+            "fix. Passed through to the sim verbatim; None disables jamming"
+        ),
+    )
+    gnss_jamming_enabled: bool = Field(
+        default=True,
+        description=(
+            "master switch for geographic GNSS jamming; set false to keep the KML "
+            "referenced but turn jamming off for a run (design doc §9.2)"
+        ),
+    )
+    gnss_noise_enabled: bool = Field(
+        default=True,
+        description=(
+            "master switch for GNSS measurement noise; false flies a truth-perfect "
+            "receiver (position/velocity/clock error zeroed) for bring-up/debug"
+        ),
+    )
+    gnss_fault_events: list[GnssFaultEvent] = Field(
+        default_factory=list,
+        description="scheduled GNSS faults injected during the run (§9.2/§23.1.1)",
     )
 
 

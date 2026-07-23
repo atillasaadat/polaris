@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Example GNSS-jamming regions for Polaris scenarios (design doc §9.2).
+
+  These are illustrative coarse boxes around areas with widely reported,
+  persistent GNSS interference observable from orbit, provided so a scenario can
+  exercise the receiver's geographic loss-of-fix and the estimator's coasting
+  through it. They are deliberately rough rectangles, NOT an authoritative
+  interference map — replace them with a mission-specific KML (any tool that
+  exports KML polygons works). Coordinates are lon,lat[,alt]; the outer
+  LinearRing of each Placemark's Polygon is the jammed boundary.
+
+  Each Placemark is one named region. Polygons must not cross the +/-180 deg
+  antimeridian (split them if needed); inner boundaries (holes) are ignored.
+-->
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>Polaris example GNSS jamming regions</name>
+
+    <Placemark>
+      <name>Black Sea / Crimea</name>
+      <Polygon>
+        <outerBoundaryIs>
+          <LinearRing>
+            <coordinates>
+              32.0,44.0,0 37.0,44.0,0 37.0,46.5,0 32.0,46.5,0 32.0,44.0,0
+            </coordinates>
+          </LinearRing>
+        </outerBoundaryIs>
+      </Polygon>
+    </Placemark>
+
+    <Placemark>
+      <name>Eastern Ukraine</name>
+      <Polygon>
+        <outerBoundaryIs>
+          <LinearRing>
+            <coordinates>
+              36.0,47.0,0 40.5,47.0,0 40.5,50.5,0 36.0,50.5,0 36.0,47.0,0
+            </coordinates>
+          </LinearRing>
+        </outerBoundaryIs>
+      </Polygon>
+    </Placemark>
+
+    <Placemark>
+      <name>Eastern Mediterranean</name>
+      <Polygon>
+        <outerBoundaryIs>
+          <LinearRing>
+            <coordinates>
+              34.0,33.0,0 37.0,33.0,0 37.0,36.0,0 34.0,36.0,0 34.0,33.0,0
+            </coordinates>
+          </LinearRing>
+        </outerBoundaryIs>
+      </Polygon>
+    </Placemark>
+  </Document>
+</kml>

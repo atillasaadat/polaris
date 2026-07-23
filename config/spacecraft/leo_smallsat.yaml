@@ -27,6 +27,8 @@ spacecraft:
       model_id: GS-NANOSENSE-FSS
     - name: mag_a
       model_id: MAG-GENERIC
+    - name: gps_a                     # GNSS PVT fix -> onboard OD (§8.3)
+      model_id: NOVATEL-OEM7600
   actuators:                        # pyramidal 4-wheel set
     - name: rw_1
       model_id: RW-X
@@ -84,6 +86,12 @@ scenario:
     magnetic_field: igrf
     eclipse_enabled: true
     occultation_atmosphere_km: 100.0  # optical limb height for sensor occlusion (§6.1)
+    gnss_jamming_kml: config/scenario/jamming/eastern_europe.kml  # GNSS loss-of-fix zones (§9.2)
+    gnss_jamming_enabled: true        # master switch for the jamming map above
+    gnss_noise_enabled: true          # false = truth-perfect GPS (bring-up/debug)
+    gnss_fault_events:                # scheduled GNSS faults (§9.2/§23.1.1)
+      - {unit: gps_a, type: outage, start_s: 600.0, stop_s: 660.0}
+      - {unit: gps_a, type: spoof, start_s: 1200.0, stop_s: 1260.0, spoof_offset_ecef_m: [500.0, 0.0, 0.0]}
   ground_stations:
     - name: svalbard
       lat_deg: 78.23

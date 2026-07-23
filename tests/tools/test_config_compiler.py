@@ -64,6 +64,15 @@ def test_compiles_template_and_emits_three_artifacts(tmp_path):
     assert fparams["sc.mass_kg"] == 12.0
     assert fparams["gains.pointing.kp"] == 0.2
     assert resolved["provenance"]["config_hash"]
+    # The GNSS jamming KML path and fault controls are carried through for the sim.
+    setup = json.loads((tmp_path / "sim_setup.json").read_text())
+    env = setup["environment"]
+    assert env["gnss_jamming_kml"] == "config/scenario/jamming/eastern_europe.kml"
+    assert env["gnss_jamming_enabled"] is True
+    assert env["gnss_noise_enabled"] is True
+    events = env["gnss_fault_events"]
+    assert [e["type"] for e in events] == ["outage", "spoof"]
+    assert events[1]["spoof_offset_ecef_m"] == [500.0, 0.0, 0.0]
 
 
 @pytest.mark.verifies("REQ-CFG-001")
@@ -235,6 +244,37 @@ def test_sun_sensor_catalog_entries_carry_the_full_spec():
     fss = library["GS-NANOSENSE-FSS"]
     assert fss.kind == "sun_sensor"
     assert digital <= set(fss.params), sorted(digital - set(fss.params))
+
+
+def test_gnss_catalog_entries_carry_the_full_spec():
+    # A GNSS entry with no horizontal position accuracy would report truth-perfect
+    # fixes — the C++ builder rejects it, but the catalog should carry the figure
+    # in the first place. Every key the C++ GnssSpec reads (sim/sensors/gnss.cpp).
+    library = load_hardware_library(_HARDWARE)
+    keys = {
+        "horizontal_position_rms_m",
+        "velocity_accuracy_m_s_rms",
+        "time_accuracy_ns_rms",
+        "max_rate_hz",
+    }
+    for model_id in ("NOVATEL-OEM7600", "GNSS-GENERIC"):
+        entry = library[model_id]
+        assert entry.kind == "gnss"
+        assert keys <= set(
+            entry.params
+        ), f"{model_id} missing {sorted(keys - set(entry.params))}"
+
+
+def test_oem7600_entry_matches_the_novatel_datasheet():
+    # NovAtel OEM7600 Product Sheet, single-point L1/L2. These are the numbers an
+    # OD budget closes against; pinning them makes a silent edit fail loudly.
+    p = load_hardware_library(_HARDWARE)["NOVATEL-OEM7600"].params
+    assert p["horizontal_position_rms_m"] == 1.2  # "Single point L1/L2 1.2 m"
+    assert p["velocity_accuracy_m_s_rms"] == 0.03  # "Velocity accuracy < 0.03 m/s RMS"
+    assert p["time_accuracy_ns_rms"] == 5.0  # "Time accuracy < 5 ns RMS"
+    assert p["max_rate_hz"] == 100.0  # "Position up to 100 Hz"
+    assert p["cold_start_s"] == 34.0  # "Cold start < 34 s (typ)"
+    assert p["reacquisition_s"] == 0.5  # "Signal reacquisition L1 < 0.5 s (typ)"
 
 
 def test_gomspace_nanosense_fss_matches_the_datasheet():
@@ -459,6 +499,28 @@ def test_unknown_config_key_is_rejected():
     bad = _minimal_config_dict()
     bad["spacecraft"]["typo_field"] = 1.0
     with pytest.raises(ValidationError, match="typo_field"):
+        Config.model_validate(bad)
+
+
+def test_gnss_fault_event_validation():
+    # A back-to-front window is a scenario authoring error, caught at the boundary.
+    bad = _minimal_config_dict()
+    bad["scenario"]["environment"] = {
+        "gnss_fault_events": [
+            {"unit": "gps_a", "type": "outage", "start_s": 200.0, "stop_s": 100.0}
+        ]
+    }
+    with pytest.raises(ValidationError, match="must exceed start_s"):
+        Config.model_validate(bad)
+
+    # An unknown fault type fails rather than being silently ignored.
+    bad["scenario"]["environment"]["gnss_fault_events"][0] = {
+        "unit": "gps_a",
+        "type": "meteor",
+        "start_s": 0.0,
+        "stop_s": 10.0,
+    }
+    with pytest.raises(ValidationError):
         Config.model_validate(bad)
 
 
