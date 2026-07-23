@@ -22,6 +22,7 @@ add_executable(polaris_unit_tests
   sim_world_magnetic_field_test.cpp
   sim_world_space_weather_test.cpp
   sim_sensors_magnetometer_test.cpp
+  sim_sensors_gnss_test.cpp
   sim_sensors_imu_test.cpp
   sim_sensors_occlusion_test.cpp
   sim_sensors_star_tracker_test.cpp

@@ -54,6 +54,7 @@ endif()
 # noise stream. Fault-injection hooks are built in for the FDIR suite.
 add_library(polaris_sensors
   sensors/magnetometer.cpp
+  sensors/gnss.cpp
   sensors/imu.cpp
   sensors/occlusion.cpp
   sensors/star_tracker.cpp

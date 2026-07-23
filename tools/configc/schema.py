@@ -32,6 +32,7 @@ HardwareKind = Literal[
     "star_tracker",
     "sun_sensor",
     "magnetometer",
+    "gnss",
     "reaction_wheel",
     "magnetorquer",
     "thruster",

@@ -31,6 +31,7 @@
 #include "actuators/magnetorquer.hpp"
 #include "actuators/reaction_wheel.hpp"
 #include "scenario/sim_config.hpp"
+#include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
 #include "sensors/magnetometer.hpp"
 #include "sensors/star_tracker.hpp"
@@ -54,6 +55,7 @@ struct Vehicle {
   std::vector<MountedModel<sensors::StarTracker>> star_trackers;
   std::vector<MountedModel<sensors::SunSensor>> sun_sensors;
   std::vector<MountedModel<sensors::Magnetometer>> magnetometers;
+  std::vector<MountedModel<sensors::Gnss>> gnss_receivers;
   std::vector<MountedModel<actuators::ReactionWheel>> wheels;
   std::vector<MountedModel<actuators::Magnetorquer>> magnetorquers;
 
@@ -65,7 +67,7 @@ struct Vehicle {
 
   std::size_t modelledCount() const {
     return imus.size() + star_trackers.size() + sun_sensors.size() + magnetometers.size() +
-           wheels.size() + magnetorquers.size();
+           gnss_receivers.size() + wheels.size() + magnetorquers.size();
   }
 };
 

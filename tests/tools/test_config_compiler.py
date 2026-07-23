@@ -237,6 +237,37 @@ def test_sun_sensor_catalog_entries_carry_the_full_spec():
     assert digital <= set(fss.params), sorted(digital - set(fss.params))
 
 
+def test_gnss_catalog_entries_carry_the_full_spec():
+    # A GNSS entry with no horizontal position accuracy would report truth-perfect
+    # fixes — the C++ builder rejects it, but the catalog should carry the figure
+    # in the first place. Every key the C++ GnssSpec reads (sim/sensors/gnss.cpp).
+    library = load_hardware_library(_HARDWARE)
+    keys = {
+        "horizontal_position_rms_m",
+        "velocity_accuracy_m_s_rms",
+        "time_accuracy_ns_rms",
+        "max_rate_hz",
+    }
+    for model_id in ("NOVATEL-OEM7600", "GNSS-GENERIC"):
+        entry = library[model_id]
+        assert entry.kind == "gnss"
+        assert keys <= set(
+            entry.params
+        ), f"{model_id} missing {sorted(keys - set(entry.params))}"
+
+
+def test_oem7600_entry_matches_the_novatel_datasheet():
+    # NovAtel OEM7600 Product Sheet, single-point L1/L2. These are the numbers an
+    # OD budget closes against; pinning them makes a silent edit fail loudly.
+    p = load_hardware_library(_HARDWARE)["NOVATEL-OEM7600"].params
+    assert p["horizontal_position_rms_m"] == 1.2  # "Single point L1/L2 1.2 m"
+    assert p["velocity_accuracy_m_s_rms"] == 0.03  # "Velocity accuracy < 0.03 m/s RMS"
+    assert p["time_accuracy_ns_rms"] == 5.0  # "Time accuracy < 5 ns RMS"
+    assert p["max_rate_hz"] == 100.0  # "Position up to 100 Hz"
+    assert p["cold_start_s"] == 34.0  # "Cold start < 34 s (typ)"
+    assert p["reacquisition_s"] == 0.5  # "Signal reacquisition L1 < 0.5 s (typ)"
+
+
 def test_gomspace_nanosense_fss_matches_the_datasheet():
     # GomSpace NanoSense FSS datasheet DS 1018157 rev 3.1, section 8. Pinning
     # these makes a silent edit fail loudly, because they are what a coarse

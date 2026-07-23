@@ -1,0 +1,36 @@
+# NovAtel OEM7600 multi-frequency GNSS receiver (design doc §19.2).
+#
+# Source: https://hexagondownloads.blob.core.windows.net/public/Novatel/assets/
+#   Documents/Papers/OEM7600-Product-Sheet/OEM7600-Product-Sheet.pdf
+# (Hexagon | NovAtel OEM7600 Product Sheet). A compact multi-constellation,
+# multi-frequency receiver. It reports a processed PVT solution (ECEF position
+# and velocity in GPS time), so this entry configures the fix-accuracy path, not
+# pseudoranges — the same keys as the C++ GnssSpec::fromParams (sim/sensors/gnss.cpp).
+#
+# The figures below are the *unaided single-point* accuracy — no SBAS/DGPS/RTK/
+# TerraStar corrections — because that is the honest baseline for a LEO spacecraft
+# with no differential link. The datasheet also lists SBAS 60 cm, DGPS 40 cm,
+# TerraStar-C PRO 2 cm and RTK 1 cm; a mission with a correction service can drop
+# horizontal_position_rms_m to the corresponding figure.
+model_id: NOVATEL-OEM7600
+kind: gnss
+description: NovAtel OEM7600 multi-frequency GNSS receiver (single-point PVT)
+params:
+  # --- Position accuracy (datasheet "Horizontal position accuracy (RMS)") -------
+  # Single point L1/L2 = 1.2 m 2D-RMS. GnssSpec divides by sqrt(2) for the
+  # per-axis sigma. Vertical is not quoted; the model defaults it to 1.5x the
+  # horizontal per-axis sigma (typical VDOP/HDOP), overridable here.
+  horizontal_position_rms_m: 1.2
+  # vertical_position_rms_m:  # omitted -> model uses 1.5x horizontal per-axis
+
+  # --- Velocity and time (datasheet) --------------------------------------------
+  velocity_accuracy_m_s_rms: 0.03   # "Velocity accuracy < 0.03 m/s RMS"
+  time_accuracy_ns_rms: 5.0         # "Time accuracy < 5 ns RMS"
+
+  # --- Rate (datasheet "Maximum data rate: Position up to 100 Hz") --------------
+  max_rate_hz: 100.0
+
+  # --- Acquisition / reacquisition (datasheet) ----------------------------------
+  cold_start_s: 34.0     # "Time to first fix: Cold start < 34 s (typ)"
+  hot_start_s: 20.0      # "Hot start < 20 s (typ)" — informational
+  reacquisition_s: 0.5   # "Signal reacquisition: L1 < 0.5 s (typ)"

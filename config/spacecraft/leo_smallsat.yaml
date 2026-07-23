@@ -27,6 +27,8 @@ spacecraft:
       model_id: GS-NANOSENSE-FSS
     - name: mag_a
       model_id: MAG-GENERIC
+    - name: gps_a                     # GNSS PVT fix -> onboard OD (§8.3)
+      model_id: NOVATEL-OEM7600
   actuators:                        # pyramidal 4-wheel set
     - name: rw_1
       model_id: RW-X
