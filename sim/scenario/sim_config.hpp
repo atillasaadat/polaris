@@ -66,6 +66,10 @@ struct UnitConfig {
   std::map<std::string, double> params;
   /// Unit→body rotation. Identity when the config omitted a mounting.
   Eigen::Matrix3d mounting_dcm{Eigen::Matrix3d::Identity()};
+  /// Reaction-wheel/CMG spin axis in the body frame, or zero when unset. When
+  /// nonzero it defines the wheel's axis (the clean alternative to a full
+  /// mounting DCM); the vehicle builder normalises it into the assembly's W.
+  Eigen::Vector3d spin_axis{Eigen::Vector3d::Zero()};
 };
 
 /// Vehicle properties the truth plant needs, including the installed hardware.

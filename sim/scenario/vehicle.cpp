@@ -35,6 +35,9 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
                   std::string* error) {
   out = Vehicle{};
 
+  // Spin axes in `wheels` order, for the assembly's W. A wheel takes its axis from
+  // spin_axis when set (the clean form), else the third column of its mounting DCM.
+  std::vector<Eigen::Vector3d> wheel_axes;
   std::set<std::string> names;
   for (const std::vector<UnitConfig>* suite : {&spacecraft.sensors, &spacecraft.actuators}) {
     for (const UnitConfig& unit : *suite) {
@@ -120,6 +123,8 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
         }
         out.wheels.push_back(
             {unit.name, unit.model_id, unit.mounting_dcm, actuators::ReactionWheel(spec)});
+        wheel_axes.push_back(unit.spin_axis.norm() > 0.0 ? unit.spin_axis
+                                                         : unit.mounting_dcm.col(2));
       } else if (unit.kind == "magnetorquer") {
         const auto spec = actuators::MagnetorquerSpec::fromParams(unit.params);
         if (!(spec.max_dipole_am2 > 0.0)) {
@@ -132,6 +137,9 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
       }
     }
   }
+
+  // Consolidate the wheel geometry into the assembly's W (empty if no wheels).
+  out.rw_assembly = actuators::RwAssembly::fromAxes(wheel_axes);
   return true;
 }
 

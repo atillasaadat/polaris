@@ -72,6 +72,7 @@ add_library(polaris::sensors ALIAS polaris_sensors)
 # residual + hysteresis). Fault-injection hooks are built in for the FDIR suite.
 add_library(polaris_actuators
   actuators/reaction_wheel.cpp
+  actuators/rw_assembly.cpp
   actuators/magnetorquer.cpp)
 target_include_directories(polaris_actuators PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_actuators

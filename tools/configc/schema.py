@@ -72,6 +72,15 @@ class MountedUnit(_Strict):
         default=None,
         description="unit→body rotation, row-major 3x3; identity if omitted",
     )
+    spin_axis: Vec3 | None = Field(
+        default=None,
+        description=(
+            "reaction-wheel/CMG spin axis in the body frame (need not be unit — it "
+            "is normalised). The clean way to place a wheel: only the spin "
+            "direction matters, not a full orientation. Populates the assembly's W "
+            "matrix (design doc §7). Ignored for sensors, which use mounting_dcm"
+        ),
+    )
 
 
 class InertiaTensor(_Strict):

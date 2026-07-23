@@ -28,6 +28,7 @@ add_executable(polaris_unit_tests
   sim_sensors_star_tracker_test.cpp
   sim_sensors_sun_sensor_test.cpp
   sim_actuators_test.cpp
+  sim_actuators_rw_assembly_test.cpp
   sim_sensors_gnss_jamming_test.cpp
   sim_scenario_gnss_faults_test.cpp
   sim_vehicle_test.cpp)

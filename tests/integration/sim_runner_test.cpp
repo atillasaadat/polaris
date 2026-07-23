@@ -410,7 +410,7 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
         "actuators": [
           {"name": "rw_1", "model_id": "RW-X", "kind": "reaction_wheel",
            "params": {"max_torque_nm": 0.1, "max_momentum_nms": 0.4, "max_speed_rpm": 6000.0},
-           "mounting_dcm_row_major": [0, 0, 1, 0, 1, 0, -1, 0, 0]},
+           "spin_axis": [0.0, 0.0, 2.0]},
           {"name": "mtq_x", "model_id": "MTQ-GENERIC", "kind": "magnetorquer",
            "params": {"max_dipole_am2": 15.0, "residual_dipole_am2": 0.5},
            "mounting_dcm_row_major": null},
@@ -454,8 +454,9 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
   EXPECT_EQ(config.environment.gnss_fault_events[0].type, scenario::GnssFaultEvent::Type::kOutage);
   EXPECT_EQ(config.environment.gnss_fault_events[1].type, scenario::GnssFaultEvent::Type::kSpoof);
   EXPECT_DOUBLE_EQ(config.environment.gnss_fault_events[1].spoof_offset_ecef_m.x(), 500.0);
-  // A 90° mounting about +y: the wheel's spin axis lies along body -x.
-  EXPECT_NEAR(config.spacecraft.actuators[0].mounting_dcm(0, 2), 1.0, 1e-15);
+  // The wheel's spin axis parses through verbatim (not yet normalised — the
+  // assembly does that).
+  EXPECT_DOUBLE_EQ(config.spacecraft.actuators[0].spin_axis.z(), 2.0);
 
   scenario::Vehicle vehicle;
   ASSERT_TRUE(scenario::buildVehicle(config.spacecraft, config.seed, vehicle, &error)) << error;
@@ -465,6 +466,9 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
   EXPECT_EQ(vehicle.magnetometers.size(), 1u);
   EXPECT_EQ(vehicle.wheels.size(), 1u);
   EXPECT_EQ(vehicle.magnetorquers.size(), 1u);
+  // The single wheel's axis is normalised into W: the raw [0,0,2] becomes +z.
+  ASSERT_EQ(vehicle.rw_assembly.size(), 1);
+  EXPECT_NEAR(vehicle.rw_assembly.matrix()(2, 0), 1.0, 1e-12);
   // The thruster has no truth model yet, so it is reported rather than dropped.
   ASSERT_EQ(vehicle.unmodelled.size(), 1u);
   EXPECT_EQ(vehicle.unmodelled[0], "acs_1:thruster");

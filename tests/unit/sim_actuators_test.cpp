@@ -60,6 +60,68 @@ TEST(ReactionWheel, TorqueBoxClampsCommand) {
   EXPECT_NEAR(out.reaction_torque_nm, -1.0, 1e-9);
 }
 
+TEST(ReactionWheel, SpeedModeReachesAndHoldsTheTarget) {
+  // Ideal inner loop (no gain): the drive asks for whatever torque the box allows
+  // to reach the target, then holds it. With inertia 1e-3 and a 1 N·m box it slews
+  // 10 rad/s per 10 ms step, so 50 rad/s is reached in ~5 steps and held after.
+  act::ReactionWheel rw(idealWheel());
+  rw.commandSpeed(50.0);
+  const double dt = 0.01;
+  for (int i = 0; i < 20; ++i) {
+    rw.step(dt);
+  }
+  EXPECT_NEAR(rw.speed(), 50.0, 1e-9);
+  // Held: at target the reaction torque is zero (no friction to fight here).
+  const auto out = rw.step(dt);
+  EXPECT_NEAR(rw.speed(), 50.0, 1e-9);
+  EXPECT_NEAR(out.reaction_torque_nm, 0.0, 1e-9);
+}
+
+TEST(ReactionWheel, SpeedModeHoldsAgainstFriction) {
+  // With bearing friction the ideal loop feed-forwards it, so the wheel still
+  // holds the exact target and delivers a steady holding torque, not droop.
+  act::ReactionWheelSpec spec = idealWheel();
+  spec.dry_friction_nm = 1.0e-4;
+  act::ReactionWheel rw(spec);
+  rw.commandSpeed(50.0);
+  const double dt = 0.01;
+  for (int i = 0; i < 40; ++i) {
+    rw.step(dt);
+  }
+  EXPECT_NEAR(rw.speed(), 50.0, 1e-6);
+}
+
+TEST(ReactionWheel, FiniteBandwidthSpeedLoopHasDroop) {
+  // A configured gain models a real finite-bandwidth loop: against friction it
+  // settles just below the target (steady-state droop = friction / gain).
+  act::ReactionWheelSpec spec = idealWheel();
+  spec.dry_friction_nm = 1.0e-4;
+  spec.speed_loop_gain_nm_per_rad_s = 1.0e-3;
+  act::ReactionWheel rw(spec);
+  rw.commandSpeed(50.0);
+  const double dt = 0.01;
+  for (int i = 0; i < 2000; ++i) {
+    rw.step(dt);
+  }
+  EXPECT_LT(rw.speed(), 50.0);  // droops below target
+  EXPECT_GT(rw.speed(), 49.5);  // but tracks closely
+  EXPECT_NEAR(rw.speed(), 50.0 - spec.dry_friction_nm / spec.speed_loop_gain_nm_per_rad_s, 1e-3);
+}
+
+TEST(ReactionWheel, CommandingTorqueLeavesSpeedMode) {
+  act::ReactionWheel rw(idealWheel());
+  rw.commandSpeed(50.0);
+  for (int i = 0; i < 20; ++i) {
+    rw.step(0.01);
+  }
+  ASSERT_NEAR(rw.speed(), 50.0, 1e-9);
+  // Back to torque mode: a zero torque command coasts (no speed regulation).
+  rw.commandTorque(0.0);
+  const auto out = rw.step(0.01);
+  EXPECT_NEAR(out.reaction_torque_nm, 0.0, 1e-9);
+  EXPECT_NEAR(rw.speed(), 50.0, 1e-9);  // coasts at speed, not held by a loop
+}
+
 TEST(ReactionWheel, SaturatesAtSpeedCeilingAndDeliversLessTorque) {
   act::ReactionWheelSpec spec = idealWheel();
   spec.max_speed_rad_s = 5.0;  // low ceiling

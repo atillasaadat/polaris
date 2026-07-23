@@ -60,6 +60,12 @@ struct ReactionWheelSpec {
   double static_imbalance_kg_m = 0.0;    ///< Us: radial force = Us·ω²
   double dynamic_imbalance_kg_m2 = 0.0;  ///< Ud: radial torque = Ud·ω²
   double idle_power_w = 0.0;             ///< housekeeping power draw
+  /// Proportional gain of the wheel's onboard speed loop [N·m/(rad/s)], used only
+  /// in speed-command mode. 0 selects the **ideal inner loop** (the drive commands
+  /// whatever torque the box allows to reach the target this step) — the right
+  /// default when the wheel's kHz loop is far faster than the ACS step. A positive
+  /// gain models a finite-bandwidth loop, which tracks with a steady-state droop.
+  double speed_loop_gain_nm_per_rad_s = 0.0;
 
   /// Rotor inertia, using max_momentum/max_speed when not set explicitly.
   double inertia() const {
@@ -91,9 +97,22 @@ class ReactionWheel {
  public:
   explicit ReactionWheel(const ReactionWheelSpec& spec) : spec_(spec), inertia_(spec.inertia()) {}
 
-  /// Command a motor torque [N·m] (the primary control interface). Speed/momentum
-  /// modes are the wheel's onboard loops and reduce to a torque command upstream.
-  void commandTorque(double torque_nm) { commanded_torque_ = torque_nm; }
+  /// Command a motor torque [N·m] (torque mode). This is the interface a
+  /// torque-authority ACS uses, and what the allocation layer (§8.5) drives.
+  void commandTorque(double torque_nm) {
+    mode_ = Mode::kTorque;
+    commanded_torque_ = torque_nm;
+  }
+
+  /// Command a rotor speed [rad/s] (speed mode). Real wheels expose this as a
+  /// selectable onboard mode: the drive's local loop supplies whatever torque —
+  /// within the torque box — reaches and holds the target, rejecting friction.
+  /// The plant behaves differently than in torque mode (torque becomes an
+  /// internal variable), which is why it is modelled here rather than upstream.
+  void commandSpeed(double speed_rad_s) {
+    mode_ = Mode::kSpeed;
+    commanded_speed_ = speed_rad_s;
+  }
 
   /// Advance the rotor by @p dt seconds (dt > 0) and return the delivered reaction
   /// torque, telemetry, and imbalance disturbances at the new rotor phase.
@@ -124,11 +143,15 @@ class ReactionWheel {
   /// Bearing friction torque opposing the current spin (magnitude·−sign(ω)).
   double frictionTorque() const;
 
+  enum class Mode { kTorque, kSpeed };
+
   ReactionWheelSpec spec_;
   double inertia_ = 0.0;
   double speed_ = 0.0;  ///< rotor speed [rad/s]
   double angle_ = 0.0;  ///< rotor phase [rad], for imbalance
+  Mode mode_ = Mode::kTorque;
   double commanded_torque_ = 0.0;
+  double commanded_speed_ = 0.0;
   bool fault_stuck_ = false;
   bool fault_runaway_ = false;
   double runaway_sign_ = 1.0;

@@ -30,6 +30,7 @@
 
 #include "actuators/magnetorquer.hpp"
 #include "actuators/reaction_wheel.hpp"
+#include "actuators/rw_assembly.hpp"
 #include "scenario/sim_config.hpp"
 #include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
@@ -58,6 +59,11 @@ struct Vehicle {
   std::vector<MountedModel<sensors::Gnss>> gnss_receivers;
   std::vector<MountedModel<actuators::ReactionWheel>> wheels;
   std::vector<MountedModel<actuators::Magnetorquer>> magnetorquers;
+
+  /// The wheel array's distribution matrix W (§7), columns = each wheel's spin
+  /// axis in body frame, in `wheels` order. Empty when there are no wheels. Use
+  /// it to turn per-wheel torques/momenta into their body-frame totals.
+  actuators::RwAssembly rw_assembly;
 
   /// Units the config asked for that have no truth model yet (e.g. a thruster),
   /// as "name:kind". Reported rather than dropped: a scenario
