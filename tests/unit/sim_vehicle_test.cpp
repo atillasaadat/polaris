@@ -122,6 +122,41 @@ TEST(Vehicle, ParamsChangeTheFlownHardware) {
       << "a lighter rotor must accelerate faster under the same torque";
 }
 
+TEST(Vehicle, BuildsTheWheelAssemblyFromSpinAxes) {
+  // A body-diagonal 4-wheel pyramid: each wheel carries its spin axis, and the
+  // builder consolidates them into W (columns in wheels order), spanning 3 axes.
+  const double s = 1.0 / std::sqrt(3.0);
+  const Eigen::Vector3d axes[4] = {{s, s, s}, {-s, s, s}, {-s, -s, s}, {s, -s, s}};
+  scenario::SpacecraftConfig sc;
+  for (int i = 0; i < 4; ++i) {
+    scenario::UnitConfig u = wheelUnit("rw_" + std::to_string(i + 1), 0.4);
+    u.spin_axis = axes[i];
+    sc.actuators.push_back(u);
+  }
+
+  scenario::Vehicle v;
+  std::string error;
+  ASSERT_TRUE(scenario::buildVehicle(sc, 1, v, &error)) << error;
+  ASSERT_EQ(v.wheels.size(), 4u);
+  ASSERT_EQ(v.rw_assembly.size(), 4);
+  EXPECT_TRUE(v.rw_assembly.spansThreeAxes());
+  // Column order matches wheel order, and the axes are unit.
+  EXPECT_NEAR(v.rw_assembly.matrix().col(0).x(), s, 1e-12);
+  EXPECT_NEAR(v.rw_assembly.matrix().col(0).norm(), 1.0, 1e-12);
+}
+
+TEST(Vehicle, WheelAssemblyFallsBackToTheMountingColumn) {
+  // With no spin_axis, the wheel's axis is the third column of its mounting DCM
+  // (default identity → +z). Four such wheels are collinear and cannot span.
+  scenario::SpacecraftConfig sc;
+  sc.actuators = {wheelUnit("rw_1", 0.4), wheelUnit("rw_2", 0.4), wheelUnit("rw_3", 0.4)};
+  scenario::Vehicle v;
+  ASSERT_TRUE(scenario::buildVehicle(sc, 1, v, nullptr));
+  ASSERT_EQ(v.rw_assembly.size(), 3);
+  EXPECT_FALSE(v.rw_assembly.spansThreeAxes());  // all +z
+  EXPECT_NEAR(v.rw_assembly.matrix().col(0).z(), 1.0, 1e-12);
+}
+
 TEST(Vehicle, UnmodelledKindsAreReportedNotDropped) {
   scenario::UnitConfig thruster;
   thruster.name = "acs_1";

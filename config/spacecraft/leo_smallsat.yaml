@@ -29,15 +29,19 @@ spacecraft:
       model_id: MAG-GENERIC
     - name: gps_a                     # GNSS PVT fix -> onboard OD (§8.3)
       model_id: NOVATEL-OEM7600
-  actuators:                        # pyramidal 4-wheel set
-    - name: rw_1
-      model_id: RW-X
+  actuators:                        # pyramidal 4-wheel set: spin axes = body
+    - name: rw_1                    # diagonals [±1,±1,1]/√3, so any 3 wheels give
+      model_id: RW-X                # 3-axis control (§7 W-matrix assembly)
+      spin_axis: [0.57735, 0.57735, 0.57735]
     - name: rw_2
       model_id: RW-X
+      spin_axis: [-0.57735, 0.57735, 0.57735]
     - name: rw_3
       model_id: RW-X
+      spin_axis: [-0.57735, -0.57735, 0.57735]
     - name: rw_4
       model_id: RW-X
+      spin_axis: [0.57735, -0.57735, 0.57735]
     - name: mtq_x                   # 3-axis torque rod set (detumble + desaturation)
       model_id: MTQ-GENERIC
     - name: mtq_y

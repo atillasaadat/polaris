@@ -199,6 +199,24 @@ bool readUnits(const json& parent, const char* key, const std::string& role,
                     role + " '" + unit.name + "' mounting_dcm_row_major is not a proper rotation");
       }
     }
+
+    // Spin axis is optional and emitted null when unset. Need not be unit — the
+    // assembly normalises it — but a zero vector is a wheel with no axis.
+    const auto axis = entry.find("spin_axis");
+    if (axis != entry.end() && !axis->is_null()) {
+      if (!axis->is_array() || axis->size() != 3) {
+        return fail(error, role + " '" + unit.name + "' spin_axis must be a 3-element array");
+      }
+      for (std::size_t i = 0; i < 3; ++i) {
+        if (!(*axis)[i].is_number()) {
+          return fail(error, role + " '" + unit.name + "' spin_axis is non-numeric");
+        }
+        unit.spin_axis(static_cast<Eigen::Index>(i)) = (*axis)[i].get<double>();
+      }
+      if (unit.spin_axis.norm() < 1.0e-9) {
+        return fail(error, role + " '" + unit.name + "' spin_axis is a zero vector");
+      }
+    }
     out.push_back(std::move(unit));
   }
   return true;

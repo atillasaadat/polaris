@@ -467,6 +467,12 @@ def test_sim_setup_carries_the_resolved_hardware_suites(tmp_path):
     assert kinds.count("magnetorquer") == 3
     wheel = sc["actuators"][0]
     assert wheel["params"]["max_momentum_nms"] > 0.0
+    # The four wheels carry distinct spin axes (a real pyramid, not collinear), so
+    # the sim's W matrix spans three axes. The z components share a sign; x/y differ.
+    wheels = [u for u in sc["actuators"] if u["kind"] == "reaction_wheel"]
+    axes = [u["spin_axis"] for u in wheels]
+    assert all(a is not None for a in axes)
+    assert len({tuple(a) for a in axes}) == 4  # four distinct directions
     # Every emitted unit must be usable: an empty param map is rejected by the
     # C++ side rather than building an ideal, unlimited device.
     assert all(u["params"] for u in sc["sensors"] + sc["actuators"])

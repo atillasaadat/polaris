@@ -33,6 +33,7 @@ ReactionWheelSpec ReactionWheelSpec::fromParams(const std::map<std::string, doub
   s.static_imbalance_kg_m = get(p, "static_imbalance_kg_m");
   s.dynamic_imbalance_kg_m2 = get(p, "dynamic_imbalance_kg_m2");
   s.idle_power_w = get(p, "idle_power_w");
+  s.speed_loop_gain_nm_per_rad_s = get(p, "speed_loop_gain_nm_per_rad_s");
   return s;
 }
 
@@ -51,12 +52,26 @@ ReactionWheelOutput ReactionWheel::step(double dt) {
     return out;
   }
 
-  // 1. Resolve the motor torque request, honouring faults and the torque box.
+  // Bearing friction (pre-step speed), needed both by the dynamics and by the
+  // speed-loop feedforward below.
+  const double friction = frictionTorque();
+
+  // 1. Resolve the motor torque request, honouring faults, the command mode, and
+  //    the torque box.
   double motor_torque = commanded_torque_;
   if (fault_stuck_) {
     motor_torque = 0.0;  // drive off; only friction acts
   } else if (fault_runaway_) {
     motor_torque = runaway_sign_ * spec_.max_torque_nm;
+  } else if (mode_ == Mode::kSpeed && inertia_ > 0.0) {
+    // Onboard speed loop. With a configured gain it is a finite-bandwidth P loop;
+    // otherwise the ideal inner loop asks for the torque that reaches the target
+    // this step (net I·Δω/dt), with a friction feedforward so it holds at target.
+    // Either way the torque box below is the real limit on authority.
+    const double speed_error = commanded_speed_ - speed_;
+    motor_torque = (spec_.speed_loop_gain_nm_per_rad_s > 0.0)
+                       ? spec_.speed_loop_gain_nm_per_rad_s * speed_error
+                       : inertia_ * speed_error / dt - friction;
   }
   if (spec_.max_torque_nm > 0.0) {
     motor_torque = std::clamp(motor_torque, -spec_.max_torque_nm, spec_.max_torque_nm);
@@ -67,7 +82,6 @@ ReactionWheelOutput ReactionWheel::step(double dt) {
   }
 
   // 2. Rotor dynamics: I·ω̇ = motor torque − bearing friction.
-  const double friction = frictionTorque();
   double omega_dot = (inertia_ > 0.0) ? (motor_torque + friction) / inertia_ : 0.0;
   double new_speed = speed_ + omega_dot * dt;
 
