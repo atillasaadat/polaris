@@ -73,8 +73,7 @@ TEST(RwAssembly, CollinearWheelsDoNotSpan) {
 }
 
 TEST(RwAssembly, TwoWheelsCannotSpan) {
-  const auto a =
-      act::RwAssembly::fromAxes({Eigen::Vector3d::UnitX(), Eigen::Vector3d::UnitY()});
+  const auto a = act::RwAssembly::fromAxes({Eigen::Vector3d::UnitX(), Eigen::Vector3d::UnitY()});
   EXPECT_FALSE(a.spansThreeAxes());  // fewer than 3 wheels
 }
 

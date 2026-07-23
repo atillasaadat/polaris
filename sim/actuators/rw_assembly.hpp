@@ -39,6 +39,7 @@ class RwAssembly {
 
   /// Number of wheels (columns of W).
   [[nodiscard]] int size() const { return static_cast<int>(w_.cols()); }
+
   [[nodiscard]] bool empty() const { return w_.cols() == 0; }
 
   /// The 3×N distribution matrix.
