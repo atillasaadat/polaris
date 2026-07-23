@@ -517,6 +517,21 @@ def test_unknown_config_key_is_rejected():
         Config.model_validate(bad)
 
 
+def test_third_bodies_accept_planets_and_reject_unknowns():
+    # Planetary perturbers (DE440 barycenters) are config-selectable; anything
+    # outside the modelled set fails at the boundary, not at sim load.
+    good = _minimal_config_dict()
+    good["scenario"]["environment"] = {
+        "third_bodies": ["sun", "moon", "jupiter", "venus"]
+    }
+    Config.model_validate(good)  # must not raise
+
+    bad = _minimal_config_dict()
+    bad["scenario"]["environment"] = {"third_bodies": ["sun", "pluto"]}
+    with pytest.raises(ValidationError):
+        Config.model_validate(bad)
+
+
 def test_gnss_fault_event_validation():
     # A back-to-front window is a scenario authoring error, caught at the boundary.
     bad = _minimal_config_dict()

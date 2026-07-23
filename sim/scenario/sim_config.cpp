@@ -8,6 +8,7 @@
 
 #include "math/quaternion.hpp"
 #include "time/utc.hpp"
+#include "world/ephemeris_file.hpp"
 
 namespace polaris::sim::scenario {
 namespace {
@@ -107,6 +108,17 @@ bool parseUtc(const std::string& text, time::UtcDateTime& out, std::string* erro
     return fail(error, "epoch_utc '" + text + "' is not a valid calendar instant");
   }
   return true;
+}
+
+/// Whether @p name is a planet the ephemeris fixture can carry
+/// (`world::kPlanetNames`) — the same set the Python schema's Literal admits.
+bool isKnownPlanet(const std::string& name) {
+  for (const char* planet : world::kPlanetNames) {
+    if (name == planet) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool parseAtmosphere(const std::string& name, AtmosphereModel& out, std::string* error) {
@@ -396,6 +408,8 @@ bool readEnvironment(const json& root, EnvironmentConfig& out, std::string* erro
         out.sun_third_body = true;
       } else if (name == "moon") {
         out.moon_third_body = true;
+      } else if (isKnownPlanet(name)) {
+        out.planet_third_bodies.push_back(name);
       } else {
         return fail(error, "unsupported third body '" + name + "'");
       }

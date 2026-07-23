@@ -49,8 +49,24 @@ namespace bodies {
 /// Heliocentric gravitational constant GM_sun [m^3/s^2] (DE440).
 inline constexpr double kSunGM = 1.327'124'400'412'794'19e20;
 
-/// Selenocentric gravitational constant GM_moon [m^3/s^2] (DE440).
-inline constexpr double kMoonGM = 4.902'800'066'163'796e12;
+/// Selenocentric gravitational constant GM_moon [m^3/s^2] (DE440,
+/// NAIF gm_de440.tpc BODY301_GM). The previous value here (4.902800066...e12)
+/// was DE430's, mislabelled as DE440 — 1e-8 relative, physically irrelevant,
+/// but the provenance claim was wrong.
+inline constexpr double kMoonGM = 4.902'800'118'457'55e12;
+
+/// Planetary gravitational parameters [m^3/s^2] (DE440: Park et al. 2021,
+/// machine-readable in NAIF gm_de440.tpc as km^3/s^2, converted here once).
+/// Values are the **barycenter/system** GM (planet + satellites) — the right
+/// mass for a point-mass perturbation acting from planetary distance, where the
+/// system is unresolved.
+inline constexpr double kMercuryGM = 2.203'186'855'14e13;
+inline constexpr double kVenusGM = 3.248'585'92e14;
+inline constexpr double kMarsGM = 4.282'837'581'575'61e13;    ///< Mars system
+inline constexpr double kJupiterGM = 1.267'127'641'0e17;      ///< Jupiter system
+inline constexpr double kSaturnGM = 3.794'058'484'18e16;      ///< Saturn system
+inline constexpr double kUranusGM = 5.794'556'4e15;           ///< Uranus system
+inline constexpr double kNeptuneGM = 6.836'527'100'580'4e15;  ///< Neptune system
 
 /// Astronomical unit [m] (IAU 2012 defining value, exact).
 inline constexpr double kAstronomicalUnit = 1.495'978'707e11;

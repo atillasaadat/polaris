@@ -1,5 +1,6 @@
 #include "scenario/sim_runner.hpp"
 
+#include <array>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
@@ -50,7 +51,7 @@ SimRunner::SimRunner() = default;
 SimRunner::~SimRunner() = default;
 
 DataPaths DataPaths::under(const std::string& root) {
-  return DataPaths{root + "/finals.all.iau2000.txt", root + "/de440_sun_moon.cheb",
+  return DataPaths{root + "/finals.all.iau2000.txt", root + "/de440_bodies.cheb",
                    root + "/igrf14coeffs.txt", root + "/EGM2008_to200.gfc", root + "/SW-All.csv"};
 }
 
@@ -110,8 +111,10 @@ bool SimRunner::build(const SimConfig& config, const DataPaths& paths, std::stri
     }
   }
 
-  // Sun and Moon positions feed third-body gravity, SRP, and eclipse alike.
-  const bool needs_ephemeris = env.sun_third_body || env.moon_third_body || env.srp_enabled;
+  // Sun and Moon positions feed third-body gravity, SRP, and eclipse alike;
+  // planetary perturbers ride the same fixture.
+  const bool needs_ephemeris = env.sun_third_body || env.moon_third_body || env.srp_enabled ||
+                               !env.planet_third_bodies.empty();
   if (needs_ephemeris) {
     d.ephemeris = std::make_unique<world::EphemerisSet>();
     if (!world::loadEphemerisFile(paths.ephemeris, *d.ephemeris, error)) {
@@ -154,13 +157,36 @@ bool SimRunner::build(const SimConfig& config, const DataPaths& paths, std::stri
   }
 
   // --- Third body ----------------------------------------------------------
-  if (env.sun_third_body || env.moon_third_body) {
+  if (env.sun_third_body || env.moon_third_body || !env.planet_third_bodies.empty()) {
     d.third_body = std::make_unique<world::ThirdBodyGravity>();
     if (env.sun_third_body) {
       d.third_body->addBody(constants::bodies::kSunGM, world::bodyPositionFn(d.ephemeris->sun));
     }
     if (env.moon_third_body) {
       d.third_body->addBody(constants::bodies::kMoonGM, world::bodyPositionFn(d.ephemeris->moon));
+    }
+    // DE440 system GMs, parallel to world::kPlanetNames (Mercury → Neptune).
+    static constexpr std::array<double, 7> kPlanetGMs = {
+        constants::bodies::kMercuryGM, constants::bodies::kVenusGM,  constants::bodies::kMarsGM,
+        constants::bodies::kJupiterGM, constants::bodies::kSaturnGM, constants::bodies::kUranusGM,
+        constants::bodies::kNeptuneGM};
+    for (const std::string& name : env.planet_third_bodies) {
+      const world::SimEphemerisTable* table = d.ephemeris->find(name);
+      // The config layer already validated the name; what can still go wrong is
+      // an old Sun/Moon-only fixture, which loads fine but has no segments for
+      // the planet. An empty table would silently skip the perturbation on
+      // every epoch, so refuse loudly instead.
+      if (table == nullptr || table->size() == 0) {
+        return fail(error, "third body '" + name +
+                               "' is not in the ephemeris fixture — regenerate it with "
+                               "tools/ephem (de440_bodies.cheb carries the planets)");
+      }
+      for (std::size_t i = 0; i < world::kPlanetNames.size(); ++i) {
+        if (name == world::kPlanetNames[i]) {
+          d.third_body->addBody(kPlanetGMs[i], world::bodyPositionFn(*table));
+          break;
+        }
+      }
     }
     composite_->add(d.third_body.get());
   }

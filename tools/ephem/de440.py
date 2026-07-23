@@ -1,4 +1,4 @@
-"""Fit geocentric Sun/Moon Chebyshev segments from a JPL DE440 SPK kernel.
+"""Fit geocentric Chebyshev segments (Sun, Moon, planetary barycenters) from a JPL DE440 SPK kernel.
 
 Ground-side only (design doc §11.3, §3.7). NAIF publishes DE440 as a binary SPK
 (`.bsp`) covering 1550–2650 (`de440.bsp`, ~114 MB) or 1849–2150 (`de440s.bsp`,
@@ -48,6 +48,20 @@ _SUN = 10
 _MOON = 301
 _EARTH = 399
 
+#: Planetary *barycenters* by name — what `de440s.bsp` actually carries for the
+#: planets (SSB→barycenter segments). For a third-body perturbation seen from
+#: Earth orbit the barycenter is the right point: the planet+moons system is
+#: unresolved at that distance, matching the system GM in `lib/constants`.
+PLANETS: dict[str, int] = {
+    "mercury": 1,
+    "venus": 2,
+    "mars": 4,
+    "jupiter": 5,
+    "saturn": 6,
+    "uranus": 7,
+    "neptune": 8,
+}
+
 # Julian Date of 1970-01-01T00:00:00, the uniform-scale epoch `time::Instant`
 # counts from (constants::time::kJulianDate1970).
 _JD_1970 = 2_440_587.5
@@ -91,9 +105,13 @@ def _geocentric_km(kernel, body: int, jd: np.ndarray) -> np.ndarray:
         # Both legs are already EMB-relative, so the barycentre cancels exactly
         # and never enters the arithmetic.
         return kernel[_EMB, _MOON].compute(jd) - kernel[_EMB, _EARTH].compute(jd)
+    earth = kernel[_SSB, _EMB].compute(jd) + kernel[_EMB, _EARTH].compute(jd)
     if body == _SUN:
-        earth = kernel[_SSB, _EMB].compute(jd) + kernel[_EMB, _EARTH].compute(jd)
         return kernel[_SSB, _SUN].compute(jd) - earth
+    if body in PLANETS.values():
+        # Planetary barycenters are SSB-relative in de440s; geocentric is the
+        # difference against the same Earth chain the Sun uses.
+        return kernel[_SSB, body].compute(jd) - earth
     raise ValueError(f"unsupported body code {body}")
 
 

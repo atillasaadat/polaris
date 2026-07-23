@@ -85,7 +85,7 @@ scenario:
     gravity_degree: 8
     drag_enabled: true
     srp_enabled: true
-    third_bodies: [sun, moon]
+    third_bodies: [sun, moon]     # planets (mercury..neptune, DE440 barycenters) available; ~1e-7 of the lunar term in LEO
     atmosphere: exponential
     magnetic_field: igrf
     eclipse_enabled: true

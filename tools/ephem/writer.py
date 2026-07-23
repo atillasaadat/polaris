@@ -44,7 +44,7 @@ def write_fixture(
 ) -> None:
     """Write the fixture, provenance header first."""
     lines = [
-        "# Polaris geocentric Sun/Moon Chebyshev ephemeris fit.",
+        "# Polaris geocentric solar-system-body Chebyshev ephemeris fit (Sun, Moon, planets).",
         "#",
         "# DERIVED PRODUCT (design doc SS3.7): computed from the JPL DE440 SPK kernel",
         "# below, which is a fetch input and is NOT committed. Regenerate with:",

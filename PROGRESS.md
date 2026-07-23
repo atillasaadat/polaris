@@ -8,7 +8,7 @@ lives in the merged PR descriptions and the design doc's "Implemented (Push N)"
 notes — this tracker stays a rollup so it cannot rot the way a narrative does.
 
 **Current phase:** Phase 2 — Sensor & actuator models (complete except CMGs/thrusters); Phase 3 (F´ SITL) next
-**Last updated:** Push 28 (holistic audit + documentation standard)
+**Last updated:** Push 29 (planetary third-body perturbers)
 
 ---
 
@@ -36,8 +36,8 @@ notes — this tracker stays a rollup so it cannot rot the way a narrative does.
 | §2.4 macro-step loop (`sim/io`): sensors/actuators bound into the running plant | ⬜ Phase 3, with the F´ SITL transport |
 | FSW GNC components, estimators, control | ⬜ Phase 3+ |
 
-**Test gates (all green):** 375 C++ unit (ASan/UBSan) · 16 integration ·
-4 GMAT golden · 84 Python (config compiler, GMAT harness, space weather, orbit) ·
+**Test gates (all green):** 378 C++ unit (ASan/UBSan) · 17 integration ·
+4 GMAT golden · 85 Python (config compiler, GMAT harness, space weather, orbit) ·
 docs `-W` (bibliography + requirements traceability) · pre-commit
 (clang-format + ruff) · F´ flight build.
 
@@ -82,7 +82,8 @@ Phase 2 — Sensor & actuator models
 | 25 | #27 | GNSS PVT-fix receiver (NovAtel OEM7600) + geographic jamming KML + scheduled fault events |
 | 26 | #28 | RW assembly (W-matrix, `spin_axis` config) + wheel-local speed command mode |
 | 27 | #29 | Sensor-noise master switch + per-unit overrides |
-| 28 | — | Holistic audit: config-pipeline fixes (`com_m`, `gravity_order`, defaults, validation), §-reference sweep, refs.bib completion, documentation standard (§21.3) + per-folder READMEs |
+| 28 | #30 | Holistic audit: config-pipeline fixes (`com_m`, `gravity_order`, defaults, validation), §-reference sweep, refs.bib completion, documentation standard (§21.3) + per-folder READMEs |
+| 29 | #31 | Planetary third-body perturbers (Mercury→Neptune, DE440 barycenters/system GMs) config-selectable; ephemeris fixture regenerated with all nine bodies |
 
 ---
 

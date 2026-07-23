@@ -202,9 +202,26 @@ class Environment(_Strict):
     )
     drag_enabled: bool = True
     srp_enabled: bool = True
-    third_bodies: list[Literal["sun", "moon"]] = Field(
+    third_bodies: list[
+        Literal[
+            "sun",
+            "moon",
+            "mercury",
+            "venus",
+            "mars",
+            "jupiter",
+            "saturn",
+            "uranus",
+            "neptune",
+        ]
+    ] = Field(
         default_factory=lambda: ["sun", "moon"],
-        description="third-body point-mass perturbers",
+        description=(
+            "third-body point-mass perturbers. Sun and Moon dominate for Earth "
+            "orbits; the planets (DE440 barycenters, system GMs) are available "
+            "for completeness studies — Jupiter and Venus are the largest, at "
+            "~1e-7 of the lunar term for LEO"
+        ),
     )
     atmosphere: Literal["exponential", "nrlmsis"] = Field(
         default="exponential", description="density model backing the drag force"
