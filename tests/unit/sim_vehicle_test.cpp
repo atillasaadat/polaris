@@ -57,7 +57,10 @@ scenario::UnitConfig starTrackerUnit(const std::string& name) {
   u.name = name;
   u.model_id = "TEST-ST";
   u.kind = "star_tracker";
-  u.params = {{"cross_axis_arcsec", 5.0}, {"boresight_arcsec", 30.0}, {"fov_deg", 15.0}};
+  u.params = {{"temporal_noise_xy_arcsec_3sigma", 11.0},
+              {"temporal_noise_z_arcsec_3sigma", 70.0},
+              {"fov_deg", 15.0},
+              {"earth_exclusion_deg", 22.0}};
   return u;
 }
 
@@ -151,18 +154,31 @@ TEST(Vehicle, StarTrackerBoresightComesFromTheMounting) {
   EXPECT_TRUE(v.star_trackers[0].model.boresightBody().isApprox(Eigen::Vector3d::UnitX()));
 }
 
-TEST(Vehicle, RejectsAStarTrackerWithNoFieldOfView) {
-  // Without a FOV the Earth keep-out collapses to zero and the tracker solves
-  // happily while pointed at the ground.
+TEST(Vehicle, RejectsAStarTrackerWithNoEarthConstraint) {
+  // With neither a FOV nor an exclusion angle the Earth keep-out collapses to
+  // zero and the tracker solves happily while pointed at the ground.
   scenario::UnitConfig st = starTrackerUnit("st_a");
   st.params.erase("fov_deg");
+  st.params.erase("earth_exclusion_deg");
 
   scenario::SpacecraftConfig sc;
   sc.sensors = {st};
   scenario::Vehicle v;
   std::string error;
   EXPECT_FALSE(scenario::buildVehicle(sc, 1, v, &error));
-  EXPECT_NE(error.find("fov_deg"), std::string::npos) << error;
+  EXPECT_NE(error.find("earth_exclusion_deg"), std::string::npos) << error;
+}
+
+TEST(Vehicle, AStarTrackerNeedsOnlyOneOfFovOrExclusionAngle) {
+  // Vendors quote an exclusion angle (Sodern: 22°) rather than deriving one from
+  // the field of view, so either key on its own is a complete configuration.
+  scenario::UnitConfig exclusion_only = starTrackerUnit("st_a");
+  exclusion_only.params.erase("fov_deg");
+  scenario::SpacecraftConfig sc;
+  sc.sensors = {exclusion_only};
+  scenario::Vehicle v;
+  std::string error;
+  EXPECT_TRUE(scenario::buildVehicle(sc, 1, v, &error)) << error;
 }
 
 TEST(Vehicle, RejectsDuplicateUnitNames) {

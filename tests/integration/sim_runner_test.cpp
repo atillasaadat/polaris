@@ -392,8 +392,10 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
            "params": {"gyro_arw_deg_sqrt_hr": 0.15, "gyro_range_deg_s": 400.0},
            "mounting_dcm_row_major": null},
           {"name": "st_a", "model_id": "ST-16", "kind": "star_tracker",
-           "params": {"cross_axis_arcsec": 5.0, "boresight_arcsec": 30.0, "fov_deg": 15.0,
-                      "sun_keepout_deg": 45.0, "earth_keepout_deg": 25.0},
+           "params": {"temporal_noise_xy_arcsec_3sigma": 11.0,
+                      "temporal_noise_z_arcsec_3sigma": 70.0, "fov_deg": 15.0,
+                      "sun_exclusion_deg": 35.0, "earth_exclusion_deg": 22.0,
+                      "lost_in_space_s": 3.8},
            "mounting_dcm_row_major": null},
           {"name": "ss_zp", "model_id": "SS-GENERIC", "kind": "sun_sensor",
            "params": {"fov_deg": 60.0}, "mounting_dcm_row_major": null}

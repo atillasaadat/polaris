@@ -57,11 +57,15 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
                             sensors::Imu(sensors::ImuSpec::fromParams(unit.params), seed, stream)});
       } else if (unit.kind == "star_tracker") {
         const auto spec = sensors::StarTrackerSpec::fromParams(unit.params);
-        // Without a field of view the Earth keep-out collapses to zero and the
-        // tracker solves happily while staring at the ground — a silently
-        // over-optimistic sensor is worse than a configuration error.
-        if (!(spec.fov_rad > 0.0)) {
-          return fail(error, "star tracker '" + unit.name + "' has no fov_deg");
+        // With neither a field of view nor a quoted Earth exclusion angle the
+        // Earth keep-out collapses to zero and the tracker solves happily while
+        // staring at the ground. A silently over-optimistic sensor is worse than
+        // a configuration error. Either key satisfies this — vendors quote an
+        // exclusion angle, and it is what dominates when both are present.
+        if (!(spec.keep_out.earth_rad > 0.0)) {
+          return fail(error, "star tracker '" + unit.name +
+                                 "' has neither fov_deg nor earth_exclusion_deg — it would "
+                                 "report valid solutions while pointed at the Earth");
         }
         out.star_trackers.push_back({unit.name, unit.model_id, unit.mounting_dcm,
                                      sensors::StarTracker(spec, unit.mounting_dcm, seed, stream)});

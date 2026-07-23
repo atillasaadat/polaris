@@ -1,18 +1,36 @@
 # Sinclair Interplanetary (Rocket Lab) ST-16RT2 star tracker (design doc §19.2).
 #
-# Performance-class values for the ST-16RT2. The keep-out and slew limits are
-# representative for this class where the public sheet does not quote them, and
-# should be refined against the unit spec before they gate a mission analysis.
-# Same keys as the C++ StarTrackerSpec::fromParams (sim/sensors/star_tracker.cpp).
+# Performance-class values for the ST-16RT2. Where the published sheet quotes a
+# single accuracy figure rather than the decomposed error budget a full model
+# wants, it is carried as the temporal (white) term and the spatial terms are
+# left representative for the class — the honest split, since collapsing an
+# unknown decomposition into one number would overstate how much averages down.
+# Refine against the unit spec before this gates a mission analysis. Same keys as
+# the C++ StarTrackerSpec::fromParams (sim/sensors/star_tracker.cpp).
 model_id: ST-16
 kind: star_tracker
 description: Sinclair ST-16RT2 star tracker
 params:
-  cross_axis_arcsec: 5.0     # cross-boresight accuracy, 1-sigma [arcsec]
-  boresight_arcsec: 30.0     # about-boresight accuracy, 1-sigma [arcsec]
-  update_rate_hz: 2.0        # attitude solution rate [Hz]
-  fov_deg: 15.0              # circular field of view [deg]
-  max_slew_rate_deg_s: 3.0   # solves through this rate; beyond it images smear
-  sun_keepout_deg: 45.0      # baffle exclusion half-angle from the solar limb
-  earth_keepout_deg: 25.0    # margin beyond the FOV edge to the Earth limb
-  moon_keepout_deg: 25.0     # margin from the lunar limb
+  # Published accuracy: 5 arcsec cross-boresight, 30 arcsec about it (1-sigma),
+  # carried here as 3-sigma temporal noise.
+  temporal_noise_xy_arcsec_3sigma: 15.0
+  temporal_noise_z_arcsec_3sigma: 90.0
+  # Spatial decomposition is not published for this unit — representative.
+  lf_spatial_xy_arcsec_3sigma: 9.0
+  lf_spatial_z_arcsec_3sigma: 50.0
+  hf_spatial_xy_arcsec_3sigma: 7.0
+  hf_spatial_z_arcsec_3sigma: 40.0
+  lf_spatial_correlation_s: 300.0    # modelling choice, not a datasheet value
+  hf_spatial_correlation_s: 10.0     # modelling choice
+  bias_deg: 0.008                    # representative alignment/calibration residual
+  thermo_elastic_arcsec_per_c: 2.0   # representative
+  acquisition_rate_deg_s: 0.5
+  tracking_rate_deg_s: 3.0
+  acquisition_accel_deg_s2: 0.5
+  tracking_accel_deg_s2: 1.0
+  lost_in_space_s: 10.0              # representative time to first fix
+  update_rate_hz: 2.0                # attitude solution rate
+  fov_deg: 15.0                      # circular field of view
+  sun_exclusion_deg: 45.0            # baffle exclusion half-angle from the solar limb
+  earth_exclusion_deg: 25.0          # from the Earth limb
+  moon_exclusion_deg: 25.0           # from the lunar limb

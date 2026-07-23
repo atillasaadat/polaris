@@ -123,29 +123,87 @@ def test_stim377h_catalog_entry_carries_the_full_imu_spec():
     assert required <= set(library["IMU-GENERIC"].params)
 
 
+_STAR_TRACKER_KEYS = {
+    # Spatial errors, low and high frequency, XY (cross) / Z (about boresight).
+    "lf_spatial_xy_arcsec_3sigma",
+    "lf_spatial_z_arcsec_3sigma",
+    "hf_spatial_xy_arcsec_3sigma",
+    "hf_spatial_z_arcsec_3sigma",
+    "lf_spatial_correlation_s",
+    "hf_spatial_correlation_s",
+    # White noise.
+    "temporal_noise_xy_arcsec_3sigma",
+    "temporal_noise_z_arcsec_3sigma",
+    # Fixed and thermal terms.
+    "bias_deg",
+    "thermo_elastic_arcsec_per_c",
+    # Separate acquisition and tracking envelopes, plus time to first fix.
+    "acquisition_rate_deg_s",
+    "tracking_rate_deg_s",
+    "acquisition_accel_deg_s2",
+    "tracking_accel_deg_s2",
+    "lost_in_space_s",
+    # Interfaces and geometry.
+    "update_rate_hz",
+    "fov_deg",
+    "sun_exclusion_deg",
+    "earth_exclusion_deg",
+    "moon_exclusion_deg",
+}
+
+
 def test_star_tracker_catalog_entries_carry_the_full_spec():
-    # The star tracker entries must expose every key the C++ StarTrackerSpec
-    # reads (sim/sensors/star_tracker.cpp). fov_deg in particular is required:
-    # without it the Earth keep-out collapses and buildVehicle rejects the unit.
+    # Every key the C++ StarTrackerSpec reads (sim/sensors/star_tracker.cpp) must
+    # be present, or the model silently defaults that mechanism to zero — which
+    # for a star tracker means an instrument better than any that exists.
     library = load_hardware_library(_HARDWARE)
-    st = library["ST-16"]
-    assert st.kind == "star_tracker"
-    required = {
-        "cross_axis_arcsec",
-        "boresight_arcsec",
-        "update_rate_hz",
-        "fov_deg",
-        "max_slew_rate_deg_s",
-        "sun_keepout_deg",
-        "earth_keepout_deg",
-        "moon_keepout_deg",
-    }
-    assert required <= set(st.params), sorted(required - set(st.params))
-    assert st.params["cross_axis_arcsec"] == 5.0
-    # About-boresight accuracy is the weak axis — an entry that lost that
-    # asymmetry would quietly make the tracker better than any real unit.
-    assert st.params["boresight_arcsec"] > st.params["cross_axis_arcsec"]
-    assert required <= set(library["ST-GENERIC"].params)  # template is complete
+    for model_id in ("ST-16", "ST-GENERIC", "AURIGA"):
+        entry = library[model_id]
+        assert entry.kind == "star_tracker"
+        missing = _STAR_TRACKER_KEYS - set(entry.params)
+        assert not missing, f"{model_id} missing {sorted(missing)}"
+
+
+def test_auriga_entry_matches_the_sodern_datasheet():
+    # Sodern AURIGA brochure p.5, end-of-life worst case. These are the numbers a
+    # pointing budget closes against, so a silent edit here changes a mission
+    # analysis; pinning them makes that edit fail loudly.
+    auriga = load_hardware_library(_HARDWARE)["AURIGA"]
+    p = auriga.params
+    assert p["lf_spatial_xy_arcsec_3sigma"] == 9.0
+    assert p["lf_spatial_z_arcsec_3sigma"] == 51.0
+    assert p["hf_spatial_xy_arcsec_3sigma"] == 6.6
+    assert p["hf_spatial_z_arcsec_3sigma"] == 38.0
+    assert p["temporal_noise_xy_arcsec_3sigma"] == 11.0
+    assert p["temporal_noise_z_arcsec_3sigma"] == 70.0
+    assert p["bias_deg"] == 0.017
+    assert p["thermo_elastic_arcsec_per_c"] == 1.5
+    assert p["lost_in_space_s"] == 3.8
+    assert p["sun_exclusion_deg"] == 35.0
+    assert p["earth_exclusion_deg"] == 22.0
+    # "Full Moon in the field of view: no performance degradation" — a zero here
+    # is a datasheet claim about the baffle, not a missing value.
+    assert p["moon_exclusion_deg"] == 0.0
+
+    # Acquisition is strictly the tighter envelope in both rate and acceleration.
+    # A catalog edit that inverted these would make a slew look recoverable when
+    # it is not, which is the failure mode this whole split exists to prevent.
+    assert p["acquisition_rate_deg_s"] < p["tracking_rate_deg_s"]
+    assert p["acquisition_accel_deg_s2"] < p["tracking_accel_deg_s2"]
+
+
+@pytest.mark.parametrize("model_id", ["ST-16", "ST-GENERIC", "AURIGA"])
+def test_star_tracker_about_boresight_error_is_the_weak_axis(model_id):
+    # Roll is always worse than cross-boresight, for every error mechanism. An
+    # entry that lost the asymmetry would quietly make the tracker better than
+    # any real unit and leave an estimator overconfident in roll.
+    p = load_hardware_library(_HARDWARE)[model_id].params
+    for xy, z in (
+        ("lf_spatial_xy_arcsec_3sigma", "lf_spatial_z_arcsec_3sigma"),
+        ("hf_spatial_xy_arcsec_3sigma", "hf_spatial_z_arcsec_3sigma"),
+        ("temporal_noise_xy_arcsec_3sigma", "temporal_noise_z_arcsec_3sigma"),
+    ):
+        assert p[z] > p[xy], f"{model_id}: {z} must exceed {xy}"
 
 
 def test_actuator_catalog_entries_carry_the_full_spec():

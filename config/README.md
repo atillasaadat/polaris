@@ -12,7 +12,7 @@ analysis inputs — don't hand-edit derived params.
   ```
   hardware/
   ├── imu/              # STIM300, STIM377H, generic template
-  ├── star_tracker/     # ST-16, generic template
+  ├── star_tracker/     # Sodern AURIGA, ST-16, generic template
   ├── reaction_wheel/   # RW-0.4, RW-X generic
   └── magnetorquer/     # NSS Taurus, MTQ800, generic
   ```

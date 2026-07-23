@@ -1,0 +1,69 @@
+# Sodern (ArianeGroup) AURIGA star tracker (design doc §19.2).
+#
+# Source: https://api.sodern.com/uploads/AURIGA_8_PAGE_a11f9a3724.pdf
+# (8-page product brochure). Values are the datasheet's **end-of-life worst case**
+# figures from the "Performances and robustness" table (p.5) — the numbers a
+# pointing budget has to close against, not begin-of-life typicals.
+#
+# Angular figures are quoted XY (cross-boresight) / Z (about the boresight) at
+# 3-sigma; the C++ StarTrackerSpec::fromParams divides by 3. The ~6x asymmetry is
+# real: a rotation about the boresight barely moves the identified stars.
+#
+# Configuration modelled: optical head with the standard 35 deg baffle, no
+# Auriga-Gyro software option. The gyro option raises the dynamic envelopes
+# considerably (acquisition to 4 deg/s, tracking to 10 deg/s and 10 deg/s^2) —
+# that is a different unit configuration and belongs in its own entry.
+model_id: AURIGA
+kind: star_tracker
+description: Sodern AURIGA star tracker (35 deg baffle, standard software)
+params:
+  # --- Spatial errors (p.5) --------------------------------------------------
+  # Low frequency = optical distortion across the field of view; slowly varying
+  # as the star field drifts. High frequency = sub-pixel centroiding.
+  lf_spatial_xy_arcsec_3sigma: 9.0
+  lf_spatial_z_arcsec_3sigma: 51.0
+  hf_spatial_xy_arcsec_3sigma: 6.6
+  hf_spatial_z_arcsec_3sigma: 38.0
+  # Correlation times are NOT datasheet values (no vendor quotes them). These are
+  # modelling choices: the low-frequency term is tied to the timescale on which a
+  # star field crosses the FOV in LEO, the high-frequency term to star images
+  # walking across pixel boundaries. Tune against flight data if you have it.
+  lf_spatial_correlation_s: 300.0
+  hf_spatial_correlation_s: 10.0
+
+  # --- Temporal noise (p.5) --------------------------------------------------
+  # The genuinely white term — the only one that averages down as sqrt(N).
+  temporal_noise_xy_arcsec_3sigma: 11.0
+  temporal_noise_z_arcsec_3sigma: 70.0
+
+  # --- Bias and thermal drift (p.5) ------------------------------------------
+  # 0.017 deg = 61 arcsec, ~6x the 3-sigma temporal noise and it does not average
+  # down. For a long-exposure imaging mission this, not the noise, sets the
+  # pointing budget. Quoted as a worst case, so it is treated as a bound.
+  bias_deg: 0.017
+  thermo_elastic_arcsec_per_c: 1.5   # worst case, per degree from calibration
+
+  # --- Dynamic envelopes (p.5) -----------------------------------------------
+  # Acquisition and tracking are separate regimes. The unit tracks through
+  # 3 deg/s but only acquires below 2 deg/s, so a vehicle that slews out of track
+  # must slow further before a solution returns. The datasheet also quotes a
+  # 0.3 deg/s "baseline" acquisition rate; 2.0 is the stated upper capability.
+  acquisition_rate_deg_s: 2.0
+  tracking_rate_deg_s: 3.0
+  acquisition_accel_deg_s2: 1.0
+  tracking_accel_deg_s2: 2.5         # while tracking at 10 Hz
+  lost_in_space_s: 3.8               # typical time to first fix
+
+  # --- Interfaces and geometry -----------------------------------------------
+  update_rate_hz: 10.0               # 8 or 10 Hz; 5 Hz possible to relax CPU load
+  # NOT in this brochure: Sodern does not publish the Auriga field of view here.
+  # 20 deg is a representative value for this optical class and is used only for
+  # the FOV-coverage fraction; the Earth constraint below dominates it, so the
+  # validity behaviour does not rest on it. Refine from the unit ICD.
+  fov_deg: 20.0
+  sun_exclusion_deg: 35.0            # standard baffle (26 deg baffle available)
+  earth_exclusion_deg: 22.0          # baffle Earth exclusion angle
+  # "Full Moon in the field of view: no performance degradation" (p.5) — the
+  # baffle handles the Moon outright, so there is no lunar exclusion cone. Stated
+  # explicitly rather than omitted, because zero here is a datasheet claim.
+  moon_exclusion_deg: 0.0
