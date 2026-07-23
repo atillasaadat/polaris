@@ -32,7 +32,9 @@
 #include "actuators/reaction_wheel.hpp"
 #include "scenario/sim_config.hpp"
 #include "sensors/imu.hpp"
+#include "sensors/magnetometer.hpp"
 #include "sensors/star_tracker.hpp"
+#include "sensors/sun_sensor.hpp"
 
 namespace polaris::sim::scenario {
 
@@ -50,17 +52,20 @@ struct MountedModel {
 struct Vehicle {
   std::vector<MountedModel<sensors::Imu>> imus;
   std::vector<MountedModel<sensors::StarTracker>> star_trackers;
+  std::vector<MountedModel<sensors::SunSensor>> sun_sensors;
+  std::vector<MountedModel<sensors::Magnetometer>> magnetometers;
   std::vector<MountedModel<actuators::ReactionWheel>> wheels;
   std::vector<MountedModel<actuators::Magnetorquer>> magnetorquers;
 
-  /// Units the config asked for that have no truth model yet (e.g. a sun sensor
-  /// or GNSS receiver), as "name:kind". Reported rather than dropped: a scenario
+  /// Units the config asked for that have no truth model yet (e.g. a thruster),
+  /// as "name:kind". Reported rather than dropped: a scenario
   /// quietly flying without a sensor it configured would produce a clean-looking
   /// run that answers a different question.
   std::vector<std::string> unmodelled;
 
   std::size_t modelledCount() const {
-    return imus.size() + star_trackers.size() + wheels.size() + magnetorquers.size();
+    return imus.size() + star_trackers.size() + sun_sensors.size() + magnetometers.size() +
+           wheels.size() + magnetorquers.size();
   }
 };
 

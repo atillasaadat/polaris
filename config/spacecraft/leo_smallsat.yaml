@@ -23,6 +23,10 @@ spacecraft:
       model_id: STIM300
     - name: st_a
       model_id: ST-16
+    - name: ss_zp                     # sun sensor + magnetometer = coarse attitude (§8.1)
+      model_id: GS-NANOSENSE-FSS
+    - name: mag_a
+      model_id: MAG-GENERIC
   actuators:                        # pyramidal 4-wheel set
     - name: rw_1
       model_id: RW-X

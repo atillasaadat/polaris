@@ -20,6 +20,8 @@
 /// perturb it.
 
 #include <Eigen/Core>
+#include <map>
+#include <string>
 
 #include "math/frames.hpp"
 #include "math/typed_vector.hpp"
@@ -36,6 +38,21 @@ struct MagnetometerMeasurement {
   bool valid{true};
   time::Tai time_tag{};
 };
+
+/// Build a magnetometer error stack from datasheet-native hardware-library
+/// params (the keys used by `config/hardware/magnetometer/*.yaml`), converting
+/// each to SI. Missing keys default to 0 (that term disabled).
+///
+/// Keys: `range_ut`, `bias_ut`, `noise_ut_rms`, `resolution_nt`,
+/// `scale_factor_pct`, `misalignment_mrad`.
+///
+/// The hard-iron bias and the soft-iron / misalignment matrix are **fixed
+/// characteristics of the installed unit**, not per-sample noise, so they are
+/// realised deterministically from the same seeded stream the sensor will use —
+/// one seeded {spec, seed} builds one specific miscalibrated device, and re-flying
+/// the scenario reproduces it exactly.
+VectorErrorModel magnetometerErrorFromParams(const std::map<std::string, double>& params,
+                                             std::uint64_t master_seed, std::uint64_t stream_id);
 
 /// A three-axis magnetometer. Construct with its error stack and a per-source
 /// stream id under the run's master seed.

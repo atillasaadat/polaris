@@ -1,0 +1,29 @@
+# Generic coarse sun sensor (CSS) template (design doc §19.2).
+#
+# A single wide-field photodiode of the kind flown several-per-vehicle on
+# smallsats — one per face, fused on the ground side by the FSW (§8.1). Round
+# numbers representative of the class; replace them from a COTS datasheet.
+# Same keys as the C++ SunSensorSpec::fromParams (sim/sensors/sun_sensor.cpp).
+#
+# The accuracy of a part like this is dominated by albedo, not by electronics:
+# with a ~60 deg acceptance cone the Earth can fill most of the diode's view in
+# LEO and reflect a large fraction of full scale. That is why albedo_coefficient
+# matters more here than noise_counts_rms, and why coarse sensors are quoted at
+# degrees of accuracy despite clean readout.
+model_id: CSS-GENERIC
+kind: sun_sensor
+description: Generic single-cell coarse sun sensor
+params:
+  diode_count: 1
+  diode_cant_deg: 0.0          # single cell: the diode normal is the boresight
+  half_fov_deg: 60.0           # wide acceptance cone
+  full_scale_counts: 4095.0    # 12-bit ADC at normal incidence, full sun
+  saturation_counts: 4095.0
+  dark_counts: 20.0            # electronic offset with no illumination
+  noise_counts_rms: 8.0
+  resolution_counts: 1.0       # one ADC LSB
+  scale_factor_pct: 3.0        # per-diode responsivity spread, 1-sigma
+  alignment_mrad: 5.0          # cell normal vs mechanical reference, 1-sigma
+  albedo_coefficient: 0.3      # peak earthshine as a fraction of full scale
+  update_rate_hz: 10.0
+  sun_present_threshold: 0.05  # shadow factor below which the Sun is "absent"

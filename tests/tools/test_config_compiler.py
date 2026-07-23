@@ -206,6 +206,76 @@ def test_star_tracker_about_boresight_error_is_the_weak_axis(model_id):
         assert p[z] > p[xy], f"{model_id}: {z} must exceed {xy}"
 
 
+def test_sun_sensor_catalog_entries_carry_the_full_spec():
+    # Two output contracts, so two key sets. An analogue part needs the diode
+    # geometry and readout; a digital part needs its accuracy-vs-angle figures.
+    # A missing key defaults that mechanism to zero, which for a sun sensor means
+    # an instrument with no field limit or no signal at all.
+    library = load_hardware_library(_HARDWARE)
+
+    analogue = {
+        "diode_count",
+        "half_fov_deg",
+        "full_scale_counts",
+        "albedo_coefficient",
+    }
+    for model_id in ("CSS-GENERIC", "FSS-GENERIC"):
+        params = library[model_id].params
+        assert library[model_id].kind == "sun_sensor"
+        missing = analogue - set(params)
+        assert not missing, f"{model_id} missing {sorted(missing)}"
+
+    digital = {
+        "half_fov_deg",
+        "accuracy_inner_half_angle_deg",
+        "accuracy_inner_deg_3sigma",
+        "accuracy_outer_deg_3sigma",
+        "sample_period_ms",
+    }
+    fss = library["GS-NANOSENSE-FSS"]
+    assert fss.kind == "sun_sensor"
+    assert digital <= set(fss.params), sorted(digital - set(fss.params))
+
+
+def test_gomspace_nanosense_fss_matches_the_datasheet():
+    # GomSpace NanoSense FSS datasheet DS 1018157 rev 3.1, section 8. Pinning
+    # these makes a silent edit fail loudly, because they are what a coarse
+    # pointing budget is closed against.
+    p = load_hardware_library(_HARDWARE)["GS-NANOSENSE-FSS"].params
+    assert p["half_fov_deg"] == 60.0  # "Field of view: half angle 60 deg"
+    assert p["accuracy_inner_half_angle_deg"] == 45.0
+    assert p["accuracy_inner_deg_3sigma"] == 0.5  # "FOV < 45 deg, no albedo"
+    assert p["accuracy_outer_deg_3sigma"] == 2.0  # "FOV < 60 deg, no albedo"
+    assert p["sample_period_ms"] == 10.0  # "Sample period: max 10 ms"
+
+    # Accuracy must get *worse* toward the field edge. Inverting these would make
+    # the sensor best where it is physically weakest, and a coarse estimator
+    # tuned on that would be confidently wrong exactly at wide sun angles.
+    assert p["accuracy_outer_deg_3sigma"] > p["accuracy_inner_deg_3sigma"]
+    assert p["accuracy_inner_half_angle_deg"] < p["half_fov_deg"]
+
+    # The datasheet warns uncorrected albedo can exceed 10 deg — an order of
+    # magnitude above the clean-sky figure, and the reason it is modelled at all.
+    assert p["albedo_error_deg"] > 10.0
+
+
+def test_magnetometer_catalog_entry_carries_the_full_spec():
+    mag = load_hardware_library(_HARDWARE)["MAG-GENERIC"]
+    assert mag.kind == "magnetometer"
+    required = {
+        "range_ut",
+        "bias_ut",
+        "noise_ut_rms",
+        "resolution_nt",
+        "scale_factor_pct",
+        "misalignment_mrad",
+    }
+    assert required <= set(mag.params), sorted(required - set(mag.params))
+    # The LEO field peaks near 50 uT, so a range below that would saturate in
+    # normal operations and silently clip the measurement.
+    assert mag.params["range_ut"] >= 50.0
+
+
 def test_actuator_catalog_entries_carry_the_full_spec():
     # The RW and MTQ catalog entries must expose the keys the C++ specs read
     # (sim/actuators/*.cpp), so selecting one configures the model rather than

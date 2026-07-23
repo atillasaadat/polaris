@@ -1,0 +1,22 @@
+# Generic three-axis magnetometer template (design doc §19.2).
+#
+# A fluxgate/AMR-class part of the kind flown on smallsats, sized for the LEO
+# field (~20-50 uT). Round numbers representative of the class; replace them from
+# a COTS datasheet. Same keys as the C++ magnetometerErrorFromParams
+# (sim/sensors/magnetometer.cpp).
+#
+# Note what dominates in practice: bias here is the *hard-iron* term — the
+# vehicle's own residual magnetisation seen by the sensor — and on a real
+# spacecraft it is usually larger than the sensor's intrinsic bias and is
+# calibrated on orbit. The value below is the installed, uncalibrated figure,
+# which is the one a coarse-attitude study has to live with.
+model_id: MAG-GENERIC
+kind: magnetometer
+description: Generic three-axis magnetometer
+params:
+  range_ut: 100.0            # +/- full scale [uT]; LEO field peaks near 50 uT
+  bias_ut: 1.0               # hard-iron offset, 1-sigma per axis
+  noise_ut_rms: 0.05         # per-sample noise, 1-sigma
+  resolution_nt: 10.0        # ADC least significant bit
+  scale_factor_pct: 1.0      # per-axis scale error, 1-sigma
+  misalignment_mrad: 5.0     # soft-iron cross-coupling / non-orthogonality

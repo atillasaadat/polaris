@@ -123,20 +123,98 @@ TEST(Vehicle, ParamsChangeTheFlownHardware) {
 }
 
 TEST(Vehicle, UnmodelledKindsAreReportedNotDropped) {
-  scenario::UnitConfig ss;
-  ss.name = "ss_zp";
-  ss.model_id = "SS-GENERIC";
-  ss.kind = "sun_sensor";  // no truth model yet
-  ss.params = {{"fov_deg", 60.0}};
+  scenario::UnitConfig thruster;
+  thruster.name = "acs_1";
+  thruster.model_id = "THR-GENERIC";
+  thruster.kind = "thruster";  // no truth model yet (§7 propulsion)
+  thruster.params = {{"thrust_n", 0.05}};
 
   scenario::SpacecraftConfig sc;
-  sc.sensors = {imuUnit("imu_a", 0.15), ss};
+  sc.sensors = {imuUnit("imu_a", 0.15)};
+  sc.actuators = {thruster};
 
   scenario::Vehicle v;
   ASSERT_TRUE(scenario::buildVehicle(sc, 1, v, nullptr));
   EXPECT_EQ(v.imus.size(), 1u);
   ASSERT_EQ(v.unmodelled.size(), 1u);
-  EXPECT_EQ(v.unmodelled[0], "ss_zp:sun_sensor");
+  EXPECT_EQ(v.unmodelled[0], "acs_1:thruster");
+}
+
+TEST(Vehicle, BuildsSunSensorsAndMagnetometersFromConfig) {
+  // Coarse attitude (§8.1) needs sun sensor + magnetometer + IMU. Until this
+  // push the first two had no path from the config into a model at all, so a
+  // vehicle could name them and fly without them.
+  scenario::UnitConfig ss;
+  ss.name = "ss_zp";
+  ss.model_id = "CSS-GENERIC";
+  ss.kind = "sun_sensor";
+  ss.params = {{"diode_count", 1.0}, {"half_fov_deg", 60.0}, {"full_scale_counts", 4095.0}};
+
+  scenario::UnitConfig mag;
+  mag.name = "mag_a";
+  mag.model_id = "MAG-GENERIC";
+  mag.kind = "magnetometer";
+  mag.params = {{"range_ut", 100.0}, {"bias_ut", 1.0}, {"noise_ut_rms", 0.05}};
+
+  scenario::SpacecraftConfig sc;
+  sc.sensors = {imuUnit("imu_a", 0.15), ss, mag};
+
+  scenario::Vehicle v;
+  std::string error;
+  ASSERT_TRUE(scenario::buildVehicle(sc, 1234, v, &error)) << error;
+  ASSERT_EQ(v.sun_sensors.size(), 1u);
+  ASSERT_EQ(v.magnetometers.size(), 1u);
+  EXPECT_TRUE(v.unmodelled.empty());
+  EXPECT_EQ(v.sun_sensors[0].name, "ss_zp");
+  EXPECT_EQ(v.magnetometers[0].model_id, "MAG-GENERIC");
+}
+
+TEST(Vehicle, RejectsASunSensorWithNoFieldOfView) {
+  // Without an acceptance cone the cosine cut-off never fires and a cell reports
+  // sunlight while facing away from the Sun.
+  scenario::UnitConfig ss;
+  ss.name = "ss_zp";
+  ss.model_id = "CSS-BROKEN";
+  ss.kind = "sun_sensor";
+  ss.params = {{"diode_count", 1.0}, {"full_scale_counts", 4095.0}};
+
+  scenario::SpacecraftConfig sc;
+  sc.sensors = {ss};
+  scenario::Vehicle v;
+  std::string error;
+  EXPECT_FALSE(scenario::buildVehicle(sc, 1, v, &error));
+  EXPECT_NE(error.find("half_fov_deg"), std::string::npos) << error;
+}
+
+TEST(Vehicle, TheTwoSunSensorOutputContractsAreValidatedSeparately) {
+  // Regression: requiring both full_scale_counts and an accuracy figure would
+  // reject every real part, since no unit quotes both. A digital part reports a
+  // vector and has no full scale; an analogue one has no quoted accuracy because
+  // the FSW is what turns its counts into an angle.
+  scenario::UnitConfig digital;
+  digital.name = "ss_zp";
+  digital.model_id = "GS-NANOSENSE-FSS";
+  digital.kind = "sun_sensor";
+  digital.params = {{"diode_count", 4.0},
+                    {"half_fov_deg", 60.0},
+                    {"accuracy_inner_half_angle_deg", 45.0},
+                    {"accuracy_inner_deg_3sigma", 0.5},
+                    {"accuracy_outer_deg_3sigma", 2.0}};
+
+  scenario::SpacecraftConfig sc;
+  sc.sensors = {digital};
+  scenario::Vehicle v;
+  std::string error;
+  EXPECT_TRUE(scenario::buildVehicle(sc, 1, v, &error)) << error;
+
+  // But an analogue part still owes its full scale.
+  scenario::UnitConfig analogue = digital;
+  analogue.params = {{"diode_count", 1.0}, {"half_fov_deg", 60.0}};
+  scenario::SpacecraftConfig sc2;
+  sc2.sensors = {analogue};
+  scenario::Vehicle v2;
+  EXPECT_FALSE(scenario::buildVehicle(sc2, 1, v2, &error));
+  EXPECT_NE(error.find("full_scale_counts"), std::string::npos) << error;
 }
 
 TEST(Vehicle, StarTrackerBoresightComesFromTheMounting) {
