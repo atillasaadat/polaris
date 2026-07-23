@@ -318,6 +318,7 @@ bool readEnvironment(const json& root, EnvironmentConfig& out, std::string* erro
     out.gnss_jamming_kml = jamming->get<std::string>();
   }
   out.gnss_jamming_enabled = node->value("gnss_jamming_enabled", true);
+  out.sensor_noise_enabled = node->value("sensor_noise_enabled", true);
   out.gnss_noise_enabled = node->value("gnss_noise_enabled", true);
 
   const auto faults = node->find("gnss_fault_events");

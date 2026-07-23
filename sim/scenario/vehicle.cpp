@@ -32,7 +32,7 @@ std::uint64_t streamIdFor(const std::string& name) {
 }  // namespace
 
 bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicle& out,
-                  std::string* error) {
+                  std::string* error, const NoiseSettings& noise) {
   out = Vehicle{};
 
   // Spin axes in `wheels` order, for the assembly's W. A wheel takes its axis from
@@ -56,8 +56,9 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
 
       const std::uint64_t stream = streamIdFor(unit.name);
       if (unit.kind == "imu") {
-        out.imus.push_back({unit.name, unit.model_id, unit.mounting_dcm,
-                            sensors::Imu(sensors::ImuSpec::fromParams(unit.params), seed, stream)});
+        out.imus.push_back(
+            {unit.name, unit.model_id, unit.mounting_dcm,
+             sensors::Imu(sensors::ImuSpec::fromParams(unit.params), seed, stream, noise.sensors)});
       } else if (unit.kind == "star_tracker") {
         const auto spec = sensors::StarTrackerSpec::fromParams(unit.params);
         // With neither a field of view nor a quoted Earth exclusion angle the
@@ -70,8 +71,9 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
                                  "' has neither fov_deg nor earth_exclusion_deg — it would "
                                  "report valid solutions while pointed at the Earth");
         }
-        out.star_trackers.push_back({unit.name, unit.model_id, unit.mounting_dcm,
-                                     sensors::StarTracker(spec, unit.mounting_dcm, seed, stream)});
+        out.star_trackers.push_back(
+            {unit.name, unit.model_id, unit.mounting_dcm,
+             sensors::StarTracker(spec, unit.mounting_dcm, seed, stream, noise.sensors)});
       } else if (unit.kind == "sun_sensor") {
         const auto spec = sensors::SunSensorSpec::fromParams(unit.params);
         // Without an acceptance cone the cosine cut-off never fires and a cell
@@ -93,17 +95,20 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
           return fail(error, "sun sensor '" + unit.name +
                                  "' reports a vector but has no accuracy_*_deg_3sigma");
         }
-        out.sun_sensors.push_back({unit.name, unit.model_id, unit.mounting_dcm,
-                                   sensors::SunSensor(spec, unit.mounting_dcm, seed, stream)});
+        out.sun_sensors.push_back(
+            {unit.name, unit.model_id, unit.mounting_dcm,
+             sensors::SunSensor(spec, unit.mounting_dcm, seed, stream, noise.sensors)});
       } else if (unit.kind == "magnetometer") {
         const auto model = sensors::magnetometerErrorFromParams(unit.params, seed, stream);
         // A magnetometer with no range still measures, so there is nothing to
         // reject here: every term of the error stack is a no-op at zero, and a
         // range of zero simply means "no saturation modelled".
         out.magnetometers.push_back({unit.name, unit.model_id, unit.mounting_dcm,
-                                     sensors::Magnetometer(model, seed, stream)});
+                                     sensors::Magnetometer(model, seed, stream, noise.sensors)});
       } else if (unit.kind == "gnss") {
-        const auto spec = sensors::GnssSpec::fromParams(unit.params);
+        auto spec = sensors::GnssSpec::fromParams(unit.params);
+        // GNSS honours the global sensor switch and its own override.
+        spec.noise_enabled = noise.sensors && noise.gnss;
         // A receiver with no quoted position accuracy would report truth-perfect
         // fixes — worse than a config error, because it silently hands the OD
         // filter the answer. Every real datasheet quotes a horizontal RMS.

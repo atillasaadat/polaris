@@ -86,8 +86,14 @@ ImuSpec ImuSpec::fromParams(const std::map<std::string, double>& p) {
   return spec;
 }
 
-Imu::Imu(const ImuSpec& spec, std::uint64_t master_seed, std::uint64_t stream_id)
+Imu::Imu(const ImuSpec& spec, std::uint64_t master_seed, std::uint64_t stream_id,
+         bool noise_enabled)
     : spec_(spec), rng_(random::streamRng(master_seed, stream_id)) {
+  // An ideal IMU short-circuits the shared error stack (both triads); the biases
+  // are still realised below so the draw order — and every other unit's stream —
+  // is unchanged, they are simply never applied.
+  gyro_err_.noise_enabled = noise_enabled;
+  accel_err_.noise_enabled = noise_enabled;
   // Realise this unit's fixed miscalibration and turn-on biases once, in a fixed
   // draw order, so {spec, seed, stream_id} always builds the same device.
   gyro_err_.scale_misalignment =

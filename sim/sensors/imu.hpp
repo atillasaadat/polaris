@@ -96,7 +96,10 @@ struct ImuSample {
 /// construction, so the same {spec, seed, stream_id} always builds the same unit.
 class Imu {
  public:
-  Imu(const ImuSpec& spec, std::uint64_t master_seed, std::uint64_t stream_id);
+  /// @param noise_enabled false builds an **ideal** IMU (measurement = truth, no
+  ///        bias/scale/misalignment/noise), for noise-free baseline runs (§6.2).
+  Imu(const ImuSpec& spec, std::uint64_t master_seed, std::uint64_t stream_id,
+      bool noise_enabled = true);
 
   /// Measure over @p dt seconds (dt > 0) given the true body rate and the true
   /// specific force (non-gravitational acceleration) in the body frame at truth

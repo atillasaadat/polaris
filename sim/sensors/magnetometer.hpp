@@ -58,8 +58,13 @@ VectorErrorModel magnetometerErrorFromParams(const std::map<std::string, double>
 /// stream id under the run's master seed.
 class Magnetometer {
  public:
-  Magnetometer(const VectorErrorModel& error, std::uint64_t master_seed, std::uint64_t stream_id)
-      : error_(error), rng_(random::streamRng(master_seed, stream_id)) {}
+  /// @param noise_enabled false builds an **ideal** magnetometer (measurement =
+  ///        truth field, no bias/soft-iron/noise), for noise-free baseline runs.
+  Magnetometer(const VectorErrorModel& error, std::uint64_t master_seed, std::uint64_t stream_id,
+               bool noise_enabled = true)
+      : error_(error), rng_(random::streamRng(master_seed, stream_id)) {
+    error_.noise_enabled = noise_enabled;
+  }
 
   /// Measure the true body-frame field @p b_truth_body at truth time @p epoch.
   MagnetometerMeasurement sample(const time::Tai& epoch,

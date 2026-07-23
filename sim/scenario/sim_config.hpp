@@ -135,8 +135,14 @@ struct EnvironmentConfig {
   /// Master switch for geographic jamming — false keeps the KML referenced but
   /// binds no regions, so a run can toggle jamming without editing the path.
   bool gnss_jamming_enabled{true};
+  /// Master switch for **all** sensor noise (IMU, star tracker, sun sensor,
+  /// magnetometer, GNSS) — false flies ideal sensors (measurement = truth) for a
+  /// noise-free baseline or with/without-noise comparison. Actuators have no
+  /// stochastic noise, so there is no equivalent for them.
+  bool sensor_noise_enabled{true};
   /// Master switch for GNSS measurement noise — false flies a truth-perfect
-  /// receiver (position/velocity/clock error zeroed) for bring-up/debug.
+  /// receiver (position/velocity/clock error zeroed) for bring-up/debug. Applied
+  /// on top of `sensor_noise_enabled` (both must be true for GNSS noise).
   bool gnss_noise_enabled{true};
   /// Scheduled GNSS faults injected during the run (§9.2/§23.1.1).
   std::vector<GnssFaultEvent> gnss_fault_events;

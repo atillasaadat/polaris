@@ -77,6 +77,18 @@ struct Vehicle {
   }
 };
 
+/// Whether the built sensors carry their error models, or run **ideal** (§6.2).
+/// A run with `sensors = false` flies noise-free sensors — the baseline for a
+/// with/without-noise comparison or algorithm bring-up. `gnss` is a GNSS-specific
+/// override, ANDed with `sensors`, so GNSS can be idealised (or, via the config's
+/// `gnss_noise_enabled`, disabled) independently. Actuators have no stochastic
+/// noise (friction, imbalance and hysteresis are deterministic), so there is
+/// nothing to toggle there.
+struct NoiseSettings {
+  bool sensors = true;
+  bool gnss = true;
+};
+
 /// Build the suite described by @p spacecraft, seeding every stochastic unit
 /// from @p seed.
 ///
@@ -85,7 +97,7 @@ struct Vehicle {
 ///         receives the reason. An unmodelled `kind` is not an error — it lands
 ///         in @ref Vehicle::unmodelled.
 bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicle& out,
-                  std::string* error = nullptr);
+                  std::string* error = nullptr, const NoiseSettings& noise = {});
 
 }  // namespace polaris::sim::scenario
 

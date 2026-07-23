@@ -69,6 +69,7 @@ def test_compiles_template_and_emits_three_artifacts(tmp_path):
     env = setup["environment"]
     assert env["gnss_jamming_kml"] == "config/scenario/jamming/eastern_europe.kml"
     assert env["gnss_jamming_enabled"] is True
+    assert env["sensor_noise_enabled"] is True
     assert env["gnss_noise_enabled"] is True
     events = env["gnss_fault_events"]
     assert [e["type"] for e in events] == ["outage", "spoof"]

@@ -427,6 +427,7 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
       "propagation": {"duration_s": 60.0, "output_step_s": 10.0},
       "environment": {"gravity_degree": 0, "magnetic_field": "none",
                       "occultation_atmosphere_km": 120.0,
+                      "sensor_noise_enabled": false,
                       "gnss_noise_enabled": false, "gnss_jamming_enabled": false,
                       "gnss_fault_events": [
                         {"unit": "gps_a", "type": "outage", "start_s": 10.0, "stop_s": 20.0},
@@ -448,6 +449,7 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
   // The optical-limb height is a scenario knob and arrives in km, held in metres.
   EXPECT_DOUBLE_EQ(config.environment.occultation_atmosphere_m, 120.0e3);
   // GNSS scenario controls parse through: master switches and the fault schedule.
+  EXPECT_FALSE(config.environment.sensor_noise_enabled);
   EXPECT_FALSE(config.environment.gnss_noise_enabled);
   EXPECT_FALSE(config.environment.gnss_jamming_enabled);
   ASSERT_EQ(config.environment.gnss_fault_events.size(), 2u);

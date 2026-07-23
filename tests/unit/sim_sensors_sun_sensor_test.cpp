@@ -258,7 +258,29 @@ TEST(SunSensor, IsBitReproducibleFromSeedAndUnitsDiffer) {
   EXPECT_FALSE(c.diodeNormalsBody()[0].isApprox(a.diodeNormalsBody()[0]));
 }
 
+TEST(SunSensor, NoiseDisabledAnalogueReportsCleanCosine) {
+  // coarseSpec carries dark current, per-sample noise, and a per-diode scale
+  // error; an ideal build strips all of them, leaving the exact cosine law.
+  sensors::SunSensor ss(coarseSpec(), Eigen::Matrix3d::Identity(), 7, 1, /*noise_enabled=*/false);
+  const double deg = 25.0;
+  const auto m = ss.sample(kEpoch, cleanSky(sunAtIncidence(deg)));
+  ASSERT_TRUE(m.valid);
+  EXPECT_NEAR(m.counts[0], 4095.0 * std::cos(deg * kDeg2Rad), 1e-9);
+}
+
 // --- Digital: GomSpace NanoSense FSS vector output ----------------------------
+
+TEST(SunSensor, NoiseDisabledVectorReportsTruthDirection) {
+  // Ideal digital part: the reported Sun vector is exactly the truth direction,
+  // and the realised accuracy is zero.
+  const auto in = cleanSky(sunAtIncidence(30.0));
+  sensors::SunSensor ss(nanoSenseSpec(), Eigen::Matrix3d::Identity(), 7, 1,
+                        /*noise_enabled=*/false);
+  const auto m = ss.sample(kEpoch, in);
+  ASSERT_TRUE(m.valid);
+  EXPECT_DOUBLE_EQ(m.accuracy_sigma_rad, 0.0);
+  EXPECT_TRUE(m.sun_dir_body.eigen().isApprox(in.sun_dir_body.eigen(), 1e-12));
+}
 
 TEST(SunSensorSpec, NanoSenseDatasheetParamsConvertToSi) {
   const auto s = nanoSenseSpec();

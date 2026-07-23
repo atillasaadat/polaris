@@ -313,6 +313,8 @@ The error stack is per-axis white Gaussian position error **split horizontal vs 
 
 Catalog: **NovAtel OEM7600** (datasheet-sourced single-point PVT) and a generic receiver.
 
+**Noise master switch (Push 27).** A scenario runs with or without sensor error from one config flag, `sensor_noise_enabled` (default true). False builds every sensor **ideal** — the measurement equals the truth, with no bias, scale, misalignment, noise, or quantization — for a noise-free baseline or a with/without-noise comparison. It disables the whole error stack, not just the random term, so an ideal sensor also has no fixed bias. Geometry is *not* noise and still applies: FOV cut-off, eclipse, occlusion, and the star tracker's availability envelopes all hold. It reaches every model at build time (`scenario/vehicle` `NoiseSettings`): the shared §6.1 `VectorErrorModel` short-circuits (IMU, magnetometer), and the star tracker, sun sensor and GNSS zero their bespoke error. `gnss_noise_enabled` remains a GNSS-specific override, ANDed with the global. **Actuators have no equivalent** — reaction-wheel friction and imbalance and magnetorquer hysteresis are deterministic physics, not stochastic noise, so there is nothing to toggle.
+
 ---
 
 ## 7. Actuator Models
