@@ -32,6 +32,7 @@
 #include "actuators/reaction_wheel.hpp"
 #include "scenario/sim_config.hpp"
 #include "sensors/imu.hpp"
+#include "sensors/star_tracker.hpp"
 
 namespace polaris::sim::scenario {
 
@@ -48,16 +49,19 @@ struct MountedModel {
 /// The vehicle's installed hardware, one vector per modelled device class.
 struct Vehicle {
   std::vector<MountedModel<sensors::Imu>> imus;
+  std::vector<MountedModel<sensors::StarTracker>> star_trackers;
   std::vector<MountedModel<actuators::ReactionWheel>> wheels;
   std::vector<MountedModel<actuators::Magnetorquer>> magnetorquers;
 
-  /// Units the config asked for that have no truth model yet (e.g. a star
-  /// tracker before §6.3 lands), as "name:kind". Reported rather than dropped:
-  /// a scenario quietly flying without a sensor it configured would produce a
-  /// clean-looking run that answers a different question.
+  /// Units the config asked for that have no truth model yet (e.g. a sun sensor
+  /// or GNSS receiver), as "name:kind". Reported rather than dropped: a scenario
+  /// quietly flying without a sensor it configured would produce a clean-looking
+  /// run that answers a different question.
   std::vector<std::string> unmodelled;
 
-  std::size_t modelledCount() const { return imus.size() + wheels.size() + magnetorquers.size(); }
+  std::size_t modelledCount() const {
+    return imus.size() + star_trackers.size() + wheels.size() + magnetorquers.size();
+  }
 };
 
 /// Build the suite described by @p spacecraft, seeding every stochastic unit

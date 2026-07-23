@@ -392,7 +392,11 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
            "params": {"gyro_arw_deg_sqrt_hr": 0.15, "gyro_range_deg_s": 400.0},
            "mounting_dcm_row_major": null},
           {"name": "st_a", "model_id": "ST-16", "kind": "star_tracker",
-           "params": {"cross_axis_arcsec": 5.0}, "mounting_dcm_row_major": null}
+           "params": {"cross_axis_arcsec": 5.0, "boresight_arcsec": 30.0, "fov_deg": 15.0,
+                      "sun_keepout_deg": 45.0, "earth_keepout_deg": 25.0},
+           "mounting_dcm_row_major": null},
+          {"name": "ss_zp", "model_id": "SS-GENERIC", "kind": "sun_sensor",
+           "params": {"fov_deg": 60.0}, "mounting_dcm_row_major": null}
         ],
         "actuators": [
           {"name": "rw_1", "model_id": "RW-X", "kind": "reaction_wheel",
@@ -421,7 +425,7 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
   std::remove(path.c_str());
 
   EXPECT_EQ(config.seed, 20260101u);
-  ASSERT_EQ(config.spacecraft.sensors.size(), 2u);
+  ASSERT_EQ(config.spacecraft.sensors.size(), 3u);
   ASSERT_EQ(config.spacecraft.actuators.size(), 2u);
   EXPECT_DOUBLE_EQ(config.spacecraft.sensors[0].params.at("gyro_arw_deg_sqrt_hr"), 0.15);
   // A 90° mounting about +y: the wheel's spin axis lies along body -x.
@@ -430,10 +434,11 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
   scenario::Vehicle vehicle;
   ASSERT_TRUE(scenario::buildVehicle(config.spacecraft, config.seed, vehicle, &error)) << error;
   EXPECT_EQ(vehicle.imus.size(), 1u);
+  EXPECT_EQ(vehicle.star_trackers.size(), 1u);
   EXPECT_EQ(vehicle.wheels.size(), 1u);
   EXPECT_EQ(vehicle.magnetorquers.size(), 1u);
   ASSERT_EQ(vehicle.unmodelled.size(), 1u);
-  EXPECT_EQ(vehicle.unmodelled[0], "st_a:star_tracker");
+  EXPECT_EQ(vehicle.unmodelled[0], "ss_zp:sun_sensor");
 }
 
 // --- Regressions -------------------------------------------------------------

@@ -19,7 +19,8 @@ The simulation is the **plant** the FSW runs against. It is **not flight code** 
 
 - **6DOF dynamics + RK89** (configurable tolerance/step). Energy/momentum conservation checks available as diagnostics.
 - **Environment:** EGM2008 (settable degree/order) + tides, third-body via SPICE, **NRLMSIS 2.1** drag, SRP + conical eclipse, **IGRF-14** (WMM backup), disturbance torques.
-- **Sensor/actuator truth models** with full error stacks; shared **line-of-sight occlusion** model (Earth limb / Sun / Moon) for optical sensors; IMU emits delta-angle/delta-velocity at native rate.
+- **Sensor/actuator truth models** with full error stacks; IMU emits delta-angle/delta-velocity at native rate.
+- **One occlusion model for every optical sensor** (`sensors/occlusion`). Any new sensor with a line of sight — sun sensor, camera, horizon sensor — checks its keep-outs through `checkLineOfSight`, never its own geometry: two optical sensors disagreeing about whether the Earth is in the way is the kind of inconsistency that produces an estimator that works in sim and not in flight. Bodies are checked from their **limb**, not their centre.
 - **Fault-injection hooks are first-class:** every sensor/actuator/subsystem model exposes scriptable fault injection (bias jumps, dropouts, occlusions, GPS outage/spoofing, stuck/runaway actuators, subsystem limits) so the FDIR integration suite (`tests/integration/`, design doc §23.1.1) can drive them per scenario. Build these hooks in from the start, not retrofitted.
 
 ## Reaction-wheel jitter (imbalance) — planned analysis

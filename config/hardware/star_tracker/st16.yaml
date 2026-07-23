@@ -1,5 +1,9 @@
-# Sinclair/Rocket Lab ST-16RT2 star tracker (design doc §19.2).
-# Representative performance-class values; refine against the unit spec.
+# Sinclair Interplanetary (Rocket Lab) ST-16RT2 star tracker (design doc §19.2).
+#
+# Performance-class values for the ST-16RT2. The keep-out and slew limits are
+# representative for this class where the public sheet does not quote them, and
+# should be refined against the unit spec before they gate a mission analysis.
+# Same keys as the C++ StarTrackerSpec::fromParams (sim/sensors/star_tracker.cpp).
 model_id: ST-16
 kind: star_tracker
 description: Sinclair ST-16RT2 star tracker
@@ -8,3 +12,7 @@ params:
   boresight_arcsec: 30.0     # about-boresight accuracy, 1-sigma [arcsec]
   update_rate_hz: 2.0        # attitude solution rate [Hz]
   fov_deg: 15.0              # circular field of view [deg]
+  max_slew_rate_deg_s: 3.0   # solves through this rate; beyond it images smear
+  sun_keepout_deg: 45.0      # baffle exclusion half-angle from the solar limb
+  earth_keepout_deg: 25.0    # margin beyond the FOV edge to the Earth limb
+  moon_keepout_deg: 25.0     # margin from the lunar limb

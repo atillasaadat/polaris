@@ -282,6 +282,8 @@ Each sensor is a configurable module producing measurements from truth, with a s
 | **Magnetometer** | bias, hard/soft-iron, noise, misalignment; truth from IGRF; onboard **IGRF-14 modeled field** (WMM backup) provides the inertial reference for measured-vs-modeled checks and coarse attitude (§8.1) |
 | **GNSS receiver (sim)** | pseudorange/position from TLE-propagated GNSS constellation + receiver clock model, noise, biases, dropouts. **Reports GPS time and ECEF state**, requiring GPS→TAI and ECEF→ECI conversion (§3.2); also disciplines the onboard clock |
 
+**Implemented:** magnetometer and IMU (Pushes 19–20, via the §6.1 error stack); **star tracker + the shared occlusion model (Push 23)**. The occlusion model (`sim/sensors/occlusion`) reuses the §5.2 apparent-disk geometry — every body is checked from its **limb**, not its centre, which at LEO is the difference between a 70° constraint and a point source. The star tracker (`sim/sensors/star_tracker`) reports a full attitude solution rather than a measured vector, so its error is a small-angle perturbation of the truth attitude that is deliberately **anisotropic**: about-boresight accuracy is ~6× worse than cross-boresight, because a roll about the boresight barely moves the identified stars. Validity covers Earth intrusion on the FOV, Sun/Moon keep-out cones, and slew-rate image smear, each reported distinctly. Sun sensor and GNSS receiver remain.
+
 ---
 
 ## 7. Actuator Models

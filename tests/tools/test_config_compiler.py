@@ -123,6 +123,31 @@ def test_stim377h_catalog_entry_carries_the_full_imu_spec():
     assert required <= set(library["IMU-GENERIC"].params)
 
 
+def test_star_tracker_catalog_entries_carry_the_full_spec():
+    # The star tracker entries must expose every key the C++ StarTrackerSpec
+    # reads (sim/sensors/star_tracker.cpp). fov_deg in particular is required:
+    # without it the Earth keep-out collapses and buildVehicle rejects the unit.
+    library = load_hardware_library(_HARDWARE)
+    st = library["ST-16"]
+    assert st.kind == "star_tracker"
+    required = {
+        "cross_axis_arcsec",
+        "boresight_arcsec",
+        "update_rate_hz",
+        "fov_deg",
+        "max_slew_rate_deg_s",
+        "sun_keepout_deg",
+        "earth_keepout_deg",
+        "moon_keepout_deg",
+    }
+    assert required <= set(st.params), sorted(required - set(st.params))
+    assert st.params["cross_axis_arcsec"] == 5.0
+    # About-boresight accuracy is the weak axis — an entry that lost that
+    # asymmetry would quietly make the tracker better than any real unit.
+    assert st.params["boresight_arcsec"] > st.params["cross_axis_arcsec"]
+    assert required <= set(library["ST-GENERIC"].params)  # template is complete
+
+
 def test_actuator_catalog_entries_carry_the_full_spec():
     # The RW and MTQ catalog entries must expose the keys the C++ specs read
     # (sim/actuators/*.cpp), so selecting one configures the model rather than

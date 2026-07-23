@@ -1,0 +1,18 @@
+# Generic star tracker template (design doc §19.2).
+#
+# Round numbers for a typical smallsat-class unit — copy this file and edit the
+# values from a COTS datasheet. Every key the C++ StarTrackerSpec::fromParams
+# reads is present, so a copy is a complete starting point rather than a set of
+# silent zeros.
+model_id: ST-GENERIC
+kind: star_tracker
+description: Generic smallsat star tracker template
+params:
+  cross_axis_arcsec: 10.0    # cross-boresight accuracy, 1-sigma [arcsec]
+  boresight_arcsec: 70.0     # about-boresight accuracy, 1-sigma [arcsec]
+  update_rate_hz: 1.0        # attitude solution rate [Hz]
+  fov_deg: 20.0              # circular field of view [deg]
+  max_slew_rate_deg_s: 2.0   # rate beyond which star images smear
+  sun_keepout_deg: 50.0      # baffle exclusion half-angle from the solar limb
+  earth_keepout_deg: 30.0    # margin beyond the FOV edge to the Earth limb
+  moon_keepout_deg: 30.0     # margin from the lunar limb

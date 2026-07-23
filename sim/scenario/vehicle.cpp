@@ -55,6 +55,16 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
       if (unit.kind == "imu") {
         out.imus.push_back({unit.name, unit.model_id, unit.mounting_dcm,
                             sensors::Imu(sensors::ImuSpec::fromParams(unit.params), seed, stream)});
+      } else if (unit.kind == "star_tracker") {
+        const auto spec = sensors::StarTrackerSpec::fromParams(unit.params);
+        // Without a field of view the Earth keep-out collapses to zero and the
+        // tracker solves happily while staring at the ground — a silently
+        // over-optimistic sensor is worse than a configuration error.
+        if (!(spec.fov_rad > 0.0)) {
+          return fail(error, "star tracker '" + unit.name + "' has no fov_deg");
+        }
+        out.star_trackers.push_back({unit.name, unit.model_id, unit.mounting_dcm,
+                                     sensors::StarTracker(spec, unit.mounting_dcm, seed, stream)});
       } else if (unit.kind == "reaction_wheel") {
         const auto spec = actuators::ReactionWheelSpec::fromParams(unit.params);
         if (!(spec.inertia() > 0.0)) {
