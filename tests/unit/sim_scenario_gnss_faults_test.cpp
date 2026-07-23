@@ -57,7 +57,7 @@ sensors::GnssInput inputOnXAxis() {
 TEST(GnssFaultSchedule, WindowMembershipIsHalfOpen) {
   const std::vector<Event> events = {outage("gps_a", 100.0, 200.0)};
   EXPECT_FALSE(scenario::gnssFaultsAt(events, "gps_a", 99.0).outage);
-  EXPECT_TRUE(scenario::gnssFaultsAt(events, "gps_a", 100.0).outage);   // inclusive start
+  EXPECT_TRUE(scenario::gnssFaultsAt(events, "gps_a", 100.0).outage);  // inclusive start
   EXPECT_TRUE(scenario::gnssFaultsAt(events, "gps_a", 199.0).outage);
   EXPECT_FALSE(scenario::gnssFaultsAt(events, "gps_a", 200.0).outage);  // exclusive stop
 }
@@ -110,8 +110,8 @@ TEST(GnssFaultApply, OutageWindowInvalidatesThenRecovers) {
 
   auto sampleAt = [&](double t_s) {
     scenario::applyGnssFaults(g, scenario::gnssFaultsAt(events, "gps_a", t_s));
-    return g.sample(pt::Tai::fromNanosecondsSinceEpoch(
-                        kEpoch.nanosecondsSinceEpoch() + static_cast<std::int64_t>(t_s * 1.0e9)),
+    return g.sample(pt::Tai::fromNanosecondsSinceEpoch(kEpoch.nanosecondsSinceEpoch() +
+                                                       static_cast<std::int64_t>(t_s * 1.0e9)),
                     in);
   };
 
@@ -136,8 +136,8 @@ TEST(GnssFaultApply, SpoofWindowOffsetsButStaysValidThenClears) {
 
   auto sampleAt = [&](double t_s) {
     scenario::applyGnssFaults(g, scenario::gnssFaultsAt({spoof}, "gps_a", t_s));
-    return g.sample(pt::Tai::fromNanosecondsSinceEpoch(
-                        kEpoch.nanosecondsSinceEpoch() + static_cast<std::int64_t>(t_s * 1.0e9)),
+    return g.sample(pt::Tai::fromNanosecondsSinceEpoch(kEpoch.nanosecondsSinceEpoch() +
+                                                       static_cast<std::int64_t>(t_s * 1.0e9)),
                     in);
   };
 

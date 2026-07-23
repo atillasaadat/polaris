@@ -29,9 +29,8 @@ void applyGnssFaults(sensors::Gnss& receiver, const GnssFaultState& state) {
   receiver.setOutage(state.outage);
   // Reconcile both directions: an ended window resolves to a zero offset / jump,
   // which clears the fault rather than leaving the last value latched.
-  receiver.injectPositionOffset(
-      math::Vec3<math::frames::ECEF>(state.spoof ? state.spoof_offset_ecef_m
-                                                 : Eigen::Vector3d::Zero()));
+  receiver.injectPositionOffset(math::Vec3<math::frames::ECEF>(
+      state.spoof ? state.spoof_offset_ecef_m : Eigen::Vector3d::Zero()));
   receiver.injectClockJump(state.clock_jump_s);
 }
 

@@ -12,10 +12,9 @@
 /// §2.4 macro-step loop will call each step; it is standalone and unit-tested so
 /// the fault semantics are pinned before that loop exists.
 
+#include <Eigen/Core>
 #include <string>
 #include <vector>
-
-#include <Eigen/Core>
 
 #include "scenario/sim_config.hpp"
 #include "sensors/gnss.hpp"
