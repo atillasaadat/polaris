@@ -1,10 +1,20 @@
-# Generic small reaction wheel "RW-X" (design doc §19.2).
-# Representative smallsat-class values; refine against the unit spec.
+# Generic small reaction wheel "RW-X" (design doc §19.2). Representative
+# smallsat-class values; refine against the unit spec. Keys match the C++
+# ReactionWheelSpec::fromParams (sim/actuators/reaction_wheel.cpp); the in-code
+# twin is catalog::genericReactionWheel(). Copy this to add a COTS wheel.
 model_id: RW-X
 kind: reaction_wheel
 description: Generic smallsat reaction wheel
 params:
-  max_torque_nm: 0.025       # peak output torque [N·m]
-  max_momentum_nms: 0.5      # momentum storage at max speed [N·m·s]
-  max_speed_rpm: 6000.0      # maximum wheel speed [rpm]
-  friction_nm: 0.0001        # static/coulomb friction torque [N·m]
+  max_torque_nm: 0.025           # peak output torque [N·m]
+  max_momentum_nms: 0.5          # momentum storage at max speed [N·m·s]
+  max_speed_rpm: 6000.0          # maximum wheel speed [rpm]
+  motor_kt_nm_a: 0.03            # torque constant (I = τ/Kt) [N·m/A]
+  motor_resistance_ohm: 2.0      # winding resistance (copper loss) [Ω]
+  dry_friction_nm: 0.0001        # Coulomb friction torque [N·m]
+  viscous_friction_nm_s: 0.000005  # viscous friction ∝ speed [N·m/(rad/s)]
+  aero_friction_nm_s2: 0.0         # aero friction ∝ speed² [N·m/(rad/s)²]
+  torque_quantization_nm: 0.0001   # drive torque LSB [N·m]
+  static_imbalance_kg_m: 0.0       # Us [kg·m] — radial force = Us·ω² (jitter)
+  dynamic_imbalance_kg_m2: 0.0     # Ud [kg·m²] — radial torque = Ud·ω² (jitter)
+  idle_power_w: 0.5                # housekeeping power draw [W]

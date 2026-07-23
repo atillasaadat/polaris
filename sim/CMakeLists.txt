@@ -61,6 +61,19 @@ target_link_libraries(polaris_sensors
   PRIVATE polaris_flags)
 add_library(polaris::sensors ALIAS polaris_sensors)
 
+# --- Actuators: command-in -> actual-out actuator models (REQ-SIM-003) --------
+# The plant's actuator side: reaction wheels (torque box, friction, quantization,
+# power, static/dynamic imbalance for jitter) and magnetorquers (dipole limit,
+# residual + hysteresis). Fault-injection hooks are built in for the FDIR suite.
+add_library(polaris_actuators
+  actuators/reaction_wheel.cpp
+  actuators/magnetorquer.cpp)
+target_include_directories(polaris_actuators PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(polaris_actuators
+  PUBLIC Eigen3::Eigen polaris_math
+  PRIVATE polaris_flags)
+add_library(polaris::actuators ALIAS polaris_actuators)
+
 # --- Scenario: compiled-config -> wired environment -> propagation -----------
 # Reads the `sim_setup.json` emitted by tools/configc (design doc §19.3 — the
 # sim never re-parses the authoritative YAML) and assembles every enabled

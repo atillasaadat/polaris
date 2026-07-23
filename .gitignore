@@ -76,3 +76,8 @@ CLAUDE.md.pre-ruflo
 # JPL DE440 SPK kernels (fetch input for tools/ephem; only the derived Chebyshev
 # fit tests/golden/de440_sun_moon.cheb is committed — design doc §3.7)
 /de440*.bsp
+
+# Vendor sensor/actuator datasheets (reference inputs for the config/hardware
+# catalog; the specs are transcribed into the *.yaml entries, the PDFs are not
+# committed).
+/*-datasheet-*.pdf

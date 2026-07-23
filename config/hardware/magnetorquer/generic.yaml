@@ -1,0 +1,12 @@
+# Generic magnetorquer rod (design doc §19.2 hardware library). Representative
+# values; refine against the unit spec. Keys match the C++
+# MagnetorquerSpec::fromParams (sim/actuators/magnetorquer.cpp); in-code twin is
+# catalog::genericMagnetorquer(). Copy this to add a COTS rod.
+model_id: MTQ-GENERIC
+kind: magnetorquer
+description: Generic magnetorquer rod (template — refine from a datasheet)
+params:
+  max_dipole_am2: 15.0          # rated magnetic moment [A·m²]
+  residual_dipole_am2: 0.5      # remanent moment = hysteresis half-width [A·m²]
+  linearity: 0.03               # scale-factor error, fractional
+  power_max_w: 1.0              # power at full dipole [W]

@@ -22,6 +22,13 @@ The simulation is the **plant** the FSW runs against. It is **not flight code** 
 - **Sensor/actuator truth models** with full error stacks; shared **line-of-sight occlusion** model (Earth limb / Sun / Moon) for optical sensors; IMU emits delta-angle/delta-velocity at native rate.
 - **Fault-injection hooks are first-class:** every sensor/actuator/subsystem model exposes scriptable fault injection (bias jumps, dropouts, occlusions, GPS outage/spoofing, stuck/runaway actuators, subsystem limits) so the FDIR integration suite (`tests/integration/`, design doc §23.1.1) can drive them per scenario. Build these hooks in from the start, not retrofitted.
 
+## Reaction-wheel jitter (imbalance) — planned analysis
+
+`ReactionWheel` (`sim/actuators/reaction_wheel.hpp`) already carries **static imbalance `Us`** (kg·m → radial force `Us·ω²`) and **dynamic imbalance `Ud`** (kg·m² → radial torque `Ud·ω²`), and emits both per step in the wheel frame at the rotor phase (`jitter_force_n`, `jitter_torque_nm`). This is deliberate groundwork: the near-term goal is **micro-vibration / jitter analysis**. When that work lands, plan for:
+- **Harmonic content:** the fundamental is once-per-rev at the wheel speed; real wheels also show bearing/structural harmonics (integer and half-integer multiples). The current model is the fundamental only — add configurable harmonic amplitudes when needed.
+- **Waterfall plots:** the standard product is a spectrogram of disturbance amplitude vs frequency vs wheel speed over a spin-up/spin-down sweep (the "waterfall"), which reveals structural resonances where a harmonic crosses a mode. Keep the disturbance outputs per-wheel and phase-resolved so this is a post-processing step over a swept run, not a model change.
+- **Imbalance values are per-unit balance-report data**, not datasheet values — they default to zero in the catalog and must be filled from a unit's measured imbalance before a jitter study means anything.
+
 ## Validation
 
 New environment/dynamics/conversion functions are validated against **GMAT golden fixtures** (`tests/golden/`) within documented tolerances. Use the **test-vv** subagent / `/verify-golden` command.
