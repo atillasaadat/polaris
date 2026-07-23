@@ -2,7 +2,7 @@
 #define POLARIS_RANDOM_RNG_HPP
 
 /// @file
-/// @brief Seeded, per-source-derived random streams (design doc §3.6 determinism;
+/// @brief Seeded, per-source-derived random streams (design doc §3.5 determinism;
 /// §6.1 sensor noise).
 ///
 /// Determinism is mandatory (sim/CLAUDE.md): a run must be bit-reproducible from
@@ -12,7 +12,7 @@
 /// independent stream, seeded by deriving from one master seed and a stable
 /// per-source stream id.
 ///
-/// **Per-source derivation, not a shared sequence.** The design doc (§182) calls
+/// **Per-source derivation, not a shared sequence.** The design doc (§3.5) calls
 /// for seed derivation such that *adding a new noise source does not perturb the
 /// existing streams*. A single generator handed out to every source fails that:
 /// insert one draw upstream and every downstream sample shifts, so yesterday's
@@ -78,7 +78,7 @@ class SplitMix64 {
 /// Derive an independent stream seed from a master seed and a stable per-source
 /// @p stream_id. Distinct ids yield well-separated seeds, and — because each id
 /// is mixed independently — adding or removing a source never shifts any other
-/// source's stream (design doc §182).
+/// source's stream (design doc §3.5).
 constexpr std::uint64_t streamSeed(std::uint64_t master_seed, std::uint64_t stream_id) {
   SplitMix64 mixer(master_seed + 0x9E3779B97F4A7C15ULL * stream_id);
   return mixer.nextU64();

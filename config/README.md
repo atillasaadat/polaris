@@ -15,6 +15,7 @@ analysis inputs — don't hand-edit derived params.
   ├── star_tracker/     # Sodern AURIGA, ST-16, generic template
   ├── sun_sensor/       # GomSpace NanoSense FSS, coarse + fine templates
   ├── magnetometer/     # generic three-axis
+  ├── gnss/             # NovAtel OEM7600, generic
   ├── reaction_wheel/   # RW-0.4, RW-X generic
   └── magnetorquer/     # NSS Taurus, MTQ800, generic
   ```
@@ -23,6 +24,9 @@ analysis inputs — don't hand-edit derived params.
   sim builds every model from the compiled params and carries no in-code hardware
   catalog (design doc §19.4). A unit's `params` keys are the datasheet-native keys
   the matching C++ `fromParams` reads, so a new key means editing the model spec
-  and the YAML — nowhere else.
-- `spacecraft/` — vehicle definitions (mass/inertia, sensor & actuator suite, gains).
-- `scenarios/` — scenario/epoch/environment + MC dispersions.
+  and the YAML — nowhere else. Entry format, comment standard, and the full
+  add-a-part walkthrough: [`hardware/README.md`](hardware/README.md).
+- `spacecraft/` — vehicle definitions (mass/inertia, sensor & actuator suite, gains,
+  scenario/environment block). `leo_smallsat.yaml` is the ready-to-compile template.
+- `scenarios/` — scenario side-data: GNSS-jamming region KMLs (`jamming/`), and
+  future scenario/dispersion sets (§13).

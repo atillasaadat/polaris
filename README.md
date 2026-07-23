@@ -2,6 +2,9 @@
 
 **End-to-end spacecraft GNC: flight software, 6DOF simulation, and analysis — from scratch.**
 
+**Docs site:** <https://atillasaadat.github.io/polaris/> — API reference,
+requirements traceability (RVTM), and bibliography, published from `main` by CI.
+
 Polaris is a ground-up Guidance, Navigation & Control software suite for a
 spacecraft, built to flight-grade, NASA-aligned standards. It spans the full
 loop — a high-fidelity truth simulation (the "plant") flying against real flight
@@ -100,8 +103,15 @@ cd flight/PolarisFsw && uv run fprime-gds --no-app    # ground system only (TCP 
 ### 5. Test
 
 ```bash
-uv run fprime-util build --ut          # build the Polaris lib unit suite
-uv run fprime-util check               # run it (GoogleTest via ctest) — 39/39
+# Build the test suites (unit runs under ASan/UBSan)
+uv run cmake --build build-fprime-automatic-native-ut \
+    --target polaris_unit_tests polaris_integration_tests polaris_golden_tests -j4
+
+./build-fprime-automatic-native-ut/bin/Linux/polaris_unit_tests          # 375 tests
+./build-fprime-automatic-native-ut/bin/Linux/polaris_integration_tests   # full-stack sim
+./build-fprime-automatic-native-ut/bin/Linux/polaris_golden_tests        # GMAT cross-validation
+
+uv run pytest tests/tools              # config compiler, GMAT harness, space weather
 ```
 
 ### 6. Docs (optional)
@@ -117,10 +127,15 @@ uv run --group docs bash tools/dev/build_docs.sh   # -> docs/_build/html/index.h
 
 ## Status
 
-**Phase 0 — Foundations** (in progress): repo skeleton, conventions, requirements ICD,
-docs site, the `lib/` math foundations, and the **F´ baseline** above (submodule + buildable,
-runnable, tested barebones deployment). Next: wiring the sim/SITL and the first GNC
-components. See design doc §24 for the full phase plan.
+**Phase 2 — Sensor & actuator models** (complete except CMGs/thrusters), on top of a
+finished Phase 0 (foundations, F´ baseline, config pipeline, requirements ICD) and
+Phase 1 (6DOF + RK8(9) truth dynamics with the full environment suite, GMAT
+cross-validated). The truth sim flies a config-defined vehicle: IMU, star tracker,
+sun sensor, magnetometer, and GNSS truth models with full error stacks, shared
+occlusion, and scriptable fault injection; reaction-wheel (W-matrix assembly) and
+magnetorquer actuators. Next: **Phase 3** — the F´ FSW skeleton and the two-process
+SITL loop that binds them together. Detail: [`PROGRESS.md`](PROGRESS.md); phase plan:
+design doc §24.
 
 ## License
 

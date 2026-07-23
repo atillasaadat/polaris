@@ -17,7 +17,7 @@
 ///    the soft-iron matrix; a fixed mounting misalignment folds in here too.
 ///  - **bias** — a constant additive offset (the magnetometer's hard-iron term).
 ///  - **noise** — zero-mean Gaussian, per-axis 1σ, drawn from the sensor's own
-///    seeded stream so it is reproducible from `{config, seed}` (§3.6).
+///    seeded stream so it is reproducible from `{config, seed}` (§3.5).
 ///  - **quantize** — rounding to a finite LSB resolution.
 ///  - **saturate** — clamping to the sensor's range.
 ///
@@ -32,6 +32,8 @@
 /// References:
 ///  - Markley & Crassidis, *Fundamentals of Spacecraft Attitude Determination
 ///    and Control*, 2014, §4 (sensor models). [markley2014]
+///
+/// Implements the shared error stack of REQ-SIM-003.
 
 #include <algorithm>
 #include <cmath>
@@ -64,6 +66,13 @@ struct VectorErrorModel {
   /// Apply the full chain. @p rng is advanced once per axis **iff** any axis has
   /// noise, so whether a given axis is noisy does not shift another axis's draw —
   /// keeping the stream position stable as the noise config changes.
+  ///
+  /// @warning The draw is conditioned on `noise_std`, which is **fixed at
+  /// construction** for the whole run — that is what makes the conditional safe.
+  /// If a future change ever makes `noise_std` runtime-mutable (e.g. a fault
+  /// that zeroes one axis mid-run), this must switch to the always-draw pattern
+  /// used elsewhere (`drawGaussian`, the star tracker's fixed nine draws), or
+  /// reproducibility silently breaks (§3.5).
   Eigen::Vector3d apply(const Eigen::Vector3d& truth, random::SplitMix64& rng) const {
     if (!noise_enabled) {
       return truth;  // ideal sensor: measurement is the truth

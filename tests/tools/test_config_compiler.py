@@ -67,10 +67,14 @@ def test_compiles_template_and_emits_three_artifacts(tmp_path):
     # The GNSS jamming KML path and fault controls are carried through for the sim.
     setup = json.loads((tmp_path / "sim_setup.json").read_text())
     env = setup["environment"]
-    assert env["gnss_jamming_kml"] == "config/scenario/jamming/eastern_europe.kml"
+    assert env["gnss_jamming_kml"] == "config/scenarios/jamming/eastern_europe.kml"
     assert env["gnss_jamming_enabled"] is True
     assert env["sensor_noise_enabled"] is True
     assert env["gnss_noise_enabled"] is True
+    # gravity_order flows through (was schema-absent, leaving the C++ knob
+    # permanently pinned to -1); com_m is emitted and carried by the sim side.
+    assert env["gravity_order"] == -1
+    assert setup["spacecraft"]["com_m"] == [0.0, 0.0, 0.0]
     events = env["gnss_fault_events"]
     assert [e["type"] for e in events] == ["outage", "spoof"]
     assert events[1]["spoof_offset_ecef_m"] == [500.0, 0.0, 0.0]

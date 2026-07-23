@@ -41,9 +41,9 @@
 ///
 /// **Fault injection is first-class** (§9): loss of fix (outage), a spoofed
 /// position offset that stays *valid* so the innovation checks must catch it, and
-/// a clock jump — the GNSS FDIR failure modes of §9.2/§635.
+/// a clock jump — the GNSS FDIR failure modes of §9.2/§6.2.
 ///
-/// Each instance owns an independent, seed-derived noise stream (§182), so it is
+/// Each instance owns an independent, seed-derived noise stream (§3.5), so it is
 /// bit-reproducible from `{config, seed}` and adding another sensor does not
 /// perturb it.
 

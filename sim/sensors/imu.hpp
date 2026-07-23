@@ -35,8 +35,11 @@
 /// FSW-side algorithm and the read-time buffer is the §2.4 macro-step's job, so
 /// neither is here. Fault injection (bias jump, dropout) is first-class (§9).
 ///
-/// Each unit owns one seed-derived stream (§182): reproducible from {config,seed}
+/// Each unit owns one seed-derived stream (§3.5): reproducible from {config,seed}
 /// and independent of every other sensor.
+///
+/// Implements REQ-SIM-003 (sensor truth models with full error stacks) and
+/// REQ-SIM-005 (scriptable fault injection).
 
 #include <cstdint>
 #include <Eigen/Core>

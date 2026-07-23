@@ -66,6 +66,9 @@
 ///  - Markley & Crassidis, *Fundamentals of Spacecraft Attitude Determination
 ///    and Control*, 2014, §4.2 (star tracker models, cross/about-boresight
 ///    accuracy, low/high-frequency error decomposition). [markley2014]
+///
+/// Implements REQ-SIM-003 (sensor truth models with full error stacks, shared
+/// occlusion) and REQ-SIM-005 (scriptable fault injection).
 
 #include <cstdint>
 #include <Eigen/Core>

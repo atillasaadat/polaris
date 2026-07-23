@@ -285,9 +285,22 @@ bool readSpacecraft(const json& root, SpacecraftConfig& out, std::string* error)
   out.drag_cd = node->value("drag_cd", 2.2);
   out.srp_area_m2 = node->value("srp_area_m2", 0.0);
   out.srp_cr = node->value("srp_cr", 1.3);
+  // Mirror the schema's positivity constraints (§19.1) so a hand-edited artifact
+  // cannot flip the sign of a force: negative areas invert drag/SRP direction,
+  // and a non-positive coefficient is physically meaningless.
+  if (out.drag_area_m2 < 0.0 || out.srp_area_m2 < 0.0) {
+    return fail(error, "spacecraft drag/srp reference areas must be non-negative");
+  }
+  if (!(out.drag_cd > 0.0) || !(out.srp_cr > 0.0)) {
+    return fail(error, "spacecraft drag_cd and srp_cr must be positive");
+  }
 
+  Eigen::Vector3d com = Eigen::Vector3d::Zero();
   Eigen::Vector3d cp = Eigen::Vector3d::Zero();
   Eigen::Vector3d dipole = Eigen::Vector3d::Zero();
+  if (node->contains("com_m") && !readVec3(*node, "com_m", "spacecraft", com, error)) {
+    return false;
+  }
   if (node->contains("cp_offset_m") && !readVec3(*node, "cp_offset_m", "spacecraft", cp, error)) {
     return false;
   }
@@ -295,6 +308,7 @@ bool readSpacecraft(const json& root, SpacecraftConfig& out, std::string* error)
       !readVec3(*node, "residual_dipole_am2", "spacecraft", dipole, error)) {
     return false;
   }
+  out.com_m = math::Vec3<math::frames::Body>(com);
   out.cp_offset_m = math::Vec3<math::frames::Body>(cp);
   out.residual_dipole_am2 = math::Vec3<math::frames::Body>(dipole);
 
@@ -367,8 +381,8 @@ bool readEnvironment(const json& root, EnvironmentConfig& out, std::string* erro
     }
   }
 
-  out.drag_enabled = node->value("drag_enabled", false);
-  out.srp_enabled = node->value("srp_enabled", false);
+  out.drag_enabled = node->value("drag_enabled", true);
+  out.srp_enabled = node->value("srp_enabled", true);
   out.eclipse_enabled = node->value("eclipse_enabled", true);
 
   const auto bodies = node->find("third_bodies");
@@ -414,6 +428,11 @@ bool readPropagation(const json& root, PropagationConfig& out, std::string* erro
   out.max_step_s = node->value("max_step_s", 60.0);
   if (!(out.max_step_s > 0.0)) {
     return fail(error, "propagation.max_step_s must be positive");
+  }
+  // Mirror the schema (§19.1): a zero tolerance drives the RK89 step controller
+  // to a zero step, which stalls the propagation rather than erroring.
+  if (!(out.abs_tol > 0.0) || !(out.rel_tol > 0.0)) {
+    return fail(error, "propagation.abs_tol and rel_tol must be positive");
   }
   return true;
 }

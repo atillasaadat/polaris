@@ -86,6 +86,12 @@ struct SpacecraftConfig {
   double drag_cd{2.2};
   double srp_area_m2{0.0};
   double srp_cr{1.3};
+  /// Centre of mass in the Body (structural) frame [m]. The dynamics currently
+  /// place the body origin at the CoM, so this is carried, not yet consumed — it
+  /// becomes load-bearing when propellant depletion / CG shift arrives (§17,
+  /// Phase 8). Parsed rather than silently dropped: a schema-required field the
+  /// sim discards would violate the §19.4 no-silent-default rule.
+  math::Vec3<math::frames::Body> com_m{};
   /// Centre-of-pressure offset from the centre of mass, Body frame [m]. Drives
   /// the aerodynamic and SRP disturbance torques.
   math::Vec3<math::frames::Body> cp_offset_m{};
@@ -124,8 +130,8 @@ struct EnvironmentConfig {
   int gravity_order{-1};
   bool sun_third_body{false};
   bool moon_third_body{false};
-  bool drag_enabled{false};
-  bool srp_enabled{false};
+  bool drag_enabled{true};
+  bool srp_enabled{true};
   bool eclipse_enabled{true};
   AtmosphereModel atmosphere{AtmosphereModel::kExponential};
   MagneticModel magnetic_field{MagneticModel::kIgrf};
@@ -169,7 +175,7 @@ struct SimConfig {
   /// trajectory header so an output file can be traced back to the exact input
   /// that produced it (REQ-CFG-003).
   std::string config_hash;
-  /// Master RNG seed for the run (§3.6). Every stochastic source derives its own
+  /// Master RNG seed for the run (§3.5). Every stochastic source derives its own
   /// stream from this, so a run is bit-reproducible from `{config, seed}`.
   std::uint64_t seed{0};
   SpacecraftConfig spacecraft;

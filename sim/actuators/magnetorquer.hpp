@@ -23,6 +23,9 @@
 ///
 /// Fault injection is first-class (§9): stuck-on holds the last command; a dropout
 /// collapses the moment to the (uncontrollable) residual.
+///
+/// Implements REQ-SIM-003 (actuator truth models with full error stacks) and
+/// REQ-SIM-005 (scriptable fault injection).
 
 #include <cmath>
 #include <Eigen/Core>

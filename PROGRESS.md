@@ -3,10 +3,12 @@
 Living status of the build-out, tracked against the design doc's development
 phasing (`docs/design/Polaris_Design_Document.md` §24). This file summarizes
 **what exists and is verified**; the authoritative spec and the requirements
-baseline (`docs/requirements/`) remain the sources of truth.
+baseline (`docs/requirements/`) remain the sources of truth. Per-push detail
+lives in the merged PR descriptions and the design doc's "Implemented (Push N)"
+notes — this tracker stays a rollup so it cannot rot the way a narrative does.
 
-**Current phase:** Phase 0 — Foundations (in progress)
-**Last updated:** Phase 0, Push 5 (GMAT golden-data harness + first fixture)
+**Current phase:** Phase 2 — Sensor & actuator models (complete except CMGs/thrusters); Phase 3 (F´ SITL) next
+**Last updated:** Push 28 (holistic audit + documentation standard)
 
 ---
 
@@ -14,283 +16,86 @@ baseline (`docs/requirements/`) remain the sources of truth.
 
 | Area | State |
 |---|---|
-| Repo skeleton, licensing, tooling | ✅ done |
-| Requirements ICD (Sphinx-Needs) | ✅ authored (72 reqs seeded) |
-| Docs site + traceability gate | ✅ builds clean under `-W` |
-| CI skeleton (docs gate + lint active) | ✅ in place; build/test stages stubbed |
-| `lib/` math foundations (constants, typed vectors, quaternion) | ✅ done + tested |
-| `lib/` time (TAI clock, GPS/TT scales, leap seconds, UTC) | ✅ done + tested |
-| F´ v4.2.2 barebones deployment (buildable/runnable) | ✅ done (Push 4 pulled forward) |
-| `lib/` geometric frames (LVLH/RIC) + canonical state (`EstimatedState`/`TruthState`) | ✅ done + tested |
-| `lib/` onboard ephemeris (Chebyshev) + TDB time argument | ✅ done + tested |
-| `lib/` ground SPICE ephemeris source (DE440) | ⏳ deferred to sim/Push 5 (never onboard) |
-| Config schema + hardware-model library + config compiler (`tools/configc/`) | ✅ done + tested |
-| GMAT golden-data harness (`tools/gmat/`) + first fixture (`tests/golden/`) | ✅ done + tested |
+| Repo skeleton, licensing, tooling, CI (lint + build + F´ tests + docs gates) | ✅ done; branch protection + squash auto-merge on `main` |
+| Requirements ICD (sphinx-needs, 71 reqs) + traceability gate (`-W`) | ✅ builds clean; uncovered baselined reqs fail CI |
+| Docs site (Sphinx + Doxygen/Breathe + bibtex) | ✅ published: <https://atillasaadat.github.io/polaris/> |
+| F´ v4.2.2 barebones deployment (buildable/runnable) | ✅ done |
+| `lib/` foundations: constants, typed vectors/quaternions, frames (LVLH/RIC), canonical state structs | ✅ done + tested |
+| `lib/` time: TAI/GPS/TT/UTC/TDB, leap seconds | ✅ done + tested |
+| `lib/` ECI↔ECEF (IAU 2006/2000A via ERFA) + IERS EOP | ✅ done + GMAT-validated |
+| `lib/` onboard Chebyshev ephemeris + IGRF-14 | ✅ done + tested |
+| Config pipeline: pydantic schema → compiler → `sim_setup.json` → C++ loader | ✅ done; single source of truth, provenance-hashed |
+| Hardware model library (`config/hardware/`, 17 entries, datasheet-pinned) | ✅ done; no in-code catalogs (§19.4) |
+| Truth dynamics: 6DOF rigid body + RK8(9) | ✅ done; conservation + Kepler-closure tested |
+| Environment: EGM2008 (to 200×200), third-body (DE440), drag (exponential + NRLMSIS 2.1 + space weather), SRP + conical eclipse, IGRF-14 + dipole torque | ✅ done + GMAT golden cross-validation |
+| Truth-sim executable (`sim/main.cpp`) | ✅ done |
+| Sensors: IMU, magnetometer, star tracker, sun sensor (analogue + digital), GNSS | ✅ done + tested (full error stacks, occlusion, fault hooks) |
+| Actuators: reaction wheel (torque + speed modes, W-matrix assembly), magnetorquer | ✅ done + tested |
+| Scenario controls: seed, sensor-noise switches (global + per-unit), GNSS jamming KML + fault schedule | ✅ done + tested |
+| CMGs, thrusters (truth models) | ⬜ remaining in Phase 2 scope (§7) |
+| §2.4 macro-step loop (`sim/io`): sensors/actuators bound into the running plant | ⬜ Phase 3, with the F´ SITL transport |
+| FSW GNC components, estimators, control | ⬜ Phase 3+ |
 
-**Build/test health:** C++ builds clean under a strict `-Werror` warning set;
-**67 C++ tests** (66 unit + 1 golden) + **17 Python tests** (12 config-compiler,
-5 GMAT-harness) pass (C++ also green under ASan/UBSan); docs build is green (with
-the `lib/` C++ API rendered); pre-commit (clang-format + ruff) is clean.
-Dependencies + Python/build toolchain are managed by **uv** (`pyproject.toml` +
-`uv.lock`, Python 3.12); CI runs the same via `setup-uv`.
-
----
-
-## Phase 0 — what's done
-
-### Push 1 — Foundations (skeleton, licensing, requirements, docs, CI)
-- **Repository skeleton** per design §22.3 (`lib/ flight/ sim/ bindings/ analysis/
-  config/ tests/ tools/ mc/ docs/ .github/`).
-- **Dual-license model:** PolyForm Noncommercial 1.0.0 for the public
-  (`LICENSE`) — free for research/education/university smallsats with attribution
-  — plus a separately-sold commercial license (`LICENSING.md`, `NOTICE`).
-  Third-party attributions in `THIRD_PARTY_NOTICES.md`.
-- **Tooling baseline:** `.gitignore`, `.editorconfig`, `.clang-format`
-  (clang-format 18), `.clang-tidy` (JPL Power-of-Ten checks),
-  `.pre-commit-config.yaml`.
-- **Requirements ICD** (`docs/requirements/`) in **Sphinx-Needs**:
-  `REQ-<SUBSYS>-NNN`, levels L0/L1/L2, T/A/I/D verification, margin fields, and
-  an auto-generated RVTM. **72 requirements** seeded across 16 subsystem groups
-  (5 mission, 14 system/program, 53 subsystem), all at status `reviewed`.
-- **Docs site** (Sphinx + numpydoc + PyData theme + Breathe/Doxygen + bibtex +
-  sphinx-needs), `refs.bib`, glossary. The build is a CI gate (`sphinx-build -W`):
-  a baselined requirement without a verifying test fails the build.
-- **CI** (`.github/workflows/`): `docs.yml` (doc-gate + Pages publish) and
-  `ci.yml` (pre-commit lint active; §23.2 build/test stages stubbed for later
-  pushes).
-- **Traceability collectors** for pytest and GoogleTest wired into the RVTM.
-
-### Push 2a — `lib/` math foundations
-- **Build system:** top-level CMake; **Eigen 3.4.0** and **GoogleTest 1.15.2**
-  pinned via FetchContent (marked SYSTEM so `-Werror` only polices Polaris code);
-  C++17; CTest.
-- **`lib/constants`** — shared physical-constants registry (WGS84 `a/f/GM/ω`,
-  `TAI−GPS = 19 s`, `TT−TAI`, *c*), each value sourced.
-- **`lib/math`** — the convention bedrock:
-  - **Frame tags** + `Vec3<Frame>` typed vectors: mixing frames across a
-    boundary is a **compile error** (Golden Rule 4).
-  - **JPL scalar-first `Quaternion`** `[q0,q1,q2,q3]`, canonical `q0≥0`, JPL
-    product (`A(a·b)=A(a)A(b)`), passive attitude matrix (`v_rot=A(q)v_ref`),
-    Shepperd extraction; tagged `Quat<To,From>` boundary wrapper.
-- **18 unit tests, all REQ-traced**, 100% pass. The quaternion convention is
-  validated by self-consistency (composition vs DCM product, Shepperd
-  round-trip, conjugate = transpose, passive ROT3). External GMAT-golden
-  validation is deferred to Push 5.
-- **Reviewed** with the `fsw-code-reviewer` (no critical/memory/exception
-  issues; math verified by hand). Findings fixed: added `trawny2005` /
-  `shepperd1978` / `wgs84` bibkeys, made `FromRotationMatrix` always return a
-  unit quaternion, added `isFinite()` boundary guards.
-
-**Requirements coverage:** 7 of 72 requirements now have a verifying test
-(REQ-SYS-001/002/003/004/006, REQ-CONV-003/004) — the first traces in the RVTM.
-
-### F´ integration — Push 4 pulled forward (out of dependency order)
-- **F´ vendored as a submodule at tag `v4.2.2`** — the **latest** F´ release
-  (published 2026-04-24; verified against `nasa/fprime` releases). No upgrade is
-  available or needed.
-- **Buildable, runnable barebones deployment** at `flight/PolarisFsw` — a minimal
-  F´-native topology (`CdhCore` + `ComCcsds` + `DataProducts` + `FileHandling`
-  subtopologies), unified into the top-level build. No GNC components yet; this is
-  the plumbing that later hosts the Phase 3 FSW skeleton (§24).
-- **Rationale for reordering:** the F´ deployment builds independently of the
-  `lib/` numerics, so standing it up early de-risks the toolchain/topology work
-  without blocking on Push 2b–2d. The design's §24 phasing is a dependency guide,
-  not a strict sequence — this reordering respects the actual dependency graph.
-
-### Push 2b — `lib/time` library
-- **`lib/time`** — the onboard time foundation (design doc §3.2):
-  - **`Duration`** — signed int64-nanosecond interval; `constexpr` arithmetic;
-    exact-seconds and rounded fractional-seconds constructors.
-  - **Strongly-typed uniform scales** `Tai` / `Gps` / `Tt` (`Instant<Scale>`):
-    monotonic int64-ns count since the 1970 scale epoch. Mixing scales is a
-    **compile error** — the same boundary-typing discipline as the frame tags.
-  - **TAI master clock** (REQ-SYS-001) with a **two-part high-precision form**
-    (int64 s + double frac in `[0,1)`) for long propagation/ephemeris arcs
-    (REQ-CONV-005).
-  - **Constant-offset conversions** `GPS→TAI = +19 s` (REQ-CONV-001) and
-    `TT−TAI = +32.184 s`, int64-exact and `static_assert`-checked against the
-    shared constants registry.
-  - **Leap-second table** — fixed-capacity (no heap), historical IERS ΔAT record
-    through 2017-01-01 (=37 s), plus a **frozen/settable** table for reproducible
-    MC (§3.5); **UTC derivation** (`utc.hpp`) with exact round-trips including the
-    inserted leap second (`hh:mm:60`). UTC is ground-only; the master clock stays
-    TAI.
-  - **`civil.hpp`** — branch-free proleptic-Gregorian date↔serial-day algorithms
-    (Hinnant), shared by the leap table and UTC conversion.
-- **21 new unit tests, all REQ-traced**, 100% pass (39/39 total; green under
-  ASan/UBSan). Validated by round-trips, known IERS/GPS-epoch anchors, and the
-  exact integer offsets. External GMAT-golden time/scale cross-validation is
-  deferred to Push 5.
-- **Scope note:** **TDB** (and the TT↔TDB periodic term) is deferred to **Push 2d**
-  (ephemeris), where it is actually consumed; TAI/GPS/TT/UTC are complete here.
-- **Reviewed** with the `fsw-code-reviewer` (no CRITICAL). Findings fixed:
-  finiteness/range guard on `Duration::fromSecondsF` (no `llround` UB); checked
-  `addEntry` returns + a capacity `static_assert` in the table factories; `frozen`
-  table re-seated so its constant ΔAT holds at/before the epoch; `isValidUtc`
-  boundary validator + `taiFromUtc` precondition; TT−TAI `static_assert` now
-  cross-checks the constants registry; added the `hinnant2016` bibkey.
-
-**Requirements coverage:** 9 of 72 requirements now have a verifying test
-(adds REQ-CONV-001, REQ-CONV-005 to the Push 2a set) — 39 verifying tests in the
-RVTM.
-
-### Push 2c — geometric frames + canonical state
-- **`lib/math/frame_geometry`** — the two orbit-relative frames built from an ECI
-  position/velocity, returned as boundary-tagged passive rotations:
-  - **RIC** (Hill/RTN): `ricFromEci(r,v) → Quat<RIC,ECI>` with R = r̂,
-    C = ĥ = (r×v)̂, I = C×R.
-  - **LVLH** (nadir pointing): `lvlhFromEci(r,v) → Quat<LVLH,ECI>` with ẑ = −r̂,
-    ŷ = −ĥ, x̂ = ŷ×ẑ (≈ +velocity).
-  - Pure functions of the orbit state (no EOP/time) — exact and always available;
-    the full time-dependent ECI↔ECEF (IAU 2006/2000A) is the separate Push-5
-    frames library. Degenerate inputs (non-finite, zero radius, r∥v) return
-    `false` and leave the output untouched — §3.6 return-code discipline, no throw.
-    Cited [vallado2013] / [wertz1978].
-- **`lib/state`** — the single nav product (§8.0):
-  - **`EstimatedState`** — TAI epoch, `Quat<Body,ECI>` attitude, body rate,
-    ECI position/velocity, gyro/accel bias, a **15-state error covariance**
-    (documented block order δθ/δb_g/δr/δv/δb_a), per-field validity flags, the
-    active `EstimationMode` (Fine/Coarse/Invalid), and a schema version. Every
-    vector is frame-tagged (§3.1).
-  - **`TruthState`** — the sim-only analogue with the same kinematics but no
-    covariance/validity, so truth-vs-onboard is a **type distinction** — flight
-    code is structurally unable to consume truth (enforced by `static_assert`).
-- **11 new unit tests, all REQ-traced**, 100% pass (50/50 total; green under
-  ASan/UBSan): known-orbit geometry (RIC identity for the canonical equatorial
-  state; LVLH nadir/velocity axes), radial/cross-track exactness for a general
-  orbit, the degenerate/finiteness guards, and the state defaults/covariance
-  layout/type-distinction.
-- **Reviewed** with the `fsw-code-reviewer`.
-
-**Requirements coverage:** 11 of 72 requirements now have a verifying test
-(adds REQ-SYS-005 canonical state, REQ-SYS-013 multi-frame views) — 50 verifying
-tests in the RVTM.
-
-### Push 2d — onboard Chebyshev ephemeris + TDB
-- **`lib/time` TDB** — the periodic dynamical-time argument the ephemerides run
-  on (design doc §3.2, §11.3), the piece deferred from Push 2b "where ephemeris
-  consumes it":
-  - `scale::Tdb` / `Tdb` join the strongly-typed uniform scales; because TDB−TT
-    is a **periodic** term (mainly annual, peak ≈ 1.66 ms, no secular drift) and
-    not a constant offset, the conversion is a function (`time/tdb.hpp`), not one
-    of the `constexpr` offsets.
-  - `toTdb(Tt)` / `toTt(Tdb)` via the standard two-harmonic series (Vallado
-    eq. 3-49), accurate to ~30 µs — far below the onboard ephemeris budget. The
-    inverse is a self-consistent single shot (< 1 µs, no iteration). Cited
-    [vallado2013].
-- **`lib/ephemeris` onboard Chebyshev evaluator** (design doc §11.3, REQ-CDH-002):
-  - `ChebyshevSegment` — one uploaded coefficient set (fixed-capacity, degree ≤ 15,
-    no heap) covering a TDB interval, mirroring an SPK Type 2 record.
-  - `evaluate(...)` returns position (and, via the analytic derivative, velocity)
-    in **ECI/J2000 metres** at a **TDB** query epoch. Out-of-coverage, malformed,
-    or non-finite → `false` with the output untouched (§3.6 return-code discipline).
-  - `EphemerisTable<Capacity>` — a body's consecutive segments in fixed-capacity
-    storage; a query selects the covering interval (no extrapolation across gaps).
-  - **SPICE stays ground/sim-only** and is never linked into flight; the DE440
-    ground source + the SPICE→Chebyshev fitting land in the sim / Push-5 golden
-    harness where they are consumed. Cited [newhall1989] / [vallado2013].
-- **16 new unit tests, all REQ-CDH-002-traced**, 100% pass (66/66 total; green
-  under ASan/UBSan): independent recomputation of the TDB series at known epochs
-  (validating the 1970→J2000 day conversion), the bounded/periodic/round-trip
-  properties; exact recovery of a hand-evaluated Chebyshev polynomial and its
-  derivative (with a finite-difference velocity cross-check), interval-boundary
-  and out-of-coverage guards, and the table's interval selection/overflow.
-- **Reviewed** with the `fsw-code-reviewer`.
-
-**Requirements coverage:** 12 of 72 requirements now have a verifying test
-(adds REQ-CDH-002 onboard ephemeris/TDB) — 66 verifying tests in the RVTM.
+**Test gates (all green):** 375 C++ unit (ASan/UBSan) · 16 integration ·
+4 GMAT golden · 84 Python (config compiler, GMAT harness, space weather, orbit) ·
+docs `-W` (bibliography + requirements traceability) · pre-commit
+(clang-format + ruff) · F´ flight build.
 
 ---
 
-### Push 3 — config schema + hardware-model library + config compiler
-- **Single source-of-truth config** (design doc §19.1): a spacecraft + scenario
-  YAML validated by a **Pydantic schema** (`tools/configc/schema.py`) with
-  `extra='forbid'` so a typo'd key fails the build instead of being silently
-  dropped (validation at the boundary). GNC-core scope: mass/CoM/inertia, the
-  sensor/actuator suite referenced by hardware model-ID, per-mode control gains,
-  epoch/environment, ground network, and Monte-Carlo dispersion hooks (RF/power/
-  thermal deferred until a consumer needs them).
-- **Hardware-model library** (`config/hardware/`, §19.2, REQ-CFG-002): parameterized
-  entries keyed by model ID (`STIM300` IMU, `ST-16` star tracker, `RW-X` reaction
-  wheel). A spacecraft references hardware by model-ID string — swapping the string
-  swaps the modeled unit.
-- **Config compiler** (`tools/configc/`, §19.3, REQ-CFG-001/003): one pipeline —
-  load library → validate config → resolve model-IDs into **one resolved object**
-  → SHA-256 provenance hash → emit F´-param / sim / analysis **stub artifacts**.
-  All three derive from the single resolved object (no consumer re-parses raw
-  YAML); each carries the config hash for traceability. The emitters are stubs
-  (JSON, not a real `ParameterDb` binary); the pipeline/validation/provenance are
-  real. CLI: `PYTHONPATH=tools uv run python -m configc`.
-- **One LEO template config** (`config/spacecraft/leo_smallsat.yaml`): a 6U-class
-  vehicle in a 500 km SSO — a ready compile/test setup.
-- **12 Python tests, REQ-CFG-001/002/003-traced** (pytest, 100% pass): three-artifact
-  emission, single-resolved-object provenance shared across all artifacts,
-  model-ID resolution + swap, unknown-model-ID and unknown-key rejection, and
-  deterministic value-sensitive hashing.
-- pydantic + pyyaml declared explicitly in a `config` dependency group (both
-  already in the locked graph). **Reviewed** with the `python-reviewer`.
+## Push log
 
-**Requirements coverage:** 15 of 72 requirements now have a verifying test
-(adds REQ-CFG-001/002/003 config compiler) — 78 verifying tests in the RVTM
-(66 C++ + 12 Python).
+Phase 0 — Foundations
+| Push | PR | Delivered |
+|---|---|---|
+| 1–2a | #1–2 | Repo/CI/licensing skeleton; requirements ICD (sphinx-needs); docs site + Pages gating; `lib/` constants + typed vectors + JPL quaternion |
+| 2b | #3 | `lib/time` (TAI/GPS/TT/UTC, leap seconds); F´ v4.2.2 barebones deployment (Push 4 pulled forward) |
+| 2c–2d | #4 | Geometric frames (LVLH/RIC) + canonical `EstimatedState`/`TruthState`; onboard Chebyshev ephemeris + TT↔TDB |
+| 3 | #5 | Config schema + hardware library + config compiler (§19.3) |
+| 5 | #6 | GMAT golden-data harness + first fixture |
 
----
+Phase 1 — Truth sim core
+| Push | PR | Delivered |
+|---|---|---|
+| 6 | #7 | 6DOF rigid-body dynamics + RK8(9) integrator |
+| 7 | #8 | Spherical-harmonic gravity + gravity-gradient torque |
+| 8 | #9 | Fully-normalized singularity-free gravity (stable to 200×200) |
+| 9 | #10 | ECI↔ECEF reduction (IAU 2006/2000A) + IERS EOP tables |
+| 10–11 | #11–13 | EGM2008 `.gfc` loader (tesseral, ECEF-frame); third-body gravity; degree-200 golden fixture |
+| 12 | #14 | Solar radiation pressure + conical eclipse |
+| 13 | #15 | Atmospheric drag + exponential atmosphere |
+| 14 | #16 | DE440 Chebyshev ephemeris layer (Sun/Moon) |
+| 15 | #17 | IGRF-14 geomagnetic field + residual-dipole torque |
+| 16 | #18 | Truth-sim executable |
+| 17 | #19 | GMAT force-model golden cross-validation |
+| 18 | #20 | CelesTrak space-weather layer for NRLMSIS |
 
-### Push 5 — GMAT golden-data harness + first fixture
-- **GMAT is the V&V reference tool** (design doc §23.1, REQ-SYS-010 / REQ-VV-002):
-  it generates versioned "golden" datasets that Polaris numerical functions are
-  checked against within documented per-quantity tolerance bands. The fixtures
-  are **committed data — CI never runs GMAT**; GMAT is only used to *regenerate*
-  them. (GMAT is a large NASA GSFC app and is not installed here, so the binary
-  is deferred — same pattern as the CSPICE/DE440 deferral; the harness and the
-  comparison path are complete and the first fixture is seeded from independent
-  published constants, GMAT-regeneratable in place.)
-- **Golden-fixture format** (`tests/golden/*.json`): versioned JSON carrying
-  provenance (reference source + `gmat_regeneratable` + the generating script),
-  input epochs, and per-quantity `expected` + `tol_abs` bands.
-- **First fixture** (`tests/golden/time_scales.json`): TAI/GPS/TT offsets vs UTC
-  at the GPS epoch (1980) and a post-2017 epoch (2020), validating `lib/time`
-  (Push 2b, whose GMAT cross-check was deferred here). Reference values are
-  **published constants** (IERS leap seconds; IAU definitional TT−TAI = 32.184 s,
-  TAI−GPS = 19 s) — independent of the Polaris code they verify.
-- **C++ comparison harness** (`tests/golden/`, nlohmann/json header-only via
-  FetchContent): loads the committed fixture and checks `lib/time` within each
-  band. TAI−UTC is recovered from public API (`historical` vs `frozen(0)` leap
-  tables), exercising the leap-second table content against the published steps.
-- **Regenerate harness** (`tools/gmat/`): emits the GMAT `.script` and parses its
-  `ReportFile` output into the fixture format; the parser/offset math is
-  unit-tested without GMAT (only the GMAT run itself needs the binary).
-- **6 REQ-VV-002-traced tests, 100% pass**: 1 C++ golden comparison (67 C++
-  total) + 5 Python harness tests (report parsing, offset recovery, ragged-row
-  rejection, fixture schema, script emission).
-
-**Requirements coverage:** 16 of 72 requirements now have a verifying test
-(adds REQ-VV-002 GMAT golden regression) — 84 verifying tests in the RVTM
-(67 C++ + 17 Python).
+Phase 2 — Sensor & actuator models
+| Push | PR | Delivered |
+|---|---|---|
+| 19 | #21 | Sensor truth-model foundation (§6.1 error stack) + magnetometer |
+| 20 | #22 | IMU truth model + datasheet catalog entries (STIM300/377H) |
+| 21 | #23 | Reaction wheel (RW-0.4 rundown model) + magnetorquer (hysteresis) |
+| 22 | #24 | Config-driven hardware — in-code catalogs deleted (§19.4) |
+| 23 | #25 | Shared line-of-sight occlusion (+ configurable atmosphere limb) + Sodern AURIGA star tracker (acquisition/tracking state machine) |
+| 24 | #26 | Sun sensor (analogue counts + GomSpace FSS digital vector) + magnetometer config wiring |
+| 25 | #27 | GNSS PVT-fix receiver (NovAtel OEM7600) + geographic jamming KML + scheduled fault events |
+| 26 | #28 | RW assembly (W-matrix, `spin_axis` config) + wheel-local speed command mode |
+| 27 | #29 | Sensor-noise master switch + per-unit overrides |
+| 28 | — | Holistic audit: config-pipeline fixes (`com_m`, `gravity_order`, defaults, validation), §-reference sweep, refs.bib completion, documentation standard (§21.3) + per-folder READMEs |
 
 ---
 
 ## What's next
 
-- ~~**Push 2b** — time library: TAI/UTC/GPS/TT, int64-ns master clock + two-part
-  high-precision form, leap-second handling.~~ ✅ **done** (TDB moved to 2d).
-- ~~**Push 2c** — frames (LVLH/RIC geometric now; full ECI↔ECEF reduction with
-  GMAT in Push 5) + the canonical `EstimatedState` / `TruthState` structs.~~
-  ✅ **done** (see above; ECI↔ECEF reduction still deferred to Push 5).
-- ~~**Push 2d** — onboard Chebyshev ephemeris interface; **TDB** (TT↔TDB periodic
-  term) where ephemeris consumes it.~~ ✅ **done** (see above; the ground SPICE /
-  DE440 source + SPICE→Chebyshev fitting stay ground-only, deferred to the sim /
-  Push 5 where they are consumed).
-- ~~**Push 3** — config schema + hardware-model library + config-compiler stub.~~
-  ✅ **done** (see above; GNC-core schema, RF/power/thermal + real F´-param/sim
-  artifact encoders deferred to their consuming pushes).
-- ~~**Push 4** — F´ submodule + buildable deployment.~~ ✅ **done early** (F´
-  `v4.2.2`, see above).
-- ~~**Push 5** — GMAT golden-data harness + first fixtures.~~ ✅ **done** (see
-  above; GMAT binary deferred, harness + first fixture from independent published
-  references, GMAT-regeneratable). Broader golden cases (propagation, ECI↔ECEF,
-  eclipse, contacts) land with the sim/GNC layers that implement those functions.
-- **Push 6** — activate the full §23.2 CI pipeline.
+1. **Phase 2 close-out (optional):** CMG and thruster truth models (§7) — or
+   defer to the phases that consume them (§8.5 control, §17 maneuvering).
+2. **Phase 3 — FSW skeleton + two-process SITL (§24):** F´ topology/rate groups,
+   plant↔FSW TCP lockstep, the §2.4 macro-step loop that finally binds sensors
+   and actuators into the running plant (and the deferred runner hooks: jamming
+   map, fault schedule, actuator torque feedback).
+3. **Phase 4 — attitude determination:** TRIAD/QUEST initializers, MEKF fine
+   mode, coarse SS+MAG+IMU mode — the consumers the sensor models were built for.
 
 ---
 
@@ -304,14 +109,23 @@ creates `.venv`, provisions Python 3.12, and installs the pinned toolchain
 # One-time
 uv sync                             # F´ toolchain + dev tools (from uv.lock)
 
-# F´ build + unit tests
+# F´ flight build
 uv run fprime-util generate && uv run fprime-util build
-uv run fprime-util build --ut && uv run fprime-util check   # 39/39
 
-# Docs site (warnings are errors; same gate as CI — renders the lib/ C++ API)
+# C++ test suites (unit runs under ASan/UBSan)
+uv run cmake --build build-fprime-automatic-native-ut \
+    --target polaris_unit_tests polaris_integration_tests polaris_golden_tests -j4
+./build-fprime-automatic-native-ut/bin/Linux/polaris_unit_tests
+./build-fprime-automatic-native-ut/bin/Linux/polaris_integration_tests
+./build-fprime-automatic-native-ut/bin/Linux/polaris_golden_tests
+
+# Python suites (config compiler, GMAT harness, space weather, orbit)
+uv run pytest tests/tools
+
+# Docs site (warnings are errors; same gate as CI)
 sudo apt-get install -y doxygen     # one-time
-uv run --group docs bash tools/dev/build_docs.sh            # -> docs/_build/html/index.html
+uv run --only-group docs bash tools/dev/build_docs.sh   # -> docs/_build/html/index.html
 
-# Lint
+# Lint (CI runs exactly this; the pre-commit git hook runs it per-commit)
 uv run --only-group dev pre-commit run --all-files
 ```

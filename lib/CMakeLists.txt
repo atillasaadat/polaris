@@ -8,7 +8,7 @@ target_include_directories(polaris_constants INTERFACE ${CMAKE_CURRENT_SOURCE_DI
 add_library(polaris::constants ALIAS polaris_constants)
 
 # --- Random: seeded, per-source-derived PRNG streams (header-only) -----------
-# Determinism mandate (§3.6): every stochastic source draws from an independent
+# Determinism mandate (§3.5): every stochastic source draws from an independent
 # stream so a run is bit-reproducible from {config, seed}. Used by the sensor/
 # actuator truth models and, later, the Monte-Carlo dispersions.
 add_library(polaris_random INTERFACE)

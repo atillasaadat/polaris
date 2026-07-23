@@ -9,4 +9,7 @@ Subdirectories (design doc §22.3):
 `math/` (Eigen, quaternions, typed vectors) · `frames/` (transforms + EOP) ·
 `time/` (TAI/UTC/GPS) · `state/` (`EstimatedState`/`TruthState`) ·
 `constants/` (registry incl. WGS84) · `environment/` (gravity, drag, SRP, IGRF, 3-body) ·
-`ephemeris/` (SPICE ground + Chebyshev onboard) · `models/`.
+`ephemeris/` (Chebyshev onboard evaluator) · `random/` (seeded per-source RNG streams, §3.5) ·
+`models/`.
+
+Each subdirectory carries its own `README.md` with a contents table.

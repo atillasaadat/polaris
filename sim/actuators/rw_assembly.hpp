@@ -20,6 +20,10 @@
 ///    (§8.5, L-norm / L-∞) and lives with the FSW, not here — but it is the same W.
 ///
 /// Sim-side: dynamic sizes and heap are fine.
+///
+/// Implements the array-geometry half of REQ-SIM-003; the allocation inverse is
+/// the §8.5 control layer. Reference: [markley2014] §7 (actuator arrays and
+/// distribution matrices).
 
 #include <Eigen/Core>
 #include <vector>
