@@ -141,11 +141,23 @@ TEST(ReactionWheel, NonPositiveDtIsANoOp) {
   EXPECT_EQ(rw.speed(), 0.0);
 }
 
-TEST(ReactionWheel, CatalogRocketLabRw04MatchesDatasheet) {
-  const auto s = act::catalog::rocketLabRw04();
+TEST(ReactionWheelSpec, LibraryParamsConvertToSi) {
+  // The hardware library speaks the datasheet's units (rpm); the spec is SI.
+  // These values mirror config/hardware/reaction_wheel/rocketlab_rw04.yaml — a
+  // test fixture, not a catalog (design doc §19.4). What is pinned here is the
+  // conversion; the datasheet numbers themselves are pinned against the YAML in
+  // tests/tools/test_config_compiler.py.
+  const auto s = act::ReactionWheelSpec::fromParams({
+      {"max_torque_nm", 0.1},
+      {"max_momentum_nms", 0.4},
+      {"max_speed_rpm", 6000.0},
+      {"dry_friction_nm", 2.0e-4},
+  });
   EXPECT_DOUBLE_EQ(s.max_torque_nm, 0.1);
   EXPECT_DOUBLE_EQ(s.max_momentum_nms, 0.4);
-  EXPECT_GT(s.inertia(), 0.0);
+  EXPECT_NEAR(s.max_speed_rad_s, 6000.0 * 2.0 * M_PI / 60.0, 1e-12);
+  // No explicit rotor inertia: it falls out of momentum / speed.
+  EXPECT_NEAR(s.inertia(), 0.4 / s.max_speed_rad_s, 1e-15);
 }
 
 // --- Magnetorquer ------------------------------------------------------------
@@ -228,16 +240,16 @@ TEST(Magnetorquer, PowerSumsAllThreeRods) {
   EXPECT_NEAR(mtq.busPower(), 3.6, 1e-12);
 }
 
-TEST(Magnetorquer, CatalogEntriesCarryTheDatasheetBounds) {
-  const auto nss = act::catalog::nssTaurus(30.0);
-  EXPECT_DOUBLE_EQ(nss.max_dipole_am2, 30.0);
-  EXPECT_DOUBLE_EQ(nss.residual_dipole_am2, 1.0);  // < 1.5 A·m² bound
-  EXPECT_DOUBLE_EQ(nss.linearity, 0.05);           // ±5%
-  EXPECT_GT(act::catalog::genericMagnetorquer().max_dipole_am2, 0.0);
-
-  const auto mtq800 = act::catalog::aacMtq800();
-  EXPECT_DOUBLE_EQ(mtq800.max_dipole_am2, 30.0);  // boost limit
-  EXPECT_DOUBLE_EQ(mtq800.linearity, 0.02);       // ±2% design accuracy
+TEST(MagnetorquerSpec, LibraryParamsBuildTheSpecAndPowerCurve) {
+  // Mirrors config/hardware/magnetorquer/aac_mtq800.yaml as a test fixture (§19.4).
+  const auto mtq800 = act::MagnetorquerSpec::fromParams({
+      {"max_dipole_am2", 30.0},  // boost limit
+      {"residual_dipole_am2", 0.1},
+      {"linearity", 0.02},  // ±2% design accuracy
+      {"power_max_w", 13.2},
+  });
+  EXPECT_DOUBLE_EQ(mtq800.max_dipole_am2, 30.0);
+  EXPECT_DOUBLE_EQ(mtq800.linearity, 0.02);
   // Peak power is the datasheet 13.2 W, and the dipole² law reproduces the low-end
   // point (~1.54 W at 10 A·m² typ). The datasheet is deliberately sub-quadratic in
   // the boost region (efficiency traded for peak moment), so the mid/high points

@@ -80,11 +80,13 @@ add_library(polaris::actuators ALIAS polaris_actuators)
 # environment model behind one CompositeForceModel.
 add_library(polaris_scenario
   scenario/sim_config.cpp
-  scenario/sim_runner.cpp)
+  scenario/sim_runner.cpp
+  scenario/vehicle.cpp)
 target_include_directories(polaris_scenario PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_scenario
   PUBLIC polaris_world polaris_dynamics polaris_frames polaris_state polaris_time
-         polaris_constants polaris_environment nlohmann_json::nlohmann_json
+         polaris_constants polaris_environment polaris_sensors polaris_actuators
+         nlohmann_json::nlohmann_json
   PRIVATE polaris_flags)
 add_library(polaris::scenario ALIAS polaris_scenario)
 

@@ -25,6 +25,7 @@
 
 #include "constants/constants.hpp"
 #include "scenario/sim_config.hpp"
+#include "scenario/vehicle.hpp"
 #include "time/leap_seconds.hpp"
 
 namespace {
@@ -365,6 +366,74 @@ TEST(SimIntegration, WritesATraceableTrajectoryCsv) {
   EXPECT_NE(text.find("deadbeefcafe"), std::string::npos);
   EXPECT_NE(text.find("t_s,x_m,y_m,z_m"), std::string::npos);
   std::remove(path.c_str());
+}
+
+// --- Compiled config -> vehicle ----------------------------------------------
+
+TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
+  // The §19.4 contract end to end: the artifact's resolved units are parsed and
+  // turned into models with no in-code catalog anywhere in the path. The JSON
+  // below is shaped exactly as `tools/configc` emits it (that shape is pinned on
+  // the Python side by tests/tools/test_config_compiler.py).
+  const std::string path = testing::TempDir() + "/polaris_sim_setup.json";
+  {
+    std::ofstream out(path);
+    out << R"({
+      "provenance": {"config_hash": "abc123"},
+      "scenario_name": "hardware-suite",
+      "seed": 20260101,
+      "epoch_utc": "2026-01-01T00:00:00Z",
+      "spacecraft": {
+        "name": "test-vehicle",
+        "mass_kg": 12.0,
+        "inertia_kgm2": {"ixx": 0.12, "iyy": 0.12, "izz": 0.10},
+        "sensors": [
+          {"name": "imu_a", "model_id": "STIM300", "kind": "imu",
+           "params": {"gyro_arw_deg_sqrt_hr": 0.15, "gyro_range_deg_s": 400.0},
+           "mounting_dcm_row_major": null},
+          {"name": "st_a", "model_id": "ST-16", "kind": "star_tracker",
+           "params": {"cross_axis_arcsec": 5.0}, "mounting_dcm_row_major": null}
+        ],
+        "actuators": [
+          {"name": "rw_1", "model_id": "RW-X", "kind": "reaction_wheel",
+           "params": {"max_torque_nm": 0.1, "max_momentum_nms": 0.4, "max_speed_rpm": 6000.0},
+           "mounting_dcm_row_major": [0, 0, 1, 0, 1, 0, -1, 0, 0]},
+          {"name": "mtq_x", "model_id": "MTQ-GENERIC", "kind": "magnetorquer",
+           "params": {"max_dipole_am2": 15.0, "residual_dipole_am2": 0.5},
+           "mounting_dcm_row_major": null}
+        ]
+      },
+      "initial_state": {
+        "position_m": [6878137.0, 0.0, 0.0],
+        "velocity_m_s": [0.0, 7612.0, 0.0],
+        "attitude_quaternion": [1.0, 0.0, 0.0, 0.0],
+        "body_rate_rad_s": [0.0, 0.0, 0.0]
+      },
+      "propagation": {"duration_s": 60.0, "output_step_s": 10.0},
+      "environment": {"gravity_degree": 0, "magnetic_field": "none"}
+    })";
+  }
+
+  scenario::SimConfig config;
+  std::string error;
+  ASSERT_TRUE(scenario::loadSimConfig(path, pt::LeapSecondTable::historical(), config, &error))
+      << error;
+  std::remove(path.c_str());
+
+  EXPECT_EQ(config.seed, 20260101u);
+  ASSERT_EQ(config.spacecraft.sensors.size(), 2u);
+  ASSERT_EQ(config.spacecraft.actuators.size(), 2u);
+  EXPECT_DOUBLE_EQ(config.spacecraft.sensors[0].params.at("gyro_arw_deg_sqrt_hr"), 0.15);
+  // A 90° mounting about +y: the wheel's spin axis lies along body -x.
+  EXPECT_NEAR(config.spacecraft.actuators[0].mounting_dcm(0, 2), 1.0, 1e-15);
+
+  scenario::Vehicle vehicle;
+  ASSERT_TRUE(scenario::buildVehicle(config.spacecraft, config.seed, vehicle, &error)) << error;
+  EXPECT_EQ(vehicle.imus.size(), 1u);
+  EXPECT_EQ(vehicle.wheels.size(), 1u);
+  EXPECT_EQ(vehicle.magnetorquers.size(), 1u);
+  ASSERT_EQ(vehicle.unmodelled.size(), 1u);
+  EXPECT_EQ(vehicle.unmodelled[0], "st_a:star_tracker");
 }
 
 // --- Regressions -------------------------------------------------------------

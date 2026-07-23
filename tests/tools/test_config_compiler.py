@@ -251,6 +251,44 @@ def test_sim_setup_carries_the_resolved_cartesian_initial_state(tmp_path):
 
 
 @pytest.mark.verifies("REQ-CFG-001")
+def test_sim_setup_carries_the_resolved_hardware_suites(tmp_path):
+    # The sim builds every sensor/actuator model from these params alone — there
+    # is no in-code hardware catalog to fall back on (design doc §19.4). So the
+    # artifact must carry each unit's identity, kind, and full param map, plus the
+    # master seed the run's random streams derive from.
+    compile_config(_TEMPLATE, _HARDWARE, tmp_path)
+    setup = json.loads((tmp_path / "sim_setup.json").read_text())
+    assert setup["seed"] == 20260101
+
+    sc = setup["spacecraft"]
+    imu = next(u for u in sc["sensors"] if u["name"] == "imu_a")
+    assert imu["kind"] == "imu"
+    assert imu["params"]["gyro_arw_deg_sqrt_hr"] == 0.15  # inlined, not referenced
+
+    kinds = [u["kind"] for u in sc["actuators"]]
+    assert kinds.count("reaction_wheel") == 4
+    assert kinds.count("magnetorquer") == 3
+    wheel = sc["actuators"][0]
+    assert wheel["params"]["max_momentum_nms"] > 0.0
+    # Every emitted unit must be usable: an empty param map is rejected by the
+    # C++ side rather than building an ideal, unlimited device.
+    assert all(u["params"] for u in sc["sensors"] + sc["actuators"])
+
+
+@pytest.mark.verifies("REQ-CFG-003")
+def test_seed_is_part_of_the_provenance_hash():
+    # A run is reproducible from {config, seed}; two runs differing only in seed
+    # are different runs and must not share a config hash.
+    library = load_hardware_library(_HARDWARE)
+    base = _minimal_config_dict()
+    h1 = resolve(Config.model_validate(base), library)["provenance"]["config_hash"]
+    seeded = _minimal_config_dict()
+    seeded["scenario"]["seed"] = 7
+    h2 = resolve(Config.model_validate(seeded), library)["provenance"]["config_hash"]
+    assert h1 != h2
+
+
+@pytest.mark.verifies("REQ-CFG-001")
 def test_unnormalised_attitude_quaternion_is_rejected():
     bad = _minimal_config_dict()
     bad["scenario"]["initial_state"]["attitude_quaternion"] = [1.0, 0.5, 0.0, 0.0]

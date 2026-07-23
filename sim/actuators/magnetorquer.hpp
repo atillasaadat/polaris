@@ -41,7 +41,7 @@ struct MagnetorquerSpec {
   double linearity = 0.0;            ///< scale-factor error, fractional (±0.05 bound)
   double power_max_w = 0.0;          ///< power at full dipole (scales with dipole²)
 
-  /// Build a spec from catalog params (the keys used by the
+  /// Build a spec from hardware-library params (the keys used by the
   /// `config/hardware/magnetorquer/*.yaml` entries). See magnetorquer.cpp.
   static MagnetorquerSpec fromParams(const std::map<std::string, double>& params);
 };
@@ -85,24 +85,6 @@ class Magnetorquer {
   bool fault_stuck_ = false;
   bool fault_dropout_ = false;
 };
-
-namespace catalog {
-
-/// NewSpace Systems **Taurus** magnetorquer rod (datasheet v26.10, 2025). The rod
-/// is a product family (0.2–400 A·m², ±5% linearity, <1.5 A·m² residual, 0.1–24 W);
-/// this returns a representative unit sized by @p max_dipole_am2.
-MagnetorquerSpec nssTaurus(double max_dipole_am2 = 30.0);
-
-/// AAC Clyde Space **MTQ800** magnetorquer (datasheet, 2021-11): 15 A·m² design /
-/// 30 A·m² boost dipole, ±2% control accuracy at the design point, 13.2 W at the
-/// peak dipole (drive electronics included). max_dipole is the boost limit;
-/// residual moment is not quoted by the datasheet and is representative here.
-MagnetorquerSpec aacMtq800();
-
-/// A generic magnetorquer rod — round numbers to copy and refine.
-MagnetorquerSpec genericMagnetorquer();
-
-}  // namespace catalog
 
 }  // namespace polaris::sim::actuators
 

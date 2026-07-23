@@ -11,8 +11,10 @@
 /// `ImuSpec` populated directly from a manufacturer datasheet — the same numbers
 /// an engineer reads off the product brief, in the datasheet's own engineering
 /// units — and converted to SI in one place. Adding a new COTS IMU is then just
-/// filling in an `ImuSpec` (or a `config/hardware/*.yaml` catalog entry with the
-/// same keys); `catalog::stim377h()` is the worked example.
+/// writing a `config/hardware/imu/*.yaml` entry with those keys
+/// (`stim377h.yaml` is the worked example): the config compiler resolves it and
+/// `ImuSpec::fromParams` builds the spec. There is no in-code IMU catalog —
+/// hardware values live only in the YAML library (design doc §19.4).
 ///
 /// The truth model turns the true body rate and specific force into what the unit
 /// would report, through:
@@ -73,7 +75,7 @@ struct ImuSpec {
   /// the dt passed to `sample`, not this).
   double sample_rate_hz = 0.0;
 
-  /// Build a spec from datasheet-native catalog params (the keys used by the
+  /// Build a spec from datasheet-native library params (the keys used by the
   /// `config/hardware/*.yaml` IMU entries), converting each to SI. Missing keys
   /// default to 0 (that term disabled). See imu.cpp for the key list and units.
   static ImuSpec fromParams(const std::map<std::string, double>& params);
@@ -151,19 +153,6 @@ class Imu {
   Eigen::Vector3d accel_fault_bias_ = Eigen::Vector3d::Zero();
   bool fault_dropout_ = false;
 };
-
-namespace catalog {
-
-/// Safran/Sensonor **STIM377H** tactical-grade IMU, from the 2022-04 product
-/// brief. A worked example of a datasheet-sourced spec; see imu.cpp for the
-/// per-field citation.
-ImuSpec stim377h();
-
-/// A generic tactical-grade MEMS IMU template — representative round numbers to
-/// copy and edit for a COTS unit whose datasheet you have.
-ImuSpec genericTactical();
-
-}  // namespace catalog
 
 }  // namespace polaris::sim::sensors
 

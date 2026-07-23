@@ -69,7 +69,7 @@ struct ReactionWheelSpec {
     return (max_speed_rad_s > 0.0) ? max_momentum_nms / max_speed_rad_s : 0.0;
   }
 
-  /// Build a spec from catalog params (the keys used by the
+  /// Build a spec from hardware-library params (the keys used by the
   /// `config/hardware/reaction_wheel/*.yaml` entries); `max_speed_rpm` converts to
   /// rad/s. Missing keys default to 0 (that term disabled). See reaction_wheel.cpp.
   static ReactionWheelSpec fromParams(const std::map<std::string, double>& params);
@@ -133,19 +133,6 @@ class ReactionWheel {
   bool fault_runaway_ = false;
   double runaway_sign_ = 1.0;
 };
-
-namespace catalog {
-
-/// Rocket Lab **RW-0.4** reaction wheel, from the data sheet (v3.2, 2025-09) and
-/// the interface control document (RL-TOR-ICD-00063 v1.6): ±0.4 N·m·s momentum,
-/// ±0.1 N·m torque, <2.8 W at 0.4 N·m·s. Rotor inertia, Kt, friction, and
-/// imbalance are per-unit calibration (not published) and are representative here.
-ReactionWheelSpec rocketLabRw04();
-
-/// A generic small-smallsat reaction wheel — round numbers to copy and refine.
-ReactionWheelSpec genericReactionWheel();
-
-}  // namespace catalog
 
 }  // namespace polaris::sim::actuators
 

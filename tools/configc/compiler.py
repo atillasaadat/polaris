@@ -193,6 +193,7 @@ def emit_sim_setup(resolved: dict[str, Any]) -> dict[str, Any]:
         "provenance": _provenance(resolved),
         "scenario_name": scn["name"],
         "epoch_utc": scn["epoch_utc"],
+        "seed": scn["seed"],
         "spacecraft": sc,
         "initial_state": {
             "position_m": list(position_m),

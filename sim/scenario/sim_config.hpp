@@ -24,7 +24,9 @@
 ///
 /// Ground/sim-side: file I/O, heap, exceptions-free error returns.
 
+#include <cstdint>
 #include <Eigen/Core>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -48,8 +50,24 @@ enum class MagneticModel {
   kIgrf,
 };
 
-/// Vehicle properties the truth plant needs. Sensor/actuator suites are in the
-/// artifact too but are not consumed yet — there are no sensor models.
+/// One hardware unit installed on the vehicle, as the compiler resolved it: the
+/// library entry's parameters already inlined (design doc §19.2/§19.3).
+///
+/// `params` is carried as the artifact's own datasheet-native key/value map and
+/// handed unmodified to the model's `fromParams`, which owns the conversion to
+/// SI. Nothing here interprets a key, so adding a parameter to a catalog entry
+/// needs no change on this side — and there is no second place where a unit's
+/// numbers could be written down (§19.4).
+struct UnitConfig {
+  std::string name;      ///< instance name on this vehicle, e.g. "imu_a"
+  std::string model_id;  ///< hardware-library model ID it resolved from
+  std::string kind;      ///< device class: "imu", "reaction_wheel", …
+  std::map<std::string, double> params;
+  /// Unit→body rotation. Identity when the config omitted a mounting.
+  Eigen::Matrix3d mounting_dcm{Eigen::Matrix3d::Identity()};
+};
+
+/// Vehicle properties the truth plant needs, including the installed hardware.
 struct SpacecraftConfig {
   std::string name;
   double mass_kg{0.0};
@@ -63,6 +81,11 @@ struct SpacecraftConfig {
   math::Vec3<math::frames::Body> cp_offset_m{};
   /// Residual magnetic moment, Body frame [A·m^2].
   math::Vec3<math::frames::Body> residual_dipole_am2{};
+  /// Installed sensors and actuators, in config order (`vehicle.hpp` turns these
+  /// into models). A kind with no truth model yet is carried here regardless —
+  /// dropping it at parse time would hide it from the vehicle's own report.
+  std::vector<UnitConfig> sensors;
+  std::vector<UnitConfig> actuators;
 };
 
 /// Which perturbations are switched on, and at what fidelity.
@@ -101,6 +124,9 @@ struct SimConfig {
   /// trajectory header so an output file can be traced back to the exact input
   /// that produced it (REQ-CFG-003).
   std::string config_hash;
+  /// Master RNG seed for the run (§3.6). Every stochastic source derives its own
+  /// stream from this, so a run is bit-reproducible from `{config, seed}`.
+  std::uint64_t seed{0};
   SpacecraftConfig spacecraft;
   EnvironmentConfig environment;
   PropagationConfig propagation;

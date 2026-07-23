@@ -1,7 +1,7 @@
 /// @file Unit tests for the IMU truth model and its datasheet-driven spec.
 ///
-/// Three concerns. (1) The datasheet→SI conversion: the STIM377H catalog spec must
-/// carry the product-brief numbers in SI, so a unit slip there is caught before it
+/// Three concerns. (1) The datasheet→SI conversion: `fromParams` must carry the
+/// product-brief numbers into SI, so a unit slip there is caught before it
 /// silently mis-scales every run. (2) The error model itself: a perfect spec is a
 /// pass-through; the random-walk noise scales as 1/√dt; the in-run bias is a
 /// stationary, temporally-correlated Gauss-Markov process (not white); g-sensitivity
@@ -34,12 +34,41 @@ const pt::Tai kEpoch = pt::Tai::fromNanosecondsSinceEpoch(1767225637000000000LL)
 sensors::ImuSpec perfectSpec() {
   return sensors::ImuSpec{};
 }
+
+/// A tactical-grade IMU **test fixture**, in the datasheet-native keys the
+/// hardware library uses. The values mirror `config/hardware/imu/stim377h.yaml`,
+/// but this is not a second catalog: it exists so the unit tests exercise a
+/// realistic error stack without a config compiler or a file on disk (design doc
+/// §19.4 — hardcoded specs are permitted in tests, and only in tests). The
+/// vehicle-assembly tests are what check the real YAML path.
+sensors::ImuSpec tacticalSpec() {
+  return sensors::ImuSpec::fromParams({
+      {"gyro_range_deg_s", 480.0},
+      {"gyro_arw_deg_sqrt_hr", 0.15},
+      {"gyro_bias_instability_deg_hr", 0.3},
+      {"gyro_bias_correlation_s", 100.0},
+      {"gyro_bias_repeatability_deg_hr", 10.0},
+      {"gyro_scale_factor_ppm", 500.0},
+      {"gyro_misalignment_mrad", 1.0},
+      {"gyro_resolution_deg_hr", 0.22},
+      {"gyro_g_sensitivity_deg_hr_g", 7.0},
+      {"accel_range_g", 10.0},
+      {"accel_vrw_m_s_sqrt_hr", 0.07},
+      {"accel_bias_instability_mg", 0.04},
+      {"accel_bias_correlation_s", 100.0},
+      {"accel_bias_repeatability_mg", 2.0},
+      {"accel_scale_factor_ppm", 200.0},
+      {"accel_misalignment_mrad", 1.0},
+      {"accel_resolution_ug", 1.9},
+      {"sample_rate_hz", 2000.0},
+  });
+}
 }  // namespace
 
 // --- Datasheet -> SI ---------------------------------------------------------
 
-TEST(ImuSpec, Stim377hMatchesTheDatasheetInSi) {
-  const sensors::ImuSpec s = sensors::catalog::stim377h();
+TEST(ImuSpec, DatasheetParamsConvertToSi) {
+  const sensors::ImuSpec s = tacticalSpec();
   // Gyro
   EXPECT_NEAR(s.gyro.random_walk, 0.15 * kDeg2Rad / 60.0, 1e-15);           // ARW [rad/√s]
   EXPECT_NEAR(s.gyro.bias_instability, 0.3 * kDeg2Rad / 3600.0, 1e-18);     // [rad/s]
@@ -73,8 +102,8 @@ TEST(Imu, PerfectSpecIsAPassThrough) {
 }
 
 TEST(Imu, IsBitReproducibleFromSeed) {
-  sensors::Imu a(sensors::catalog::stim377h(), 0xABCD, 1);
-  sensors::Imu b(sensors::catalog::stim377h(), 0xABCD, 1);
+  sensors::Imu a(tacticalSpec(), 0xABCD, 1);
+  sensors::Imu b(tacticalSpec(), 0xABCD, 1);
   const Eigen::Vector3d rate(0.01, 0.0, 0.0);
   const Eigen::Vector3d sf(0.0, 0.0, -kG);
   for (int i = 0; i < 100; ++i) {
@@ -152,7 +181,7 @@ TEST(Imu, GyroGsensitivityCouplesToSpecificForce) {
   // Same seed, noise/drift off: the only difference between a zero-g sample and a
   // sample under specific force is the g-sensitivity bias = k_g · sf.
   sensors::ImuSpec spec;
-  spec.gyro_g_sensitivity = sensors::catalog::stim377h().gyro_g_sensitivity;
+  spec.gyro_g_sensitivity = tacticalSpec().gyro_g_sensitivity;
   sensors::Imu a(spec, 5, 1);
   sensors::Imu b(spec, 5, 1);
   const Eigen::Vector3d rate(0.01, 0.0, 0.0);
@@ -167,8 +196,8 @@ TEST(Imu, GyroGsensitivityCouplesToSpecificForce) {
 // --- Faults ------------------------------------------------------------------
 
 TEST(Imu, BiasJumpAndDropoutFaults) {
-  sensors::Imu nominal(sensors::catalog::stim377h(), 0xABCD, 1);
-  sensors::Imu faulted(sensors::catalog::stim377h(), 0xABCD, 1);
+  sensors::Imu nominal(tacticalSpec(), 0xABCD, 1);
+  sensors::Imu faulted(tacticalSpec(), 0xABCD, 1);
   const Eigen::Vector3d jump(1e-3, 0.0, -2e-3);
   faulted.injectGyroBiasJump(Vec3B(jump));
   const Eigen::Vector3d rate(0.01, 0.0, 0.0);
@@ -180,7 +209,7 @@ TEST(Imu, BiasJumpAndDropoutFaults) {
   // quantized to the same LSB grid: the difference recovers the jump to within one
   // resolution step, confirming the fault is subject to quantization like a real one.
   const Eigen::Vector3d diff = mf.angular_rate_rads.eigen() - mn.angular_rate_rads.eigen();
-  const double lsb = sensors::catalog::stim377h().gyro.resolution;
+  const double lsb = tacticalSpec().gyro.resolution;
   for (int i = 0; i < 3; ++i) {
     EXPECT_LE(std::abs(diff[i] - jump[i]), lsb) << "axis " << i;
   }
@@ -193,8 +222,8 @@ TEST(Imu, NonPositiveDtIsAnInvalidNoOpThatDoesNotDesyncTheStream) {
   // A dt<=0 tick must draw nothing, so a run that hits one stays bit-identical to
   // one that never did (reproducibility). Sensor `a` takes a spurious dt=0 sample
   // before its real samples; `b` never does — their real samples must still match.
-  sensors::Imu a(sensors::catalog::stim377h(), 0xABCD, 1);
-  sensors::Imu b(sensors::catalog::stim377h(), 0xABCD, 1);
+  sensors::Imu a(tacticalSpec(), 0xABCD, 1);
+  sensors::Imu b(tacticalSpec(), 0xABCD, 1);
   const Eigen::Vector3d rate(0.02, -0.01, 0.005);
   const Eigen::Vector3d sf(0.0, 0.0, -kG);
 
