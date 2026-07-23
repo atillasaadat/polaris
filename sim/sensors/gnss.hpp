@@ -55,6 +55,7 @@
 #include "math/frames.hpp"
 #include "math/typed_vector.hpp"
 #include "random/rng.hpp"
+#include "sensors/gnss_jamming.hpp"
 #include "time/timescales.hpp"
 
 namespace polaris::sim::sensors {
@@ -126,10 +127,17 @@ struct GnssMeasurement {
   /// repeated. An estimator treating repeated fixes as independent grows
   /// overconfident, so it is flagged.
   bool fresh = true;
-  /// False during a cold-start acquisition, an outage, or the reacquisition delay
-  /// after one. Downstream consumers must respect this (§9.1); a spoofed fix is
-  /// deliberately *valid* — catching it is the innovation check's job, not a flag.
+  /// False during a cold-start acquisition, an outage, jamming, or the
+  /// reacquisition delay after one. Downstream consumers must respect this
+  /// (§9.1); a spoofed fix is deliberately *valid* — catching it is the
+  /// innovation check's job, not a flag.
   bool valid = false;
+  /// True when the sub-satellite point is inside a config-defined jamming region
+  /// (§9.2). Separated from `valid` so telemetry can tell a geographic jam from a
+  /// commanded outage or a cold start.
+  bool jammed = false;
+  /// The name of the jamming region, when `jammed`; empty otherwise.
+  std::string jamming_region;
 };
 
 /// A GNSS receiver. Construct with its spec and a per-source stream id under the
@@ -166,6 +174,13 @@ class Gnss {
     fault_clock_jump_s_ = 0.0;
   }
 
+  /// Bind the config-defined jamming map (§9.2). Not owned — the caller keeps it
+  /// alive for the run. Passing nullptr (the default) disables geographic
+  /// jamming. When the sub-satellite point is inside a region the fix goes
+  /// invalid, and leaving it imposes the reacquisition delay, exactly like an
+  /// outage — a jammed receiver does not reacquire the instant it clears the zone.
+  void setJammingRegions(const JammingRegions* regions) { jamming_ = regions; }
+
  private:
   GnssSpec spec_;
   random::SplitMix64 rng_;
@@ -182,6 +197,7 @@ class Gnss {
   Eigen::Vector3d fault_pos_offset_ = Eigen::Vector3d::Zero();
   double fault_clock_jump_s_ = 0.0;
   bool fault_outage_ = false;
+  const JammingRegions* jamming_ = nullptr;
 };
 
 }  // namespace polaris::sim::sensors

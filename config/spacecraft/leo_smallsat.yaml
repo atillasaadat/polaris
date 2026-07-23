@@ -86,6 +86,7 @@ scenario:
     magnetic_field: igrf
     eclipse_enabled: true
     occultation_atmosphere_km: 100.0  # optical limb height for sensor occlusion (§6.1)
+    gnss_jamming_kml: config/scenario/jamming/eastern_europe.kml  # GNSS loss-of-fix zones (§9.2)
   ground_stations:
     - name: svalbard
       lat_deg: 78.23

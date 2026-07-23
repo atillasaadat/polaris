@@ -19,6 +19,7 @@
 #include "math/frames.hpp"
 #include "math/typed_vector.hpp"
 #include "sensors/gnss.hpp"
+#include "sensors/gnss_jamming.hpp"
 #include "time/timescales.hpp"
 
 namespace {
@@ -58,13 +59,44 @@ sensors::GnssSpec oem7600Spec(double cold_start_s = 34.0, double reacquisition_s
 /// basis is exactly up=+X, east=+Y, north=+Z, so the vertical error lands on X and
 /// the two horizontal errors on Y and Z — which lets the split be measured axis by
 /// axis.
-Vec3E onXAxis() { return Vec3E(kRe + 500.0e3, 0.0, 0.0); }
+Vec3E onXAxis() {
+  return Vec3E(kRe + 500.0e3, 0.0, 0.0);
+}
 
 sensors::GnssInput inputOnXAxis() {
   sensors::GnssInput in;
   in.position_m = onXAxis();
   in.velocity_m_s = Vec3E(0.0, 7612.0, 0.0);  // ~circular LEO speed, along +Y
   return in;
+}
+
+constexpr double kDeg2Rad = 0.017453292519943295;
+
+/// Forward WGS84: place a satellite over a given sub-satellite point.
+sensors::GnssInput inputOverGeodetic(double lat_deg, double lon_deg) {
+  const double a = kRe;
+  const double e2 = polaris::constants::wgs84::kEccentricitySq;
+  const double lat = lat_deg * kDeg2Rad;
+  const double lon = lon_deg * kDeg2Rad;
+  const double alt = 500.0e3;
+  const double n = a / std::sqrt(1.0 - e2 * std::sin(lat) * std::sin(lat));
+  sensors::GnssInput in;
+  in.position_m =
+      Vec3E((n + alt) * std::cos(lat) * std::cos(lon), (n + alt) * std::cos(lat) * std::sin(lon),
+            (n * (1.0 - e2) + alt) * std::sin(lat));
+  in.velocity_m_s = Vec3E(0.0, 0.0, 0.0);
+  return in;
+}
+
+/// A one-region jamming map: a box over lon∈[32,37], lat∈[44,46.5] (Crimea-ish).
+sensors::JammingRegions crimeaBox() {
+  sensors::JammingRegions regions;
+  const std::string kml =
+      "<kml><Document><Placemark><name>Crimea</name><Polygon><outerBoundaryIs><LinearRing>"
+      "<coordinates>32,44 37,44 37,46.5 32,46.5 32,44</coordinates>"
+      "</LinearRing></outerBoundaryIs></Polygon></Placemark></Document></kml>";
+  sensors::JammingRegions::fromKml(kml, regions, nullptr);
+  return regions;
 }
 
 }  // namespace
@@ -172,7 +204,7 @@ TEST(Gnss, ColdStartWithholdsFixesUntilFirstFixTime) {
   sensors::Gnss g(s, kSeed, kStream);
   const auto in = inputOnXAxis();
 
-  EXPECT_FALSE(g.sample(kEpoch, in).valid);          // acquiring
+  EXPECT_FALSE(g.sample(kEpoch, in).valid);           // acquiring
   EXPECT_FALSE(g.sample(epochPlus(33.0), in).valid);  // still acquiring
   EXPECT_TRUE(g.sample(epochPlus(34.0), in).valid);   // fix acquired
 }
@@ -210,6 +242,38 @@ TEST(Gnss, SpoofOffsetsThePositionButStaysValid) {
   EXPECT_NEAR(m.position_m.eigen().x(), in.position_m.eigen().x() + 1000.0, 1e-6);
 }
 
+TEST(Gnss, GeographicJammingInvalidatesOverARegion) {
+  const auto s = oem7600Spec(0.0, 0.0);
+  const auto regions = crimeaBox();
+  sensors::Gnss g(s, kSeed, kStream);
+  g.setJammingRegions(&regions);
+
+  // Over the Atlantic — not jammed, a normal valid fix.
+  const auto clear = g.sample(kEpoch, inputOverGeodetic(0.0, -30.0));
+  EXPECT_TRUE(clear.valid);
+  EXPECT_FALSE(clear.jammed);
+  EXPECT_TRUE(clear.jamming_region.empty());
+
+  // Over the region — jammed, invalid, and telemetering which zone.
+  const auto jammed = g.sample(epochPlus(1.0), inputOverGeodetic(45.0, 34.5));
+  EXPECT_FALSE(jammed.valid);
+  EXPECT_TRUE(jammed.jammed);
+  EXPECT_EQ(jammed.jamming_region, "Crimea");
+}
+
+TEST(Gnss, ReacquisitionDelayAppliesAfterLeavingAJammedZone) {
+  const auto s = oem7600Spec(0.0, 0.5);
+  const auto regions = crimeaBox();
+  sensors::Gnss g(s, kSeed, kStream);
+  g.setJammingRegions(&regions);
+
+  EXPECT_FALSE(g.sample(kEpoch, inputOverGeodetic(45.0, 34.5)).valid);  // jammed
+  // Just cleared the zone: recovery is not instant — the reacquisition delay runs.
+  EXPECT_FALSE(g.sample(epochPlus(1.0), inputOverGeodetic(0.0, -30.0)).valid);
+  EXPECT_FALSE(g.sample(epochPlus(1.4), inputOverGeodetic(0.0, -30.0)).valid);
+  EXPECT_TRUE(g.sample(epochPlus(1.5), inputOverGeodetic(0.0, -30.0)).valid);
+}
+
 TEST(Gnss, ClockJumpShiftsTheTimeTag) {
   auto s = oem7600Spec(0.0, 0.0);
   s.time_sigma_s = 0.0;
@@ -219,6 +283,5 @@ TEST(Gnss, ClockJumpShiftsTheTimeTag) {
   g.injectClockJump(1.0e-6);  // 1 µs
   const auto m = g.sample(kEpoch, in);
   EXPECT_NEAR(m.clock_bias_s, 1.0e-6, 1e-15);
-  EXPECT_EQ(m.time_tag.nanosecondsSinceEpoch(),
-            pt::toGps(kEpoch).nanosecondsSinceEpoch() + 1000);
+  EXPECT_EQ(m.time_tag.nanosecondsSinceEpoch(), pt::toGps(kEpoch).nanosecondsSinceEpoch() + 1000);
 }

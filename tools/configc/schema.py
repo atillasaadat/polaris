@@ -166,6 +166,14 @@ class Environment(_Strict):
             "a horizon sensor in the 15 um CO2 band sees a higher limb"
         ),
     )
+    gnss_jamming_kml: str | None = Field(
+        default=None,
+        description=(
+            "path to a KML of GNSS-jamming regions (design doc §9.2). When the "
+            "sub-satellite point is inside a region the GNSS receiver loses its "
+            "fix. Passed through to the sim verbatim; None disables jamming"
+        ),
+    )
 
 
 class OrbitElements(_Strict):

@@ -382,7 +382,7 @@ Per-sensor validity flag with documented criteria: range checks, rate-of-change 
 ### 9.2 FDIR Architecture
 - **Monitors** (per sensor/actuator and system-level) → **isolation** → **response** → **safing escalation**.
 - Sensor FDIR: dropout/disagreement detection, voting where redundancy exists; **measured-vs-modeled magnetic field consistency** (onboard IGRF) as a magnetometer reasonableness check.
-- **GNSS FDIR:** outage detection and graceful coasting on propagation; **spoofing/meaconing** detection via innovation/consistency checks and position/time reasonableness bounds, with measurement rejection.
+- **GNSS FDIR:** outage detection and graceful coasting on propagation; **spoofing/meaconing** detection via innovation/consistency checks and position/time reasonableness bounds, with measurement rejection. The truth model (`sim/sensors/gnss`) drives these with three fault sources: a commanded **outage** (loss of fix), a **spoofed** position offset that stays *valid* so it must be caught on innovation rather than a flag, and **geographic jamming** — a config-provided KML of jammed regions (`sim/sensors/gnss_jamming`, e.g. `config/scenario/jamming/*.kml`) that invalidates the fix whenever the sub-satellite point is inside one, with the reacquisition delay applied on exit. Jamming and outage share one recovery path; the receiver telemeters *which* zone jammed it.
 - **Estimator fallback:** loss/occlusion of star trackers triggers fine→coarse attitude estimation (§8.1); the active estimation mode is part of FDIR state.
 - Actuator FDIR: wheel stall/runaway, saturation, thruster stuck-on/-off, dipole saturation.
 - Subsystem FDIR: low SoC (power) and thermal-limit monitors can trigger Safe mode.

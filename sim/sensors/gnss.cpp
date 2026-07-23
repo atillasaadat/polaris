@@ -72,14 +72,21 @@ GnssMeasurement Gnss::sample(const time::Tai& epoch, const GnssInput& input) {
     }
   }
 
+  // Geographic jamming is a loss of fix gated by the sub-satellite point, so it
+  // folds into the same "outage" signal as a commanded dropout: same
+  // invalidation, same reacquisition delay on exit.
+  const std::string* jam_region =
+      (jamming_ != nullptr) ? jamming_->jammedRegion(input.position_m) : nullptr;
+  const bool outage = fault_outage_ || jam_region != nullptr;
+
   // Acquisition / reacquisition timing. A cold start withholds fixes for the
   // time-to-first-fix; the falling edge of an outage arms the reacquisition delay.
   if (!has_sampled_) {
     valid_from_gps_ns_ = gps_ns + static_cast<std::int64_t>(spec_.cold_start_s * kNsPerSecond);
-  } else if (prev_outage_ && !fault_outage_) {
+  } else if (prev_outage_ && !outage) {
     valid_from_gps_ns_ = gps_ns + static_cast<std::int64_t>(spec_.reacquisition_s * kNsPerSecond);
   }
-  prev_outage_ = fault_outage_;
+  prev_outage_ = outage;
 
   GnssMeasurement m;
   m.position_sigma_h_m = spec_.position_sigma_h_m;
@@ -95,8 +102,8 @@ GnssMeasurement Gnss::sample(const time::Tai& epoch, const GnssInput& input) {
   const Eigen::Vector3d pos_err = spec_.position_sigma_h_m * rng_.gaussian() * east +
                                   spec_.position_sigma_h_m * rng_.gaussian() * north +
                                   spec_.position_sigma_v_m * rng_.gaussian() * up;
-  m.position_m = math::Vec3<math::frames::ECEF>(input.position_m.eigen() + pos_err +
-                                                fault_pos_offset_);
+  m.position_m =
+      math::Vec3<math::frames::ECEF>(input.position_m.eigen() + pos_err + fault_pos_offset_);
 
   // Velocity error, per-axis white in ECEF (the datasheet quotes no H/V split).
   const Eigen::Vector3d vel_err(spec_.velocity_sigma_m_s * rng_.gaussian(),
@@ -110,7 +117,11 @@ GnssMeasurement Gnss::sample(const time::Tai& epoch, const GnssInput& input) {
       gps_ns + static_cast<std::int64_t>(std::llround(m.clock_bias_s * kNsPerSecond)));
 
   m.fresh = true;
-  m.valid = !fault_outage_ && gps_ns >= valid_from_gps_ns_;
+  m.valid = !outage && gps_ns >= valid_from_gps_ns_;
+  m.jammed = jam_region != nullptr;
+  if (jam_region != nullptr) {
+    m.jamming_region = *jam_region;
+  }
 
   has_sampled_ = true;
   last_fix_time_ = gps;

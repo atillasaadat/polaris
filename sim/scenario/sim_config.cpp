@@ -294,6 +294,11 @@ bool readEnvironment(const json& root, EnvironmentConfig& out, std::string* erro
   if (!(out.occultation_atmosphere_m >= 0.0)) {
     return fail(error, "environment.occultation_atmosphere_km must be non-negative");
   }
+  // Optional; the compiler emits null when unset, which is not a string.
+  const auto jamming = node->find("gnss_jamming_kml");
+  if (jamming != node->end() && jamming->is_string()) {
+    out.gnss_jamming_kml = jamming->get<std::string>();
+  }
   out.drag_enabled = node->value("drag_enabled", false);
   out.srp_enabled = node->value("srp_enabled", false);
   out.eclipse_enabled = node->value("eclipse_enabled", true);

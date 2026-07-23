@@ -111,6 +111,10 @@ struct EnvironmentConfig {
   /// optical-sensor occlusion model (§6.1). Separate from the drag atmosphere:
   /// this one is about what blocks a line of sight, not what produces force.
   double occultation_atmosphere_m{sensors::kDefaultAtmosphereHeight};
+  /// Path to a KML of GNSS-jamming regions (§9.2), or empty for none. Carried
+  /// verbatim from the config; the sim loads it into `sensors::JammingRegions`
+  /// and binds it to each GNSS receiver.
+  std::string gnss_jamming_kml;
 };
 
 /// Propagation span and RK89 step control.

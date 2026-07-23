@@ -55,6 +55,7 @@ endif()
 add_library(polaris_sensors
   sensors/magnetometer.cpp
   sensors/gnss.cpp
+  sensors/gnss_jamming.cpp
   sensors/imu.cpp
   sensors/occlusion.cpp
   sensors/star_tracker.cpp

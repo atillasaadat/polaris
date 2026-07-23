@@ -64,6 +64,12 @@ def test_compiles_template_and_emits_three_artifacts(tmp_path):
     assert fparams["sc.mass_kg"] == 12.0
     assert fparams["gains.pointing.kp"] == 0.2
     assert resolved["provenance"]["config_hash"]
+    # The GNSS jamming KML path is carried through verbatim for the sim to load.
+    setup = json.loads((tmp_path / "sim_setup.json").read_text())
+    assert (
+        setup["environment"]["gnss_jamming_kml"]
+        == "config/scenario/jamming/eastern_europe.kml"
+    )
 
 
 @pytest.mark.verifies("REQ-CFG-001")
