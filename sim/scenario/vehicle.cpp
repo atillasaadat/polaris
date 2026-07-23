@@ -55,10 +55,12 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
       }
 
       const std::uint64_t stream = streamIdFor(unit.name);
+      // A per-unit override wins over the global switch; otherwise inherit it.
+      const bool unit_noise = unit.noise_enabled.value_or(noise.sensors);
       if (unit.kind == "imu") {
         out.imus.push_back(
             {unit.name, unit.model_id, unit.mounting_dcm,
-             sensors::Imu(sensors::ImuSpec::fromParams(unit.params), seed, stream, noise.sensors)});
+             sensors::Imu(sensors::ImuSpec::fromParams(unit.params), seed, stream, unit_noise)});
       } else if (unit.kind == "star_tracker") {
         const auto spec = sensors::StarTrackerSpec::fromParams(unit.params);
         // With neither a field of view nor a quoted Earth exclusion angle the
@@ -73,7 +75,7 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
         }
         out.star_trackers.push_back(
             {unit.name, unit.model_id, unit.mounting_dcm,
-             sensors::StarTracker(spec, unit.mounting_dcm, seed, stream, noise.sensors)});
+             sensors::StarTracker(spec, unit.mounting_dcm, seed, stream, unit_noise)});
       } else if (unit.kind == "sun_sensor") {
         const auto spec = sensors::SunSensorSpec::fromParams(unit.params);
         // Without an acceptance cone the cosine cut-off never fires and a cell
@@ -97,18 +99,19 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
         }
         out.sun_sensors.push_back(
             {unit.name, unit.model_id, unit.mounting_dcm,
-             sensors::SunSensor(spec, unit.mounting_dcm, seed, stream, noise.sensors)});
+             sensors::SunSensor(spec, unit.mounting_dcm, seed, stream, unit_noise)});
       } else if (unit.kind == "magnetometer") {
         const auto model = sensors::magnetometerErrorFromParams(unit.params, seed, stream);
         // A magnetometer with no range still measures, so there is nothing to
         // reject here: every term of the error stack is a no-op at zero, and a
         // range of zero simply means "no saturation modelled".
         out.magnetometers.push_back({unit.name, unit.model_id, unit.mounting_dcm,
-                                     sensors::Magnetometer(model, seed, stream, noise.sensors)});
+                                     sensors::Magnetometer(model, seed, stream, unit_noise)});
       } else if (unit.kind == "gnss") {
         auto spec = sensors::GnssSpec::fromParams(unit.params);
-        // GNSS honours the global sensor switch and its own override.
-        spec.noise_enabled = noise.sensors && noise.gnss;
+        // A per-unit override wins; otherwise the global sensor switch ANDed with
+        // the GNSS-specific one.
+        spec.noise_enabled = unit.noise_enabled.value_or(noise.sensors && noise.gnss);
         // A receiver with no quoted position accuracy would report truth-perfect
         // fixes — worse than a config error, because it silently hands the OD
         // filter the answer. Every real datasheet quotes a horizontal RMS.

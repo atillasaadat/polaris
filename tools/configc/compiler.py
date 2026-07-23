@@ -107,6 +107,7 @@ def _resolve_units(
                 "params": model.params,
                 "mounting_dcm_row_major": unit.mounting_dcm_row_major,
                 "spin_axis": unit.spin_axis,
+                "noise_enabled": unit.noise_enabled,
             }
         )
     return resolved

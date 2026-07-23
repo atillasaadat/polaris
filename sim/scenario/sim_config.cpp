@@ -217,6 +217,15 @@ bool readUnits(const json& parent, const char* key, const std::string& role,
         return fail(error, role + " '" + unit.name + "' spin_axis is a zero vector");
       }
     }
+
+    // Per-unit noise override is optional and emitted null when unset.
+    const auto noise = entry.find("noise_enabled");
+    if (noise != entry.end() && !noise->is_null()) {
+      if (!noise->is_boolean()) {
+        return fail(error, role + " '" + unit.name + "' noise_enabled must be a boolean");
+      }
+      unit.noise_enabled = noise->get<bool>();
+    }
     out.push_back(std::move(unit));
   }
   return true;

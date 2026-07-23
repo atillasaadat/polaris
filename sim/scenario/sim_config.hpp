@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <Eigen/Core>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -70,6 +71,10 @@ struct UnitConfig {
   /// nonzero it defines the wheel's axis (the clean alternative to a full
   /// mounting DCM); the vehicle builder normalises it into the assembly's W.
   Eigen::Vector3d spin_axis{Eigen::Vector3d::Zero()};
+  /// Per-unit override of the scenario sensor-noise switch (§6.2). Unset =
+  /// inherit the global `sensor_noise_enabled`; set forces this sensor's noise
+  /// on/off regardless. Ignored for actuators (no stochastic noise).
+  std::optional<bool> noise_enabled;
 };
 
 /// Vehicle properties the truth plant needs, including the installed hardware.

@@ -236,6 +236,57 @@ TEST(Vehicle, NoiseSettingsBuildIdealSensors) {
   EXPECT_TRUE(s.angular_rate_rads.eigen().isApprox(rate_truth.eigen(), 1e-15));
 }
 
+TEST(Vehicle, PerUnitNoiseOverrideWinsOverTheGlobal) {
+  // A unit's own noise_enabled beats the scenario switch in both directions.
+  auto mag = [](const std::string& name) {
+    scenario::UnitConfig u;
+    u.name = name;
+    u.model_id = "MAG-GENERIC";
+    u.kind = "magnetometer";
+    u.params = {{"range_ut", 100.0}, {"bias_ut", 5.0}, {"noise_ut_rms", 0.0}};  // bias only
+    return u;
+  };
+  const Vec3B truth(30.0e-6, 0.0, 0.0);
+
+  // Global noise ON, but one unit forces it OFF: that one is ideal, the other has
+  // its 5 µT bias.
+  {
+    scenario::UnitConfig forced_off = mag("mag_off");
+    forced_off.noise_enabled = false;
+    scenario::SpacecraftConfig sc;
+    sc.sensors = {forced_off, mag("mag_on")};
+    scenario::Vehicle v;
+    ASSERT_TRUE(scenario::buildVehicle(sc, 1, v, nullptr));  // default NoiseSettings = on
+    EXPECT_TRUE(v.magnetometers[0]
+                    .model.sample(kEpoch, truth)
+                    .field_tesla.eigen()
+                    .isApprox(truth.eigen(), 1e-15));
+    EXPECT_FALSE(v.magnetometers[1]
+                     .model.sample(kEpoch, truth)
+                     .field_tesla.eigen()
+                     .isApprox(truth.eigen(), 1e-9))
+        << "the un-overridden unit still obeys the global switch";
+  }
+
+  // Global noise OFF, but one unit forces it ON: that one is noisy, the other ideal.
+  {
+    scenario::UnitConfig forced_on = mag("mag_on");
+    forced_on.noise_enabled = true;
+    scenario::SpacecraftConfig sc;
+    sc.sensors = {forced_on, mag("mag_off")};
+    scenario::Vehicle v;
+    ASSERT_TRUE(scenario::buildVehicle(sc, 1, v, nullptr, scenario::NoiseSettings{false, false}));
+    EXPECT_FALSE(v.magnetometers[0]
+                     .model.sample(kEpoch, truth)
+                     .field_tesla.eigen()
+                     .isApprox(truth.eigen(), 1e-9));
+    EXPECT_TRUE(v.magnetometers[1]
+                    .model.sample(kEpoch, truth)
+                    .field_tesla.eigen()
+                    .isApprox(truth.eigen(), 1e-15));
+  }
+}
+
 TEST(Vehicle, RejectsASunSensorWithNoFieldOfView) {
   // Without an acceptance cone the cosine cut-off never fires and a cell reports
   // sunlight while facing away from the Sun.

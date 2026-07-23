@@ -477,6 +477,10 @@ def test_sim_setup_carries_the_resolved_hardware_suites(tmp_path):
     # Every emitted unit must be usable: an empty param map is rejected by the
     # C++ side rather than building an ideal, unlimited device.
     assert all(u["params"] for u in sc["sensors"] + sc["actuators"])
+    # The per-unit noise override is carried (null when unset) so the sim can
+    # apply it over the global switch.
+    assert all("noise_enabled" in u for u in sc["sensors"])
+    assert imu["noise_enabled"] is None
 
 
 @pytest.mark.verifies("REQ-CFG-003")

@@ -390,7 +390,7 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
         "sensors": [
           {"name": "imu_a", "model_id": "STIM300", "kind": "imu",
            "params": {"gyro_arw_deg_sqrt_hr": 0.15, "gyro_range_deg_s": 400.0},
-           "mounting_dcm_row_major": null},
+           "mounting_dcm_row_major": null, "noise_enabled": true},
           {"name": "st_a", "model_id": "ST-16", "kind": "star_tracker",
            "params": {"temporal_noise_xy_arcsec_3sigma": 11.0,
                       "temporal_noise_z_arcsec_3sigma": 70.0, "fov_deg": 15.0,
@@ -451,6 +451,10 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
   // GNSS scenario controls parse through: master switches and the fault schedule.
   EXPECT_FALSE(config.environment.sensor_noise_enabled);
   EXPECT_FALSE(config.environment.gnss_noise_enabled);
+  // The per-unit override parses through: imu_a forces its noise on despite the
+  // global switch being off.
+  ASSERT_TRUE(config.spacecraft.sensors[0].noise_enabled.has_value());
+  EXPECT_TRUE(config.spacecraft.sensors[0].noise_enabled.value());
   EXPECT_FALSE(config.environment.gnss_jamming_enabled);
   ASSERT_EQ(config.environment.gnss_fault_events.size(), 2u);
   EXPECT_EQ(config.environment.gnss_fault_events[0].type, scenario::GnssFaultEvent::Type::kOutage);

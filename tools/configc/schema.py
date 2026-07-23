@@ -81,6 +81,14 @@ class MountedUnit(_Strict):
             "matrix (design doc §7). Ignored for sensors, which use mounting_dcm"
         ),
     )
+    noise_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "per-unit override of the scenario's sensor_noise_enabled (§6.2): set "
+            "true/false to force this sensor's noise on/off regardless of the "
+            "global switch; omit (null) to inherit it. Ignored for actuators"
+        ),
+    )
 
 
 class InertiaTensor(_Strict):
