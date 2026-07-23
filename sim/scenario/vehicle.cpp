@@ -15,7 +15,7 @@ bool fail(std::string* error, const std::string& message) {
 
 /// FNV-1a over the instance name — the unit's noise-stream id.
 ///
-/// Name-derived rather than index-derived on purpose: the §182 determinism rule
+/// Name-derived rather than index-derived on purpose: the §3.5 determinism rule
 /// is that adding a noise source must not perturb the ones already there, and an
 /// index shifts the moment a unit is inserted ahead of another. FNV-1a is used
 /// only to spread names across the id space; `random::streamRng` does the actual

@@ -59,6 +59,10 @@ scenario::SimConfig circularOrbit(double duration_s, double output_step_s) {
 
   c.environment.gravity_degree = -1;  // free drift unless a test says otherwise
   c.environment.magnetic_field = scenario::MagneticModel::kNone;
+  // The struct defaults mirror the schema (physics on); the analytic baselines
+  // need everything off unless a test opts back in.
+  c.environment.drag_enabled = false;
+  c.environment.srp_enabled = false;
   c.propagation.duration_s = duration_s;
   c.propagation.output_step_s = output_step_s;
   return c;
@@ -387,6 +391,7 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
         "name": "test-vehicle",
         "mass_kg": 12.0,
         "inertia_kgm2": {"ixx": 0.12, "iyy": 0.12, "izz": 0.10},
+        "com_m": [0.01, -0.02, 0.03],
         "sensors": [
           {"name": "imu_a", "model_id": "STIM300", "kind": "imu",
            "params": {"gyro_arw_deg_sqrt_hr": 0.15, "gyro_range_deg_s": 400.0},
@@ -425,8 +430,9 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
         "body_rate_rad_s": [0.0, 0.0, 0.0]
       },
       "propagation": {"duration_s": 60.0, "output_step_s": 10.0},
-      "environment": {"gravity_degree": 0, "magnetic_field": "none",
+      "environment": {"gravity_degree": 0, "gravity_order": 0, "magnetic_field": "none",
                       "occultation_atmosphere_km": 120.0,
+                      "drag_enabled": false, "srp_enabled": false,
                       "sensor_noise_enabled": false,
                       "gnss_noise_enabled": false, "gnss_jamming_enabled": false,
                       "gnss_fault_events": [
@@ -448,6 +454,10 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
   EXPECT_DOUBLE_EQ(config.spacecraft.sensors[0].params.at("gyro_arw_deg_sqrt_hr"), 0.15);
   // The optical-limb height is a scenario knob and arrives in km, held in metres.
   EXPECT_DOUBLE_EQ(config.environment.occultation_atmosphere_m, 120.0e3);
+  // com_m is carried (not consumed yet — CG work is Phase 8); gravity_order is an
+  // independent knob (0 = zonal-only here), both previously dropped/unreachable.
+  EXPECT_DOUBLE_EQ(config.spacecraft.com_m.eigen().y(), -0.02);
+  EXPECT_EQ(config.environment.gravity_order, 0);
   // GNSS scenario controls parse through: master switches and the fault schedule.
   EXPECT_FALSE(config.environment.sensor_noise_enabled);
   EXPECT_FALSE(config.environment.gnss_noise_enabled);

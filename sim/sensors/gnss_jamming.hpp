@@ -27,6 +27,8 @@
 /// point-in-polygon test works in raw lon degrees without wrap handling.
 ///
 /// Sim-side: file I/O, heap, exceptions-free error returns.
+///
+/// Implements REQ-SIM-005 (scriptable fault injection: geographic GNSS jamming).
 
 #include <array>
 #include <cstddef>

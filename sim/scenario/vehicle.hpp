@@ -17,7 +17,7 @@
 /// **Seeding.** Each unit's noise stream id is derived from a hash of its
 /// instance name rather than its position in the list, so adding, removing, or
 /// reordering hardware leaves every other unit's random stream bit-identical
-/// (§3.6/§182). Two units may not share a name — that would make them the same
+/// (§3.5). Two units may not share a name — that would make them the same
 /// stream, and correlated "independent" sensors is the kind of error that only
 /// shows up as an implausibly good estimator.
 ///

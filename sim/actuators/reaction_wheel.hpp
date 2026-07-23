@@ -36,6 +36,9 @@
 /// The imbalance magnitudes and the friction/Kt constants are unit-specific
 /// calibration data (a balance report), not published datasheet values, so they
 /// default to zero / representative and are meant to be filled per unit.
+///
+/// Implements REQ-SIM-003 (actuator truth models with full error stacks) and
+/// REQ-SIM-005 (scriptable fault injection: stuck/runaway).
 
 #include <cmath>
 #include <Eigen/Core>

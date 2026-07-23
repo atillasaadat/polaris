@@ -7,7 +7,7 @@
 /// params reach the model's `fromParams` untouched, swapping a `model_id`'s
 /// params swaps the flown hardware, and a unit the config asked for is never
 /// silently dropped. The seeding contract is checked too — adding hardware must
-/// not perturb the random stream of hardware already there (§3.6/§182).
+/// not perturb the random stream of hardware already there (§3.5).
 
 #include <gtest/gtest.h>
 
@@ -421,7 +421,7 @@ TEST(Vehicle, RejectsAWheelWithNoRotorInertia) {
 }
 
 TEST(Vehicle, AddingHardwareDoesNotPerturbExistingNoiseStreams) {
-  // §182: streams are keyed by unit name, not list position, so installing a
+  // §3.5: streams are keyed by unit name, not list position, so installing a
   // second IMU ahead of the first must leave the first's samples bit-identical.
   // Were this to fail, every Monte Carlo baseline would silently invalidate on a
   // config edit that touched unrelated hardware.

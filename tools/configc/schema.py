@@ -192,9 +192,17 @@ class Environment(_Strict):
     gravity_degree: int = Field(
         default=8, ge=0, description="spherical-harmonic gravity degree/order"
     )
+    gravity_order: int = Field(
+        default=-1,
+        description=(
+            "max harmonic order m; -1 means 'same as gravity_degree' (the usual "
+            "square field). Independent knob: order 0 is the standard zonal-only "
+            "J2-class comparison case (design doc §5.2)"
+        ),
+    )
     drag_enabled: bool = True
     srp_enabled: bool = True
-    third_bodies: list[str] = Field(
+    third_bodies: list[Literal["sun", "moon"]] = Field(
         default_factory=lambda: ["sun", "moon"],
         description="third-body point-mass perturbers",
     )

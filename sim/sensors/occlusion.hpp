@@ -64,6 +64,8 @@
 ///    [markley2014]
 ///  - Vallado, *Fundamentals of Astrodynamics and Applications*, 4th ed., §5.3
 ///    (apparent-disk geometry). [vallado2013]
+///
+/// Implements the shared line-of-sight occlusion model of REQ-SIM-003.
 
 #include <Eigen/Core>
 

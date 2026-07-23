@@ -90,7 +90,7 @@ scenario:
     magnetic_field: igrf
     eclipse_enabled: true
     occultation_atmosphere_km: 100.0  # optical limb height for sensor occlusion (§6.1)
-    gnss_jamming_kml: config/scenario/jamming/eastern_europe.kml  # GNSS loss-of-fix zones (§9.2)
+    gnss_jamming_kml: config/scenarios/jamming/eastern_europe.kml  # GNSS loss-of-fix zones (§9.2)
     gnss_jamming_enabled: true        # master switch for the jamming map above
     gnss_noise_enabled: true          # false = truth-perfect GPS (bring-up/debug)
     gnss_fault_events:                # scheduled GNSS faults (§9.2/§23.1.1)

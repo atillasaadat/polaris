@@ -40,7 +40,7 @@ seeds below.
    :tags: sim, sensors, actuators
    :method: Test
    :derived_from: REQ-MIS-002
-   :allocation: sim/world
+   :allocation: sim/sensors, sim/actuators
 
    The truth sim **shall** provide sensor and actuator truth models with full error
    stacks (bias/drift, scale factor, misalignment, noise, quantization,
@@ -67,7 +67,7 @@ seeds below.
    :tags: sim, fdir
    :method: Test
    :derived_from: REQ-FDIR-004
-   :allocation: sim/world
+   :allocation: sim/sensors, sim/actuators, sim/scenario
 
    Every sensor/actuator/subsystem model **shall** expose scriptable
    fault-injection hooks (bias jumps, dropouts, occlusions, GPS outage/spoofing,

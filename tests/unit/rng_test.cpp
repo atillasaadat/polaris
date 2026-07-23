@@ -1,9 +1,9 @@
-/// @file Unit tests for the seeded per-source RNG (design doc §3.6, §182).
+/// @file Unit tests for the seeded per-source RNG (design doc §3.5).
 ///
 /// The properties that matter here are not "is it random" — SplitMix64's
 /// statistical quality is established upstream — but the ones the determinism
 /// mandate rests on: identical seeds replay bit-for-bit, distinct streams are
-/// independent, and (the §182 requirement) adding a stream never disturbs the
+/// independent, and (the §3.5 requirement) adding a stream never disturbs the
 /// others. The distributional checks are coarse sanity, not a PRNG test suite.
 
 #include "random/rng.hpp"
@@ -33,7 +33,7 @@ TEST(Rng, DifferentSeedsDiverge) {
 }
 
 TEST(Rng, StreamDerivationIsIndependentPerSource) {
-  // The §182 property: each stream id derives its own seed, so introducing a new
+  // The §3.5 property: each stream id derives its own seed, so introducing a new
   // source (a new id) leaves every existing stream's sequence untouched.
   constexpr std::uint64_t master = 0xDEADBEEF;
   rnd::SplitMix64 gyro = rnd::streamRng(master, 1);

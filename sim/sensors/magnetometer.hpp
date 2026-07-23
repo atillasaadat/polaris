@@ -15,9 +15,12 @@
 /// suite drives a bias jump or a dropout through the hooks here, so a scenario can
 /// exercise the health monitors without a special build.
 ///
-/// Each instance owns an independent, seed-derived noise stream (§182), so it is
+/// Each instance owns an independent, seed-derived noise stream (§3.5), so it is
 /// bit-reproducible from `{config, seed}` and adding another sensor does not
 /// perturb it.
+///
+/// Implements REQ-SIM-003 (sensor truth models with full error stacks) and
+/// REQ-SIM-005 (scriptable fault injection).
 
 #include <Eigen/Core>
 #include <map>
