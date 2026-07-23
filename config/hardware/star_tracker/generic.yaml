@@ -1,0 +1,34 @@
+# Generic star tracker template (design doc §19.2).
+#
+# Round numbers for a typical smallsat-class unit — copy this file and edit the
+# values from a COTS datasheet. Every key the C++ StarTrackerSpec::fromParams
+# reads is present, so a copy is a complete starting point rather than a set of
+# silent zeros. See sodern_auriga.yaml for a fully datasheet-sourced example.
+model_id: ST-GENERIC
+kind: star_tracker
+description: Generic smallsat star tracker template
+params:
+  # Spatial errors: low frequency is optical distortion across the field, high
+  # frequency is sub-pixel centroiding. XY = cross-boresight, Z = about it.
+  lf_spatial_xy_arcsec_3sigma: 15.0
+  lf_spatial_z_arcsec_3sigma: 90.0
+  hf_spatial_xy_arcsec_3sigma: 10.0
+  hf_spatial_z_arcsec_3sigma: 60.0
+  lf_spatial_correlation_s: 300.0    # modelling choice, not a datasheet value
+  hf_spatial_correlation_s: 10.0     # modelling choice
+  # Temporal (white) noise — the only term that averages down as sqrt(N).
+  temporal_noise_xy_arcsec_3sigma: 30.0
+  temporal_noise_z_arcsec_3sigma: 200.0
+  bias_deg: 0.02                     # fixed per-unit offset, worst case
+  thermo_elastic_arcsec_per_c: 2.0
+  # Acquisition is the tighter envelope; tracking rides through more.
+  acquisition_rate_deg_s: 0.5
+  tracking_rate_deg_s: 2.0
+  acquisition_accel_deg_s2: 0.5
+  tracking_accel_deg_s2: 1.0
+  lost_in_space_s: 10.0              # time to first fix
+  update_rate_hz: 1.0
+  fov_deg: 20.0
+  sun_exclusion_deg: 50.0
+  earth_exclusion_deg: 30.0
+  moon_exclusion_deg: 30.0

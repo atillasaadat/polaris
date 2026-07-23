@@ -59,6 +59,10 @@ inline constexpr double kAstronomicalUnit = 1.495'978'707e11;
 /// angular size of the solar disk in the conical eclipse model.
 inline constexpr double kSunRadius = 6.957e8;
 
+/// Mean lunar radius [m] (IAU/IAG working group on cartographic coordinates).
+/// Sets the Moon's angular size for optical-sensor keep-out (§6.1).
+inline constexpr double kMoonRadius = 1.7374e6;
+
 }  // namespace bodies
 
 /// @brief Time-scale constants (Vallado §3).

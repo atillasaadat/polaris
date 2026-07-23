@@ -287,6 +287,13 @@ bool readEnvironment(const json& root, EnvironmentConfig& out, std::string* erro
   if (out.gravity_order > out.gravity_degree) {
     return fail(error, "environment.gravity_order exceeds gravity_degree");
   }
+  // Emitted in km (the unit a config is written in); held in metres like every
+  // other length on this side of the boundary.
+  out.occultation_atmosphere_m =
+      node->value("occultation_atmosphere_km", sensors::kDefaultAtmosphereHeight / 1000.0) * 1000.0;
+  if (!(out.occultation_atmosphere_m >= 0.0)) {
+    return fail(error, "environment.occultation_atmosphere_km must be non-negative");
+  }
   out.drag_enabled = node->value("drag_enabled", false);
   out.srp_enabled = node->value("srp_enabled", false);
   out.eclipse_enabled = node->value("eclipse_enabled", true);

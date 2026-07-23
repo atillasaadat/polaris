@@ -392,7 +392,13 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
            "params": {"gyro_arw_deg_sqrt_hr": 0.15, "gyro_range_deg_s": 400.0},
            "mounting_dcm_row_major": null},
           {"name": "st_a", "model_id": "ST-16", "kind": "star_tracker",
-           "params": {"cross_axis_arcsec": 5.0}, "mounting_dcm_row_major": null}
+           "params": {"temporal_noise_xy_arcsec_3sigma": 11.0,
+                      "temporal_noise_z_arcsec_3sigma": 70.0, "fov_deg": 15.0,
+                      "sun_exclusion_deg": 35.0, "earth_exclusion_deg": 22.0,
+                      "lost_in_space_s": 3.8},
+           "mounting_dcm_row_major": null},
+          {"name": "ss_zp", "model_id": "SS-GENERIC", "kind": "sun_sensor",
+           "params": {"fov_deg": 60.0}, "mounting_dcm_row_major": null}
         ],
         "actuators": [
           {"name": "rw_1", "model_id": "RW-X", "kind": "reaction_wheel",
@@ -410,7 +416,8 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
         "body_rate_rad_s": [0.0, 0.0, 0.0]
       },
       "propagation": {"duration_s": 60.0, "output_step_s": 10.0},
-      "environment": {"gravity_degree": 0, "magnetic_field": "none"}
+      "environment": {"gravity_degree": 0, "magnetic_field": "none",
+                      "occultation_atmosphere_km": 120.0}
     })";
   }
 
@@ -421,19 +428,22 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
   std::remove(path.c_str());
 
   EXPECT_EQ(config.seed, 20260101u);
-  ASSERT_EQ(config.spacecraft.sensors.size(), 2u);
+  ASSERT_EQ(config.spacecraft.sensors.size(), 3u);
   ASSERT_EQ(config.spacecraft.actuators.size(), 2u);
   EXPECT_DOUBLE_EQ(config.spacecraft.sensors[0].params.at("gyro_arw_deg_sqrt_hr"), 0.15);
+  // The optical-limb height is a scenario knob and arrives in km, held in metres.
+  EXPECT_DOUBLE_EQ(config.environment.occultation_atmosphere_m, 120.0e3);
   // A 90° mounting about +y: the wheel's spin axis lies along body -x.
   EXPECT_NEAR(config.spacecraft.actuators[0].mounting_dcm(0, 2), 1.0, 1e-15);
 
   scenario::Vehicle vehicle;
   ASSERT_TRUE(scenario::buildVehicle(config.spacecraft, config.seed, vehicle, &error)) << error;
   EXPECT_EQ(vehicle.imus.size(), 1u);
+  EXPECT_EQ(vehicle.star_trackers.size(), 1u);
   EXPECT_EQ(vehicle.wheels.size(), 1u);
   EXPECT_EQ(vehicle.magnetorquers.size(), 1u);
   ASSERT_EQ(vehicle.unmodelled.size(), 1u);
-  EXPECT_EQ(vehicle.unmodelled[0], "st_a:star_tracker");
+  EXPECT_EQ(vehicle.unmodelled[0], "ss_zp:sun_sensor");
 }
 
 // --- Regressions -------------------------------------------------------------

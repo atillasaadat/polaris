@@ -54,7 +54,9 @@ endif()
 # noise stream. Fault-injection hooks are built in for the FDIR suite.
 add_library(polaris_sensors
   sensors/magnetometer.cpp
-  sensors/imu.cpp)
+  sensors/imu.cpp
+  sensors/occlusion.cpp
+  sensors/star_tracker.cpp)
 target_include_directories(polaris_sensors PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_sensors
   PUBLIC Eigen3::Eigen polaris_math polaris_state polaris_time polaris_random

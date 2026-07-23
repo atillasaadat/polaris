@@ -155,6 +155,16 @@ class Environment(_Strict):
     eclipse_enabled: bool = Field(
         default=True, description="apply the conical eclipse shadow factor to SRP"
     )
+    occultation_atmosphere_km: float = Field(
+        default=100.0,
+        ge=0.0,
+        description=(
+            "optically obstructing atmosphere thickness above the surface [km], "
+            "used by the optical-sensor occlusion model (design doc §6.1). The "
+            "100 km default is the Karman line, right for visible-band blinding; "
+            "a horizon sensor in the 15 um CO2 band sees a higher limb"
+        ),
+    )
 
 
 class OrbitElements(_Strict):
