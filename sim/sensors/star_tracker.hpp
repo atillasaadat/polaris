@@ -82,8 +82,11 @@ struct StarTrackerMeasurement {
   /// still fills it with the last-known truth-derived value rather than garbage.
   math::Quat<math::frames::Body, math::frames::ECI> attitude{};
   bool valid{true};
-  /// Why the solution was lost, when it was lost geometrically.
-  Occluder occluder{Occluder::kNone};
+  /// What the field of view was looking at: keep-out verdict plus the fraction
+  /// of the FOV each body covers. Carried on every sample, valid or not — the
+  /// fractions are how a consumer sees an outage *coming*, rather than only that
+  /// it arrived, and are what a graded degradation model will key off.
+  OcclusionState occlusion{};
   /// True when the body rate exceeded `max_slew_rate` (image smear).
   bool rate_limited{false};
   time::Tai time_tag{};

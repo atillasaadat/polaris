@@ -178,7 +178,7 @@ TEST(StarTracker, EarthInTheFieldOfViewInvalidatesTheSolution) {
   sensors::StarTracker st(st16Spec(), mount, 1, 1);
   const auto m = st.sample(kEpoch, QuatBI::Identity(), kAtRest, sky());
   EXPECT_FALSE(m.valid);
-  EXPECT_EQ(m.occluder, sensors::Occluder::kEarth);
+  EXPECT_EQ(m.occlusion.occluder, sensors::Occluder::kEarth);
   EXPECT_FALSE(m.rate_limited);
 }
 
@@ -191,7 +191,29 @@ TEST(StarTracker, SunInTheKeepOutConeInvalidatesTheSolution) {
   sensors::StarTracker st(st16Spec(), zenithMount(), 1, 1);
   const auto m = st.sample(kEpoch, QuatBI::Identity(), kAtRest, s);
   EXPECT_FALSE(m.valid);
-  EXPECT_EQ(m.occluder, sensors::Occluder::kSun);
+  EXPECT_EQ(m.occlusion.occluder, sensors::Occluder::kSun);
+}
+
+TEST(StarTracker, ReportsHowMuchOfTheFieldOfViewEachBodyCovers) {
+  // The tracker carries the occlusion state on every sample, so a consumer can
+  // watch the Earth march into the field rather than only learn that it arrived.
+  // The atmospheric fraction leads the solid one — that airglow annulus is what
+  // actually spoils the star field first.
+  sensors::StarTracker st(st16Spec(), zenithMount(), 1, 1);
+
+  const auto clear = st.sample(kEpoch, QuatBI::Identity(), kAtRest, sky());
+  EXPECT_DOUBLE_EQ(clear.occlusion.earth_atmosphere_fraction, 0.0) << "zenith stare is clear";
+  EXPECT_TRUE(clear.valid);
+
+  // Nadir: the Earth fills the field completely.
+  Eigen::Matrix3d nadir;
+  nadir << 0, 0, -1, 0, 1, 0, 1, 0, 0;
+  sensors::StarTracker down(st16Spec(), nadir, 1, 1);
+  const auto blocked = down.sample(kEpoch, QuatBI::Identity(), kAtRest, sky());
+  EXPECT_DOUBLE_EQ(blocked.occlusion.earth_fraction, 1.0);
+  EXPECT_DOUBLE_EQ(blocked.occlusion.earth_atmosphere_fraction, 1.0);
+  EXPECT_DOUBLE_EQ(blocked.occlusion.blockedFraction(), 1.0);
+  EXPECT_FALSE(blocked.valid);
 }
 
 TEST(StarTracker, SlewRateSmearInvalidatesTheSolution) {
@@ -210,7 +232,7 @@ TEST(StarTracker, SlewRateSmearInvalidatesTheSolution) {
       st.sample(kEpoch, truth, Vec3B(Eigen::Vector3d(0.0, 10.0 * kDeg2Rad, 0.0)), sky());
   EXPECT_FALSE(fast.valid);
   EXPECT_TRUE(fast.rate_limited);
-  EXPECT_EQ(fast.occluder, sensors::Occluder::kNone);
+  EXPECT_EQ(fast.occlusion.occluder, sensors::Occluder::kNone);
 }
 
 TEST(StarTracker, AnOutageDoesNotDisturbTheNoiseStream) {

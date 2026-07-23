@@ -32,6 +32,7 @@
 
 #include "math/frames.hpp"
 #include "math/typed_vector.hpp"
+#include "sensors/occlusion.hpp"
 #include "state/truth_state.hpp"
 #include "time/leap_seconds.hpp"
 #include "time/timescales.hpp"
@@ -106,6 +107,10 @@ struct EnvironmentConfig {
   bool eclipse_enabled{true};
   AtmosphereModel atmosphere{AtmosphereModel::kExponential};
   MagneticModel magnetic_field{MagneticModel::kIgrf};
+  /// Optically obstructing atmosphere thickness above the surface [m], for the
+  /// optical-sensor occlusion model (§6.1). Separate from the drag atmosphere:
+  /// this one is about what blocks a line of sight, not what produces force.
+  double occultation_atmosphere_m{sensors::kDefaultAtmosphereHeight};
 };
 
 /// Propagation span and RK89 step control.

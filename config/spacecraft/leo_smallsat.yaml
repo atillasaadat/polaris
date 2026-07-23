@@ -79,6 +79,7 @@ scenario:
     atmosphere: exponential
     magnetic_field: igrf
     eclipse_enabled: true
+    occultation_atmosphere_km: 100.0  # optical limb height for sensor occlusion (§6.1)
   ground_stations:
     - name: svalbard
       lat_deg: 78.23

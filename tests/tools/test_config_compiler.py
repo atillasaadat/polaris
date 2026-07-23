@@ -271,6 +271,10 @@ def test_sim_setup_carries_the_resolved_cartesian_initial_state(tmp_path):
     assert init["keplerian"]["inc_deg"] == 97.4018
     assert setup["propagation"]["duration_s"] == 5677.0
     assert setup["environment"]["atmosphere"] == "exponential"
+    # Optical-limb height for the sensor occlusion model (§6.1), a scenario knob
+    # distinct from the drag atmosphere: what blocks a line of sight, not what
+    # produces force.
+    assert setup["environment"]["occultation_atmosphere_km"] == 100.0
     assert setup["spacecraft"]["residual_dipole_am2"] == [0.002, -0.001, 0.0015]
     assert setup["epoch_utc"] == "2026-01-01T00:00:00Z"
 

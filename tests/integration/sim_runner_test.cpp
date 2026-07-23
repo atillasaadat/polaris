@@ -414,7 +414,8 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
         "body_rate_rad_s": [0.0, 0.0, 0.0]
       },
       "propagation": {"duration_s": 60.0, "output_step_s": 10.0},
-      "environment": {"gravity_degree": 0, "magnetic_field": "none"}
+      "environment": {"gravity_degree": 0, "magnetic_field": "none",
+                      "occultation_atmosphere_km": 120.0}
     })";
   }
 
@@ -428,6 +429,8 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
   ASSERT_EQ(config.spacecraft.sensors.size(), 3u);
   ASSERT_EQ(config.spacecraft.actuators.size(), 2u);
   EXPECT_DOUBLE_EQ(config.spacecraft.sensors[0].params.at("gyro_arw_deg_sqrt_hr"), 0.15);
+  // The optical-limb height is a scenario knob and arrives in km, held in metres.
+  EXPECT_DOUBLE_EQ(config.environment.occultation_atmosphere_m, 120.0e3);
   // A 90° mounting about +y: the wheel's spin axis lies along body -x.
   EXPECT_NEAR(config.spacecraft.actuators[0].mounting_dcm(0, 2), 1.0, 1e-15);
 

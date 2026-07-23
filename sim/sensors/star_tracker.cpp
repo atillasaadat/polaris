@@ -63,9 +63,9 @@ StarTrackerMeasurement StarTracker::sample(
   const Eigen::Vector3d boresight_eci =
       truth.inverse().rotate(math::Vec3<math::frames::Body>(boresight_body_)).eigen();
 
-  m.occluder = checkLineOfSight(boresight_eci, sky, spec_.keep_out);
+  m.occlusion = evaluateLineOfSight(boresight_eci, 0.5 * spec_.fov_rad, sky, spec_.keep_out);
   m.rate_limited = spec_.max_slew_rate > 0.0 && body_rate.eigen().norm() > spec_.max_slew_rate;
-  m.valid = !fault_dropout_ && m.occluder == Occluder::kNone && !m.rate_limited;
+  m.valid = !fault_dropout_ && m.occlusion.occluder == Occluder::kNone && !m.rate_limited;
 
   // Anisotropic error: σ_cross about the two axes across the boresight, σ_bore
   // about the boresight itself (see the header — roll is the weak axis).
