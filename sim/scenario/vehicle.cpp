@@ -69,6 +69,36 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
         }
         out.star_trackers.push_back({unit.name, unit.model_id, unit.mounting_dcm,
                                      sensors::StarTracker(spec, unit.mounting_dcm, seed, stream)});
+      } else if (unit.kind == "sun_sensor") {
+        const auto spec = sensors::SunSensorSpec::fromParams(unit.params);
+        // Without an acceptance cone the cosine cut-off never fires and a cell
+        // reports sunlight while facing away from the Sun — required whichever
+        // output the part has.
+        if (!(spec.half_fov_rad > 0.0)) {
+          return fail(error, "sun sensor '" + unit.name + "' needs half_fov_deg");
+        }
+        // Beyond that the two output contracts need different things, and
+        // demanding both would reject every real part: a digital unit reports a
+        // vector and has no full scale, an analogue one has no quoted accuracy
+        // because the FSW is what turns its counts into an angle.
+        if (spec.output == sensors::SunSensorOutput::kDiodeCounts) {
+          if (!(spec.full_scale_counts > 0.0)) {
+            return fail(error, "sun sensor '" + unit.name +
+                                   "' reports diode counts but has no full_scale_counts");
+          }
+        } else if (!(spec.accuracy_outer_sigma > 0.0)) {
+          return fail(error, "sun sensor '" + unit.name +
+                                 "' reports a vector but has no accuracy_*_deg_3sigma");
+        }
+        out.sun_sensors.push_back({unit.name, unit.model_id, unit.mounting_dcm,
+                                   sensors::SunSensor(spec, unit.mounting_dcm, seed, stream)});
+      } else if (unit.kind == "magnetometer") {
+        const auto model = sensors::magnetometerErrorFromParams(unit.params, seed, stream);
+        // A magnetometer with no range still measures, so there is nothing to
+        // reject here: every term of the error stack is a no-op at zero, and a
+        // range of zero simply means "no saturation modelled".
+        out.magnetometers.push_back({unit.name, unit.model_id, unit.mounting_dcm,
+                                     sensors::Magnetometer(model, seed, stream)});
       } else if (unit.kind == "reaction_wheel") {
         const auto spec = actuators::ReactionWheelSpec::fromParams(unit.params);
         if (!(spec.inertia() > 0.0)) {

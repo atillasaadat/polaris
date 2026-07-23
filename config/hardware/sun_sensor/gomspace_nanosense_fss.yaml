@@ -1,0 +1,48 @@
+# GomSpace NanoSense Fine Sun Sensor (design doc §19.2).
+#
+# Source: https://gomspace.com/wp-content/uploads/2025/09/gs-ds-nanosense-fss-31.pdf
+# (datasheet DS 1018157 rev 3.1, 10 December 2021). A quadrant-diode vector sun
+# sensor with an I2C interface: the unit samples four filtered photodiode
+# channels through a 16-bit ADC, runs its own factory calibration in a
+# microcontroller, and reports a **sun vector** — so this entry configures the
+# vector-output path, not the per-diode counts path. Same keys as the C++
+# SunSensorSpec::fromParams (sim/sensors/sun_sensor.cpp).
+#
+# The defining feature is that accuracy is a function of incidence angle, and by
+# a wide margin: 0.5 deg inside 45 deg, 2.0 deg out to the 60 deg edge. A model
+# quoting one number would be wrong by 4x at one end of the field or the other,
+# and coarse-attitude performance depends on which part of the field the vehicle
+# actually flies the sensor in.
+model_id: GS-NANOSENSE-FSS
+kind: sun_sensor
+description: GomSpace NanoSense Fine Sun Sensor (quadrant diode, I2C vector output)
+params:
+  # --- Geometry (datasheet section 8) ----------------------------------------
+  diode_count: 4               # quadrant diode behind a single aperture
+  diode_cant_deg: 0.0          # a shared aperture, not canted cells
+  half_fov_deg: 60.0           # "Field of view: half angle 60 deg"
+
+  # --- Accuracy vs incidence angle (section 8, 3-sigma, no albedo) -----------
+  accuracy_inner_half_angle_deg: 45.0
+  accuracy_inner_deg_3sigma: 0.5     # "FOV < 45 deg, no albedo: +/- 0.5 deg"
+  accuracy_outer_deg_3sigma: 2.0     # "FOV < 60 deg, no albedo: +/- 2.0 deg"
+
+  # Albedo. The datasheet is unusually direct about this: "albedo influence will
+  # degrade accuracy [...] can generate errors >10 deg", with an ISS-orbit error
+  # histogram (Figure 7) that is mostly under 2 deg but has a tail out past
+  # 10 deg. 12 deg is the peak of that tail, reached only when the Earth fills
+  # the field on the day side; the model scales it by the FOV fill fraction, so
+  # the typical case lands in the histogram's bulk rather than at the tail.
+  albedo_error_deg: 12.0
+
+  # --- Timing (section 8) ----------------------------------------------------
+  sample_period_ms: 10.0       # "Sample period: max 10 ms"
+  update_rate_hz: 100.0        # the reciprocal of the sample period
+
+  sun_present_threshold: 0.05  # shadow factor below which the Sun is "absent"
+
+  # NOT in the datasheet: GomSpace publish no separate mounting-alignment figure
+  # (the part ships with calibration data, and installed alignment is a function
+  # of the bracket, not the sensor). Left at zero rather than invented — a
+  # mission that has measured its own mounting should set it here.
+  alignment_mrad: 0.0

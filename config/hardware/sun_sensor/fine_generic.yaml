@@ -1,0 +1,30 @@
+# Generic fine sun sensor (FSS) template (design doc §19.2).
+#
+# A four-quadrant part: the diodes are canted about the boresight, and the
+# *differences* between opposing cells give a well-conditioned two-axis angle
+# near boresight — where a single cosine cell is least sensitive, because its
+# response flattens as dcos/dtheta goes to zero at normal incidence. Round
+# numbers representative of the class; replace from a COTS datasheet. Same keys
+# as the C++ SunSensorSpec::fromParams (sim/sensors/sun_sensor.cpp).
+#
+# The narrow acceptance cone is what buys the accuracy: less sky per cell means
+# far less Earth in view, so albedo contributes much less than it does to the
+# coarse sensor. The trade is that the unit only works when it is already
+# pointed roughly at the Sun.
+model_id: FSS-GENERIC
+kind: sun_sensor
+description: Generic four-quadrant fine sun sensor
+params:
+  diode_count: 4
+  diode_cant_deg: 30.0         # quadrant cells canted off the boresight
+  half_fov_deg: 32.0           # per-cell acceptance, giving ~+/-30 deg coverage
+  full_scale_counts: 65535.0   # 16-bit readout
+  saturation_counts: 65535.0
+  dark_counts: 100.0
+  noise_counts_rms: 30.0
+  resolution_counts: 1.0
+  scale_factor_pct: 1.0        # matched quadrant cells, tighter than a CSS
+  alignment_mrad: 1.0
+  albedo_coefficient: 0.05     # narrow FOV sees little Earth
+  update_rate_hz: 10.0
+  sun_present_threshold: 0.05
