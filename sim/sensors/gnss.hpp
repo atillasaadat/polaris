@@ -91,6 +91,12 @@ struct GnssSpec {
   /// Delay before valid fixes resume after an outage clears [s].
   double reacquisition_s = 0.0;
 
+  /// Master noise switch (a scenario knob, not a datasheet value). When false the
+  /// receiver reports truth-exact position/velocity/time — for bring-up and debug
+  /// runs where GNSS error would only obscure what is being tested. The
+  /// datasheet σ are still carried on the measurement; they are simply not drawn.
+  bool noise_enabled = true;
+
   /// Build a spec from datasheet-native params. Missing keys default to 0 (that
   /// term disabled). See gnss.cpp for the key list.
   static GnssSpec fromParams(const std::map<std::string, double>& params);

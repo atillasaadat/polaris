@@ -95,24 +95,30 @@ GnssMeasurement Gnss::sample(const time::Tai& epoch, const GnssInput& input) {
   m.time_sigma_s = spec_.time_sigma_s;
 
   // Position error, split horizontal vs vertical in the local geodetic frame.
-  Eigen::Vector3d east;
-  Eigen::Vector3d north;
-  Eigen::Vector3d up;
-  enuBasis(input.position_m.eigen(), east, north, up);
-  const Eigen::Vector3d pos_err = spec_.position_sigma_h_m * rng_.gaussian() * east +
-                                  spec_.position_sigma_h_m * rng_.gaussian() * north +
-                                  spec_.position_sigma_v_m * rng_.gaussian() * up;
+  // With noise disabled the fix is truth-exact (the spoof offset still applies —
+  // it is a fault, not measurement noise).
+  Eigen::Vector3d pos_err = Eigen::Vector3d::Zero();
+  Eigen::Vector3d vel_err = Eigen::Vector3d::Zero();
+  double clock_noise = 0.0;
+  if (spec_.noise_enabled) {
+    Eigen::Vector3d east;
+    Eigen::Vector3d north;
+    Eigen::Vector3d up;
+    enuBasis(input.position_m.eigen(), east, north, up);
+    pos_err = spec_.position_sigma_h_m * rng_.gaussian() * east +
+              spec_.position_sigma_h_m * rng_.gaussian() * north +
+              spec_.position_sigma_v_m * rng_.gaussian() * up;
+    vel_err = Eigen::Vector3d(spec_.velocity_sigma_m_s * rng_.gaussian(),
+                              spec_.velocity_sigma_m_s * rng_.gaussian(),
+                              spec_.velocity_sigma_m_s * rng_.gaussian());
+    clock_noise = spec_.time_sigma_s * rng_.gaussian();
+  }
   m.position_m =
       math::Vec3<math::frames::ECEF>(input.position_m.eigen() + pos_err + fault_pos_offset_);
-
-  // Velocity error, per-axis white in ECEF (the datasheet quotes no H/V split).
-  const Eigen::Vector3d vel_err(spec_.velocity_sigma_m_s * rng_.gaussian(),
-                                spec_.velocity_sigma_m_s * rng_.gaussian(),
-                                spec_.velocity_sigma_m_s * rng_.gaussian());
   m.velocity_m_s = math::Vec3<math::frames::ECEF>(input.velocity_m_s.eigen() + vel_err);
 
-  // Receiver-clock bias on the time tag.
-  m.clock_bias_s = spec_.time_sigma_s * rng_.gaussian() + fault_clock_jump_s_;
+  // Receiver-clock bias on the time tag (noise + any injected jump).
+  m.clock_bias_s = clock_noise + fault_clock_jump_s_;
   m.time_tag = time::Gps::fromNanosecondsSinceEpoch(
       gps_ns + static_cast<std::int64_t>(std::llround(m.clock_bias_s * kNsPerSecond)));
 

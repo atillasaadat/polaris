@@ -71,8 +71,7 @@ class JammingRegions {
   /// The name of the first region containing the sub-satellite point of
   /// @p r_ecef, or nullptr if none. A pointer so the caller can telemeter *which*
   /// zone jammed the receiver.
-  [[nodiscard]] const std::string* jammedRegion(
-      const math::Vec3<math::frames::ECEF>& r_ecef) const;
+  [[nodiscard]] const std::string* jammedRegion(const math::Vec3<math::frames::ECEF>& r_ecef) const;
 
   /// Whether @p r_ecef's sub-satellite point is inside any region.
   [[nodiscard]] bool jammed(const math::Vec3<math::frames::ECEF>& r_ecef) const {
@@ -80,7 +79,9 @@ class JammingRegions {
   }
 
   [[nodiscard]] bool empty() const { return regions_.empty(); }
+
   [[nodiscard]] std::size_t size() const { return regions_.size(); }
+
   [[nodiscard]] const std::vector<JammingRegion>& regions() const { return regions_; }
 
  private:

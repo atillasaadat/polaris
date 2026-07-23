@@ -64,12 +64,15 @@ def test_compiles_template_and_emits_three_artifacts(tmp_path):
     assert fparams["sc.mass_kg"] == 12.0
     assert fparams["gains.pointing.kp"] == 0.2
     assert resolved["provenance"]["config_hash"]
-    # The GNSS jamming KML path is carried through verbatim for the sim to load.
+    # The GNSS jamming KML path and fault controls are carried through for the sim.
     setup = json.loads((tmp_path / "sim_setup.json").read_text())
-    assert (
-        setup["environment"]["gnss_jamming_kml"]
-        == "config/scenario/jamming/eastern_europe.kml"
-    )
+    env = setup["environment"]
+    assert env["gnss_jamming_kml"] == "config/scenario/jamming/eastern_europe.kml"
+    assert env["gnss_jamming_enabled"] is True
+    assert env["gnss_noise_enabled"] is True
+    events = env["gnss_fault_events"]
+    assert [e["type"] for e in events] == ["outage", "spoof"]
+    assert events[1]["spoof_offset_ecef_m"] == [500.0, 0.0, 0.0]
 
 
 @pytest.mark.verifies("REQ-CFG-001")
@@ -496,6 +499,28 @@ def test_unknown_config_key_is_rejected():
     bad = _minimal_config_dict()
     bad["spacecraft"]["typo_field"] = 1.0
     with pytest.raises(ValidationError, match="typo_field"):
+        Config.model_validate(bad)
+
+
+def test_gnss_fault_event_validation():
+    # A back-to-front window is a scenario authoring error, caught at the boundary.
+    bad = _minimal_config_dict()
+    bad["scenario"]["environment"] = {
+        "gnss_fault_events": [
+            {"unit": "gps_a", "type": "outage", "start_s": 200.0, "stop_s": 100.0}
+        ]
+    }
+    with pytest.raises(ValidationError, match="must exceed start_s"):
+        Config.model_validate(bad)
+
+    # An unknown fault type fails rather than being silently ignored.
+    bad["scenario"]["environment"]["gnss_fault_events"][0] = {
+        "unit": "gps_a",
+        "type": "meteor",
+        "start_s": 0.0,
+        "stop_s": 10.0,
+    }
+    with pytest.raises(ValidationError):
         Config.model_validate(bad)
 
 

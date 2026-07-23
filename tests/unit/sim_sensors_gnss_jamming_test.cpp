@@ -40,8 +40,7 @@ Vec3E ecefFromGeodetic(double lat_deg, double lon_deg, double alt_m) {
 }
 
 /// A single-square KML region, lon in [lon0,lon1], lat in [lat0,lat1].
-std::string squareKml(const std::string& name, double lon0, double lat0, double lon1,
-                      double lat1) {
+std::string squareKml(const std::string& name, double lon0, double lat0, double lon1, double lat1) {
   auto c = [](double lon, double lat) {
     return std::to_string(lon) + "," + std::to_string(lat) + ",0 ";
   };
@@ -82,8 +81,8 @@ TEST(GnssGeodetic, GeodeticLatitudeExceedsGeocentricAtMidLatitudes) {
 TEST(GnssJammingParse, ExtractsNamedPolygon) {
   sensors::JammingRegions regions;
   std::string error;
-  ASSERT_TRUE(sensors::JammingRegions::fromKml(squareKml("Crimea", 32.0, 44.0, 37.0, 46.5),
-                                               regions, &error))
+  ASSERT_TRUE(sensors::JammingRegions::fromKml(squareKml("Crimea", 32.0, 44.0, 37.0, 46.5), regions,
+                                               &error))
       << error;
   ASSERT_EQ(regions.size(), 1u);
   EXPECT_EQ(regions.regions()[0].name, "Crimea");
@@ -99,10 +98,13 @@ TEST(GnssJammingParse, EmptyKmlIsAnError) {
 
 TEST(GnssJammingParse, ParsesMultiplePlacemarks) {
   std::string two = "<kml><Document>";
-  two += "<Placemark><name>A</name><Polygon><outerBoundaryIs><LinearRing><coordinates>"
-         "0,0 10,0 10,10 0,10 0,0</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>";
-  two += "<Placemark><name>B</name><Polygon><outerBoundaryIs><LinearRing><coordinates>"
-         "20,20 30,20 30,30 20,30 20,20</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>";
+  two +=
+      "<Placemark><name>A</name><Polygon><outerBoundaryIs><LinearRing><coordinates>"
+      "0,0 10,0 10,10 0,10 0,0</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>";
+  two +=
+      "<Placemark><name>B</name><Polygon><outerBoundaryIs><LinearRing><coordinates>"
+      "20,20 30,20 30,30 20,30 "
+      "20,20</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>";
   two += "</Document></kml>";
   sensors::JammingRegions regions;
   ASSERT_TRUE(sensors::JammingRegions::fromKml(two, regions, nullptr));
@@ -113,8 +115,8 @@ TEST(GnssJammingParse, ParsesMultiplePlacemarks) {
 
 TEST(GnssJammingMembership, InsideAndOutsideARegion) {
   sensors::JammingRegions regions;
-  ASSERT_TRUE(sensors::JammingRegions::fromKml(squareKml("Crimea", 32.0, 44.0, 37.0, 46.5),
-                                               regions, nullptr));
+  ASSERT_TRUE(sensors::JammingRegions::fromKml(squareKml("Crimea", 32.0, 44.0, 37.0, 46.5), regions,
+                                               nullptr));
 
   // A satellite whose sub-satellite point is inside the box is jammed.
   const auto inside = ecefFromGeodetic(45.0, 34.5, 500.0e3);

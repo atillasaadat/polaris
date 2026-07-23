@@ -89,6 +89,19 @@ struct SpacecraftConfig {
   std::vector<UnitConfig> actuators;
 };
 
+/// A scheduled GNSS fault (§9.2/§23.1.1): what the scenario does to a receiver,
+/// as opposed to what the catalog says it is. Active for `start_s <= t < stop_s`
+/// (seconds since epoch) on the named unit.
+struct GnssFaultEvent {
+  enum class Type { kOutage, kSpoof, kClockJump };
+  std::string unit;
+  Type type{Type::kOutage};
+  double start_s{0.0};
+  double stop_s{0.0};
+  Eigen::Vector3d spoof_offset_ecef_m{Eigen::Vector3d::Zero()};  ///< for kSpoof
+  double clock_jump_s{0.0};                                      ///< for kClockJump
+};
+
 /// Which perturbations are switched on, and at what fidelity.
 struct EnvironmentConfig {
   /// Negative: no gravity (free-drift baseline). 0: point mass. Positive: the
@@ -115,6 +128,14 @@ struct EnvironmentConfig {
   /// verbatim from the config; the sim loads it into `sensors::JammingRegions`
   /// and binds it to each GNSS receiver.
   std::string gnss_jamming_kml;
+  /// Master switch for geographic jamming — false keeps the KML referenced but
+  /// binds no regions, so a run can toggle jamming without editing the path.
+  bool gnss_jamming_enabled{true};
+  /// Master switch for GNSS measurement noise — false flies a truth-perfect
+  /// receiver (position/velocity/clock error zeroed) for bring-up/debug.
+  bool gnss_noise_enabled{true};
+  /// Scheduled GNSS faults injected during the run (§9.2/§23.1.1).
+  std::vector<GnssFaultEvent> gnss_fault_events;
 };
 
 /// Propagation span and RK89 step control.

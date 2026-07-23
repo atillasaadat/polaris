@@ -86,6 +86,7 @@ add_library(polaris::actuators ALIAS polaris_actuators)
 add_library(polaris_scenario
   scenario/sim_config.cpp
   scenario/sim_runner.cpp
+  scenario/gnss_faults.cpp
   scenario/vehicle.cpp)
 target_include_directories(polaris_scenario PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_scenario

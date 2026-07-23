@@ -242,6 +242,22 @@ TEST(Gnss, SpoofOffsetsThePositionButStaysValid) {
   EXPECT_NEAR(m.position_m.eigen().x(), in.position_m.eigen().x() + 1000.0, 1e-6);
 }
 
+TEST(Gnss, NoiseDisabledReportsTruthExactFixes) {
+  // A bring-up run flies a perfect GPS: the datasheet σ are still carried, but no
+  // error is drawn, so the fix equals truth and the clock bias is zero.
+  auto s = oem7600Spec(0.0, 0.0);
+  s.noise_enabled = false;
+  sensors::Gnss g(s, kSeed, kStream);
+  const auto in = inputOnXAxis();
+  const auto m = g.sample(kEpoch, in);
+  EXPECT_TRUE(m.valid);
+  EXPECT_EQ(m.position_m.eigen(), in.position_m.eigen());
+  EXPECT_EQ(m.velocity_m_s.eigen(), in.velocity_m_s.eigen());
+  EXPECT_EQ(m.clock_bias_s, 0.0);
+  // The σ are still reported — an estimator wants them even on a clean run.
+  EXPECT_GT(m.position_sigma_h_m, 0.0);
+}
+
 TEST(Gnss, GeographicJammingInvalidatesOverARegion) {
   const auto s = oem7600Spec(0.0, 0.0);
   const auto regions = crimeaBox();

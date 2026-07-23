@@ -125,8 +125,7 @@ void ecefToGeodeticDeg(const math::Vec3<math::frames::ECEF>& r_ecef, double& lat
   lat_deg = lat * kRad2Deg;
 }
 
-bool JammingRegions::fromKml(const std::string& kml_text, JammingRegions& out,
-                             std::string* error) {
+bool JammingRegions::fromKml(const std::string& kml_text, JammingRegions& out, std::string* error) {
   out.regions_.clear();
 
   std::size_t pm = 0;
@@ -170,8 +169,7 @@ bool JammingRegions::fromKml(const std::string& kml_text, JammingRegions& out,
   return true;
 }
 
-bool JammingRegions::loadKmlFile(const std::string& path, JammingRegions& out,
-                                 std::string* error) {
+bool JammingRegions::loadKmlFile(const std::string& path, JammingRegions& out, std::string* error) {
   std::ifstream in(path, std::ios::binary);
   if (!in) {
     if (error != nullptr) {

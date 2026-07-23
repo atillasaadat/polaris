@@ -29,6 +29,7 @@ add_executable(polaris_unit_tests
   sim_sensors_sun_sensor_test.cpp
   sim_actuators_test.cpp
   sim_sensors_gnss_jamming_test.cpp
+  sim_scenario_gnss_faults_test.cpp
   sim_vehicle_test.cpp)
 
 # The committed DE440 Chebyshev fit (tests/golden/de440_sun_moon.cheb), the

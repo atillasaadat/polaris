@@ -299,6 +299,46 @@ bool readEnvironment(const json& root, EnvironmentConfig& out, std::string* erro
   if (jamming != node->end() && jamming->is_string()) {
     out.gnss_jamming_kml = jamming->get<std::string>();
   }
+  out.gnss_jamming_enabled = node->value("gnss_jamming_enabled", true);
+  out.gnss_noise_enabled = node->value("gnss_noise_enabled", true);
+
+  const auto faults = node->find("gnss_fault_events");
+  if (faults != node->end()) {
+    if (!faults->is_array()) {
+      return fail(error, "environment.gnss_fault_events must be an array");
+    }
+    for (const json& ev : *faults) {
+      GnssFaultEvent fe;
+      fe.unit = ev.value("unit", std::string{});
+      if (fe.unit.empty()) {
+        return fail(error, "gnss_fault_events entry has no unit");
+      }
+      const std::string type = ev.value("type", std::string{});
+      if (type == "outage") {
+        fe.type = GnssFaultEvent::Type::kOutage;
+      } else if (type == "spoof") {
+        fe.type = GnssFaultEvent::Type::kSpoof;
+      } else if (type == "clock_jump") {
+        fe.type = GnssFaultEvent::Type::kClockJump;
+      } else {
+        return fail(error, "gnss_fault_events entry '" + fe.unit + "' has unknown type '" + type +
+                               "' (outage|spoof|clock_jump)");
+      }
+      fe.start_s = ev.value("start_s", 0.0);
+      fe.stop_s = ev.value("stop_s", 0.0);
+      if (!(fe.stop_s > fe.start_s)) {
+        return fail(error, "gnss_fault_events entry '" + fe.unit + "' has stop_s <= start_s");
+      }
+      const auto off = ev.find("spoof_offset_ecef_m");
+      if (off != ev.end() && off->is_array() && off->size() == 3) {
+        fe.spoof_offset_ecef_m = Eigen::Vector3d((*off)[0].get<double>(), (*off)[1].get<double>(),
+                                                 (*off)[2].get<double>());
+      }
+      fe.clock_jump_s = ev.value("clock_jump_s", 0.0);
+      out.gnss_fault_events.push_back(fe);
+    }
+  }
+
   out.drag_enabled = node->value("drag_enabled", false);
   out.srp_enabled = node->value("srp_enabled", false);
   out.eclipse_enabled = node->value("eclipse_enabled", true);

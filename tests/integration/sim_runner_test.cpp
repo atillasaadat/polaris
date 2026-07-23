@@ -426,7 +426,12 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
       },
       "propagation": {"duration_s": 60.0, "output_step_s": 10.0},
       "environment": {"gravity_degree": 0, "magnetic_field": "none",
-                      "occultation_atmosphere_km": 120.0}
+                      "occultation_atmosphere_km": 120.0,
+                      "gnss_noise_enabled": false, "gnss_jamming_enabled": false,
+                      "gnss_fault_events": [
+                        {"unit": "gps_a", "type": "outage", "start_s": 10.0, "stop_s": 20.0},
+                        {"unit": "gps_a", "type": "spoof", "start_s": 30.0, "stop_s": 40.0,
+                         "spoof_offset_ecef_m": [500.0, 0.0, 0.0]}]}
     })";
   }
 
@@ -442,6 +447,13 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
   EXPECT_DOUBLE_EQ(config.spacecraft.sensors[0].params.at("gyro_arw_deg_sqrt_hr"), 0.15);
   // The optical-limb height is a scenario knob and arrives in km, held in metres.
   EXPECT_DOUBLE_EQ(config.environment.occultation_atmosphere_m, 120.0e3);
+  // GNSS scenario controls parse through: master switches and the fault schedule.
+  EXPECT_FALSE(config.environment.gnss_noise_enabled);
+  EXPECT_FALSE(config.environment.gnss_jamming_enabled);
+  ASSERT_EQ(config.environment.gnss_fault_events.size(), 2u);
+  EXPECT_EQ(config.environment.gnss_fault_events[0].type, scenario::GnssFaultEvent::Type::kOutage);
+  EXPECT_EQ(config.environment.gnss_fault_events[1].type, scenario::GnssFaultEvent::Type::kSpoof);
+  EXPECT_DOUBLE_EQ(config.environment.gnss_fault_events[1].spoof_offset_ecef_m.x(), 500.0);
   // A 90° mounting about +y: the wheel's spin axis lies along body -x.
   EXPECT_NEAR(config.spacecraft.actuators[0].mounting_dcm(0, 2), 1.0, 1e-15);
 
