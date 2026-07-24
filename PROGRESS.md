@@ -83,7 +83,7 @@ Phase 2 — Sensor & actuator models
 | 26 | #28 | RW assembly (W-matrix, `spin_axis` config) + wheel-local speed command mode |
 | 27 | #29 | Sensor-noise master switch + per-unit overrides |
 | 28 | #30 | Holistic audit: config-pipeline fixes (`com_m`, `gravity_order`, defaults, validation), §-reference sweep, refs.bib completion, documentation standard (§21.3) + per-folder READMEs |
-| 29 | #31 | Planetary third-body perturbers (Mercury→Neptune, DE440 barycenters/system GMs) config-selectable; ephemeris fixture regenerated with all nine bodies |
+| 29 | #31 | Planetary third-body perturbers config-selectable (mercury/venus/mars/jupiter/saturn/uranus/neptune, case-insensitive; DE440 barycenters/system GMs); ephemeris fixture regenerated with all nine bodies |
 
 ---
 

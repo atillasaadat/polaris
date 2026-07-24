@@ -437,7 +437,7 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
       "environment": {"gravity_degree": 0, "gravity_order": 0, "magnetic_field": "none",
                       "occultation_atmosphere_km": 120.0,
                       "drag_enabled": false, "srp_enabled": false,
-                      "third_bodies": ["sun", "jupiter"],
+                      "third_bodies": ["Sun", "JUPITER"],
                       "sensor_noise_enabled": false,
                       "gnss_noise_enabled": false, "gnss_jamming_enabled": false,
                       "gnss_fault_events": [
@@ -463,7 +463,8 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
   // independent knob (0 = zonal-only here), both previously dropped/unreachable.
   EXPECT_DOUBLE_EQ(config.spacecraft.com_m.eigen().y(), -0.02);
   EXPECT_EQ(config.environment.gravity_order, 0);
-  // Planetary third bodies parse into their own list, separate from the flags.
+  // Planetary third bodies parse into their own list, separate from the flags —
+  // and case-insensitively ("Sun"/"JUPITER" above land as canonical lowercase).
   EXPECT_TRUE(config.environment.sun_third_body);
   EXPECT_FALSE(config.environment.moon_third_body);
   ASSERT_EQ(config.environment.planet_third_bodies.size(), 1u);

@@ -9,7 +9,7 @@ format and parsed as-is — never pre-digested).
 |---|---|---|
 | `gravity_field.{hpp,cpp}` | Fully-normalized spherical-harmonic gravity (Holmes-Featherstone recursion, stable to 200×200) + gravity-gradient torque | — |
 | `egm2008.{hpp,cpp}` | ICGEM `.gfc` coefficient loader (EGM2008) | `tests/golden/EGM2008_to200.gfc` |
-| `third_body.{hpp,cpp}` | Point-mass differential gravity: Sun, Moon, and config-selectable planets (DE440 barycenters) | via ephemeris |
+| `third_body.{hpp,cpp}` | Point-mass differential gravity: Sun, Moon, and config-selectable planets — mercury, venus, mars, jupiter, saturn, uranus, neptune (DE440 barycenters) | via ephemeris |
 | `ephemeris_file.{hpp,cpp}` | DE440-fitted Chebyshev segment loader | `tests/golden/de440_bodies.cheb` |
 | `body_position.{hpp,cpp?}` | Injected body-position resolver plumbing (one ephemeris, many consumers) | — |
 | `drag.{hpp,cpp}` | Cannonball atmospheric drag | atmosphere below |

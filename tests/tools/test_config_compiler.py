@@ -532,6 +532,15 @@ def test_third_bodies_accept_planets_and_reject_unknowns():
         Config.model_validate(bad)
 
 
+def test_third_bodies_are_case_insensitive_and_normalised():
+    # "Jupiter"/"SUN" are obviously intended; the schema lowercases before the
+    # Literal check, so the emitted artifact is always the canonical lowercase.
+    cfg = _minimal_config_dict()
+    cfg["scenario"]["environment"] = {"third_bodies": ["SUN", "Moon", "Jupiter"]}
+    validated = Config.model_validate(cfg)
+    assert validated.scenario.environment.third_bodies == ["sun", "moon", "jupiter"]
+
+
 def test_gnss_fault_event_validation():
     # A back-to-front window is a scenario authoring error, caught at the boundary.
     bad = _minimal_config_dict()

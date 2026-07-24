@@ -217,12 +217,24 @@ class Environment(_Strict):
     ] = Field(
         default_factory=lambda: ["sun", "moon"],
         description=(
-            "third-body point-mass perturbers. Sun and Moon dominate for Earth "
-            "orbits; the planets (DE440 barycenters, system GMs) are available "
-            "for completeness studies — Jupiter and Venus are the largest, at "
+            "third-body point-mass perturbers. Options: sun, moon, mercury, "
+            "venus, mars, jupiter, saturn, uranus, neptune (case-insensitive; "
+            "normalised to lowercase). Sun and Moon dominate for Earth orbits; "
+            "the planets (DE440 barycenters, system GMs) are available for "
+            "completeness studies — Jupiter and Venus are the largest, at "
             "~1e-7 of the lunar term for LEO"
         ),
     )
+
+    @field_validator("third_bodies", mode="before")
+    @classmethod
+    def _lowercase_bodies(cls, v: object) -> object:
+        # Case-robust: "Jupiter"/"SUN" are obviously intended; normalise before
+        # the Literal check so the emitted artifact is always lowercase.
+        if isinstance(v, list):
+            return [item.lower() if isinstance(item, str) else item for item in v]
+        return v
+
     atmosphere: Literal["exponential", "nrlmsis"] = Field(
         default="exponential", description="density model backing the drag force"
     )

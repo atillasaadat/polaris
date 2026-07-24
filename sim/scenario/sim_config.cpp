@@ -1,5 +1,6 @@
 #include "scenario/sim_config.hpp"
 
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <Eigen/Eigenvalues>
@@ -403,7 +404,12 @@ bool readEnvironment(const json& root, EnvironmentConfig& out, std::string* erro
       return fail(error, "environment.third_bodies must be an array");
     }
     for (const json& body : *bodies) {
-      const std::string name = body.get<std::string>();
+      std::string name = body.get<std::string>();
+      // Case-robust, mirroring the schema: "Jupiter"/"SUN" are obviously
+      // intended, so normalise to the lowercase canonical form before matching.
+      for (char& c : name) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      }
       if (name == "sun") {
         out.sun_third_body = true;
       } else if (name == "moon") {
