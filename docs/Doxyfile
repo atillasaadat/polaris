@@ -9,7 +9,7 @@ OUTPUT_DIRECTORY       = doxygen
 # Scoped to lib/ for now — the shared Polaris C++ library is what the API page
 # documents. flight/ and sim/ are added here once they carry documented,
 # non-F´-generated code; parsing the F´ topology now only adds framework noise.
-INPUT                  = ../lib
+INPUT                  = ../lib ../sim
 FILE_PATTERNS          = *.h *.hpp *.hh *.hxx *.cpp *.cc *.cxx
 RECURSIVE              = YES
 EXCLUDE_PATTERNS       = */fprime/* */build/* */_build/*

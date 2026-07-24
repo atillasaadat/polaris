@@ -194,15 +194,19 @@ struct StarTrackerMeasurement {
 /// {spec, seed, stream_id} always builds the same physical unit.
 class StarTracker {
  public:
+  /// @param spec The datasheet-derived error/availability specification.
+  /// @param mounting_dcm Unit→body rotation placing the boresight.
+  /// @param master_seed The run's master RNG seed (§3.5).
+  /// @param stream_id This unit's per-source stream id.
   /// @param noise_enabled false reports the **truth** attitude (no spatial,
   ///        temporal, bias, or thermo-elastic error) whenever a solution is
   ///        available — availability, occlusion and the rate/accel envelopes
   ///        still apply, since those are geometry, not noise (§6.2).
-  /// The spec this unit was built from (update rate drives the §2.4 loop).
-  const StarTrackerSpec& spec() const { return spec_; }
-
   StarTracker(const StarTrackerSpec& spec, const Eigen::Matrix3d& mounting_dcm,
               std::uint64_t master_seed, std::uint64_t stream_id, bool noise_enabled = true);
+
+  /// The spec this unit was built from (update rate drives the §2.4 loop).
+  const StarTrackerSpec& spec() const { return spec_; }
 
   /// Solve over an interval of @p dt seconds ending at truth time @p epoch.
   ///

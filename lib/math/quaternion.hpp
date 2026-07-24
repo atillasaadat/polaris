@@ -120,6 +120,22 @@ class Quaternion {
 /// Boundary-tagged rotation. `Quat<To, From>` transforms vector coordinates
 /// from frame @c From to frame @c To: `v_To = q.rotate(v_From)`. Mirrors the
 /// design-doc notation `Quat<Body, ECI>` (Body ← ECI).
+///
+/// The frame tags are checked at compile time — a rotation only applies to a
+/// vector in its @c From frame, and rotations compose only where the middle
+/// frames match:
+///
+/// @code
+/// Quat<Body, ECI> q_bi = attitude;      // Body ← ECI
+/// Vec3<ECI>  r_eci = ...;
+/// Vec3<Body> r_body = q_bi.rotate(r_eci);   // OK: input is ECI
+/// // q_bi.rotate(r_body);                   // compile error: r_body is not ECI
+///
+/// Quat<ECI, ECEF> q_ie = ...;
+/// Quat<Body, ECEF> q_be = q_bi * q_ie;      // OK: ECI cancels
+/// // auto bad = q_ie * q_bi;                // compile error: ECEF ≠ Body
+/// @endcode
+///
 /// @tparam To   destination frame tag
 /// @tparam From source frame tag
 template <class To, class From>

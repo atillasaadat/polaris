@@ -99,11 +99,14 @@ struct ImuSample {
 /// construction, so the same {spec, seed, stream_id} always builds the same unit.
 class Imu {
  public:
-  /// @param noise_enabled false builds an **ideal** IMU (measurement = truth, no
-  ///        bias/scale/misalignment/noise), for noise-free baseline runs (§6.2).
   /// The spec this unit was built from (sensor rates drive the §2.4 loop).
   const ImuSpec& spec() const { return spec_; }
 
+  /// @param spec The datasheet-derived error/rate specification.
+  /// @param master_seed The run's master RNG seed (§3.5).
+  /// @param stream_id This unit's per-source stream id.
+  /// @param noise_enabled false builds an **ideal** IMU (measurement = truth, no
+  ///        bias/scale/misalignment/noise), for noise-free baseline runs (§6.2).
   Imu(const ImuSpec& spec, std::uint64_t master_seed, std::uint64_t stream_id,
       bool noise_enabled = true);
 

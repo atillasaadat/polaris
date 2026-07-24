@@ -74,13 +74,16 @@ class SimRunner {
   /// megabyte fixtures — and it means a missing file is only an error when the
   /// scenario genuinely needed it.
   ///
-  /// @return false if a required data product is missing or malformed, or the
-  ///         configuration asks for a model that is not compiled in (NRLMSIS
-  ///         without `POLARIS_HAS_NRLMSIS`). @p error receives the reason.
+  /// @param config The parsed scenario/spacecraft configuration to fly.
+  /// @param paths Where the committed reference-data products live.
+  /// @param error If non-null, receives a human-readable reason on failure.
   /// @param extra_model An optional additional force/torque source composed
   ///        into the plant — the §2.4 closed loop passes its `CommandedWrench`
   ///        here so actuator effects reach the dynamics. Not owned; must
   ///        outlive the runner. Null composes nothing.
+  /// @return false if a required data product is missing or malformed, or the
+  ///         configuration asks for a model that is not compiled in (NRLMSIS
+  ///         without `POLARIS_HAS_NRLMSIS`).
   bool build(const SimConfig& config, const DataPaths& paths, std::string* error = nullptr,
              const dynamics::ForceTorqueModel* extra_model = nullptr);
 

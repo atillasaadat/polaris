@@ -61,6 +61,9 @@ VectorErrorModel magnetometerErrorFromParams(const std::map<std::string, double>
 /// stream id under the run's master seed.
 class Magnetometer {
  public:
+  /// @param error The §6.1 error stack built by `magnetometerErrorFromParams`.
+  /// @param master_seed The run's master RNG seed (§3.5).
+  /// @param stream_id This unit's per-source stream id.
   /// @param noise_enabled false builds an **ideal** magnetometer (measurement =
   ///        truth field, no bias/soft-iron/noise), for noise-free baseline runs.
   Magnetometer(const VectorErrorModel& error, std::uint64_t master_seed, std::uint64_t stream_id,

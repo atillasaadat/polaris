@@ -8,7 +8,7 @@ lives in the merged PR descriptions and the design doc's "Implemented (Push N)"
 notes — this tracker stays a rollup so it cannot rot the way a narrative does.
 
 **Current phase:** Phase 2 — Sensor & actuator models (complete except CMGs/thrusters); Phase 3 (F´ SITL) next
-**Last updated:** Push 31 (GMAT orbit-regime matrix + attitude cross-validation)
+**Last updated:** Push 32 (docs overhaul — sectioned API reference + MyST user guides)
 
 ---
 
@@ -36,8 +36,8 @@ notes — this tracker stays a rollup so it cannot rot the way a narrative does.
 | §2.4 closed loop (`sim/io`): sensors sampled at native rates, actuator feedback into the plant, fault bindings live | ✅ done + tested (FSW is a callback until the F´ SITL transport) |
 | FSW GNC components, estimators, control | ⬜ Phase 3+ |
 
-**Test gates (all green):** 378 C++ unit (ASan/UBSan) · 17 integration ·
-4 GMAT golden · 85 Python (config compiler, GMAT harness, space weather, orbit) ·
+**Test gates (all green):** 383 C++ unit (ASan/UBSan) · 20 integration ·
+4 GMAT golden · 84 Python (config compiler, GMAT harness, space weather, orbit) ·
 docs `-W` (bibliography + requirements traceability) · pre-commit
 (clang-format + ruff) · F´ flight build.
 
@@ -84,6 +84,9 @@ Phase 2 — Sensor & actuator models
 | 27 | #29 | Sensor-noise master switch + per-unit overrides |
 | 28 | #30 | Holistic audit: config-pipeline fixes (`com_m`, `gravity_order`, defaults, validation), §-reference sweep, refs.bib completion, documentation standard (§21.3) + per-folder READMEs |
 | 29 | #31 | Planetary third-body perturbers config-selectable (mercury/venus/mars/jupiter/saturn/uranus/neptune, case-insensitive; DE440 barycenters/system GMs); ephemeris fixture regenerated with all nine bodies |
+| 30 | #32 | §2.4 closed loop (`sim/io`): native-rate sensor sampling, IMU delta-accumulation, actuator wrench feedback into the plant, live fault bindings; full-stack 6DOF orbit+attitude integration test |
+| 31 | #33 | GMAT orbit-regime matrix (ISS/SSO/GEO/Molniya) + attitude-spinner cross-validation; model-difference tolerance budgets |
+| 32 | — | Docs overhaul: sectioned API reference (per-namespace pages grouped `lib`/`sim`/tools) + MyST user guides reusing per-folder READMEs; frame-safe quaternion + closed-loop docstring examples |
 
 ---
 

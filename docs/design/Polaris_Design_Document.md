@@ -584,6 +584,10 @@ A single, unified, nicely-formatted docs site built from code docstrings — mat
 - **References:** `sphinxcontrib-bibtex` renders the bibliography and inline citations from `docs/refs.bib`.
 - **Build & publish:** the docs are built in CI and published to **GitHub Pages**; a broken docstring, missing reference, or doc-build failure **fails the CI gate**.
 
+**Site structure (implemented, Push 32).** Two navigable sections in the left sidebar:
+- **User Guides** (`docs/guides/`, MyST Markdown) — task-oriented walkthroughs (getting started, frames/attitude/time, configuring a vehicle, adding a sensor, the closed loop, verification). The guides **reuse the per-folder READMEs** via MyST `{include}` where the README *is* the authoring contract (the sensor/actuator/hardware how-to-add walkthroughs), so there is one source of truth that renders both on GitHub and on the site.
+- **Reference** — the API grouped by layer (`lib/` foundations, `sim/` truth simulation, tools/Python), one page per topic namespace rather than one flat page, plus the requirements RVTM, glossary, and bibliography. Doxygen reads both `lib/` and `sim/`.
+
 ### 21.3 Docstring & Documentation Conventions
 - NumPy-style docstrings for Python; structured Doxygen comment blocks for C++ — both carrying parameters, units, frames, returns, references, and examples.
 - Units and frames are stated in every docstring for any physical quantity (reinforces §3.1/§3.4).

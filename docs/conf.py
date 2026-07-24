@@ -24,6 +24,7 @@ version = "0.0"
 
 # -- General configuration ----------------------------------------------------
 extensions = [
+    "myst_parser",
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
     "sphinx.ext.intersphinx",
@@ -35,13 +36,18 @@ extensions = [
     "sphinx_needs",
 ]
 
+# MyST (Markdown) — lets the hand-written user guides (docs/guides/*.md) be
+# authored in Markdown and lets them reuse the repository's per-folder READMEs.
+myst_enable_extensions = ["colon_fence", "deflist", "substitution"]
+myst_heading_anchors = 3
+
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "_generated", "Thumbs.db", ".DS_Store", "design"]
 
-# Only reStructuredText is a source format for now. The design doc lives under
-# docs/design/ as Markdown and is intentionally NOT rendered into this site yet
-# (no myst-parser), so it does not trigger toctree warnings.
-source_suffix = {".rst": "restructuredtext"}
+# reStructuredText for the generated/API pages, Markdown (MyST) for the guides.
+# The design doc under docs/design/ stays excluded (see exclude_patterns) so it
+# does not double as a rendered page.
+source_suffix = {".rst": "restructuredtext", ".md": "markdown"}
 
 nitpicky = False  # tighten later once the C++/Python API is populated
 

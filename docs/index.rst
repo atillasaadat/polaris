@@ -18,12 +18,18 @@ the build (``sphinx-build -W``).
 
 .. toctree::
    :maxdepth: 2
-   :caption: Contents
+   :caption: User Guides
 
+   guides/index
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Reference
+
+   api/index
    requirements/index
    glossary
    references
-   api/index
 
 Conventions at a glance
 -----------------------
