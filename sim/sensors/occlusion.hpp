@@ -119,25 +119,55 @@ struct OcclusionState {
   double moon_fraction = 0.0;
 
   /// Fraction of the FOV covered by any body — the union, approximated as the
-  /// largest single contributor. Bodies overlapping each other in one FOV is a
-  /// geometry no real sensor is operated in (it means staring at an eclipse),
-  /// so the approximation costs nothing real and keeps the value monotone.
+  /// largest single contributor,
+  /// \f$\max(\text{earth\_atmosphere\_fraction},\ \text{sun\_fraction},\ \text{moon\_fraction})\f$.
+  /// Bodies overlapping each other in one FOV is a geometry no real sensor is
+  /// operated in (it means staring at an eclipse), so the approximation costs
+  /// nothing real and keeps the value monotone.
   double blockedFraction() const;
 };
 
 /// Angular clearance [rad] between @p boresight_eci and a body of radius
 /// @p body_radius_m whose centre is at @p to_body (vector from the spacecraft).
 ///
-/// Positive is clear sky between the boresight and the body's limb; negative
-/// means the boresight is inside the disk. Returns +∞ for a degenerate input
-/// (zero-length boresight or a body at the spacecraft), i.e. "unconstrained" —
-/// a geometry that cannot be evaluated must not silently blind a sensor.
+/// With separation \f$\psi\f$ (boresight to body centre) and distance
+/// \f$d = \|\text{to\_body}\|\f$, the clearance to the body's limb is
+/// \f[
+///   c = \psi - \arcsin\!\big(R / d\big),
+/// \f]
+/// \f$R\f$ = @p body_radius_m. Positive is clear sky between the boresight and the
+/// limb; negative means the boresight is inside the disk. Returns \f$-\infty\f$
+/// when the spacecraft is inside the body (\f$d \le R\f$) and \f$+\infty\f$ for a
+/// degenerate input (zero-length boresight or a body at the spacecraft), i.e.
+/// "unconstrained" — a geometry that cannot be evaluated must not silently blind
+/// a sensor.
 double limbClearance(const Eigen::Vector3d& boresight_eci, const Eigen::Vector3d& to_body,
                      double body_radius_m);
 
 /// Fraction of a circular field of view of half-angle @p half_fov_rad covered by
 /// a disk of angular radius @p body_radius_rad whose centre is @p separation_rad
 /// from the boresight.
+///
+/// With FOV radius \f$r_f\f$, body radius \f$r_b\f$, and separation
+/// \f$d = |\text{separation\_rad}|\f$, the three degenerate cases are
+/// \f[
+///   f = \begin{cases}
+///     0 & d \ge r_f + r_b \quad(\text{disjoint})
+///     \\ 1 & d \le r_b - r_f \quad(\text{FOV inside body})
+///     \\ (r_b/r_f)^2 & d \le r_f - r_b \quad(\text{body inside FOV})
+///   \end{cases}
+/// \f]
+/// and the partial overlap is the planar two-circle lens area over the FOV disk:
+/// \f[
+///   f = \frac{r_f^2\big(\alpha - \tfrac12\sin 2\alpha\big) + r_b^2\big(\beta - \tfrac12\sin
+///   2\beta\big)}{\pi\, r_f^2},
+/// \f]
+/// \f[
+///   \alpha = \arccos\frac{d^2 + r_f^2 - r_b^2}{2\,d\,r_f}, \qquad
+///   \beta  = \arccos\frac{d^2 + r_b^2 - r_f^2}{2\,d\,r_b},
+/// \f]
+/// clamped to \f$[0,1]\f$. Exact in the small-angle limit (see the file header for
+/// the error against a spherical quadrature).
 ///
 /// Returns 0 for a non-positive FOV: a sensor with no field of view has no
 /// fraction to report, and dividing by its area would be a NaN in a telemetry

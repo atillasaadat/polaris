@@ -49,8 +49,10 @@ class NoForceModel : public ForceTorqueModel {
 };
 
 /// A settable external wrench — the actuator-feedback channel of the §2.4
-/// closed loop. The loop computes the net actuator effect on the body each
-/// micro-interval (reaction-wheel reaction torques through the assembly's W,
+/// closed loop, held constant over a propagation interval (zero-order hold):
+/// \f$\mathbf{a}_\mathrm{ext}(s) = \mathbf{a}_c\f$, \f$\boldsymbol{\tau}_\mathrm{ext}(s)
+/// = \boldsymbol{\tau}_c\f$ for the last values set. The loop computes the net actuator effect on
+/// the body each micro-interval (reaction-wheel reaction torques through the assembly's W,
 /// magnetorquer m×B) and writes it here; the plant integrates it like any other
 /// external model. Zero until set, so composing it into a run with no commands
 /// changes nothing.
@@ -74,8 +76,16 @@ class CommandedWrench : public ForceTorqueModel {
   math::Vec3<math::frames::Body> torque_{};
 };
 
-/// Point-mass (two-body) gravity: a = -mu r / |r|^3. Rotation is left torque-free
-/// (a point mass exerts no torque). Default mu is Earth's WGS84 value.
+/// Point-mass (two-body) gravity. The specific acceleration is the gradient of the
+/// point-mass potential,
+/// \f[
+///   \mathbf{a} = -\,\frac{\mu\,\mathbf{r}}{\lVert \mathbf{r} \rVert^{3}},
+/// \f]
+/// with \f$\mathbf{r}\f$ the ECI position and \f$\mu = GM\f$ the gravitational
+/// parameter (default Earth WGS84). Rotation is left torque-free
+/// (\f$\boldsymbol{\tau} = \mathbf{0}\f$): a point mass exerts no torque. A radius
+/// below \f$r_{\min}\f$ returns zero rather than a singular value (§3.6 boundary
+/// guard).
 class TwoBodyGravity : public ForceTorqueModel {
  public:
   explicit TwoBodyGravity(double mu = constants::wgs84::kGM) : mu_(mu) {}
@@ -104,7 +114,12 @@ class TwoBodyGravity : public ForceTorqueModel {
 
 /// Sum of several `ForceTorqueModel`s — the superposition the plant actually
 /// flies (e.g. EGM2008 gravity + third-body + drag + SRP). Acceleration and
-/// torque are both linear in the sources, so each is the sum of the parts.
+/// torque are both linear in the sources, so each is the sum of the parts:
+/// \f[
+///   \mathbf{a}_\mathrm{ext} = \sum_{k} \mathbf{a}_k, \qquad
+///   \boldsymbol{\tau}_\mathrm{ext} = \sum_{k} \boldsymbol{\tau}_k,
+/// \f]
+/// over the registered component models \f$k\f$.
 ///
 /// Holds **non-owning** pointers; every added model must outlive the composite
 /// (same lifetime rule the plant already imposes on its model). Sim-side, so heap

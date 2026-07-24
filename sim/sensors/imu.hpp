@@ -97,6 +97,58 @@ struct ImuSample {
 /// A three-axis IMU. Construct with a spec and a per-source stream id under the
 /// run's master seed; the fixed miscalibration and turn-on biases are realised at
 /// construction, so the same {spec, seed, stream_id} always builds the same unit.
+///
+/// **Measurement model.** Each triad is the shared §6.1 stack
+/// (`VectorErrorModel`) wrapped around a stateful bias. For the gyro, given a true
+/// body rate \f$\omega\f$ and specific force \f$f\f$ over an interval \f$\Delta t\f$:
+/// \f[
+///   \tilde{\omega} = \operatorname{sat}_{r_g}\!\Big( Q_{\delta_g}\big( M_g\,\omega + b_g + n_g
+///   \big) \Big), \qquad b_g = b_g^{\mathrm{on}} + d_g + k_g\,f + b_g^{\mathrm{flt}},
+/// \f]
+/// and identically for the accelerometer with \f$f\f$ in place of \f$\omega\f$ and
+/// no g-sensitivity term:
+/// \f[
+///   \tilde{f} = \operatorname{sat}_{r_a}\!\Big( Q_{\delta_a}\big( M_a\,f + b_a + n_a \big) \Big),
+///   \qquad
+///   b_a = b_a^{\mathrm{on}} + d_a + b_a^{\mathrm{flt}}.
+/// \f]
+/// The terms:
+///  - **Scale + misalignment** \f$M = I + \operatorname{diag}(s) + [a]_\times\f$,
+///    drawn once at construction with \f$s_i \sim \mathcal{N}(0,\ \sigma_{sf}^2)\f$
+///    (`scale_factor`) and small misalignment angles
+///    \f$a_i \sim \mathcal{N}(0,\ \sigma_{\mathrm{mis}}^2)\f$ (`misalignment`),
+///    \f$[a]_\times\f$ the skew-symmetric cross-product matrix.
+///  - **Turn-on bias** \f$b^{\mathrm{on}} \sim \mathcal{N}(0,\ \sigma_{\mathrm{rep}}^2 I)\f$
+///    (`bias_repeatability`), fixed per power-up.
+///  - **In-run bias drift** \f$d_k\f$ — a first-order Gauss-Markov process advanced
+///    each sample:
+///    \f[
+///      d_{k+1} = \phi\, d_k + w_k, \qquad
+///      \phi = e^{-\Delta t/\tau}, \qquad
+///      w_k \sim \mathcal{N}\!\big(0,\ \sigma_{bi}^2\,(1-\phi^2)\, I\big),
+///    \f]
+///    with correlation time \f$\tau\f$ (`bias_correlation_s`) and steady-state
+///    \f$\sigma_{bi}\f$ (`bias_instability`). It is seeded at its stationary
+///    distribution \f$d_0 \sim \mathcal{N}(0,\ \sigma_{bi}^2 I)\f$. When
+///    \f$\tau \le 0\f$ there is no drift: \f$\phi = 1,\ w = 0,\ d_0 = 0\f$.
+///  - **g-sensitivity** \f$k_g\,f\f$ — a gyro rate bias proportional to the specific
+///    force, \f$k_g\f$ = `gyro_g_sensitivity`.
+///  - **White noise** \f$n \sim \mathcal{N}(0,\ \sigma^2 I)\f$ with
+///    \f$\sigma = \mathrm{rw}/\sqrt{\Delta t}\f$ from the angular/velocity random
+///    walk (`random_walk`), so it scales correctly with the sample interval.
+///  - **Quantization** \f$Q_{\delta}\f$ (`resolution`) and **saturation**
+///    \f$\operatorname{sat}_r\f$ (`range`), as in `VectorErrorModel`.
+///  - \f$b^{\mathrm{flt}}\f$ is the injected bias-jump fault (§9), applied with the
+///    bias so it saturates and quantizes like a genuine one.
+///
+/// The reported sample carries both the rates and their integrals over the step,
+/// the **delta-angle / delta-velocity** the FSW consumes:
+/// \f[
+///   \Delta\theta = \tilde{\omega}\,\Delta t, \qquad \Delta v = \tilde{f}\,\Delta t.
+/// \f]
+/// An **ideal** IMU (`noise_enabled = false`) reports \f$\tilde{\omega} = \omega\f$,
+/// \f$\tilde{f} = f\f$: every stochastic term is drawn (to keep the stream aligned)
+/// but none is applied.
 class Imu {
  public:
   /// The spec this unit was built from (sensor rates drive the §2.4 loop).

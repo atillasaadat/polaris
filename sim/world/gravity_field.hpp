@@ -98,6 +98,27 @@ struct GravityCoeffs {
 };
 
 /// Spherical-harmonic gravity with the matching gravity-gradient torque.
+///
+/// **Model.** The geopotential is the fully-normalized spherical-harmonic sum
+/// (\f$\sin\phi = z/r\f$, \f$\lambda = \operatorname{atan2}(y,x)\f$, \f$\bar
+/// C_{00}=1\f$ supplying the leading \f$GM/r\f$):
+/// \f[
+///   U(\mathbf r) = \frac{GM}{r}\sum_{n=0}^{N}\left(\frac{R_e}{r}\right)^{\!n}
+///     \sum_{m=0}^{n}\bar P_{nm}(\sin\phi)
+///       \left[\bar C_{nm}\cos m\lambda + \bar S_{nm}\sin m\lambda\right],
+///   \qquad \mathbf a = \nabla U,
+/// \f]
+/// with \f$\bar P_{nm}\f$ the fully-normalized associated Legendre functions and
+/// \f$\bar C_{nm},\bar S_{nm}\f$ the overbarred coefficients EGM models ship. Two
+/// independent engines evaluate it so \f$\mathbf a = \nabla U\f$ cross-checks by
+/// finite difference: `potential()` sums \f$U\f$ with the Holmes-Featherstone
+/// forward-column ALF recursion [holmes2002], while `gradient()` assembles
+/// \f$\mathbf a\f$ directly in Cartesian form via the singularity-free normalized
+/// Gottlieb recursion [eckman2016; gottlieb1993] (the sectoral \f$\cos^m\phi\f$
+/// factor is carried by a direction-cosine recursion, so no \f$1/\cos\phi\f$ ever
+/// appears and the field is stable to high degree and at the poles). The
+/// recursion is defined in the Earth-fixed frame; see @ref setEciToEcef for the
+/// ECI\f$\to\f$ECEF reduction it requires at every order, zonal included.
 class SphericalHarmonicGravity : public dynamics::ForceTorqueModel {
  public:
   /// @param coeffs  harmonic coefficients (owned).
@@ -113,9 +134,14 @@ class SphericalHarmonicGravity : public dynamics::ForceTorqueModel {
 
   math::Vec3<math::frames::ECI> acceleration(const state::TruthState& s) const override;
 
-  /// Gravity-gradient torque tau = 3 (GM/r^3) c_hat x (J c_hat), c_hat the Body
-  /// nadir unit vector (Wertz/Hughes). Uses the point-mass term (standard; the
-  /// harmonic contribution to GG torque is negligible).
+  /// Gravity-gradient torque about the center of mass,
+  /// \f[
+  ///   \boldsymbol\tau = \frac{3GM}{r^3}\,\hat{\mathbf c}\times(\mathbf J\,\hat{\mathbf c}),
+  /// \f]
+  /// with \f$\hat{\mathbf c}\f$ the Body-frame nadir (spacecraft\f$\to\f$geocenter)
+  /// unit vector and \f$\mathbf J\f$ the inertia tensor (Vallado §8) [vallado2013].
+  /// Uses the point-mass term (standard; the harmonic contribution to the
+  /// gravity-gradient torque is negligible).
   math::Vec3<math::frames::Body> torque(const state::TruthState& s) const override;
 
   /// Geopotential U at ECI position [m^2/s^2]; the acceleration is grad U. Exposed

@@ -42,11 +42,20 @@ struct Egm2008Header {
 };
 
 /// Parse an ICGEM `.gfc` stream into fully-normalized `GravityCoeffs`, truncated
-/// to @p max_degree (clamped to the model's own max degree). `Cbar_00` is forced
-/// to 1 (point-mass term) regardless of the file. On success @p header, if given,
-/// receives the model's GM / radius / declared max degree. Throws
-/// `std::runtime_error` if the stream has no valid coefficients (sim-side; §3.6
-/// return-code discipline is a flight rule, not a sim one).
+/// to @p max_degree (clamped to the model's own max degree).
+///
+/// **Convention.** EGM2008 ships the \f$4\pi\f$ (geodesy) fully-normalized
+/// coefficients \f$\{\bar C_{nm},\bar S_{nm}\}\f$ that pair with the fully-normalized
+/// Legendre functions \f$\bar P_{nm}\f$ used by `SphericalHarmonicGravity`
+/// [pavlis2012; icgemformat]:
+/// \f[
+///   \bar P_{nm} = \sqrt{(2-\delta_{0m})(2n+1)\frac{(n-m)!}{(n+m)!}}\;P_{nm},
+/// \f]
+/// so loading is a near-1:1 fill of the triangular table with no re-normalization.
+/// `Cbar_00` is forced to 1 (point-mass term) regardless of the file. On success @p header, if
+/// given, receives the model's GM / radius / declared max degree. Throws `std::runtime_error` if
+/// the stream has no valid coefficients (sim-side; §3.6 return-code discipline is a flight rule,
+/// not a sim one).
 GravityCoeffs loadEgm2008Gfc(std::istream& in, int max_degree, Egm2008Header* header = nullptr);
 
 /// Convenience overload: open @p path and parse it. Throws `std::runtime_error`

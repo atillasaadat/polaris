@@ -23,12 +23,34 @@ A rotation carries **both** frames: `Quat<Body, ECI>` reads "Body ← ECI" and
 rotates an ECI vector into the Body frame. The compiler checks that a rotation's
 input frame matches the vector it is applied to.
 
+```{mermaid}
+flowchart TD
+    ECI["ECI (GCRS/J2000)<br/>inertial — propagation, estimation"]
+    ECEF["ECEF (ITRS)<br/>Earth-fixed — GNSS, geopotential, IGRF"]
+    Body["Body<br/>structural — sensors, actuators"]
+    LVLH["LVLH / RIC<br/>orbit-relative (pure functions of ECI state)"]
+    Sensor["Sensor / wheel mount frames<br/>(fixed mounting DCMs)"]
+
+    ECI <-->|"IAU 2006/2000A + EOP<br/>(lib/math/frames — the only path)"| ECEF
+    ECI <-->|"attitude Quat&lt;Body,ECI&gt;<br/>(truth or MEKF estimate)"| Body
+    ECI -->|"r, v"| LVLH
+    Body <-->|"mounting_dcm (config)"| Sensor
+```
+
 ## Attitude — one representation, quaternions
 
-Attitude is a **JPL scalar-first unit quaternion** `q = [q0, q1, q2, q3]`,
-`q0 ≥ 0`, everywhere: truth propagation, the estimator reference, telemetry.
-The truth plant integrates `q̇ = ½·Ω(ω)·q` and renormalises after every accepted
-RK89 step. Quaternions are chosen over Modified Rodrigues Parameters
+Attitude is a **JPL scalar-first unit quaternion** $q = [q_0, q_1, q_2, q_3]$,
+$q_0 \ge 0$, everywhere: truth propagation, the estimator reference, telemetry.
+The truth plant integrates the kinematics
+
+$$
+\dot{q} = \tfrac{1}{2}\,\Omega(\boldsymbol{\omega})\,q, \qquad
+\Omega(\boldsymbol{\omega}) =
+\begin{bmatrix} 0 & -\boldsymbol{\omega}^{\mathsf T} \\
+\boldsymbol{\omega} & -[\boldsymbol{\omega}]_\times \end{bmatrix}
+$$
+
+and renormalises after every accepted RK89 step. Quaternions are chosen over Modified Rodrigues Parameters
 deliberately — an MRP shadow-set switch near 180° is a mid-step discontinuity
 the adaptive integrator cannot tolerate, while a quaternion has no singularity
 anywhere on SO(3) (design doc §5.1). The onboard MEKF uses the same quaternion
@@ -40,11 +62,16 @@ a second global state (§8.1).
 The onboard master clock is **TAI**, counted as an int64 nanosecond value; time
 scales are strongly typed so mixing them is a compile error ({doc}`/api/time`).
 
-- `TAI = GPS + 19 s` (applied when a GNSS fix is ingested).
-- `TT = TAI + 32.184 s`; TDB is a periodic term off TT, used only as the
-  ephemeris argument.
-- **UTC is ground-facing only** — it is the one scale with leap seconds; the
-  flight side never runs on it.
+$$
+\mathrm{TAI} = \mathrm{GPS} + 19\,\mathrm{s}, \qquad
+\mathrm{TT} = \mathrm{TAI} + 32.184\,\mathrm{s}, \qquad
+\mathrm{UTC} = \mathrm{TAI} - \Delta AT(t)
+$$
+
+- `TAI = GPS + 19 s` is applied when a GNSS fix is ingested.
+- TDB is a periodic term off TT, used only as the ephemeris argument.
+- **UTC is ground-facing only** — $\Delta AT(t)$ is the leap-second count (a
+  table lookup, not an equation); the flight side never runs on it.
 
 A run is **bit-reproducible from `{config, seed}`**, which requires that all
 logic key off sim time, never the wall clock, and that every stochastic source

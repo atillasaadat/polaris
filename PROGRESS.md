@@ -8,7 +8,7 @@ lives in the merged PR descriptions and the design doc's "Implemented (Push N)"
 notes — this tracker stays a rollup so it cannot rot the way a narrative does.
 
 **Current phase:** Phase 2 — Sensor & actuator models (complete except CMGs/thrusters); Phase 3 (F´ SITL) next
-**Last updated:** Push 32 (docs overhaul — sectioned API reference + MyST user guides)
+**Last updated:** Push 33 (math documentation — implementation-exact equations + Mermaid diagrams)
 
 ---
 
@@ -86,7 +86,8 @@ Phase 2 — Sensor & actuator models
 | 29 | #31 | Planetary third-body perturbers config-selectable (mercury/venus/mars/jupiter/saturn/uranus/neptune, case-insensitive; DE440 barycenters/system GMs); ephemeris fixture regenerated with all nine bodies |
 | 30 | #32 | §2.4 closed loop (`sim/io`): native-rate sensor sampling, IMU delta-accumulation, actuator wrench feedback into the plant, live fault bindings; full-stack 6DOF orbit+attitude integration test |
 | 31 | #33 | GMAT orbit-regime matrix (ISS/SSO/GEO/Molniya) + attitude-spinner cross-validation; model-difference tolerance budgets |
-| 32 | — | Docs overhaul: sectioned API reference (per-namespace pages grouped `lib`/`sim`/tools) + MyST user guides reusing per-folder READMEs; frame-safe quaternion + closed-loop docstring examples |
+| 32 | #34 | Docs overhaul: sectioned API reference (per-namespace pages grouped `lib`/`sim`/tools) + MyST user guides reusing per-folder READMEs; frame-safe quaternion + closed-loop docstring examples |
+| 33 | — | Math documentation standard (§21.3): implementation-exact LaTeX equation blocks on every model class (sensors, actuators, dynamics, environment, quaternion) rendered via Doxygen→Breathe→MathJax; source-controlled Mermaid diagrams in guides (§2.4 sequence, config pipeline, frame graph, architecture) |
 
 ---
 

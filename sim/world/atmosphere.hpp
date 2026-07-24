@@ -82,6 +82,17 @@ double geodeticAltitude(const math::Vec3<math::frames::ECI>& r_eci);
 
 /// Piecewise-exponential US Standard Atmosphere 1976 (Vallado Table 8-4).
 ///
+/// **Model.** Within the altitude band whose base is \f$(h_0,\rho_0,H)\f$
+/// [vallado2013]:
+/// \f[
+///   \rho(h) = \rho_0\,\exp\!\left(-\frac{h - h_0}{H}\right),
+/// \f]
+/// with \f$h\f$ the geodetic altitude, \f$\rho_0\f$ the base density and \f$H\f$
+/// the scale height of that band. This is the static baseline and NRLMSIS
+/// fallback; a space-weather-driven truth run instead injects the NRLMSIS 2.1
+/// resolver [emmert2021] through the same `DensityFn`, which this model knows
+/// nothing about.
+///
 /// @param altitude_m Geodetic altitude [m].
 /// @return Density [kg/m^3]. Zero below the ellipsoid; the topmost band (1000 km)
 ///         is extrapolated upward, where the density is negligible anyway.

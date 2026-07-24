@@ -34,6 +34,33 @@ namespace polaris::sim::dynamics {
 
 /// 6DOF rigid-body truth propagator. Holds the (constant) inertia tensor and a
 /// reference to the external force/torque model; not the owner of either.
+///
+/// **Equations of motion.** The 13-element state
+/// \f$\mathbf{y} = [\mathbf{r}_I,\ \mathbf{v}_I,\ \bar{q}_{B\leftarrow I},
+/// \ \boldsymbol{\omega}_B]\f$ (position and velocity in ECI, attitude quaternion
+/// Body\f$\leftarrow\f$ECI in JPL scalar-first order, body rate in Body) evolves as
+/// \f[
+///   \dot{\mathbf{r}}_I = \mathbf{v}_I, \qquad
+///   \dot{\mathbf{v}}_I = \mathbf{a}_\mathrm{ext}, \qquad
+///   \dot{\bar q} = \tfrac{1}{2}\,\begin{bmatrix} 0 \\ \boldsymbol{\omega}_B \end{bmatrix}
+///     \otimes \bar q, \qquad
+///   \dot{\boldsymbol{\omega}}_B = J^{-1}\!\left(\boldsymbol{\tau}_\mathrm{ext}
+///     - \boldsymbol{\omega}_B \times J\,\boldsymbol{\omega}_B\right),
+/// \f]
+/// with \f$\mathbf{a}_\mathrm{ext}\f$ (ECI) and \f$\boldsymbol{\tau}_\mathrm{ext}\f$
+/// (Body) supplied by the force/torque model, \f$J\f$ the body-frame inertia
+/// tensor, and \f$\otimes\f$ the JPL quaternion product.
+///
+/// The kinematic term uses **left** multiplication by the rate quaternion
+/// \f$[0,\boldsymbol{\omega}_B]\f$ because \f$\boldsymbol{\omega}_B\f$ is expressed
+/// in the Body frame — the body-referenced form \f$\dot{\bar q} =
+/// \tfrac{1}{2}\,\Omega(\boldsymbol{\omega}_B)\,\bar q\f$ of Trawny & Roumeliotis
+/// [trawny2005] Eq. (106). It is equivalent to \f$\dot A = -[\boldsymbol{\omega}_B
+/// \times]\,A\f$ for the attitude matrix \f$A = A(\bar q_{B\leftarrow I})\f$
+/// (Markley & Crassidis §3.1 [markley2014]). The rotational term is Euler's
+/// equation. After each accepted integrator step the quaternion sub-vector is
+/// renormalised, \f$\bar q \leftarrow \bar q / \lVert \bar q \rVert\f$, to hold it
+/// on the unit manifold.
 class RigidBody6Dof {
  public:
   static constexpr int kStateDim = 13;

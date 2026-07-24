@@ -40,6 +40,30 @@ namespace polaris::sim::world {
 
 /// Fraction of the solar disk visible from @p r_sat, in [0, 1].
 ///
+/// **Model.** Project the Sun and Earth onto the sky as seen from the spacecraft
+/// and overlap the two apparent disks (Montenbruck & Gill §3.4.2; Vallado §5.3)
+/// [montenbruck2000; vallado2013]:
+/// \f[
+///   a = \arcsin\!\frac{R_\odot}{|\mathbf r_\odot - \mathbf r_{\mathrm{sat}}|},
+///   \quad
+///   b = \arcsin\!\frac{R_\oplus}{|\mathbf r_{\mathrm{sat}}|},
+///   \quad
+///   c = \angle\!\left(-\mathbf r_{\mathrm{sat}},\ \mathbf r_\odot - \mathbf
+///   r_{\mathrm{sat}}\right),
+/// \f]
+/// the apparent solar radius, apparent Earth radius, and apparent separation. The
+/// regimes are: full sun for \f$c \ge a+b\f$ (disjoint), umbra for \f$c+a\le b\f$
+/// (solar disk fully occulted, \f$\nu=0\f$), and annular for \f$c+b\le a\f$
+/// (\f$\nu = 1 - b^2/a^2\f$, unreachable for an Earth orbiter). Otherwise the disks
+/// partially overlap and \f$\nu\f$ is one minus the circular-lens overlap area over
+/// the solar-disk area (Montenbruck & Gill Eq. 3.87):
+/// \f[
+///   x = \frac{c^2 + a^2 - b^2}{2c},
+///   \quad y = \sqrt{a^2 - x^2},
+///   \quad A = a^2\arccos\frac{x}{a} + b^2\arccos\frac{c-x}{b} - c\,y,
+///   \quad \nu = 1 - \frac{A}{\pi a^2}.
+/// \f]
+///
 /// @param r_sat Geocentric ECI position of the spacecraft [m].
 /// @param r_sun Geocentric ECI position of the Sun [m].
 /// @return 1.0 in full sunlight, 0.0 in the umbra, fractional in the penumbra.

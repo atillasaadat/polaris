@@ -45,6 +45,21 @@
 namespace polaris::sim::world {
 
 /// Cannon-ball solar radiation pressure with a conical eclipse.
+///
+/// **Model.** Photon momentum transfer pushes the spacecraft anti-sunward
+/// (Montenbruck & Gill §3.4; Vallado §8.6.4) [montenbruck2000; vallado2013]:
+/// \f[
+///   \mathbf a = \nu\,P_{1\mathrm{AU}}\,C_R\,\frac{A}{m}
+///     \left(\frac{\mathrm{AU}}{|\mathbf d|}\right)^{\!2}\hat{\mathbf d},
+///   \qquad \mathbf d = \mathbf r - \mathbf r_\odot,
+/// \f]
+/// with \f$\nu\in[0,1]\f$ the conical shadow factor (`eclipse.hpp`), \f$P_{1\mathrm{AU}}\f$
+/// the reference radiation pressure at 1 AU, \f$C_R\f$ the reflectivity
+/// coefficient, and the \f$(\mathrm{AU}/|\mathbf d|)^2\f$ factor spreading that
+/// pressure over the true Sun-spacecraft range. A center-of-pressure offset
+/// \f$\mathbf r_{cp}\f$ produces the disturbance torque \f$\boldsymbol\tau =
+/// \mathbf r_{cp}\times\mathbf F\f$ (\f$\mathbf F = m\mathbf a\f$ in Body); the
+/// default zero offset leaves it torque-free.
 class SolarRadiationPressure : public dynamics::ForceTorqueModel {
  public:
   /// Area and mass are taken separately rather than as the usual lumped A/m

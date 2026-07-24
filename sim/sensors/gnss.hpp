@@ -148,6 +148,38 @@ struct GnssMeasurement {
 
 /// A GNSS receiver. Construct with its spec and a per-source stream id under the
 /// run's master seed.
+///
+/// **PVT error model.** Position error is white Gaussian, split horizontal vs
+/// vertical in the local geodetic east/north/up basis \f$(\hat{e},\hat{n},\hat{u})\f$
+/// at the truth ECEF position, plus the spoof offset; velocity error is per-axis
+/// white in ECEF:
+/// \f[
+///   \tilde{r} = r + \sigma_h\,g_e\,\hat{e} + \sigma_h\,g_n\,\hat{n} + \sigma_v\,g_u\,\hat{u} +
+///   \Delta r^{\mathrm{flt}}, \qquad \tilde{v} = v + \sigma_v^{\!vel}\,(g_x,\,g_y,\,g_z)^\top,
+/// \f]
+/// with per-axis \f$\sigma_h\f$ (`position_sigma_h_m`, = DRMS\f$/\sqrt2\f$),
+/// vertical \f$\sigma_v\f$ (`position_sigma_v_m`), velocity
+/// \f$\sigma_v^{\!vel}\f$ (`velocity_sigma_m_s`), each \f$g\sim\mathcal{N}(0,1)\f$.
+/// The receiver-clock bias biases the GPS time tag:
+/// \f[
+///   b = \sigma_t\,g_t + \Delta t^{\mathrm{flt}}, \qquad
+///   \tilde{t} = t_{\mathrm{gps}} + b,
+/// \f]
+/// \f$\sigma_t\f$ = `time_sigma_s`. With `noise_enabled = false` every
+/// \f$\sigma\f$-scaled draw is skipped (truth-exact PVT), but the spoof offset
+/// \f$\Delta r^{\mathrm{flt}}\f$ and clock jump \f$\Delta t^{\mathrm{flt}}\f$ still
+/// apply — they are faults, not measurement noise.
+///
+/// **Validity decision.** A fix is reported `valid` only when
+/// \f[
+///   \lnot\,\text{outage} \ \land\ t_{\mathrm{gps}} \ge t_{\mathrm{valid}},
+/// \f]
+/// where \f$\text{outage} = \text{fault\_outage} \lor (\text{sub-satellite point}
+/// \in \text{jamming region})\f$, and \f$t_{\mathrm{valid}}\f$ is set on the first
+/// sample to \f$t_{\mathrm{gps}} + t_{\mathrm{cold}}\f$ (`cold_start_s`) and re-armed
+/// on each outage falling edge to \f$t_{\mathrm{gps}} + t_{\mathrm{reacq}}\f$
+/// (`reacquisition_s`). A spoofed fix stays `valid` by design. A poll within one
+/// `sample_period_s` of the last genuine fix repeats it with `fresh = false`.
 class Gnss {
  public:
   /// The spec this unit was built from (fix rate drives the §2.4 loop).

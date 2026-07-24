@@ -59,6 +59,22 @@ VectorErrorModel magnetometerErrorFromParams(const std::map<std::string, double>
 
 /// A three-axis magnetometer. Construct with its error stack and a per-source
 /// stream id under the run's master seed.
+///
+/// **Measurement model.** The reading is the shared §6.1 stack
+/// (`VectorErrorModel`) applied to the true body-frame field \f$B\f$, with the
+/// injected fault added to the hard-iron bias:
+/// \f[
+///   \tilde{B} = \operatorname{sat}_{R}\!\Big( Q_{\delta}\big( M\,B + (h + h^{\mathrm{flt}}) + n
+///   \big) \Big), \qquad n \sim \mathcal{N}\!\big(0,\ \sigma^2 I\big),
+/// \f]
+/// where \f$M\f$ is the soft-iron + misalignment matrix, \f$h\f$ (`bias`) the
+/// hard-iron offset, \f$h^{\mathrm{flt}}\f$ the injected bias jump (§9),
+/// \f$\sigma\f$ = `noise_ut_rms`, \f$\delta\f$ = `resolution_nt`, and \f$R\f$ =
+/// `range_ut`. The fault enters upstream of quantization and saturation, so a
+/// large fault clips to the rated envelope exactly as a real hard-iron shift would.
+/// `magnetometerErrorFromParams` realises \f$M\f$ and \f$h\f$ once from a build-time
+/// stream: \f$h_i = h_0\, g_i\f$, \f$M_{ii} = 1 + \sigma_{sf}\, g_{ii}\f$,
+/// \f$M_{ij} = \sigma_{\mathrm{mis}}\, g_{ij}\ (i\neq j)\f$, each \f$g\sim\mathcal{N}(0,1)\f$.
 class Magnetometer {
  public:
   /// @param error The §6.1 error stack built by `magnetometerErrorFromParams`.

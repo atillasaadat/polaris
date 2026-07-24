@@ -32,6 +32,20 @@ namespace polaris::sim::actuators {
 
 /// The geometry of a reaction-wheel array: W (3×N), columns = unit spin axes in
 /// the body frame, in wheel order.
+///
+/// **Distribution.** With \f$W = [\hat{\mathbf{a}}_1\ \cdots\ \hat{\mathbf{a}}_N]
+/// \in \mathbb{R}^{3\times N}\f$ (unit spin axes), the forward (truth) maps of the
+/// array are linear in the per-wheel scalars:
+/// \f[
+///   \boldsymbol{\tau}_\mathrm{body} = W\,\boldsymbol{\tau}_\mathrm{wheels}, \qquad
+///   \mathbf{h}_\mathrm{body} = W\,\mathbf{h}_\mathrm{wheels},
+/// \f]
+/// where \f$\tau_{\mathrm{wheel},i}\f$ is wheel \f$i\f$'s reaction torque about its
+/// own spin axis and \f$h_{\mathrm{wheel},i}\f$ its stored momentum. (The control
+/// inverse \f$\boldsymbol{\tau}_\mathrm{wheels} = W^{+}\,\boldsymbol{\tau}_\mathrm{body}\f$
+/// is the §8.5 allocation layer, not part of this truth model.) The array can
+/// produce torque about every body axis iff \f$\operatorname{rank} W = 3\f$
+/// (Markley & Crassidis §7 [markley2014]).
 class RwAssembly {
  public:
   RwAssembly() = default;
@@ -61,8 +75,11 @@ class RwAssembly {
   }
 
   /// Whether the axes span all three body axes (rank W = 3) — the condition for
-  /// the array to produce torque about any direction. A pyramid of ≥3 skewed
-  /// wheels does; a set of collinear wheels does not, which is exactly the
+  /// the array to produce torque about any direction. Rank is tested from the
+  /// smallest singular value of \f$W\f$: \f$\sigma_{\min}(W) > \varepsilon\f$ with
+  /// \f$\varepsilon = 10^{-9} N\f$ scaled by the wheel count \f$N\f$ (the singular
+  /// values of \f$N\f$ unit columns run up to \f$\sqrt{N}\f$). A pyramid of ≥3 skewed
+  /// wheels satisfies it; a set of collinear wheels does not, which is exactly the
   /// misconfiguration this flags.
   [[nodiscard]] bool spansThreeAxes() const;
 

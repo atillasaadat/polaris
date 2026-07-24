@@ -57,6 +57,23 @@ using EciToEcefFn =
 
 /// IGRF-14 evaluated in ECI at a TAI epoch.
 ///
+/// **Model.** Wraps `environment::IgrfField` (the Schmidt semi-normalized IGRF
+/// expansion; see `lib/environment/igrf.hpp`) and applies the two conversions the
+/// plant needs: TAI to the decimal year the field is parameterised by, and the
+/// Earth-fixed field to ECI. The IGRF harmonics are defined in ECEF, so the
+/// position is rotated in and the field vector rotated back with the same
+/// rotation \f$R \equiv R_{\mathrm{ECEF}\leftarrow\mathrm{ECI}}\f$:
+/// \f[
+///   \mathbf r_{\mathrm{ecef}} = R\,\mathbf r_{\mathrm{eci}},
+///   \qquad
+///   \mathbf B_{\mathrm{eci}} = R^{-1}\,\mathbf B_{\mathrm{ecef}}
+///     = R^{\mathsf T}\,\mathbf B_{\mathrm{ecef}}
+/// \f]
+/// (a pure rotation, no translation — the frames share an origin, and \f$\mathbf B\f$
+/// is a free vector). The rotation is mandatory here because the field is strongly
+/// longitude-dependent; evaluating it on an unrotated ECI position would smear the
+/// field pattern around the Earth once per day.
+///
 /// Both dependencies are injected rather than constructed: the Earth-rotation
 /// resolver because it needs EOP, and the leap-second table because TAI->UTC is
 /// not computable without one. Missing either yields no field rather than a
@@ -103,7 +120,16 @@ class EarthMagneticField {
 /// @return false if @p epoch cannot be converted with @p leap.
 bool decimalYear(const time::Tai& epoch, const time::LeapSecondTable& leap, double& out);
 
-/// Torque from the spacecraft's residual magnetic dipole: tau = m x B.
+/// Torque from the spacecraft's residual magnetic dipole.
+///
+/// **Model.** A magnetic moment \f$\mathbf m\f$ in an ambient field \f$\mathbf B\f$
+/// feels the torque
+/// \f[
+///   \boldsymbol\tau = \mathbf m \times \mathbf B,
+/// \f]
+/// evaluated in the Body frame — the field is rotated from ECI into Body (via the
+/// attitude) and crossed with the Body-fixed dipole, since \f$\mathbf m\f$ is a
+/// property of the structure and rotates with the vehicle.
 ///
 /// Contributes no acceleration — a dipole in a uniform field feels a torque but
 /// no net force. (The force from the field *gradient* is smaller by the ratio of

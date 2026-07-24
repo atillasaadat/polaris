@@ -45,6 +45,21 @@
 namespace polaris::sim::world {
 
 /// Sum of third-body point-mass perturbations from injected body ephemerides.
+///
+/// **Model.** For each perturbing body at geocentric position \f$\mathbf s_b\f$
+/// (both \f$\mathbf s_b\f$ and the satellite \f$\mathbf r\f$ in ECI/ICRF), the
+/// geocentric perturbation is the direct attraction toward the body minus Earth's
+/// own attraction toward it (Montenbruck & Gill Eq. 3.37; Vallado §8.6)
+/// [montenbruck2000; vallado2013]:
+/// \f[
+///   \mathbf a = \sum_b GM_b\left(
+///     \frac{\mathbf s_b - \mathbf r}{|\mathbf s_b - \mathbf r|^3}
+///     - \frac{\mathbf s_b}{|\mathbf s_b|^3}\right).
+/// \f]
+/// The first term is the body's pull on the satellite, the second is its pull on
+/// the (accelerating) Earth-centered frame; the difference is what survives in the
+/// geocentric equation of motion. A point mass exerts no net torque, so
+/// `torque()` is zero.
 class ThirdBodyGravity : public dynamics::ForceTorqueModel {
  public:
   /// Body position resolver — the shared `BodyPositionFn` contract
