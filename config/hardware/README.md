@@ -49,9 +49,8 @@ hardware/
    `spin_axis` (wheels), or a per-unit `noise_enabled` override.
 
 **Adding a new *kind* of hardware** (not just a new part) additionally needs a
-truth model — see the walkthroughs in
-[`sim/sensors/README.md`](../../sim/sensors/README.md) /
-[`sim/actuators/README.md`](../../sim/actuators/README.md).
+truth model — see the model walkthroughs in `sim/sensors/README.md` /
+`sim/actuators/README.md` (the *Sensors* and *Actuators* user guides).
 
 ## Ground rules
 

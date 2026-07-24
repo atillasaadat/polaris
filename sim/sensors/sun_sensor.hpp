@@ -223,16 +223,20 @@ struct SunSensorMeasurement {
 /// {spec, seed, stream_id} always builds the same physical unit.
 class SunSensor {
  public:
+  /// @param spec The datasheet-derived geometry/accuracy specification.
+  /// @param mounting_dcm Unit→body rotation placing the boresight.
+  /// @param master_seed The run's master RNG seed (§3.5).
+  /// @param stream_id This unit's per-source stream id.
   /// @param noise_enabled false builds an **ideal** sun sensor: exact truth Sun
   ///        direction (vector part) or clean cosine-law counts (analogue part),
   ///        with no per-diode miscalibration, dark current, noise, albedo, or
   ///        quantization. The FOV cut-off and eclipse still apply — geometry, not
   ///        noise (§6.2).
-  /// The spec this unit was built from (rates drive the §2.4 loop).
-  const SunSensorSpec& spec() const { return spec_; }
-
   SunSensor(const SunSensorSpec& spec, const Eigen::Matrix3d& mounting_dcm,
             std::uint64_t master_seed, std::uint64_t stream_id, bool noise_enabled = true);
+
+  /// The spec this unit was built from (rates drive the §2.4 loop).
+  const SunSensorSpec& spec() const { return spec_; }
 
   /// Read every diode at truth time @p epoch.
   SunSensorMeasurement sample(const time::Tai& epoch, const SunSensorInput& input);

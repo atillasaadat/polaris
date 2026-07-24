@@ -58,6 +58,7 @@ docs = [
     "breathe>=4.35,<5",
     "sphinxcontrib-bibtex>=2.6,<3",
     "sphinx-needs>=4.1,<5",
+    "myst-parser>=4,<5",
 ]
 
 # Local developer tooling: test runner, formatter/linter, and pre-commit driver.

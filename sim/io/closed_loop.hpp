@@ -114,6 +114,25 @@ struct MacroSample {
 
 /// The §2.4 closed loop. Build a `SimRunner` **with this loop's wrench** (see
 /// `run`), build a `Vehicle`, then run.
+///
+/// @code
+/// scenario::Vehicle vehicle;                          // buildVehicle(...)
+/// scenario::SimRunner runner;
+/// io::ClosedLoop loop(runner, vehicle);
+/// runner.build(config, paths, &err, loop.wrench());   // wrench MUST be composed
+///
+/// std::vector<io::MacroSample> trace;
+/// loop.run(
+///     [](const io::FswInputs& in) {                   // the FSW: stub / script / F´
+///       io::FswOutputs out;
+///       out.wheels.resize(in.imus.size());            // fill wheel + MTQ commands
+///       return out;
+///     },
+///     &trace, &err);
+/// @endcode
+///
+/// The callback sees **measurements only** — `TruthState` never crosses it
+/// (§2.3). The default (no callback) flies open loop.
 class ClosedLoop {
  public:
   /// @param runner   Built plant + environment. The runner must have been built
