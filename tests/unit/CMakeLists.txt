@@ -31,6 +31,7 @@ add_executable(polaris_unit_tests
   sim_actuators_rw_assembly_test.cpp
   sim_sensors_gnss_jamming_test.cpp
   sim_scenario_gnss_faults_test.cpp
+  sim_io_closed_loop_test.cpp
   sim_vehicle_test.cpp)
 
 # The committed DE440 Chebyshev fit (tests/golden/de440_bodies.cheb), the
@@ -40,7 +41,8 @@ target_compile_definitions(polaris_unit_tests
           POLARIS_IGRF_COEFFS="${CMAKE_SOURCE_DIR}/tests/golden/igrf14coeffs.txt"
           POLARIS_IGRF_REFERENCE="${CMAKE_SOURCE_DIR}/tests/golden/igrf14_reference.csv"
           POLARIS_SW_FIXTURE="${CMAKE_SOURCE_DIR}/tests/golden/SW-All.csv"
-          POLARIS_GNSS_JAMMING_KML="${CMAKE_SOURCE_DIR}/config/scenarios/jamming/eastern_europe.kml")
+          POLARIS_GNSS_JAMMING_KML="${CMAKE_SOURCE_DIR}/config/scenarios/jamming/eastern_europe.kml"
+          POLARIS_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden")
 
 # NRLMSIS tests only exist when the model was fetched and built; the golden case
 # reads upstream's own input/reference files straight from the fetched tree, so
@@ -63,6 +65,7 @@ target_link_libraries(polaris_unit_tests
     polaris::dynamics
     polaris::world
     polaris::scenario
+    polaris::io
     polaris::sensors
     polaris::actuators
     polaris::frames

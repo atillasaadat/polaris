@@ -228,6 +228,9 @@ class SunSensor {
   ///        with no per-diode miscalibration, dark current, noise, albedo, or
   ///        quantization. The FOV cut-off and eclipse still apply — geometry, not
   ///        noise (§6.2).
+  /// The spec this unit was built from (rates drive the §2.4 loop).
+  const SunSensorSpec& spec() const { return spec_; }
+
   SunSensor(const SunSensorSpec& spec, const Eigen::Matrix3d& mounting_dcm,
             std::uint64_t master_seed, std::uint64_t stream_id, bool noise_enabled = true);
 

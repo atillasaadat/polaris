@@ -198,6 +198,9 @@ class StarTracker {
   ///        temporal, bias, or thermo-elastic error) whenever a solution is
   ///        available — availability, occlusion and the rate/accel envelopes
   ///        still apply, since those are geometry, not noise (§6.2).
+  /// The spec this unit was built from (update rate drives the §2.4 loop).
+  const StarTrackerSpec& spec() const { return spec_; }
+
   StarTracker(const StarTrackerSpec& spec, const Eigen::Matrix3d& mounting_dcm,
               std::uint64_t master_seed, std::uint64_t stream_id, bool noise_enabled = true);
 

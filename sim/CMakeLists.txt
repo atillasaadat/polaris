@@ -84,6 +84,17 @@ add_library(polaris::actuators ALIAS polaris_actuators)
 # Reads the `sim_setup.json` emitted by tools/configc (design doc §19.3 — the
 # sim never re-parses the authoritative YAML) and assembles every enabled
 # environment model behind one CompositeForceModel.
+# The §2.4 closed loop: plant → sensors → FSW callback → actuators, sim-time
+# driven and bit-reproducible. The F´ SITL transport (Phase 3) drives the same
+# FswCallback interface over TCP.
+add_library(polaris_io
+  io/closed_loop.cpp)
+target_include_directories(polaris_io PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(polaris_io
+  PUBLIC polaris_scenario polaris_sensors polaris_actuators
+  PRIVATE polaris_flags)
+add_library(polaris::io ALIAS polaris_io)
+
 add_library(polaris_scenario
   scenario/sim_config.cpp
   scenario/sim_runner.cpp

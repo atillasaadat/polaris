@@ -171,6 +171,9 @@ struct PropagationConfig {
   double abs_tol{1.0e-12};
   double rel_tol{1.0e-12};
   double max_step_s{60.0};
+  /// FSW macro-step rate [Hz] for the §2.4 closed loop: sensor buffers publish,
+  /// the FSW fires, and its commands apply on the next step at this cadence.
+  double fsw_rate_hz{10.0};
 };
 
 /// Everything one scenario needs to run.

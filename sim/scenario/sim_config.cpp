@@ -454,6 +454,10 @@ bool readPropagation(const json& root, PropagationConfig& out, std::string* erro
   if (!(out.abs_tol > 0.0) || !(out.rel_tol > 0.0)) {
     return fail(error, "propagation.abs_tol and rel_tol must be positive");
   }
+  out.fsw_rate_hz = node->value("fsw_rate_hz", 10.0);
+  if (!(out.fsw_rate_hz > 0.0)) {
+    return fail(error, "propagation.fsw_rate_hz must be positive");
+  }
   return true;
 }
 

@@ -82,7 +82,8 @@ struct SimRunner::Impl {
   }
 };
 
-bool SimRunner::build(const SimConfig& config, const DataPaths& paths, std::string* error) {
+bool SimRunner::build(const SimConfig& config, const DataPaths& paths, std::string* error,
+                      const dynamics::ForceTorqueModel* extra_model) {
   config_ = config;
   // Invalidate the previous build FIRST. `body_` holds a pointer into the old
   // composite, and the steps below can fail partway (a missing data product);
@@ -272,6 +273,11 @@ bool SimRunner::build(const SimConfig& config, const DataPaths& paths, std::stri
     composite_->add(d.dipole.get());
   }
 
+  // The closed loop's actuator-feedback channel (or any test-supplied extra
+  // source). Composed last so the budget tests' model counts stay stable when
+  // no extra model is passed.
+  composite_->add(extra_model);
+
   if (composite_->size() == 0) {
     // Not an error — a free-drift scenario is a legitimate baseline, and the
     // conservation tests depend on it — but the plant still needs a model.
@@ -280,6 +286,40 @@ bool SimRunner::build(const SimConfig& config, const DataPaths& paths, std::stri
 
   body_ = std::make_unique<dynamics::RigidBody6Dof>(sc.inertia_kgm2, *composite_);
   return true;
+}
+
+world::MagneticFieldFn SimRunner::magneticFieldFn() const {
+  if (impl_ == nullptr || impl_->magnetic == nullptr) {
+    return {};
+  }
+  return impl_->magnetic->fieldFn();
+}
+
+world::BodyPositionFn SimRunner::sunPositionFn() const {
+  if (impl_ == nullptr || impl_->ephemeris == nullptr) {
+    return {};
+  }
+  return world::bodyPositionFn(impl_->ephemeris->sun);
+}
+
+world::BodyPositionFn SimRunner::moonPositionFn() const {
+  if (impl_ == nullptr || impl_->ephemeris == nullptr) {
+    return {};
+  }
+  return world::bodyPositionFn(impl_->ephemeris->moon);
+}
+
+math::Vec3<math::frames::ECI> SimRunner::nonGravAcceleration(const state::TruthState& s) const {
+  Eigen::Vector3d a = Eigen::Vector3d::Zero();
+  if (impl_ != nullptr) {
+    if (impl_->srp != nullptr) {
+      a += impl_->srp->acceleration(s).eigen();
+    }
+    if (impl_->drag != nullptr) {
+      a += impl_->drag->acceleration(s).eigen();
+    }
+  }
+  return math::Vec3<math::frames::ECI>(a);
 }
 
 const world::SphericalHarmonicGravity* SimRunner::gravityField() const {

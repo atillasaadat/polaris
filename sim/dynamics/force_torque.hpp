@@ -48,6 +48,32 @@ class NoForceModel : public ForceTorqueModel {
   }
 };
 
+/// A settable external wrench — the actuator-feedback channel of the §2.4
+/// closed loop. The loop computes the net actuator effect on the body each
+/// micro-interval (reaction-wheel reaction torques through the assembly's W,
+/// magnetorquer m×B) and writes it here; the plant integrates it like any other
+/// external model. Zero until set, so composing it into a run with no commands
+/// changes nothing.
+class CommandedWrench : public ForceTorqueModel {
+ public:
+  /// Set the wrench for the next propagation interval (zero-order hold).
+  void set(const math::Vec3<math::frames::ECI>& accel,
+           const math::Vec3<math::frames::Body>& torque) {
+    accel_ = accel;
+    torque_ = torque;
+  }
+
+  math::Vec3<math::frames::ECI> acceleration(const state::TruthState&) const override {
+    return accel_;
+  }
+
+  math::Vec3<math::frames::Body> torque(const state::TruthState&) const override { return torque_; }
+
+ private:
+  math::Vec3<math::frames::ECI> accel_{};
+  math::Vec3<math::frames::Body> torque_{};
+};
+
 /// Point-mass (two-body) gravity: a = -mu r / |r|^3. Rotation is left torque-free
 /// (a point mass exerts no torque). Default mu is Earth's WGS84 value.
 class TwoBodyGravity : public ForceTorqueModel {
