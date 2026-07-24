@@ -4,7 +4,8 @@
 # the golden directory.
 add_executable(polaris_integration_tests
   sim_runner_test.cpp
-  sim_closed_loop_orbit_test.cpp)
+  sim_closed_loop_orbit_test.cpp
+  sim_sitl_lockstep_test.cpp)
 
 target_compile_definitions(polaris_integration_tests
   PRIVATE POLARIS_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden")

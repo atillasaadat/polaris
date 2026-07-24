@@ -78,3 +78,10 @@ target_include_directories(polaris_state INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_state INTERFACE
   Eigen3::Eigen polaris_math polaris_time polaris_constants)
 add_library(polaris::state ALIAS polaris_state)
+
+# --- SITL: plant<->FSW lockstep wire format (header-only, flight-safe) -------
+# One layout shared by the truth sim's TCP server and the F´ SitlBridge
+# component (design doc §2.2, §2.4) so the two processes cannot drift.
+add_library(polaris_sitl INTERFACE)
+target_include_directories(polaris_sitl INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+add_library(polaris::sitl ALIAS polaris_sitl)

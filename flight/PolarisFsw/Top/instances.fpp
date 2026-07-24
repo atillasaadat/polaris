@@ -65,4 +65,27 @@ module flight {
 
   instance comDriver: Drv.TcpClient base id 0x10014000
 
+  # ----------------------------------------------------------------------
+  # SITL lockstep transport (design doc §2.2, §2.4)
+  # ----------------------------------------------------------------------
+  #
+  # A dedicated comm stack for the plant<->FSW TCP link, disjoint from the GDS
+  # ComCcsds stack above: its own TcpClient + ComStub + FrameAccumulator +
+  # FprimeDeframer/FprimeFramer, feeding the SitlBridge payload boundary. All
+  # inert unless --sitl-port is given (the TcpClient is never started).
+
+  instance sitlBridge: flight.SitlBridge base id 0x10015000
+
+  instance comDriverSitl: Drv.TcpClient base id 0x10016000
+
+  instance comStubSitl: Svc.ComStub base id 0x10017000
+
+  instance frameAccumulatorSitl: Svc.FrameAccumulator base id 0x10018000
+
+  instance deframerSitl: Svc.FprimeDeframer base id 0x10019000
+
+  instance framerSitl: Svc.FprimeFramer base id 0x1001A000
+
+  instance commsBufferManagerSitl: Svc.BufferManager base id 0x1001B000
+
 }

@@ -11,12 +11,34 @@
 // Necessary project-specified types
 #include <Fw/Types/MallocAllocator.hpp>
 
+// SITL comm stack configuration types (design doc §2.2, §2.4)
+#include <cstring>
+#include <Svc/FrameAccumulator/FrameDetector/FprimeFrameDetector.hpp>
+
+#include "sitl/wire.hpp"
+
 // Public functions for use in main program are namespaced with deployment module flight
 // This is also the namespace where the topology components are instantiated by FPP.
 namespace flight {
 
 // Instantiate a malloc allocator for cmdSeq buffer allocation
 Fw::MallocAllocator mallocator;
+
+// SITL lockstep transport (§2.2, §2.4). The frame detector must persist for the
+// life of frameAccumulatorSitl; a shared malloc allocator backs the SITL buffer
+// pool (allocated once at init — no steady-state heap).
+Svc::FrameDetectors::FprimeFrameDetector sitlFrameDetector;
+Fw::MallocAllocator sitlAllocator;
+
+// SITL buffer pool: one bin sized to the largest single allocation — a whole
+// deframed STEP_REQ frame (kMaxStepReqBytes + F´ frame header/trailer). The
+// TcpClient recv buffers and the framer's reply frames are smaller and fit too.
+enum SitlConstants {
+  SITL_BUFFER_SIZE = polaris::sitl::kMaxStepReqBytes + 64,
+  SITL_BUFFER_COUNT = 10,
+  SITL_ACCUMULATOR_SIZE = SITL_BUFFER_SIZE * 2,
+  SITL_COMM_PRIORITY = 33,
+};
 
 // The reference topology divides the incoming clock signal (1Hz) into sub-signals: 1Hz, 1/2Hz, and
 // 1/4Hz with 0 offset
@@ -51,6 +73,17 @@ void configureTopology() {
 
   // Command sequencer needs to allocate memory to hold contents of command sequences
   cmdSeq.allocateBuffer(0, mallocator, 5 * 1024);
+
+  // SITL comm stack: frame detector + buffer pool. Configured unconditionally so
+  // the instances are valid; they stay inert until the TcpClient is started (only
+  // when --sitl-port is given), so a SITL-off run behaves exactly as before.
+  frameAccumulatorSitl.configure(sitlFrameDetector, 1, sitlAllocator, SITL_ACCUMULATOR_SIZE);
+
+  Svc::BufferManager::BufferBins sitlBins;
+  memset(&sitlBins, 0, sizeof(sitlBins));
+  sitlBins.bins[0].bufferSize = SITL_BUFFER_SIZE;
+  sitlBins.bins[0].numBuffers = SITL_BUFFER_COUNT;
+  commsBufferManagerSitl.setup(0, 0, sitlAllocator, sitlBins);
 }
 
 void setupTopology(const TopologyState& state) {
@@ -67,6 +100,12 @@ void setupTopology(const TopologyState& state) {
   if (state.hostname != nullptr && state.port != 0) {
     comDriver.configure(state.hostname, state.port);
   }
+  // SITL link connects to the truth sim (which listens) on loopback (§2.2). The
+  // FrameAccumulator reassembles frames across recv buffers, so the default recv
+  // buffer size is sufficient.
+  if (state.sitlPort != 0) {
+    comDriverSitl.configure("127.0.0.1", state.sitlPort);
+  }
   // Project-specific component configuration. Function provided above. May be inlined, if desired.
   configureTopology();
   // Autocoded parameter loading. Function provided by autocoder.
@@ -78,6 +117,12 @@ void setupTopology(const TopologyState& state) {
     Os::TaskString name("ReceiveTask");
     // Uplink is configured for receive so a socket task is started
     comDriver.start(name, COMM_PRIORITY, Default::STACK_SIZE);
+  }
+  // Start the SITL receive task only when a SITL port was given; otherwise the
+  // stack stays inert (design doc §2.2).
+  if (state.sitlPort != 0) {
+    Os::TaskString sitlName("SitlRecvTask");
+    comDriverSitl.start(sitlName, SITL_COMM_PRIORITY, Default::STACK_SIZE);
   }
 }
 
@@ -101,9 +146,13 @@ void teardownTopology(const TopologyState& state) {
   // Other task clean-up.
   comDriver.stop();
   (void)comDriver.join();
+  comDriverSitl.stop();
+  (void)comDriverSitl.join();
 
   // Resource deallocation
   cmdSeq.deallocateBuffer(mallocator);
+  frameAccumulatorSitl.cleanup();
+  commsBufferManagerSitl.cleanup();
 
   tearDownComponents(state);
   deinitComponents(state);

@@ -32,6 +32,8 @@ add_executable(polaris_unit_tests
   sim_sensors_gnss_jamming_test.cpp
   sim_scenario_gnss_faults_test.cpp
   sim_io_closed_loop_test.cpp
+  sim_io_sitl_server_test.cpp
+  sitl_handler_test.cpp
   sim_vehicle_test.cpp)
 
 # The committed DE440 Chebyshev fit (tests/golden/de440_bodies.cheb), the
@@ -62,6 +64,7 @@ target_link_libraries(polaris_unit_tests
     polaris::ephemeris
     polaris::environment
     polaris::state
+    polaris::sitl
     polaris::dynamics
     polaris::world
     polaris::scenario

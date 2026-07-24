@@ -63,3 +63,20 @@ cd PolarisFsw/build-artifacts/<platform>/bin/
   - Data product cataloging
   - Storage and retrieval capabilities
   - Product metadata management
+
+## SITL lockstep bridge
+
+`SitlBridge` (`SitlBridge/`) is the flight end of the two-process plant↔FSW SITL
+transport (design doc §2.2, §2.4). It runs on its own dedicated F´ comm stack
+(a separate `Drv::TcpClient` + `Svc::ComStub` + `Svc::FrameAccumulator` +
+`Svc::FprimeDeframer`/`FprimeFramer`, disjoint from the GDS ground link) and
+connects to the truth sim, which listens. Enable it with the SITL port option:
+
+```
+./flight_PolarisFsw -s 50500
+```
+
+`-s 0` (or omitting it) disables SITL; the deployment then runs exactly as
+before. This push the bridge answers the sim autonomously with zero actuator
+commands — rate-group coupling is the next push. The wire format and the
+FSW-side decode/reply logic are shared, testable code in `lib/sitl/`.
