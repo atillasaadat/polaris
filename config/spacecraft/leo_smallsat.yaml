@@ -85,7 +85,8 @@ scenario:
     gravity_degree: 8
     drag_enabled: true
     srp_enabled: true
-    third_bodies: [sun, moon]
+    third_bodies: [sun, moon]     # options: sun, moon, mercury, venus, mars, jupiter, saturn, uranus, neptune
+                                  # (case-insensitive; planets are DE440 barycenters, ~1e-7 of the lunar term in LEO)
     atmosphere: exponential
     magnetic_field: igrf
     eclipse_enabled: true

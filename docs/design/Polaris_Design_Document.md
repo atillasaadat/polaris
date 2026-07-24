@@ -250,7 +250,7 @@ Worked example (Push 9): `tests/golden/finals.all.iau2000.txt` is the raw IERS p
 | Effect | Model | Notes |
 |---|---|---|
 | **Gravity** | Spherical-harmonic, **EGM2008**; **settable zonal/tesseral degree & order** | + optional **solid-Earth and ocean tide** corrections |
-| **Third-body / multi-body** | Point-mass from JPL ephemeris | **SPICE / NAIF (DE440/DE441)** on ground/truth |
+| **Third-body / multi-body** | Point-mass from JPL ephemeris | **SPICE / NAIF (DE440/DE441)** on ground/truth. Sun + Moon by default; **planetary perturbers are config-selectable** via `third_bodies` — options `sun, moon, mercury, venus, mars, jupiter, saturn, uranus, neptune` (case-insensitive, normalised to lowercase; planets are DE440 barycenters + system GMs) — Jupiter/Venus are the largest at ~1e-7 of the lunar term in LEO, carried for completeness studies. The committed Chebyshev fixture (`tests/golden/de440_bodies.cheb`) holds all nine bodies; a planet requested but absent from the fixture refuses to build rather than silently skipping. |
 | **Atmospheric drag** | **NRLMSIS 2.1** (latest; 2.0-equivalent for mass density) | density driven by space-weather files |
 | **Space weather** | Loadable latest files (F10.7, Ap/Kp) **or settable/frozen** | reproducibility mode for MC |
 | **Solar radiation pressure** | Cannonball + optional panel/facet model | coupled to eclipse |

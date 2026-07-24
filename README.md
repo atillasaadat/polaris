@@ -107,7 +107,7 @@ cd flight/PolarisFsw && uv run fprime-gds --no-app    # ground system only (TCP 
 uv run cmake --build build-fprime-automatic-native-ut \
     --target polaris_unit_tests polaris_integration_tests polaris_golden_tests -j4
 
-./build-fprime-automatic-native-ut/bin/Linux/polaris_unit_tests          # 375 tests
+./build-fprime-automatic-native-ut/bin/Linux/polaris_unit_tests          # 378 tests
 ./build-fprime-automatic-native-ut/bin/Linux/polaris_integration_tests   # full-stack sim
 ./build-fprime-automatic-native-ut/bin/Linux/polaris_golden_tests        # GMAT cross-validation
 

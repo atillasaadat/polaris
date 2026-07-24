@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <fstream>
 #include <sstream>
+#include <utility>
 
 namespace polaris::sim::world {
 namespace {
@@ -26,6 +27,25 @@ bool fail(std::string* error, const std::string& message) {
 }
 
 }  // namespace
+
+const SimEphemerisTable* EphemerisSet::find(const std::string& name) const {
+  if (name == "sun") {
+    return &sun;
+  }
+  if (name == "moon") {
+    return &moon;
+  }
+  for (std::size_t i = 0; i < kPlanetNames.size(); ++i) {
+    if (name == kPlanetNames[i]) {
+      return &planets[i];
+    }
+  }
+  return nullptr;
+}
+
+SimEphemerisTable* EphemerisSet::find(const std::string& name) {
+  return const_cast<SimEphemerisTable*>(std::as_const(*this).find(name));
+}
 
 bool loadEphemerisFile(const std::string& path, EphemerisSet& out, std::string* error) {
   std::ifstream file(path);
@@ -64,12 +84,8 @@ bool loadEphemerisFile(const std::string& path, EphemerisSet& out, std::string* 
       return fail(error, "truncated coefficients at line " + std::to_string(line_number));
     }
 
-    SimEphemerisTable* table = nullptr;
-    if (body == "sun") {
-      table = &out.sun;
-    } else if (body == "moon") {
-      table = &out.moon;
-    } else {
+    SimEphemerisTable* table = out.find(body);
+    if (table == nullptr) {
       return fail(error, "unknown body '" + body + "' at line " + std::to_string(line_number));
     }
 

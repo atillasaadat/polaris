@@ -29,6 +29,7 @@
 /// with `degree + 1` coefficients per component, geocentric ECI metres, and
 /// `mid_ns` in TDB nanoseconds since 1970-01-01T00:00:00.
 
+#include <array>
 #include <cstddef>
 #include <string>
 
@@ -46,15 +47,31 @@ inline constexpr std::size_t kEphemerisCapacity = 256;
 
 using SimEphemerisTable = ephemeris::EphemerisTable<kEphemerisCapacity>;
 
-/// The bodies one fixture provides.
+/// Planet names a fixture may carry, in a fixed order (Mercury→Neptune). These
+/// are the *barycenter/system* positions and pair with the system GMs in
+/// `constants::bodies` — the right point mass seen from Earth orbit, where a
+/// planet and its moons are unresolved.
+inline constexpr std::array<const char*, 7> kPlanetNames = {
+    "mercury", "venus", "mars", "jupiter", "saturn", "uranus", "neptune"};
+
+/// The bodies one fixture provides. Sun and Moon are always fitted; planets are
+/// present in fixtures regenerated since the planetary-third-body push (their
+/// tables are simply empty when loading an older Sun/Moon-only fixture).
 struct EphemerisSet {
   SimEphemerisTable sun;
   SimEphemerisTable moon;
+  /// Planetary barycenters, indexed parallel to @ref kPlanetNames.
+  std::array<SimEphemerisTable, kPlanetNames.size()> planets;
+
+  /// The table for @p name ("sun", "moon", or a @ref kPlanetNames entry), or
+  /// nullptr for an unknown name.
+  const SimEphemerisTable* find(const std::string& name) const;
+  SimEphemerisTable* find(const std::string& name);
 };
 
 /// Load a `.cheb` fixture into @p out.
 ///
-/// @param path  Fixture path (e.g. `tests/golden/de440_sun_moon.cheb`).
+/// @param path  Fixture path (e.g. `tests/golden/de440_bodies.cheb`).
 /// @param out   Filled on success; partially filled on failure, so do not use it
 ///              unless this returned true.
 /// @param error If non-null, receives a human-readable reason on failure.

@@ -130,6 +130,11 @@ struct EnvironmentConfig {
   int gravity_order{-1};
   bool sun_third_body{false};
   bool moon_third_body{false};
+  /// Planetary third-body perturbers by name ("jupiter", "venus", …), validated
+  /// against the ephemeris fixture's body set at load. Sun/Moon dominate for
+  /// Earth orbits; these are for completeness studies (Jupiter and Venus are
+  /// the largest, ~1e-7 of the lunar term in LEO).
+  std::vector<std::string> planet_third_bodies;
   bool drag_enabled{true};
   bool srp_enabled{true};
   bool eclipse_enabled{true};

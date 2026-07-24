@@ -1,7 +1,7 @@
-"""Regenerate the committed Sun/Moon Chebyshev ephemeris fixture (ground-side).
+"""Regenerate the committed solar-system-body Chebyshev ephemeris fixture (ground-side).
 
     PYTHONPATH=tools uv run --group ephem python -m ephem \\
-        --kernel de440s.bsp --out tests/golden/de440_sun_moon.cheb
+        --kernel de440s.bsp --out tests/golden/de440_bodies.cheb
 
 Downloads `de440s.bsp` if it is not already present, fits geocentric Sun and Moon
 Chebyshev segments over the requested window, and writes the plain-text fixture
@@ -21,7 +21,7 @@ import hashlib
 import sys
 from pathlib import Path
 
-from .de440 import DEFAULT_URL, _MOON, _SUN, fetch, fit_body
+from .de440 import DEFAULT_URL, _MOON, _SUN, PLANETS, fetch, fit_body
 from .writer import write_fixture
 
 # 2026-01-01T00:00:00 TDB through 2027-01-01T00:00:00 TDB.
@@ -45,6 +45,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sun-degree", type=int, default=12)
     parser.add_argument("--moon-interval-days", type=float, default=4.0)
     parser.add_argument("--moon-degree", type=int, default=12)
+    # Geocentric planet motion carries the same monthly EMB wobble as the Sun's
+    # (~4700 km) on top of a slow heliocentric drift, so the Sun's cadence works;
+    # 16 days halves the segment count at the same residual class. At planetary
+    # distances a km-level residual is < 1e-8 relative — far below the point-mass
+    # model error itself.
+    parser.add_argument("--planet-interval-days", type=float, default=16.0)
+    parser.add_argument("--planet-degree", type=int, default=12)
     args = parser.parse_args(argv)
 
     try:
@@ -77,6 +84,20 @@ def main(argv: list[str] | None = None) -> int:
         args.moon_degree,
     )
 
+    bodies = {"sun": sun, "moon": moon}
+    residuals = {"sun": sun_residual, "moon": moon_residual}
+    for name, code in PLANETS.items():
+        segments, residual = fit_body(
+            kernel,
+            code,
+            args.jd_start,
+            args.jd_end,
+            args.planet_interval_days,
+            args.planet_degree,
+        )
+        bodies[name] = segments
+        residuals[name] = residual
+
     write_fixture(
         args.out,
         source_url=args.url,
@@ -84,15 +105,15 @@ def main(argv: list[str] | None = None) -> int:
         kernel_sha256=digest,
         jd_start=args.jd_start,
         jd_end=args.jd_end,
-        bodies={"sun": sun, "moon": moon},
-        residuals={"sun": sun_residual, "moon": moon_residual},
+        bodies=bodies,
+        residuals=residuals,
     )
 
-    print(
-        f"wrote {args.out}: sun {len(sun)} segments (max residual {sun_residual:.3g} m), "
-        f"moon {len(moon)} segments (max residual {moon_residual:.3g} m)",
-        file=sys.stderr,
+    summary = ", ".join(
+        f"{name} {len(segs)} segments (max residual {residuals[name]:.3g} m)"
+        for name, segs in bodies.items()
     )
+    print(f"wrote {args.out}: {summary}", file=sys.stderr)
     return 0
 
 

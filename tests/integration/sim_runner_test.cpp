@@ -186,6 +186,10 @@ TEST(SimIntegration, FullEnvironmentPropagatesACompleteOrbit) {
   config.environment.gravity_degree = 8;
   config.environment.sun_third_body = true;
   config.environment.moon_third_body = true;
+  // The two largest planetary perturbers (§5.2) — ~1e-7 of the lunar term, so
+  // they cannot change the orbit checks below; what this exercises is the
+  // planet wiring end to end (fixture lookup, GM pairing, composition).
+  config.environment.planet_third_bodies = {"jupiter", "venus"};
   config.environment.srp_enabled = true;
   config.environment.drag_enabled = true;
   config.environment.magnetic_field = scenario::MagneticModel::kIgrf;
@@ -433,6 +437,7 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
       "environment": {"gravity_degree": 0, "gravity_order": 0, "magnetic_field": "none",
                       "occultation_atmosphere_km": 120.0,
                       "drag_enabled": false, "srp_enabled": false,
+                      "third_bodies": ["Sun", "JUPITER"],
                       "sensor_noise_enabled": false,
                       "gnss_noise_enabled": false, "gnss_jamming_enabled": false,
                       "gnss_fault_events": [
@@ -458,6 +463,12 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
   // independent knob (0 = zonal-only here), both previously dropped/unreachable.
   EXPECT_DOUBLE_EQ(config.spacecraft.com_m.eigen().y(), -0.02);
   EXPECT_EQ(config.environment.gravity_order, 0);
+  // Planetary third bodies parse into their own list, separate from the flags —
+  // and case-insensitively ("Sun"/"JUPITER" above land as canonical lowercase).
+  EXPECT_TRUE(config.environment.sun_third_body);
+  EXPECT_FALSE(config.environment.moon_third_body);
+  ASSERT_EQ(config.environment.planet_third_bodies.size(), 1u);
+  EXPECT_EQ(config.environment.planet_third_bodies[0], "jupiter");
   // GNSS scenario controls parse through: master switches and the fault schedule.
   EXPECT_FALSE(config.environment.sensor_noise_enabled);
   EXPECT_FALSE(config.environment.gnss_noise_enabled);
@@ -488,6 +499,33 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
   // The thruster has no truth model yet, so it is reported rather than dropped.
   ASSERT_EQ(vehicle.unmodelled.size(), 1u);
   EXPECT_EQ(vehicle.unmodelled[0], "acs_1:thruster");
+}
+
+TEST(SimIntegration, PlanetMissingFromTheFixtureRefusesToBuild) {
+  // A pre-planet Sun/Moon-only fixture loads fine, so a configured planet whose
+  // table came back empty would otherwise be skipped silently on every epoch —
+  // a run that quietly answers a different question. The runner must refuse.
+  const std::string path = testing::TempDir() + "/sun_moon_only.cheb";
+  {
+    std::ofstream out(path);
+    // One degenerate degree-0 segment per body: parses, so the failure below is
+    // specifically the missing planet, not a load error.
+    out << "seg sun 1767225600000000000 345600 0 1.0 1.0 1.0\n";
+    out << "seg moon 1767225600000000000 345600 0 1.0 1.0 1.0\n";
+  }
+
+  scenario::SimConfig config = circularOrbit(60.0, 10.0);
+  config.environment.planet_third_bodies = {"jupiter"};
+
+  scenario::DataPaths paths = dataPaths();
+  paths.ephemeris = path;
+
+  scenario::SimRunner runner;
+  std::string error;
+  EXPECT_FALSE(runner.build(config, paths, &error));
+  EXPECT_NE(error.find("jupiter"), std::string::npos) << error;
+  EXPECT_NE(error.find("not in the ephemeris fixture"), std::string::npos) << error;
+  std::remove(path.c_str());
 }
 
 // --- Regressions -------------------------------------------------------------

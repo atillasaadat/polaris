@@ -98,9 +98,68 @@ TEST(EphemerisFile, LoadsTheCommittedFixture) {
   ASSERT_TRUE(world::loadEphemerisFile(POLARIS_EPHEMERIS_FIXTURE, set, &error)) << error;
   EXPECT_GT(set.sun.size(), 0u);
   EXPECT_GT(set.moon.size(), 0u);
-  // The generator's defaults: 8-day Sun and 4-day Moon intervals over one year.
+  // The generator's defaults: 8-day Sun, 4-day Moon, 16-day planet intervals
+  // over one year.
   EXPECT_EQ(set.sun.size(), 46u);
   EXPECT_EQ(set.moon.size(), 92u);
+  for (const char* planet : world::kPlanetNames) {
+    const world::SimEphemerisTable* table = set.find(planet);
+    ASSERT_NE(table, nullptr) << planet;
+    EXPECT_EQ(table->size(), 23u) << planet;
+  }
+}
+
+TEST(EphemerisFile, FindResolvesEveryBodyAndRejectsUnknowns) {
+  const world::EphemerisSet& set = fixture();
+  EXPECT_EQ(set.find("sun"), &set.sun);
+  EXPECT_EQ(set.find("moon"), &set.moon);
+  EXPECT_EQ(set.find("jupiter"), &set.planets[3]);  // kPlanetNames order
+  EXPECT_EQ(set.find("pluto"), nullptr);
+  EXPECT_EQ(set.find(""), nullptr);
+}
+
+TEST(EphemerisFile, PlanetGeocentricRangesMatchTheSolarSystem) {
+  // Facts independent of DE440, so a wrongly-generated fixture (barycentric
+  // instead of geocentric, km instead of m, swapped bodies) cannot pass. Ranges
+  // are geocentric min/max over any epoch: heliocentric distance ∓/± 1 AU.
+  const struct {
+    const char* name;
+    double min_au;
+    double max_au;
+  } kRanges[] = {
+      {"mercury", 0.27, 1.55},   {"venus", 0.25, 1.75},   {"mars", 0.36, 2.70},
+      {"jupiter", 3.90, 6.50},   {"saturn", 7.90, 11.10}, {"uranus", 17.20, 21.10},
+      {"neptune", 28.70, 31.40},
+  };
+
+  // Sample across the fixture year so a single-epoch fluke cannot pass either.
+  for (const auto& range : kRanges) {
+    const world::SimEphemerisTable* table = fixture().find(range.name);
+    ASSERT_NE(table, nullptr) << range.name;
+    for (double jd = kJdStart + 1.0; jd < kJdEnd; jd += 30.0) {
+      Eci p;
+      ASSERT_TRUE(table->position(tdbAtJd(jd), p)) << range.name << " JD " << jd;
+      const double au = p.eigen().norm() / kAu;
+      EXPECT_GT(au, range.min_au) << range.name << " JD " << jd;
+      EXPECT_LT(au, range.max_au) << range.name << " JD " << jd;
+    }
+  }
+}
+
+TEST(EphemerisFile, JupiterTidalAccelerationIsInThePublishedWindow) {
+  // The point of carrying planets at all: Jupiter's differential (tidal)
+  // acceleration on a LEO satellite, 2·GM_J·r/d³, is published at the 1e-11 to
+  // 1e-12 m/s² level — nine orders below the Moon's. Checks the GM constant and
+  // the fixture together against an independent order-of-magnitude fact.
+  const world::SimEphemerisTable* jupiter = fixture().find("jupiter");
+  ASSERT_NE(jupiter, nullptr);
+  Eci p;
+  ASSERT_TRUE(jupiter->position(tdbAtJd(kJdStart + 100.0), p));
+  const double d = p.eigen().norm();
+  const double r_leo = 7.0e6;
+  const double tidal = 2.0 * pc::bodies::kJupiterGM * r_leo / (d * d * d);
+  EXPECT_GT(tidal, 1.0e-12);
+  EXPECT_LT(tidal, 2.0e-11);
 }
 
 TEST(EphemerisFile, MissingFileFailsWithAReason) {
@@ -121,7 +180,9 @@ TEST(EphemerisFile, TruncatedCoefficientsAreRejectedRatherThanPartiallyLoaded) {
 }
 
 TEST(EphemerisFile, UnknownBodyIsRejected) {
-  const std::string path = writeTemp("seg jupiter 0 86400 0 1 2 3\n");
+  // "jupiter" was the unknown-body example until the planets became legitimate
+  // fixture bodies; Pluto is not in the modelled set (nor in de440s.bsp).
+  const std::string path = writeTemp("seg pluto 0 86400 0 1 2 3\n");
   world::EphemerisSet set;
   std::string error;
   EXPECT_FALSE(world::loadEphemerisFile(path, set, &error));
