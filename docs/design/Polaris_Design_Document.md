@@ -131,6 +131,8 @@ Because truth and FSW are separate processes and runs must be reproducible at an
   - **IMU:** emits accumulated **delta-angle / delta-velocity** (coning/sculling-compensated) since the last FSW read, so the 10 Hz FSW consumes all 250 Hz information with no loss.
   - **Star tracker / discrete sensors:** FSW reads the **latest valid** sample (with its validity flag and time tag).
 
+**Implemented (Push 30), sim side.** `sim/io/closed_loop` is this model minus the second process: the loop owns sim time on an exact integer-nanosecond event grid (sensor rates cannot drift over a long run), micro-steps the plant between sensor events, accumulates the IMU per §2.4 and publishes latest-valid for discrete sensors, fires an **`FswCallback`** at each macro boundary, and holds the returned wheel/magnetorquer commands for the *next* interval — causality pinned by test. Actuator output finally reaches the dynamics (`CommandedWrench` composed into the plant; RW reaction torques through the assembly's W, MTQ m×B against the wired field), and the deferred §9.2 bindings are live: the GNSS jamming map and fault schedule apply at sample time. The flight side of the callback is Phase 3's F´ TCP barrier; until then the default callback flies open loop and tests script command profiles. Conservation of body+wheel angular momentum through the full loop, lossless IMU accumulation, and bit-reproducibility across runs are all pinned in `tests/unit/sim_io_closed_loop_test.cpp`.
+
 ---
 
 ## 3. Conventions & Standards (Foundational)

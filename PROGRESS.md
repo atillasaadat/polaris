@@ -8,7 +8,7 @@ lives in the merged PR descriptions and the design doc's "Implemented (Push N)"
 notes — this tracker stays a rollup so it cannot rot the way a narrative does.
 
 **Current phase:** Phase 2 — Sensor & actuator models (complete except CMGs/thrusters); Phase 3 (F´ SITL) next
-**Last updated:** Push 29 (planetary third-body perturbers)
+**Last updated:** Push 30 (§2.4 closed loop)
 
 ---
 
@@ -33,7 +33,7 @@ notes — this tracker stays a rollup so it cannot rot the way a narrative does.
 | Actuators: reaction wheel (torque + speed modes, W-matrix assembly), magnetorquer | ✅ done + tested |
 | Scenario controls: seed, sensor-noise switches (global + per-unit), GNSS jamming KML + fault schedule | ✅ done + tested |
 | CMGs, thrusters (truth models) | ⬜ remaining in Phase 2 scope (§7) |
-| §2.4 macro-step loop (`sim/io`): sensors/actuators bound into the running plant | ⬜ Phase 3, with the F´ SITL transport |
+| §2.4 closed loop (`sim/io`): sensors sampled at native rates, actuator feedback into the plant, fault bindings live | ✅ done + tested (FSW is a callback until the F´ SITL transport) |
 | FSW GNC components, estimators, control | ⬜ Phase 3+ |
 
 **Test gates (all green):** 378 C++ unit (ASan/UBSan) · 17 integration ·
@@ -91,10 +91,9 @@ Phase 2 — Sensor & actuator models
 
 1. **Phase 2 close-out (optional):** CMG and thruster truth models (§7) — or
    defer to the phases that consume them (§8.5 control, §17 maneuvering).
-2. **Phase 3 — FSW skeleton + two-process SITL (§24):** F´ topology/rate groups,
-   plant↔FSW TCP lockstep, the §2.4 macro-step loop that finally binds sensors
-   and actuators into the running plant (and the deferred runner hooks: jamming
-   map, fault schedule, actuator torque feedback).
+2. **Phase 3 — FSW skeleton + two-process SITL (§24):** F´ topology/rate groups
+   and the plant↔FSW TCP lockstep — the flight side of the `FswCallback` the
+   closed loop already drives.
 3. **Phase 4 — attitude determination:** TRIAD/QUEST initializers, MEKF fine
    mode, coarse SS+MAG+IMU mode — the consumers the sensor models were built for.
 

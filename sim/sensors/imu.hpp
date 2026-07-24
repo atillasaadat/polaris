@@ -101,6 +101,9 @@ class Imu {
  public:
   /// @param noise_enabled false builds an **ideal** IMU (measurement = truth, no
   ///        bias/scale/misalignment/noise), for noise-free baseline runs (§6.2).
+  /// The spec this unit was built from (sensor rates drive the §2.4 loop).
+  const ImuSpec& spec() const { return spec_; }
+
   Imu(const ImuSpec& spec, std::uint64_t master_seed, std::uint64_t stream_id,
       bool noise_enabled = true);
 

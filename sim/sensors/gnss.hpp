@@ -150,6 +150,9 @@ struct GnssMeasurement {
 /// run's master seed.
 class Gnss {
  public:
+  /// The spec this unit was built from (fix rate drives the §2.4 loop).
+  const GnssSpec& spec() const { return spec_; }
+
   Gnss(const GnssSpec& spec, std::uint64_t master_seed, std::uint64_t stream_id)
       : spec_(spec), rng_(random::streamRng(master_seed, stream_id)) {}
 

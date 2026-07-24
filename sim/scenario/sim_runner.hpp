@@ -31,7 +31,9 @@
 #include "dynamics/rigid_body.hpp"
 #include "scenario/sim_config.hpp"
 #include "state/truth_state.hpp"
+#include "world/body_position.hpp"
 #include "world/gravity_field.hpp"
+#include "world/magnetic_field.hpp"
 
 namespace polaris::sim::scenario {
 
@@ -75,10 +77,18 @@ class SimRunner {
   /// @return false if a required data product is missing or malformed, or the
   ///         configuration asks for a model that is not compiled in (NRLMSIS
   ///         without `POLARIS_HAS_NRLMSIS`). @p error receives the reason.
-  bool build(const SimConfig& config, const DataPaths& paths, std::string* error = nullptr);
+  /// @param extra_model An optional additional force/torque source composed
+  ///        into the plant — the §2.4 closed loop passes its `CommandedWrench`
+  ///        here so actuator effects reach the dynamics. Not owned; must
+  ///        outlive the runner. Null composes nothing.
+  bool build(const SimConfig& config, const DataPaths& paths, std::string* error = nullptr,
+             const dynamics::ForceTorqueModel* extra_model = nullptr);
 
   /// True once @ref build has succeeded.
   bool ready() const { return body_ != nullptr; }
+
+  /// The configuration the runner was built with (valid once ready()).
+  const SimConfig& config() const { return config_; }
 
   /// Propagate for the configured duration, sampling at the configured cadence.
   ///
@@ -107,6 +117,33 @@ class SimRunner {
 
   /// The composed model, for tests that want to interrogate the force budget.
   const dynamics::ForceTorqueModel* forceModel() const { return composite_.get(); }
+
+  /// @name Step-wise access (the §2.4 closed loop drives these)
+  /// @{
+
+  /// The plant, for step-by-step propagation. Null before a successful build.
+  /// `propagate` is stateless per call, so a caller owning its own `TruthState`
+  /// and epoch can march sim time itself.
+  const dynamics::RigidBody6Dof* body() const { return body_.get(); }
+
+  /// The wired geomagnetic-field resolver, or an empty function when the
+  /// scenario flies `magnetic_field: none`. Used for magnetometer truth and
+  /// magnetorquer m×B without duplicating the IGRF wiring.
+  world::MagneticFieldFn magneticFieldFn() const;
+
+  /// Sun / Moon geocentric position resolvers from the loaded ephemeris, or
+  /// empty functions when the scenario loaded none. Sensor truth (sun vector,
+  /// occlusion geometry, eclipse) reuses the exact tables the forces use, so a
+  /// sensor and the SRP model cannot disagree about where the Sun is.
+  world::BodyPositionFn sunPositionFn() const;
+  world::BodyPositionFn moonPositionFn() const;
+
+  /// Sum of the **non-gravitational** accelerations (drag + SRP) at @p s [ECI,
+  /// m/s²] — what an accelerometer senses, as opposed to what the plant
+  /// integrates. Zero when neither model is enabled.
+  math::Vec3<math::frames::ECI> nonGravAcceleration(const state::TruthState& s) const;
+
+  /// @}
 
   /// Number of component models composed in.
   std::size_t modelCount() const;

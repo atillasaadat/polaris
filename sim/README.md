@@ -16,7 +16,7 @@ the orientation map.
 | [`sensors/`](sensors/README.md) | Sensor truth models (IMU, star tracker, sun sensor, magnetometer, GNSS) + shared error stack and occlusion — **start here to add a sensor** |
 | [`actuators/`](actuators/README.md) | Actuator truth models (reaction wheel, magnetorquer) + the W-matrix wheel assembly — **start here to add an actuator** |
 | [`scenario/`](scenario/README.md) | The config→models bridge: `sim_setup.json` loader, vehicle builder, GNSS fault schedule, and the sim runner |
-| `io/` | *(placeholder)* the §2.4 macro-step loop and the two-process F´ SITL transport — Phase 3 |
+| [`io/`](io/README.md) | The §2.4 closed loop: plant → sensors → FSW callback → actuators, sim-time-driven and bit-reproducible. The F´ SITL transport (Phase 3) drives the same callback over TCP |
 | `main.cpp` | The truth-sim executable: compiled config in, trajectory out |
 
 ## The one-paragraph data flow
@@ -26,8 +26,9 @@ and provenance-hashes → `sim_setup.json` → `scenario/sim_config` parses →
 `scenario/vehicle` builds every sensor/actuator model from its params
 (`fromParams`, seeded per unit **by instance name**) → `scenario/sim_runner`
 assembles the force/torque stack from `world/` + `dynamics/` and propagates.
-Sensors/actuators are built and unit-tested today; they bind into the running
-plant when the §2.4 macro-step loop lands (`io/`, Phase 3).
+`io/closed_loop` binds it all together: sensors sampled at native rates into
+§2.4 buffers, FSW commands (a callback until the F´ SITL lands) fed back into
+the plant as wheel reaction torques and magnetorquer m×B.
 
 ## House rules (the short version)
 

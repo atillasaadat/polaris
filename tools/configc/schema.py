@@ -344,6 +344,16 @@ class Propagation(_Strict):
     max_step_s: float = Field(
         default=60.0, gt=0.0, description="integrator maximum step size [s]"
     )
+    fsw_rate_hz: float = Field(
+        default=10.0,
+        gt=0.0,
+        description=(
+            "FSW macro-step rate [Hz] for the closed-loop execution model "
+            "(design doc SS2.4): each boundary the sim publishes buffered sensor "
+            "samples, the FSW fires, and its actuator commands apply on the next "
+            "step"
+        ),
+    )
 
 
 class McDispersion(_Strict):

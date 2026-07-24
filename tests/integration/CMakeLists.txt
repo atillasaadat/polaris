@@ -11,6 +11,7 @@ target_compile_definitions(polaris_integration_tests
 target_link_libraries(polaris_integration_tests
   PRIVATE
     polaris::scenario
+    polaris::io
     polaris::constants
     polaris::math
     polaris::state
