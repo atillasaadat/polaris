@@ -8,7 +8,7 @@ lives in the merged PR descriptions and the design doc's "Implemented (Push N)"
 notes — this tracker stays a rollup so it cannot rot the way a narrative does.
 
 **Current phase:** Phase 2 — Sensor & actuator models (complete except CMGs/thrusters); Phase 3 (F´ SITL) next
-**Last updated:** Push 30 (§2.4 closed loop)
+**Last updated:** Push 31 (GMAT orbit-regime matrix + attitude cross-validation)
 
 ---
 
