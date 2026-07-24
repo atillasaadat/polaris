@@ -267,7 +267,7 @@ struct SunSensorMeasurement {
 /// noise while still drawing to keep the stream aligned; the FOV cut and eclipse
 /// threshold \f$\gamma_{\min}\f$ still apply, being geometry not noise.
 ///
-/// Markley & Crassidis §4.1 [markley2014].
+/// Markley & Crassidis Ch. 4 (Sensors and Actuators), sun-sensor model [markley2014].
 class SunSensor {
  public:
   /// @param spec The datasheet-derived geometry/accuracy specification.

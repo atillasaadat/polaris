@@ -103,7 +103,7 @@ bool validIgrfCoefficients(const IgrfCoefficients& c);
 ///
 /// **Model.** The internal-source scalar potential is a Schmidt semi-normalized
 /// spherical-harmonic expansion to degree \f$N=13\f$ (Alken et al. 2021 Eq. 1;
-/// Langel 1987 §4) [alken2021; langel1987]:
+/// Langel 1987) [alken2021; langel1987]:
 /// \f[
 ///   V(r,\theta,\phi) = a\sum_{n=1}^{N}\left(\frac{a}{r}\right)^{\!n+1}
 ///     \sum_{m=0}^{n}\left[g_n^m\cos m\phi + h_n^m\sin m\phi\right]

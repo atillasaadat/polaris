@@ -49,9 +49,12 @@ namespace polaris::math {
 ///   A(\bar q) = (2q_0^2 - 1)\,\mathbf{I} - 2 q_0\,[\mathbf{q}_v\times]
 ///     + 2\,\mathbf{q}_v \mathbf{q}_v^\top,
 /// \f]
-/// where \f$[\mathbf{q}_v\times]\f$ is the cross-product (skew) matrix. The
-/// negative sign on \f$\mathbf{a}_v\times\mathbf{b}_v\f$ is the JPL convention
-/// (Trawny & Roumeliotis [trawny2005]); it makes \f$A\f$ a homomorphism,
+/// where \f$[\mathbf{q}_v\times]\f$ is the cross-product (skew) matrix. Both are
+/// the JPL forms of Trawny & Roumeliotis [trawny2005] — the product is their
+/// Eq. (9) and the attitude matrix their Eq. (78), written here scalar-first
+/// (\f$q_0\f$ leading) where that report is scalar-last (\f$q_4\f$ trailing). The
+/// negative sign on \f$\mathbf{a}_v\times\mathbf{b}_v\f$ is the JPL convention;
+/// it makes \f$A\f$ a homomorphism,
 /// \f$A(\bar a \otimes \bar b) = A(\bar a)\,A(\bar b)\f$, and \f$A\f$ maps a
 /// vector's reference-frame coordinates to the rotated frame,
 /// \f$\mathbf{v}_\mathrm{rot} = A(\bar q)\,\mathbf{v}_\mathrm{ref}\f$

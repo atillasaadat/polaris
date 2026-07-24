@@ -53,7 +53,9 @@ namespace polaris::sim::dynamics {
 ///
 /// The kinematic term uses **left** multiplication by the rate quaternion
 /// \f$[0,\boldsymbol{\omega}_B]\f$ because \f$\boldsymbol{\omega}_B\f$ is expressed
-/// in the Body frame; this is equivalent to \f$\dot A = -[\boldsymbol{\omega}_B
+/// in the Body frame — the body-referenced form \f$\dot{\bar q} =
+/// \tfrac{1}{2}\,\Omega(\boldsymbol{\omega}_B)\,\bar q\f$ of Trawny & Roumeliotis
+/// [trawny2005] Eq. (106). It is equivalent to \f$\dot A = -[\boldsymbol{\omega}_B
 /// \times]\,A\f$ for the attitude matrix \f$A = A(\bar q_{B\leftarrow I})\f$
 /// (Markley & Crassidis §3.1 [markley2014]). The rotational term is Euler's
 /// equation. After each accepted integrator step the quaternion sub-vector is

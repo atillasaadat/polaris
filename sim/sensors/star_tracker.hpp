@@ -254,7 +254,7 @@ struct StarTrackerMeasurement {
 /// model with the Earth keep-out floored at the half field of view,
 /// \f$\theta_{\mathrm{earth}} = \max(\theta_{\mathrm{excl}},\ \tfrac12\,\mathrm{FOV})\f$.
 ///
-/// Markley & Crassidis §4.2 [markley2014].
+/// Markley & Crassidis Ch. 4 (Sensors and Actuators), star-camera model [markley2014].
 class StarTracker {
  public:
   /// @param spec The datasheet-derived error/availability specification.

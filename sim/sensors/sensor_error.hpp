@@ -67,7 +67,7 @@ namespace polaris::sim::sensors {
 /// \f$y = x\f$ (an **ideal** sensor: no scale, misalignment, bias, noise,
 /// quantization, or saturation), used for noise-free baseline runs (§6.2).
 ///
-/// Markley & Crassidis §4 [markley2014].
+/// Markley & Crassidis Ch. 4 (Sensors and Actuators) [markley2014].
 struct VectorErrorModel {
   /// (I + scale)·misalignment, applied to the true vector. Identity = perfect.
   Eigen::Matrix3d scale_misalignment = Eigen::Matrix3d::Identity();

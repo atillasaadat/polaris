@@ -77,7 +77,8 @@ class RwAssembly {
   /// Whether the axes span all three body axes (rank W = 3) — the condition for
   /// the array to produce torque about any direction. Rank is tested from the
   /// smallest singular value of \f$W\f$: \f$\sigma_{\min}(W) > \varepsilon\f$ with
-  /// \f$\varepsilon\f$ scaled to the unit-axis magnitude. A pyramid of ≥3 skewed
+  /// \f$\varepsilon = 10^{-9} N\f$ scaled by the wheel count \f$N\f$ (the singular
+  /// values of \f$N\f$ unit columns run up to \f$\sqrt{N}\f$). A pyramid of ≥3 skewed
   /// wheels satisfies it; a set of collinear wheels does not, which is exactly the
   /// misconfiguration this flags.
   [[nodiscard]] bool spansThreeAxes() const;
