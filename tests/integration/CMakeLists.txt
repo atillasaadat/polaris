@@ -3,7 +3,8 @@
 # RK89 plant. Unlike unit tests these read the committed fixtures, so they need
 # the golden directory.
 add_executable(polaris_integration_tests
-  sim_runner_test.cpp)
+  sim_runner_test.cpp
+  sim_closed_loop_orbit_test.cpp)
 
 target_compile_definitions(polaris_integration_tests
   PRIVATE POLARIS_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden")
