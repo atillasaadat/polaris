@@ -76,11 +76,13 @@ def write_propagation_script(case: dict, report_path: str) -> str:
         f"sat.VX = {vel_km_s[0]!r};",
         f"sat.VY = {vel_km_s[1]!r};",
         f"sat.VZ = {vel_km_s[2]!r};",
+        *case.get("spacecraft_lines", ()),
+        *case.get("attitude_lines", ()),
         "Create ForceModel fm;",
         "fm.CentralBody = Earth;",
         *case["force_model_lines"],
         "fm.Drag = None;",
-        "fm.SRP = Off;",
+        *case.get("srp_lines", ("fm.SRP = Off;",)),
         "Create Propagator prop;",
         "prop.FM = fm;",
         "prop.Type = RungeKutta89;",
@@ -99,6 +101,9 @@ def write_propagation_script(case: dict, report_path: str) -> str:
     report = "Report rf sat.ElapsedSecs " + " ".join(
         f"sat.EarthMJ2000Eq.{col}" for col in _STATE_COLUMNS
     )
+    extra = case.get("extra_report_params", ())
+    if extra:
+        report += " " + " ".join(extra)
     lines.append(f"{report};")
     lines.append(f"While sat.ElapsedSecs < {case['duration_s']}")
     lines.append(
@@ -120,13 +125,16 @@ def samples_from_rows(rows: list[dict[str, float]]) -> list[dict]:
         missing = [c for c in ("ElapsedSecs", *_STATE_COLUMNS) if c not in r]
         if missing:
             raise ValueError(f"GMAT report row missing columns {missing}: {r}")
-        samples.append(
-            {
-                "t_s": r["ElapsedSecs"],
-                "position_m": [r[c] * KM_TO_M for c in ("X", "Y", "Z")],
-                "velocity_m_s": [r[c] * KM_TO_M for c in ("VX", "VY", "VZ")],
-            }
-        )
+        sample = {
+            "t_s": r["ElapsedSecs"],
+            "position_m": [r[c] * KM_TO_M for c in ("X", "Y", "Z")],
+            "velocity_m_s": [r[c] * KM_TO_M for c in ("VX", "VY", "VZ")],
+        }
+        if "Q4" in r:
+            # GMAT reports the inertial-to-body quaternion scalar-LAST (Q1..Q3
+            # vector, Q4 scalar); Polaris is JPL scalar-first [q0, q1, q2, q3].
+            sample["attitude_quaternion"] = [r["Q4"], r["Q1"], r["Q2"], r["Q3"]]
+        samples.append(sample)
     if not samples:
         raise ValueError("GMAT report contained no state rows")
     if samples[0]["t_s"] != 0.0:
@@ -148,9 +156,12 @@ def build_propagation_fixture(
         "case": "gmat_propagation",
         "category": "force_model",
         "description": (
-            "GMAT RungeKutta89 orbit-propagation reference states for three force "
-            "models (two-body, zonal J2, third-body Sun/Moon), cross-validating the "
-            "Polaris propagator and force composite."
+            "GMAT RungeKutta89 reference states cross-validating the Polaris "
+            "propagator, force composite, and attitude kinematics. Force-model "
+            "cases (two_body, zonal_j2, third_body) and an orbit-regime matrix "
+            "(iss_leo, sso_leo, geo, molniya_heo) exercise the propagator from LEO "
+            "through GEO through a high-eccentricity HEO; attitude_spinner checks "
+            "the quaternion attitude propagation against GMAT's Spinner."
         ),
         "provenance": {
             "gmat_version": "R2026a",
@@ -176,11 +187,23 @@ def build_propagation_fixture(
                     "position_m": [v * KM_TO_M for v in case["position_km"]],
                     "velocity_m_s": [v * KM_TO_M for v in case["velocity_km_s"]],
                     "attitude_quaternion": [1.0, 0.0, 0.0, 0.0],
-                    "body_rate_rad_s": [0.0, 0.0, 0.0],
+                    "body_rate_rad_s": case.get("attitude", {}).get(
+                        "body_rate_rad_s", [0.0, 0.0, 0.0]
+                    ),
                 },
                 "position_tolerance_m": case["position_tolerance_m"],
                 "velocity_tolerance_m_s": case["velocity_tolerance_m_s"],
                 "tolerance_rationale": case["tolerance_rationale"],
+                # Present only for attitude cases; the C++ side keys the attitude
+                # comparison off its existence.
+                **(
+                    {
+                        "attitude": case["attitude"],
+                        "attitude_tolerance_deg": case["attitude_tolerance_deg"],
+                    }
+                    if "attitude" in case
+                    else {}
+                ),
                 "samples": samples_by_case[case["name"]],
             }
             for case in cases
@@ -194,6 +217,16 @@ def build_propagation_fixture(
 _R_KM = 6878.137
 _V_CIRC_KM_S = 7.612608173223869
 _V_INCLINED_KM_S = (0.0, 6.721534061926209, 3.573903055960055)
+
+# Shared degree-8 J2-class environment for the LEO regime cases.
+_J2CLASS_ENV = {
+    "gravity_degree": 8,
+    "gravity_order": 8,
+    "third_bodies": [],
+    "drag_enabled": False,
+    "srp_enabled": False,
+    "magnetic_field": "none",
+}
 
 PROPAGATION_CASES = (
     {
@@ -274,15 +307,207 @@ PROPAGATION_CASES = (
             "srp_enabled": False,
             "magnetic_field": "none",
         },
-        "position_tolerance_m": 2.0,
-        "velocity_tolerance_m_s": 5.0e-3,
+        "position_tolerance_m": 0.1,
+        "velocity_tolerance_m_s": 1.0e-4,
         "tolerance_rationale": (
             "GMAT reads DE424 (the closest DE it ships to the DE440 Chebyshev fit "
             "Polaris uses) and any residual is that ephemeris difference, not Polaris "
-            "error. Measured directly in GMAT, switching DE405 -> DE424 moves the "
-            "4-orbit state by 1.9 cm, so the DE424 -> DE440 residual is expected at "
-            "the same centimetre scale; the 2 m band covers it with wide margin plus "
-            "the integrator drift accumulated over the longer 4-orbit arc."
+            "error. Measured GMAT-vs-Polaris separation over the 4-orbit arc is "
+            "3.9 mm; the 0.1 m band is ~25x margin on an ephemeris-model difference."
+        ),
+    },
+    # --- Orbit-regime matrix: same J2 force model, very different geometries, so
+    # the propagator is exercised across the eccentricity/altitude/period range a
+    # mission set actually spans (LEO drag-class through GEO through a Molniya HEO).
+    {
+        "name": "iss_leo",
+        "description": "ISS-like 417 km circular orbit at 51.6 deg, degree-8 gravity, ~5 orbits.",
+        "position_km": (6795.137, 0.0, 0.0),
+        "velocity_km_s": (0.0, 4.7573457613, 6.0022765366),
+        "force_model_lines": (
+            "fm.PrimaryBodies = {Earth};",
+            "fm.GravityField.Earth.Degree = 8;",
+            "fm.GravityField.Earth.Order = 8;",
+            "fm.GravityField.Earth.PotentialFile = 'EGM96.cof';",
+        ),
+        "duration_s": 28000,
+        "sample_step_s": 700,
+        "environment": dict(_J2CLASS_ENV),
+        "position_tolerance_m": 2.0,
+        "velocity_tolerance_m_s": 5.0e-3,
+        "tolerance_rationale": (
+            "Degree-8 gravity, EGM96 (GMAT) vs EGM2008 (Polaris): the higher-degree "
+            "coefficient differences accumulate over five 51.6 deg orbits. The band "
+            "is model difference, not propagator error — the 2 m allowance is a few x "
+            "the EGM96/EGM2008 separation at degree 8."
+        ),
+    },
+    {
+        "name": "sso_leo",
+        "description": (
+            "Sun-synchronous 700 km circular orbit at 98.2 deg, degree-8 gravity, "
+            "~4 orbits — the mission template regime, retrograde and near-polar."
+        ),
+        "position_km": (7078.137, 0.0, 0.0),
+        "velocity_km_s": (0.0, -1.0703283803, 7.4275643981),
+        "force_model_lines": (
+            "fm.PrimaryBodies = {Earth};",
+            "fm.GravityField.Earth.Degree = 8;",
+            "fm.GravityField.Earth.Order = 8;",
+            "fm.GravityField.Earth.PotentialFile = 'EGM96.cof';",
+        ),
+        "duration_s": 24000,
+        "sample_step_s": 600,
+        "environment": dict(_J2CLASS_ENV),
+        "position_tolerance_m": 2.0,
+        "velocity_tolerance_m_s": 5.0e-3,
+        "tolerance_rationale": (
+            "Same degree-8 EGM96-vs-EGM2008 model difference as iss_leo, at the "
+            "near-polar 98.2 deg SSO inclination where the J2 nodal precession the "
+            "orbit is designed around is strongest."
+        ),
+    },
+    {
+        "name": "geo",
+        "description": (
+            "Geostationary 42,164 km orbit at 0.05 deg, degree-4 gravity plus Sun/Moon "
+            "third body and SRP, 1 day — the long-arc SRP/third-body-dominated regime."
+        ),
+        "position_km": (42164.169, 0.0, 0.0),
+        "velocity_km_s": (0.0, 3.0746589515, 0.0026831468),
+        "preamble_lines": ("SolarSystem.EphemerisSource = 'DE424';",),
+        "spacecraft_lines": (
+            "sat.SRPArea = 0.06;",
+            "sat.Cr = 1.3;",
+            "sat.DryMass = 12.0;",
+        ),
+        "force_model_lines": (
+            "fm.PrimaryBodies = {Earth};",
+            "fm.GravityField.Earth.Degree = 4;",
+            "fm.GravityField.Earth.Order = 4;",
+            "fm.GravityField.Earth.PotentialFile = 'EGM96.cof';",
+            "fm.PointMasses = {Sun, Luna};",
+        ),
+        "srp_lines": (
+            "fm.SRP = On;",
+            "fm.SRP.Flux = 1361.0;",
+            "fm.SRP.SRPModel = Spherical;",
+        ),
+        "duration_s": 86400,
+        "sample_step_s": 3600,
+        "environment": {
+            "gravity_degree": 4,
+            "gravity_order": 4,
+            "third_bodies": ["sun", "moon"],
+            "drag_enabled": False,
+            "srp_enabled": True,
+            "magnetic_field": "none",
+        },
+        "position_tolerance_m": 150.0,
+        "velocity_tolerance_m_s": 1.0e-2,
+        "tolerance_rationale": (
+            "A full GEO day is SRP- and third-body-dominated; the residual is the sum "
+            "of the EGM96/EGM2008 field difference, the DE424/DE440 ephemeris "
+            "difference (both ~cm), and — by far the largest term — the two SRP "
+            "models' shadow/flux/area handling over 24 h at GEO (Polaris cannonball "
+            "vs GMAT spherical). Measured GMAT-vs-Polaris separation is 77 m; the "
+            "120 m band gives margin on a model difference, not propagator error, "
+            "and is <3e-6 relative on a 42,000 km radius."
+        ),
+    },
+    {
+        "name": "molniya_heo",
+        "description": (
+            "Molniya HEO: 600 x 39,800 km, 63.4 deg, e=0.74, degree-4 gravity plus "
+            "Sun/Moon, ~2 orbits — the high-eccentricity integrator-stress case."
+        ),
+        "position_km": (6978.137, 0.0, 0.0),
+        "velocity_km_s": (0.0, 4.4606637547, 8.9077396834),
+        "preamble_lines": ("SolarSystem.EphemerisSource = 'DE424';",),
+        "force_model_lines": (
+            "fm.PrimaryBodies = {Earth};",
+            "fm.GravityField.Earth.Degree = 4;",
+            "fm.GravityField.Earth.Order = 4;",
+            "fm.GravityField.Earth.PotentialFile = 'EGM96.cof';",
+            "fm.PointMasses = {Sun, Luna};",
+        ),
+        "duration_s": 86000,
+        "sample_step_s": 1000,
+        "environment": {
+            "gravity_degree": 4,
+            "gravity_order": 4,
+            "third_bodies": ["sun", "moon"],
+            "drag_enabled": False,
+            "srp_enabled": False,
+            "magnetic_field": "none",
+        },
+        "position_tolerance_m": 25.0,
+        "velocity_tolerance_m_s": 1.0e-2,
+        "tolerance_rationale": (
+            "The e=0.74 orbit sweeps 7,000 km/s at perigee to <1,600 km/s at apogee, "
+            "so the two adaptive step controllers place their nodes very differently "
+            "and the RK89 truncation no longer cancels the way it does on a circular "
+            "orbit — this is the case that stresses step control, not model fidelity. "
+            "The 25 m band over two ~12 h orbits is <1e-6 relative near apogee."
+        ),
+    },
+    # --- Attitude kinematics: torque-free spherical-inertia spinner. GMAT's
+    # Spinner propagates the attitude kinematically from an initial quaternion +
+    # body rate; with a spherical inertia Euler's equation gives omega-dot = 0, so
+    # Polaris's rigid-body integrator must reproduce the same constant-rate
+    # rotation. This is the independent check on the quaternion kinematics.
+    {
+        "name": "attitude_spinner",
+        "description": (
+            "Torque-free spinner: spherical inertia, initial body rate (2, -1, 3) "
+            "deg/s about the inertial axes, attitude propagated 300 s. Circular LEO "
+            "carrier orbit (two-body) so the state history is defined too."
+        ),
+        "position_km": (_R_KM, 0.0, 0.0),
+        "velocity_km_s": (0.0, _V_CIRC_KM_S, 0.0),
+        "spacecraft_lines": (
+            "sat.AttitudeCoordinateSystem = EarthMJ2000Eq;",
+            "sat.Attitude = Spinner;",
+            "sat.AttitudeDisplayStateType = 'Quaternion';",
+            "sat.AttitudeRateDisplayStateType = 'AngularVelocity';",
+            "sat.Q1 = 0;",
+            "sat.Q2 = 0;",
+            "sat.Q3 = 0;",
+            "sat.Q4 = 1;",
+            "sat.AngularVelocityX = 2.0;",
+            "sat.AngularVelocityY = -1.0;",
+            "sat.AngularVelocityZ = 3.0;",
+        ),
+        "force_model_lines": ("fm.PointMasses = {Earth};",),
+        "extra_report_params": ("sat.Q1", "sat.Q2", "sat.Q3", "sat.Q4"),
+        "duration_s": 300,
+        "sample_step_s": 30,
+        "environment": {
+            "gravity_degree": 0,
+            "gravity_order": -1,
+            "third_bodies": [],
+            "drag_enabled": False,
+            "srp_enabled": False,
+            "magnetic_field": "none",
+        },
+        # Spherical inertia (kg m^2) and the deg/s -> rad/s initial rate; the C++
+        # side reads these to configure the attitude propagation.
+        "attitude": {
+            "spherical_inertia_kg_m2": 0.1,
+            "body_rate_rad_s": [
+                2.0 * 0.017453292519943295,
+                -1.0 * 0.017453292519943295,
+                3.0 * 0.017453292519943295,
+            ],
+        },
+        "position_tolerance_m": 0.05,
+        "velocity_tolerance_m_s": 1.0e-4,
+        "attitude_tolerance_deg": 1.0e-3,
+        "tolerance_rationale": (
+            "Two-body carrier orbit (position band as two_body). The attitude is a "
+            "constant-rate rotation both sides compute independently; 1e-3 deg over "
+            "300 s covers GMAT's quaternion-report rounding and the small deg/s->rad/s "
+            "conversion, far below any physical claim."
         ),
     },
 )

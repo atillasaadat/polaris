@@ -59,9 +59,25 @@ itself needs the binary. `propagation.py` follows the same split
 
 ## Propagation fixture (`tests/golden/gmat_propagation.json`)
 
-Cross-validates the Polaris orbit propagator against GMAT's RungeKutta89 over
-three force models — `two_body`, `zonal_j2` (degree 2, order 0), and
-`third_body` (Sun + Moon point masses).
+Cross-validates the Polaris orbit propagator, force composite, and attitude
+kinematics against GMAT's RungeKutta89. Eight cases:
+
+| Case | What it stresses | Band (achieved) |
+|---|---|---|
+| `two_body` | integrator truncation only (Earth.Mu pinned to wgs84::kGM) | 5 cm (3.5 mm) |
+| `zonal_j2` | degree-2 field, EGM96↔EGM2008 | 0.5 m (4.7 cm) |
+| `third_body` | Sun+Moon point mass, DE424↔DE440 | 0.1 m (3.9 mm) |
+| `iss_leo` | 417 km / 51.6°, degree-8 field | 2 m (0.88 m) |
+| `sso_leo` | 700 km / 98.2° sun-sync, degree-8 field | 2 m (0.76 m) |
+| `geo` | 42,164 km, degree-4 + Sun/Moon + SRP, 1 day | 150 m (120 m) |
+| `molniya_heo` | 600×39,800 km, e=0.74, 63.4° — step-control stress | 25 m (6.3 m) |
+| `attitude_spinner` | torque-free spinner vs GMAT Spinner (quaternion kinematics) | 1e-3° |
+
+The bands are model-difference budgets (EGM96↔EGM2008, DE424↔DE440, cannonball↔
+spherical SRP) or, for `molniya_heo`, adaptive-step divergence on the
+high-eccentricity arc — **not** propagator error, which sits well below.
+`attitude_spinner` compares the net rotation angle (a quaternion-convention-
+independent invariant) between Polaris, GMAT, and the analytic `|ω|·t`.
 
 ```bash
 GMAT_CONSOLE=… PYTHONPATH=tools uv run python -m gmat regenerate-propagation \

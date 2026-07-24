@@ -55,6 +55,8 @@ namespace pm = polaris::math;
 namespace pt = polaris::time;
 using nlohmann::json;
 
+constexpr double kDeg2Rad = 0.017453292519943295;
+
 Eigen::Vector3d vec3(const json& node) {
   return Eigen::Vector3d(node[0].get<double>(), node[1].get<double>(), node[2].get<double>());
 }
@@ -115,6 +117,16 @@ scenario::SimConfig configFor(const json& c, const pt::LeapSecondTable& leap) {
   config.initial_state.velocity = pm::Vec3<pm::frames::ECI>(vec3(init.at("velocity_m_s")));
   config.initial_state.attitude = pm::Quat<pm::frames::Body, pm::frames::ECI>::Identity();
   config.initial_state.body_rate = pm::Vec3<pm::frames::Body>(Eigen::Vector3d::Zero());
+
+  // Attitude cases fly a spherical inertia and a nonzero initial body rate, so
+  // Euler's ω̇ = −I⁻¹(ω×Iω) vanishes and the attitude is a constant-rate rotation
+  // — the kinematics GMAT's Spinner propagates independently.
+  if (c.contains("attitude")) {
+    const json& att = c.at("attitude");
+    config.spacecraft.inertia_kgm2 =
+        Eigen::Matrix3d::Identity() * att.at("spherical_inertia_kg_m2").get<double>();
+    config.initial_state.body_rate = pm::Vec3<pm::frames::Body>(vec3(att.at("body_rate_rad_s")));
+  }
 
   // Tight tolerances: the residual being measured is centimetres, so integrator
   // error must sit well below it or it would be indistinguishable from model
@@ -181,6 +193,53 @@ TEST(GmatPropagation, PolarisAgreesWithGmatAcrossForceModels) {
     // output before it becomes a failure.
     RecordProperty(name + "_worst_position_m", std::to_string(worst_position));
     RecordProperty(name + "_worst_velocity_m_s", std::to_string(worst_velocity));
+
+    // --- Attitude: Polaris's quaternion propagation vs GMAT's Spinner ----------
+    //
+    // Compared by the invariant NET ROTATION ANGLE from the identity, which is
+    // independent of quaternion sign, scalar position, and the Hamilton-vs-JPL
+    // handedness that a direct component comparison would trip over: for a
+    // constant-rate rotation the angle is |ω|·t folded into [0, π]. All three —
+    // Polaris, GMAT, and the analytic |ω|·t — must agree, and Polaris's rotation
+    // axis must be the (constant, inertial) ω direction.
+    if (c.contains("attitude")) {
+      const double tol = c.at("attitude_tolerance_deg").get<double>() * kDeg2Rad;
+      const Eigen::Vector3d omega = config.initial_state.body_rate.eigen();
+      const double omega_mag = omega.norm();
+      ASSERT_GT(omega_mag, 0.0);
+
+      auto foldedAngle = [](double raw) {
+        double a = std::fmod(raw, 2.0 * M_PI);
+        if (a < 0.0) {
+          a += 2.0 * M_PI;
+        }
+        return a > M_PI ? 2.0 * M_PI - a : a;  // the short net angle, in [0, π]
+      };
+      auto quatAngle = [](double scalar) {
+        return 2.0 * std::acos(std::min(1.0, std::abs(scalar)));
+      };
+
+      for (std::size_t i = 0; i < trajectory.size(); ++i) {
+        const json& sample = c.at("samples")[i];
+        ASSERT_TRUE(sample.contains("attitude_quaternion")) << "sample " << i;
+        const double expected = foldedAngle(omega_mag * trajectory[i].t_s);
+
+        // GMAT quaternion is stored scalar-first [q0, q1, q2, q3].
+        const double gmat_angle = quatAngle(sample.at("attitude_quaternion")[0].get<double>());
+        const pm::Quaternion q_p = trajectory[i].state.attitude.core();
+        const double polaris_angle = quatAngle(q_p.w());
+
+        EXPECT_NEAR(polaris_angle, expected, tol) << "t=" << trajectory[i].t_s;
+        EXPECT_NEAR(gmat_angle, expected, tol) << "t=" << trajectory[i].t_s;
+
+        // Rotation axis = ω direction (skip where sin(θ/2) ≈ 0 leaves it undefined).
+        if (q_p.vec().norm() > 1.0e-6) {
+          const double axis_dot = std::abs(q_p.vec().normalized().dot(omega / omega_mag));
+          EXPECT_NEAR(axis_dot, 1.0, 1.0e-6) << "t=" << trajectory[i].t_s;
+        }
+      }
+      continue;  // attitude cases skip the vacuous-band guard below
+    }
 
     // A tolerance far looser than the achieved error is a band that has stopped
     // testing anything. This is deliberately generous (100x) so it flags only

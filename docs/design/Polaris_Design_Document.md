@@ -247,6 +247,8 @@ Worked example (Push 9): `tests/golden/finals.all.iau2000.txt` is the raw IERS p
 - **RK89** (adaptive or fixed-step, configurable) with documented tolerance/step control. Energy/momentum conservation checks as validation diagnostics.
 - Quaternion kinematics integrated with renormalization; state vector and Jacobian conventions documented.
 
+**Attitude representation — quaternion, not MRP (decision).** The truth attitude is propagated as a **unit quaternion** (`q̇ = ½·Ω(ω)·q`, JPL scalar-first), renormalized after every accepted RK89 step. Quaternions are chosen over Modified Rodrigues Parameters (MRP) deliberately, and the deciding factor is the *adaptive* integrator: MRPs are minimal (3-parameter, no norm constraint) but have a singularity at ±360° that forces a shadow-set switch near 180°, and that switch is a **discontinuity mid-step** — poison for RK89's embedded error estimate, which assumes a smooth flow (a tumbling body would trigger step rejections at every crossing). The quaternion has no such event anywhere on SO(3); its only cost is one renormalization per step, which is exact and pinned by test (`|q| = 1` to 1e-12). This matches GMAT/STK/Basilisk, and the quaternion propagation is cross-validated against GMAT's Spinner in `tests/golden/` (`attitude_spinner`). **The onboard MEKF uses the same quaternion reference (§8.1)**, so truth and estimate share one singularity-free representation — MRPs/GRPs appear only as the filter's *local error* parameterization, never as a global state.
+
 ### 5.2 Environment Models
 
 | Effect | Model | Notes |
@@ -349,6 +351,7 @@ The GNC chain has exactly **one** definition of vehicle state, produced once and
 
 ### 8.1 Attitude Determination
 - **Fine mode (nominal):** **MEKF (multiplicative EKF)** — unit-quaternion reference (JPL scalar-first) + 3-parameter error state, gyro-bias states; star tracker(s), multi-IMU, and multi-sun-sensor fusion feed measurements.
+  - **Consistent with the truth side, and singularity-free.** The filter's estimate *is* a unit quaternion, propagated by the same kinematics the truth plant uses (§5.1) — so both sides carry one global attitude representation with no singularity. The **3-parameter error state is not a second representation**: a 3-DOF rotation cannot carry a full-rank 4×4 covariance (the unit-norm constraint makes it singular), so the covariance is defined on a minimal local rotation error (GRP/rotation-vector) that is multiplicatively composed onto the quaternion and reset to zero each update. That is the entire content of "multiplicative" EKF — the quaternion never leaves SO(3), and the error parameterization is a linearization detail local to one step, not a mode with its own singularity.
 - **Coarse mode (degraded / safe):** when star trackers are unavailable (occlusion, fault, slew-limited), estimation falls back to **sun sensor + magnetometer vector measurements + IMU gyro propagation**. The two body-frame vectors (sun direction, magnetic field) are paired with their inertial references (sun ephemeris, onboard IGRF-14 modeled field, §5.2/§6.2) to form a coarse attitude; the IMU propagates attitude between/through vector updates. This is the estimator used in **Safe** and **Sun Point** acquisition and whenever the fine solution is invalid.
 - **Initialization / coarse determination:** deterministic single-frame initializers (**TRIAD / QUEST / q-method**) seed both the coarse solution and the MEKF from two vector measurements, giving a defined cold-start/acquisition path rather than assuming a pre-converged filter.
 - **Mode arbitration:** transitions between fine and coarse are driven by sensor validity (§9.1) and surfaced to FDIR and the mode manager (§10); the active estimation mode is telemetered.
@@ -640,6 +643,15 @@ polaris/
 └── .github/workflows/
 ```
 
+### 22.4 Telemetry Storage, Replay & Visualization (Phase 3 target)
+
+The truth sim already emits a trajectory/measurement trace and the FSW emits F´ telemetry; both need to land in one queryable, long-term store so runs can be compared, replayed, and dashboarded. The **target architecture** (built out with the two-process SITL in Phase 3):
+
+- **Store: PostgreSQL + TimescaleDB.** Time-series channels as hypertables keyed `(run_id, channel, t_tai_ns, value)`; a `runs` table holds the run's identity — crucially the **config provenance hash + master seed** the config compiler already emits (§19.3, §3.5). TimescaleDB over Influx because the analysis layer needs real SQL joins between channel data and config metadata (regime, hardware, seed), plus native compression/retention for long-term storage. Postgres is the single source; no bespoke binary log.
+- **Ingest, two sources, one schema.** The truth side writes its trace directly (the loop's `MacroSample` stream, §2.4). The FSW side rides a small **`fprime-gds` plugin**: the GDS Python pipeline exposes decoded channel-update callbacks, so a thin bridge forwards them to the DB. F´ GDS stays for live operation; the DB is the persistence/analysis layer — the two do not compete.
+- **Replay & truth-vs-telemetry is a `run_id` join.** Truth and onboard streams share a `run_id`, so overlaying "truth state vs estimated state", "truth field vs magnetometer", or an innovation sequence is one query. Because a run is **bit-reproducible from `{config, seed}`**, a re-run *is* a replay — the DB record is a cache of a reproducible computation, not the only copy.
+- **Visualization: Grafana** over the Postgres/Timescale source — residual dashboards (truth − estimate), per-regime overlays, and the pass/fail panels the Monte-Carlo framework (§13) queries against the same store. (F´ GDS remains available for live single-run ops.)
+- **Staging:** the trace-writer + schema can land before the F´ SITL (truth-only dashboards are immediately useful for the V&V work above); the GDS bridge lands with the Phase-3 transport. A `docker-compose` (Postgres + Grafana) ships with it so a contributor gets the stack with one command.
 ---
 
 ## 23. Verification, Tooling & Pre-Kickoff Checklist
