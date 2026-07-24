@@ -44,6 +44,16 @@ namespace polaris::sim::sensors {
 /// Bowring's closed-form (sub-mm for terrestrial radii, and the geodetic latitude
 /// of a point at altitude is the latitude of its nadir foot — the sub-satellite
 /// point). Longitude is `atan2(y, x)`, in (-180, 180].
+///
+/// With \f$p = \sqrt{x^2+y^2}\f$, semi-axes \f$a, b\f$, eccentricities
+/// \f$e^2, e'^2 = e^2/(1-e^2)\f$, and parametric latitude
+/// \f$\theta = \operatorname{atan2}(z\,a,\ p\,b)\f$:
+/// \f[
+///   \lambda = \operatorname{atan2}(y, x), \qquad
+///   \varphi = \operatorname{atan2}\!\big(z + e'^2\, b \sin^3\theta,\ \ p - e^2\, a
+///   \cos^3\theta\big).
+/// \f]
+/// On the polar axis (\f$p < 10^{-9}\f$) latitude is \f$\pm 90°\f$.
 void ecefToGeodeticDeg(const math::Vec3<math::frames::ECEF>& r_ecef, double& lat_deg,
                        double& lon_deg);
 
@@ -55,6 +65,17 @@ struct JammingRegion {
 };
 
 /// A set of jamming regions with a point-in-any-region test.
+///
+/// **Point-in-region test.** The sub-satellite point \f$(\lambda, \varphi)\f$
+/// (from `ecefToGeodeticDeg`) is tested against each region's ring by ray casting:
+/// for ring vertices \f$(x_i, y_i)\f$ (lon, lat), the point is inside when an odd
+/// number of edges straddle its latitude and lie to its east —
+/// \f[
+///   \big[(y_i > \varphi) \neq (y_j > \varphi)\big]
+///   \ \land\ \lambda < x_i + (x_j - x_i)\,\frac{\varphi - y_i}{y_j - y_i},
+/// \f]
+/// counted over all edges \f$(j, i)\f$ with the ring implicitly closed. The test is
+/// in raw longitude degrees, so a region must not cross the ±180° antimeridian.
 class JammingRegions {
  public:
   JammingRegions() = default;

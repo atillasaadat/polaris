@@ -96,6 +96,51 @@ struct ReactionWheelOutput {
 
 /// A single reaction wheel spinning about its own +z. The caller applies the
 /// mounting rotation to place the outputs in the body frame.
+///
+/// **Per-step model** (rotor speed \f$\omega\f$, inertia \f$I\f$, step \f$\Delta t\f$).
+/// Bearing friction opposes the spin with a dry + viscous + aerodynamic rundown
+/// law:
+/// \f[
+///   \tau_f = -\operatorname{sgn}(\omega)\,\big(c_d + c_v\,|\omega| + c_a\,\omega^2\big).
+/// \f]
+/// The motor-torque request \f$\tau_c\f$ (torque mode) or the speed-loop output
+/// (speed mode) is passed through the torque box and drive quantiser,
+/// \f[
+///   \tau_m = q\,\operatorname{round}\!\Big(
+///     \tfrac{1}{q}\operatorname{clamp}(\tau_c,\,-\tau_{\max},\,\tau_{\max})\Big),
+/// \f]
+/// where \f$q\f$ is the torque LSB (skipped when \f$q=0\f$). In **speed mode** the
+/// onboard loop sets the request to \f$\tau_c = K_p(\omega_\mathrm{cmd}-\omega)\f$
+/// for a configured proportional gain \f$K_p>0\f$, or to the ideal single-step
+/// value \f$\tau_c = I(\omega_\mathrm{cmd}-\omega)/\Delta t - \tau_f\f$ when
+/// \f$K_p=0\f$ (a friction feed-forward that holds at target). The rotor then
+/// integrates
+/// \f[
+///   \dot\omega = \frac{\tau_m + \tau_f}{I}, \qquad
+///   \omega' = \omega + \dot\omega\,\Delta t.
+/// \f]
+/// If \f$|\omega'|\f$ exceeds the speed ceiling \f$\omega_{\max}\f$ it is clamped,
+/// \f$\dot\omega\f$ is backed out from the clamped motion, and the implied motor
+/// torque is recomputed \f$\tau_m = I\dot\omega - \tau_f\f$, so a saturated wheel
+/// reports the reduced authority it actually delivered. The reaction on the body
+/// (Newton's third law) is the negative rate of change of rotor momentum,
+/// \f[
+///   \tau_\mathrm{body} = -I\,\dot\omega, \qquad h = I\,\omega,
+/// \f]
+/// about the wheel \f$+z\f$. Bus power sums housekeeping, copper loss and
+/// (signed, regenerative) mechanical power, using the pre-step speed for the
+/// mechanical term:
+/// \f[
+///   P = P_\mathrm{idle} + \left(\frac{\tau_m}{K_t}\right)^{2} R + \tau_m\,\omega.
+/// \f]
+/// Static imbalance \f$U_s\f$ and dynamic imbalance \f$U_d\f$ throw a radial
+/// force and torque that rotate with the rotor phase \f$\theta\f$ (integrated as
+/// \f$\theta' = (\theta + \omega'\,\Delta t)\bmod 2\pi\f$):
+/// \f[
+///   \mathbf{F}_\mathrm{jit} = U_s\,\omega'^2\,[\cos\theta',\ \sin\theta',\ 0]^\top,
+///   \qquad
+///   \boldsymbol{\tau}_\mathrm{jit} = U_d\,\omega'^2\,[\cos\theta',\ \sin\theta',\ 0]^\top.
+/// \f]
 class ReactionWheel {
  public:
   explicit ReactionWheel(const ReactionWheelSpec& spec) : spec_(spec), inertia_(spec.inertia()) {}

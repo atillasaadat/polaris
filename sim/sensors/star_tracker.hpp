@@ -192,6 +192,69 @@ struct StarTrackerMeasurement {
 /// per-source stream id under the run's master seed. The fixed per-unit bias and
 /// thermo-elastic axis are realised at construction, so the same
 /// {spec, seed, stream_id} always builds the same physical unit.
+///
+/// **Measurement model.** The output is a full attitude, so the error is a
+/// small-angle rotation vector \f$\theta\f$ (body axes) composed onto the truth:
+/// \f[
+///   \tilde{q} = \delta q(\theta) \otimes q_{\mathrm{truth}}, \qquad
+///   \delta q(\theta) =
+///   \Big(\cos\tfrac{|\theta|}{2},\ \tfrac{\theta}{|\theta|}\sin\tfrac{|\theta|}{2}\Big),
+/// \f]
+/// summing the physically distinct mechanisms (dropped to \f$\theta = 0\f$ for an
+/// **ideal** tracker, `noise_enabled = false`):
+/// \f[
+///   \theta = \underbrace{b_u}_{\text{bias}} + \underbrace{\hat{t}\,\kappa\,\Delta
+///   T}_{\text{thermo}}
+///          + \underbrace{e_{\mathrm{lf}}}_{\text{LF spatial}} +
+///          \underbrace{e_{\mathrm{hf}}}_{\text{HF spatial}}
+///          + \underbrace{e_{\tau}}_{\text{temporal}} +
+///          \underbrace{b^{\mathrm{flt}}}_{\text{fault}}.
+/// \f]
+/// Each mechanism is **anisotropic** — its 1σ splits into a cross-boresight and an
+/// about-boresight component. For a mechanism with pair
+/// \f$(\sigma_\perp,\ \sigma_\parallel)\f$ and standard-normal draws
+/// \f$g_1,g_2,g_3\f$, with \f$\hat{c}_1,\hat{c}_2\f$ the cross axes and \f$\hat{b}\f$
+/// the boresight:
+/// \f[
+///   e(\sigma; g) = \sigma_\perp\,(g_1\hat{c}_1 + g_2\hat{c}_2) + \sigma_\parallel\,g_3\,\hat{b}.
+/// \f]
+/// The temporal term is this directly, \f$e_\tau = e(\sigma_{\tau}; g)\f$. Each
+/// spatial term is a first-order Gauss-Markov process over its state \f$s\f$ with
+/// correlation time \f$\tau_s\f$:
+/// \f[
+///   s_{k+1} = \phi\, s_k + \sqrt{1-\phi^2}\; e(\sigma; g), \qquad \phi = e^{-\Delta t/\tau_s},
+/// \f]
+/// degenerating to white noise \f$s = e(\sigma; g)\f$ when \f$\tau_s \le 0\f$. The
+/// fixed per-unit realisations, drawn once at construction, are the thermo-elastic
+/// axis \f$\hat{t}\f$ (isotropic unit vector, scaled by \f$\kappa\,\Delta T\f$ with
+/// \f$\kappa\f$ = `thermo_elastic_per_k`) and the bias
+/// \f$b_u = \hat{d}\,(B\, u)\f$ — an isotropic direction \f$\hat{d}\f$ with
+/// magnitude uniform in \f$[0, B]\f$, \f$u\sim\mathcal{U}(0,1)\f$, \f$B\f$ =
+/// `bias_bound` (a bound, not a σ). The states advance every call whether or not a
+/// solution is reported.
+///
+/// **Availability state machine.** A solution is valid only in `kTracking`. With
+/// \f$\rho = \|\omega\|\f$, \f$\alpha = \|\dot\omega\|\f$, and
+/// \f$\operatorname{ok}(v, \ell) \equiv (\ell \le 0)\ \lor\ (v \le \ell)\f$, and
+/// geometry clear (\f$\text{occluder} = \text{None}\f$ and no dropout):
+///  - geometry not clear \f$\Rightarrow\f$ `kLost`, acquisition timer reset;
+///  - in `kTracking`: stay iff
+///    \f$\operatorname{ok}(\rho, \ell_{\mathrm{trk}}^{\rho}) \land \operatorname{ok}(\alpha,
+///    \ell_{\mathrm{trk}}^{\alpha})\f$, else `kLost`;
+///  - otherwise, if
+///    \f$\operatorname{ok}(\rho, \ell_{\mathrm{acq}}^{\rho}) \land \operatorname{ok}(\alpha,
+///    \ell_{\mathrm{acq}}^{\alpha})\f$, accumulate \f$t_{\mathrm{acq}} \mathrel{+}= \Delta t\f$ and
+///    enter `kTracking` once \f$t_{\mathrm{acq}} \ge t_{\mathrm{LIS}}\f$ (`lost_in_space_s`), else
+///    `kAcquiring`;
+///  - otherwise `kLost`.
+///
+/// The tracking envelope is the wider one, so a vehicle that slews out of it must
+/// re-enter the tighter acquisition envelope and dwell for \f$t_{\mathrm{LIS}}\f$
+/// before a solution reappears. Geometry comes from the shared §6.1 occlusion
+/// model with the Earth keep-out floored at the half field of view,
+/// \f$\theta_{\mathrm{earth}} = \max(\theta_{\mathrm{excl}},\ \tfrac12\,\mathrm{FOV})\f$.
+///
+/// Markley & Crassidis §4.2 [markley2014].
 class StarTracker {
  public:
   /// @param spec The datasheet-derived error/availability specification.

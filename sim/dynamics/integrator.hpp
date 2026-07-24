@@ -58,6 +58,23 @@ struct StepControl {
 
 /// One RK step of size @p h from (@p t0, @p y): advancing solution -> @p y_next,
 /// embedded error estimate -> @p err. @p f is `Vec f(double t, const Vec& y)`.
+///
+/// **Embedded step.** With the Butcher tableau \f$(c_i, a_{ij}, b_i, e_i)\f$ of
+/// \f$s = 16\f$ stages, the stage derivatives are evaluated left-to-right on the
+/// strictly lower-triangular coupling,
+/// \f[
+///   \mathbf{k}_i = f\!\left(t_0 + c_i h,\ \mathbf{y} + h \sum_{j<i} a_{ij}\,\mathbf{k}_j\right),
+///   \qquad i = 0,\dots,s-1,
+/// \f]
+/// and combined into the advancing (higher-order) solution and the embedded error
+/// estimate
+/// \f[
+///   \mathbf{y}_\mathrm{next} = \mathbf{y} + h \sum_{i} b_i\,\mathbf{k}_i, \qquad
+///   \mathbf{err} = h \sum_{i} e_i\,\mathbf{k}_i,
+/// \f]
+/// where \f$e_i = b_i^{\text{high}} - b_i^{\text{low}}\f$ is the difference of the
+/// order-9 and order-8 weight rows, so \f$\mathbf{err}\f$ estimates the local
+/// truncation error of the order-8 member (Verner 1978 [verner1978]).
 template <int N, class Deriv>
 void rk89_step(const RkTableau& tab, Deriv& f, double t0, const Eigen::Matrix<double, N, 1>& y,
                double h, Eigen::Matrix<double, N, 1>& y_next, Eigen::Matrix<double, N, 1>& err) {
@@ -87,6 +104,26 @@ struct NoProjection {
 /// Integrate @p y from @p t0 to @p t1 with adaptive RK8(9). After each accepted
 /// step, @p project is applied to the state (e.g. renormalize a quaternion so it
 /// stays on the unit manifold). @p f is `Vec f(double t, const Vec& y)`.
+///
+/// **Step-size control** (Montenbruck & Gill §4.2 [montenbruck2000]). The embedded
+/// error is scaled per component by a mixed absolute/relative tolerance and reduced
+/// to an RMS norm over the \f$N\f$ states,
+/// \f[
+///   \mathrm{sc}_i = \mathrm{atol} + \mathrm{rtol}\,\max(|y_i|, |y_{\mathrm{next},i}|),
+///   \qquad
+///   E = \sqrt{\frac{1}{N} \sum_{i=1}^{N} \left(\frac{\mathrm{err}_i}{\mathrm{sc}_i}\right)^2}.
+/// \f]
+/// A step is accepted when \f$E \le 1\f$ (or force-accepted at the \f$h =
+/// h_{\min}\f$ floor so the loop cannot stall). The next step is scaled by
+/// \f[
+///   h \leftarrow \operatorname{clamp}\!\Big(
+///     h\cdot\operatorname{clamp}\big(\rho\,E^{-1/(p+1)},\ s_{\min},\ s_{\max}\big),
+///     \ h_{\min},\ h_{\max}\Big),
+/// \f]
+/// with safety factor \f$\rho\f$ (`safety`), error-estimate order \f$p\f$
+/// (`error_order`, so the exponent is \f$-1/(p+1) = -1/9\f$), and per-step growth
+/// bounded to \f$[s_{\min}, s_{\max}]\f$. When \f$E = 0\f$ the growth defaults to
+/// \f$s_{\max}\f$. The final step is truncated to land exactly on \f$t_1\f$.
 template <int N, class Deriv, class Project = NoProjection>
 Eigen::Matrix<double, N, 1> integrate(const RkTableau& tab, Deriv& f, double t0, double t1,
                                       Eigen::Matrix<double, N, 1> y, const StepControl& ctl = {},

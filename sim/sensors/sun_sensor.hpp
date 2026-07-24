@@ -221,6 +221,53 @@ struct SunSensorMeasurement {
 /// per-source stream id under the run's master seed. Per-diode scale errors and
 /// normal misalignments are realised at construction, so the same
 /// {spec, seed, stream_id} always builds the same physical unit.
+///
+/// **Measurement model — analogue** (`kDiodeCounts`). For diode \f$i\f$ with body
+/// normal \f$\hat{n}_i\f$, true Sun direction \f$\hat{s}\f$, shadow factor \f$\gamma\f$,
+/// and incidence cosine \f$c_i = \hat{n}_i\cdot\hat{s}\f$, the diode is illuminated
+/// when \f$\gamma > \gamma_{\min}\f$, \f$c_i > 0\f$, and \f$c_i \ge \cos(\text{FOV})\f$.
+/// Its count is the cosine law plus Earthshine plus electronics:
+/// \f[
+///   \mathrm{cnt}_i = \operatorname{clamp}\!\Big( Q_{\delta}\big( D_i + A_i + c_{\mathrm{dk}} +
+///   \sigma_c\, g_i \big),\ 0,\ \mathrm{cnt}_{\max} \Big),
+/// \f]
+/// \f[
+///   D_i = F\, k_i\, c_i\, \gamma \quad(\text{if illuminated, else }0), \qquad
+///   A_i = a\, F\, \Phi_i\, \eta,
+/// \f]
+/// with full scale \f$F\f$ (`full_scale_counts`), per-unit scale \f$k_i = 1+\varepsilon_i\f$,
+/// dark counts \f$c_{\mathrm{dk}}\f$, noise \f$\sigma_c\f$ (`noise_counts`), LSB
+/// \f$\delta\f$, ceiling \f$\mathrm{cnt}_{\max}\f$ (`saturation_counts`), and albedo
+/// coefficient \f$a\f$. The Earthshine view factor
+/// \f$\Phi_i = \mathrm{fovCoveredFraction}(\text{FOV},\ \angle(\hat{n}_i,\hat{d}),\ \rho_\oplus)\f$
+/// uses the shared §6.1 overlap with Earth angular radius
+/// \f$\rho_\oplus = \arcsin(R_\oplus/\|r_{\mathrm{sat}}\|)\f$ and nadir \f$\hat{d}\f$,
+/// scaled by the dayside factor
+/// \f$\eta = \max\!\big(0,\ (r_{\mathrm{sat}}\cdot
+/// r_{\mathrm{sun}})/(\|r_{\mathrm{sat}}\|\,\|r_{\mathrm{sun}}\|)\big)\f$. A failed diode reads
+/// \f$0\f$.
+///
+/// **Measurement model — digital** (`kSunVector`). The unit reports a direction;
+/// the model perturbs the truth by the datasheet accuracy. The incidence angle
+/// \f$\theta = \arccos(\hat{b}\cdot\hat{s})\f$ selects the regime, and albedo adds
+/// in quadrature:
+/// \f[
+///   \sigma = \sqrt{\sigma_\theta^2 + \sigma_a^2}, \quad
+///   \sigma_\theta = \begin{cases}\sigma_{\mathrm{in}} & \theta \le
+///   \theta_{\mathrm{in}}\\ \sigma_{\mathrm{out}} & \text{otherwise}\end{cases}, \quad \sigma_a =
+///   \sigma_a^{\max}\,\Phi\,\eta,
+/// \f]
+/// \f[
+///   \hat{s}_{\mathrm{meas}} = \operatorname{normalize}\!\big(\hat{s} + \sigma\,(g_1\hat{e}_1 +
+///   g_2\hat{e}_2)\big),
+/// \f]
+/// where \f$\hat{e}_1,\hat{e}_2 \perp \hat{s}\f$, \f$\Phi\f$ is the boresight–nadir
+/// view factor, and \f$\sigma_a^{\max}\f$ = `albedo_error_rad`. An **ideal** sensor
+/// (`noise_enabled = false`) forces \f$\sigma = 0\f$ / drops \f$A_i\f$, dark, and
+/// noise while still drawing to keep the stream aligned; the FOV cut and eclipse
+/// threshold \f$\gamma_{\min}\f$ still apply, being geometry not noise.
+///
+/// Markley & Crassidis §4.1 [markley2014].
 class SunSensor {
  public:
   /// @param spec The datasheet-derived geometry/accuracy specification.

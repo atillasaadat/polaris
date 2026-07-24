@@ -45,6 +45,29 @@ namespace polaris::sim::sensors {
 
 /// The §6.1 error stack for a 3-axis vector sensor. Plain-`Eigen::Vector3d` in and
 /// out: the caller supplies truth already in the sensor's axes and tags the frame.
+///
+/// **Error model.** For a true vector \f$x\f$, the measurement is the composition
+/// applied in `apply()` in this exact order:
+/// \f[
+///   y = \operatorname{sat}_{R}\!\Big(\, Q_{\delta}\big(\, M x + b + n \,\big) \Big),
+///   \qquad n_i \sim \mathcal{N}\!\big(0,\ \sigma_i^2\big),
+/// \f]
+/// where the four configurable stages are, each a no-op at its identity setting:
+///  - \f$M\f$ (`scale_misalignment`) — the \f$3\times3\f$ scale-factor +
+///    misalignment / soft-iron matrix; \f$M = I\f$ is perfect.
+///  - \f$b\f$ (`bias`) — the constant additive (hard-iron) offset.
+///  - \f$n\f$ — zero-mean Gaussian noise with per-axis \f$\sigma_i\f$ (`noise_std`);
+///    an axis with \f$\sigma_i = 0\f$ draws nothing there.
+///  - \f$Q_{\delta}(v) = \delta\,\operatorname{round}(v/\delta)\f$ — LSB
+///    quantization with step \f$\delta\f$ (`resolution`); \f$\delta = 0\f$ disables it.
+///  - \f$\operatorname{sat}_{R}(v) = \operatorname{clamp}(v,\,-R,\,+R)\f$ — per-axis
+///    saturation to the range \f$R\f$; \f$R = 0\f$ disables it.
+///
+/// When `noise_enabled` is false the whole stack collapses to the identity
+/// \f$y = x\f$ (an **ideal** sensor: no scale, misalignment, bias, noise,
+/// quantization, or saturation), used for noise-free baseline runs (§6.2).
+///
+/// Markley & Crassidis §4 [markley2014].
 struct VectorErrorModel {
   /// (I + scale)·misalignment, applied to the true vector. Identity = perfect.
   Eigen::Matrix3d scale_misalignment = Eigen::Matrix3d::Identity();

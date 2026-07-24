@@ -37,6 +37,25 @@ namespace polaris::math {
 
 /// Untagged quaternion core (JPL scalar-first). Used inside hot kernels; the
 /// boundary type is `Quat<To, From>` below.
+///
+/// Writing \f$\bar q = [q_0,\ \mathbf{q}_v]\f$ with scalar \f$q_0\f$ and vector
+/// part \f$\mathbf{q}_v = [q_1,q_2,q_3]^\top\f$, the **JPL product** and **passive
+/// attitude matrix** are
+/// \f[
+///   \bar a \otimes \bar b = \begin{bmatrix}
+///     a_0 b_0 - \mathbf{a}_v\!\cdot\mathbf{b}_v \\[2pt]
+///     a_0\,\mathbf{b}_v + b_0\,\mathbf{a}_v - \mathbf{a}_v \times \mathbf{b}_v
+///   \end{bmatrix}, \qquad
+///   A(\bar q) = (2q_0^2 - 1)\,\mathbf{I} - 2 q_0\,[\mathbf{q}_v\times]
+///     + 2\,\mathbf{q}_v \mathbf{q}_v^\top,
+/// \f]
+/// where \f$[\mathbf{q}_v\times]\f$ is the cross-product (skew) matrix. The
+/// negative sign on \f$\mathbf{a}_v\times\mathbf{b}_v\f$ is the JPL convention
+/// (Trawny & Roumeliotis [trawny2005]); it makes \f$A\f$ a homomorphism,
+/// \f$A(\bar a \otimes \bar b) = A(\bar a)\,A(\bar b)\f$, and \f$A\f$ maps a
+/// vector's reference-frame coordinates to the rotated frame,
+/// \f$\mathbf{v}_\mathrm{rot} = A(\bar q)\,\mathbf{v}_\mathrm{ref}\f$
+/// (Markley & Crassidis §2.9 [markley2014]).
 class Quaternion {
  public:
   /// Identity rotation `[1, 0, 0, 0]`.
@@ -52,11 +71,16 @@ class Quaternion {
   static Quaternion Identity() { return Quaternion(1.0, 0.0, 0.0, 0.0); }
 
   /// Quaternion for a rotation of @p angle_rad about @p unit_axis (assumed unit
-  /// norm). Produces the passive transform `A(q)` about that axis.
+  /// norm). Produces the passive transform `A(q)` about that axis:
+  /// \f$\bar q = [\cos(\theta/2),\ \sin(\theta/2)\,\hat{\mathbf{n}}]\f$.
   static Quaternion FromAxisAngle(const Eigen::Vector3d& unit_axis, double angle_rad);
 
   /// Extract a quaternion from a proper rotation matrix `A` (Shepperd's
-  /// numerically stable method). @p dcm must be orthonormal with det +1.
+  /// numerically stable method [shepperd1978]). The extraction pivots on the
+  /// largest of \f$\{4q_0^2, 4q_1^2, 4q_2^2, 4q_3^2\} - 1\f$, formed from the trace
+  /// and diagonal of \f$A\f$, then recovers the remaining components from
+  /// off-diagonal differences/sums divided by \f$4\times\f$ the pivot; the result
+  /// is renormalised and made canonical. @p dcm must be orthonormal with det +1.
   static Quaternion FromRotationMatrix(const Eigen::Matrix3d& dcm);
 
   /// @name Accessors (scalar-first)
@@ -109,7 +133,10 @@ class Quaternion {
   /// Rotate raw vector coordinates from the reference to the rotated frame.
   Eigen::Vector3d rotate(const Eigen::Vector3d& v) const;
 
-  /// Smallest rotation angle [rad] between this and @p other (in [0, π]).
+  /// Smallest rotation angle [rad] between this and @p other (in [0, π]), from the
+  /// four-vector dot product \f$\theta = 2\arccos\big(\min(|\bar q_1 \cdot \bar q_2|,\,1)\big)\f$.
+  /// The absolute value maps \f$\bar q\f$ and \f$-\bar q\f$ (the same rotation) to
+  /// the same angle; the clamp guards \c acos against round-off past 1.
   double angularDistance(const Quaternion& other) const;
 
  private:

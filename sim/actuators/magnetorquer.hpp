@@ -51,6 +51,23 @@ struct MagnetorquerSpec {
 
 /// A three-axis magnetorquer set. Each body axis is one rod with its own
 /// hysteresis state, so the residual/hysteresis history is tracked per axis.
+///
+/// **Per-axis model.** For a commanded moment \f$m_c\f$ with rated moment
+/// \f$m_{\max}\f$, linearity error \f$\epsilon\f$, and residual moment \f$r\f$:
+/// \f[
+///   x = (1+\epsilon)\,\operatorname{clamp}(m_c,\,-m_{\max},\,m_{\max}), \qquad
+///   s \leftarrow \operatorname{clamp}(s,\,x - r,\,x + r), \qquad
+///   m = \operatorname{clamp}(s,\,-m_{\max},\,m_{\max})
+/// \f]
+/// where \f$s\f$ is the per-axis play (backlash) state — the standard scalar
+/// play operator, whose memory reproduces both the B-H lag on command reversal
+/// and the remanent moment \f$\pm r\f$ at zero command.
+///
+/// The rod produces a dipole only; the environment applies
+/// \f$\boldsymbol{\tau} = \mathbf{m} \times \mathbf{B}\f$. Bus power is
+/// \f$P = P_{\max} \sum_i (m_i/m_{\max})^2\f$ (\f$P \propto I^2R\f$ with
+/// \f$m \propto I\f$; each rod carries its own winding, so full three-axis
+/// drive draws \f$3P_{\max}\f$).
 class Magnetorquer {
  public:
   explicit Magnetorquer(const MagnetorquerSpec& spec) : spec_(spec) {}

@@ -33,12 +33,13 @@ extensions = [
     "numpydoc",
     "breathe",
     "sphinxcontrib.bibtex",
+    "sphinxcontrib.mermaid",
     "sphinx_needs",
 ]
 
 # MyST (Markdown) — lets the hand-written user guides (docs/guides/*.md) be
 # authored in Markdown and lets them reuse the repository's per-folder READMEs.
-myst_enable_extensions = ["colon_fence", "deflist", "substitution"]
+myst_enable_extensions = ["colon_fence", "deflist", "dollarmath", "substitution"]
 myst_heading_anchors = 3
 
 templates_path = ["_templates"]

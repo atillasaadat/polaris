@@ -4,6 +4,35 @@ Polaris is a from-scratch spacecraft GNC suite: flight software in F´ (F Prime)
 C++, a high-fidelity 6DOF truth simulation, a shared C++ library, and Python
 tooling — verified against GMAT golden data.
 
+```{mermaid}
+flowchart TB
+    subgraph tools["Python tooling"]
+        CFG["configc — config compiler"]
+        GMAT["GMAT golden harness"]
+        EPH["ephemeris / data fetchers"]
+    end
+    subgraph lib["lib/ — shared C++ (flight-safe)"]
+        MATH["math: typed vectors, JPL quaternion, frames"]
+        TIME["time: TAI/GPS/TT/UTC/TDB"]
+        ENV["environment: IGRF, Chebyshev ephemeris"]
+    end
+    subgraph sim["sim/ — truth simulation (plant)"]
+        DYN["dynamics: 6DOF + RK8(9)"]
+        WORLD["world: gravity, drag, SRP, third-body, B-field"]
+        SENS["sensors + actuators (full error stacks)"]
+        LOOP["io: §2.4 closed loop"]
+    end
+    subgraph flight["flight/ — F´ FSW"]
+        FSW["PolarisFsw deployment<br/>(GNC components: Phase 3+)"]
+    end
+    CFG -->|sim_setup.json| sim
+    CFG -->|F´ params| flight
+    lib --> sim
+    lib --> flight
+    LOOP <-->|"measurements / commands<br/>(SITL TCP in Phase 3)"| FSW
+    GMAT -->|golden fixtures| sim
+```
+
 ## Prerequisites
 
 - Linux or macOS (WSL2 works), `git`, a C++17 compiler (`g++` ≥ 11 / `clang` ≥ 14).

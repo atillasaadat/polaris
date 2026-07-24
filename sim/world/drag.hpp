@@ -47,6 +47,22 @@
 namespace polaris::sim::world {
 
 /// Cannon-ball atmospheric drag against a co-rotating atmosphere.
+///
+/// **Model.** The acceleration opposes the atmosphere-relative velocity
+/// (Vallado Eq. 8-32; Montenbruck & Gill §3.5) [vallado2013; montenbruck2000]:
+/// \f[
+///   \mathbf a = -\tfrac12\,\rho\,\frac{C_D A}{m}\,|\mathbf v_{\mathrm{rel}}|\,
+///     \mathbf v_{\mathrm{rel}},
+///   \qquad
+///   \mathbf v_{\mathrm{rel}} = \mathbf v - \boldsymbol\omega_\oplus\times\mathbf r,
+///   \quad \boldsymbol\omega_\oplus = \omega_\oplus\,\hat{\mathbf z},
+/// \f]
+/// where \f$\rho\f$ is the neutral density from the injected `DensityFn` and the
+/// \f$\boldsymbol\omega_\oplus\times\mathbf r\f$ term is the co-rotating wind.
+/// A center-of-pressure offset \f$\mathbf r_{cp}\f$ turns the force into the aero
+/// disturbance torque \f$\boldsymbol\tau = \mathbf r_{cp}\times\mathbf F\f$ with
+/// \f$\mathbf F = m\mathbf a\f$ resolved in Body; with the default zero offset the
+/// torque vanishes.
 class AtmosphericDrag : public dynamics::ForceTorqueModel {
  public:
   /// Area and mass are taken separately rather than as the usual lumped

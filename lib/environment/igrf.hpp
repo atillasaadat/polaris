@@ -101,6 +101,39 @@ bool validIgrfCoefficients(const IgrfCoefficients& c);
 
 /// IGRF main-field evaluator.
 ///
+/// **Model.** The internal-source scalar potential is a Schmidt semi-normalized
+/// spherical-harmonic expansion to degree \f$N=13\f$ (Alken et al. 2021 Eq. 1;
+/// Langel 1987 §4) [alken2021; langel1987]:
+/// \f[
+///   V(r,\theta,\phi) = a\sum_{n=1}^{N}\left(\frac{a}{r}\right)^{\!n+1}
+///     \sum_{m=0}^{n}\left[g_n^m\cos m\phi + h_n^m\sin m\phi\right]
+///       P_n^m(\cos\theta),
+/// \f]
+/// with \f$a = 6371.2\f$ km the IGRF reference radius (a geomagnetic convention,
+/// not WGS84), \f$\theta\f$ colatitude, \f$\phi\f$ east longitude, and \f$P_n^m\f$
+/// the Schmidt semi-normalized associated Legendre functions the published Gauss
+/// coefficients assume [winch2005]. The field is \f$\mathbf B = -\nabla V\f$, in
+/// geocentric spherical components:
+/// \f[
+///   B_r = \sum_n (n+1)\left(\tfrac{a}{r}\right)^{\!n+2}
+///           \sum_m \left[g_n^m\cos m\phi + h_n^m\sin m\phi\right]P_n^m,
+/// \f]
+/// \f[
+///   B_\theta = -\sum_n \left(\tfrac{a}{r}\right)^{\!n+2}
+///           \sum_m \left[g_n^m\cos m\phi + h_n^m\sin m\phi\right]
+///             \frac{\partial P_n^m}{\partial\theta},
+/// \f]
+/// \f[
+///   B_\phi = \frac{1}{\sin\theta}\sum_n \left(\tfrac{a}{r}\right)^{\!n+2}
+///           \sum_m m\left[g_n^m\sin m\phi - h_n^m\cos m\phi\right]P_n^m,
+/// \f]
+/// where \f$B_\theta\f$ points toward increasing colatitude (geographic south) and
+/// \f$B_r\f$ radially outward. Time dependence is the official linear model,
+/// \f$g_n^m(t) = g_n^m(t_0) + (t - t_0)\,\dot g_n^m\f$, with secular variation
+/// \f$\dot g_n^m\f$ published (and applied) only to degree 8. `field()` returns
+/// the equivalent Cartesian ECEF vector; `fieldSpherical()` returns the
+/// components above.
+///
 /// Holds its coefficient set by value (≈6 kB), so an instance is
 /// self-contained and safe to keep as a component member. Copyable, no heap.
 class IgrfField {
