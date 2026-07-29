@@ -19,6 +19,9 @@ module flight {
     import ComCcsds.Subtopology
     import DataProducts.Subtopology
     import FileHandling.Subtopology
+    # SITL lockstep transport (design doc §2.2). A hardware build drops this
+    # import and the Sitl connections block below (recipe: PolarisFsw/README.md).
+    import PolarisSitl.Subtopology
 
   # ----------------------------------------------------------------------
   # Instances used in the topology
@@ -33,16 +36,8 @@ module flight {
     instance comDriver
     instance cmdSeq
 
-    # SITL lockstep transport
-    instance sitlBridge
-    instance sitlRateGroup
-    instance scriptedCmdSource
-    instance comDriverSitl
-    instance comStubSitl
-    instance frameAccumulatorSitl
-    instance deframerSitl
-    instance framerSitl
-    instance commsBufferManagerSitl
+    # SITL lockstep transport instances come from the imported PolarisSitl
+    # subtopology; only sitlTime (above) lives in this topology.
 
   # ----------------------------------------------------------------------
   # Pattern graph specifiers
@@ -145,47 +140,15 @@ module flight {
     # ----------------------------------------------------------------------
     # SITL lockstep transport (design doc §2.2, §2.4)
     #
-    # A self-contained F´ comm stack for the plant<->FSW link. Uplink:
-    # TcpClient -> ComStub -> FrameAccumulator -> FprimeDeframer -> SitlBridge.
-    # Downlink (the reply): SitlBridge -> FprimeFramer -> ComStub -> TcpClient.
-    # Kept fully separate from the GDS ComCcsds stack; inert until --sitl-port.
+    # The self-contained comm stack (TcpClient/ComStub/FrameAccumulator/deframer
+    # -> SitlBridge -> framer -> ...) and the barrier-driven rate group are all
+    # internal to the imported PolarisSitl.Subtopology. Only one connection
+    # crosses the boundary: SitlBridge publishes each STEP epoch to sitlTime,
+    # the deployment-wide time source, which lives here rather than in the
+    # subtopology (§3.2). A hardware build drops the block below with the import.
     # ----------------------------------------------------------------------
     connections Sitl {
-      # --- Barrier-driven rate group (design doc §2.4 steps 3-4) ---
-      # sitlBridge drives the SITL rate group synchronously per STEP; the scripted
-      # command source is its member and commands actuators back to sitlBridge.
-      sitlBridge.sitlCycleOut                  -> sitlRateGroup.CycleIn
-      sitlBridge.timeSetOut                    -> sitlTime.timeSetIn
-      sitlRateGroup.RateGroupMemberOut[0]      -> scriptedCmdSource.run
-      scriptedCmdSource.wheelCmdOut            -> sitlBridge.wheelCmdIn
-      scriptedCmdSource.mtqCmdOut              -> sitlBridge.mtqCmdIn
-
-      # --- Buffer allocations (shared SITL pool) ---
-      comDriverSitl.allocate            -> commsBufferManagerSitl.bufferGetCallee
-      comDriverSitl.deallocate          -> commsBufferManagerSitl.bufferSendIn
-      frameAccumulatorSitl.bufferAllocate   -> commsBufferManagerSitl.bufferGetCallee
-      frameAccumulatorSitl.bufferDeallocate -> commsBufferManagerSitl.bufferSendIn
-      framerSitl.bufferAllocate         -> commsBufferManagerSitl.bufferGetCallee
-      framerSitl.bufferDeallocate       -> commsBufferManagerSitl.bufferSendIn
-
-      # --- Uplink: driver -> stub -> accumulator -> deframer -> bridge ---
-      comDriverSitl.$recv                   -> comStubSitl.drvReceiveIn
-      comStubSitl.drvReceiveReturnOut       -> comDriverSitl.recvReturnIn
-      comStubSitl.dataOut                   -> frameAccumulatorSitl.dataIn
-      frameAccumulatorSitl.dataReturnOut    -> comStubSitl.dataReturnIn
-      frameAccumulatorSitl.dataOut          -> deframerSitl.dataIn
-      deframerSitl.dataReturnOut            -> frameAccumulatorSitl.dataReturnIn
-      deframerSitl.dataOut                  -> sitlBridge.dataIn
-      sitlBridge.dataReturnOut              -> deframerSitl.dataReturnIn
-
-      # --- Downlink (reply): bridge -> framer -> stub -> driver ---
-      sitlBridge.dataOut                    -> framerSitl.dataIn
-      framerSitl.dataReturnOut              -> sitlBridge.dataReturnIn
-      framerSitl.dataOut                    -> comStubSitl.dataIn
-      comStubSitl.dataReturnOut             -> framerSitl.dataReturnIn
-      comStubSitl.comStatusOut              -> framerSitl.comStatusIn
-      comStubSitl.drvSendOut                -> comDriverSitl.$send
-      comDriverSitl.ready                   -> comStubSitl.drvConnected
+      PolarisSitl.sitlBridge.timeSetOut -> sitlTime.timeSetIn
     }
 
   }

@@ -72,32 +72,14 @@ module flight {
   # SITL lockstep transport (design doc §2.2, §2.4)
   # ----------------------------------------------------------------------
   #
-  # A dedicated comm stack for the plant<->FSW TCP link, disjoint from the GDS
-  # ComCcsds stack above: its own TcpClient + ComStub + FrameAccumulator +
-  # FprimeDeframer/FprimeFramer, feeding the SitlBridge payload boundary. All
-  # inert unless --sitl-port is given (the TcpClient is never started).
-
-  instance sitlBridge: flight.SitlBridge base id 0x10015000
-
-  # SITL rate group (passive → runs to completion on the SITL receive task, so
-  # the 10 Hz FSW cycle is deterministic and barrier-driven, not wall-clock
-  # driven). Cycled only by sitlBridge.sitlCycleOut, never by rateGroupDriver.
-  instance sitlRateGroup: Svc.PassiveRateGroup base id 0x1001C000
-
-  # Phase-4 placeholder actuator commander; the SITL rate group's only member
-  # until real GNC components replace it.
-  instance scriptedCmdSource: flight.ScriptedCmdSource base id 0x1001D000
-
-  instance comDriverSitl: Drv.TcpClient base id 0x10016000
-
-  instance comStubSitl: Svc.ComStub base id 0x10017000
-
-  instance frameAccumulatorSitl: Svc.FrameAccumulator base id 0x10018000
-
-  instance deframerSitl: Svc.FprimeDeframer base id 0x10019000
-
-  instance framerSitl: Svc.FprimeFramer base id 0x1001A000
-
-  instance commsBufferManagerSitl: Svc.BufferManager base id 0x1001B000
+  # The plant<->FSW SITL comm stack (sitlBridge, sitlRateGroup, scriptedCmdSource
+  # and their dedicated TcpClient/ComStub/FrameAccumulator/deframer/framer/
+  # bufferManager) now lives in the PolarisSitl subtopology
+  # (flight/PolarisFsw/PolarisSitl/), imported by topology.fpp. Base IDs are
+  # preserved there (0x10015000 + offsets) so the dictionary is unchanged.
+  #
+  # SitlTime (above) intentionally stays here: it is the deployment-wide time
+  # source served to every component via `time connections`, not SITL-only
+  # infrastructure — only its SITL activation is gated at runtime.
 
 }

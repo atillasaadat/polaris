@@ -8,7 +8,7 @@ lives in the merged PR descriptions and the design doc's "Implemented (Push N)"
 notes — this tracker stays a rollup so it cannot rot the way a narrative does.
 
 **Current phase:** Phase 3 — F´ SITL two-process lockstep (barrier drives the real FSW cycle; GNC components next)
-**Last updated:** Push 35 (SITL barrier-driven rate group + sim-time provider + real command path via placeholder ScriptedCmdSource)
+**Last updated:** Push 36 (SITL packaged as the excludable `PolarisSitl` subtopology; deliver-without-SITL recipe; health-ping decision documented)
 
 ---
 
@@ -36,6 +36,7 @@ notes — this tracker stays a rollup so it cannot rot the way a narrative does.
 | §2.4 closed loop (`sim/io`): sensors sampled at native rates, actuator feedback into the plant, fault bindings live | ✅ done + tested |
 | §2.2 SITL two-process transport: `lib/sitl` wire + `SitlBridge` F´ component + sim TCP barrier | ✅ done + tested (bit-identical two-process trace) |
 | §2.4 barrier-driven FSW cycle: SITL `PassiveRateGroup` + `SitlTime` sim-time source + real command path (placeholder `ScriptedCmdSource`) | ✅ done + tested (scripted profile crosses the wire → bit-identical to in-process) |
+| §2.2 SITL packaged as the `PolarisSitl` subtopology (excludable for a flight build; dictionary byte-identical) | ✅ done + tested (both two-process gates stay bitwise green) |
 | FSW GNC components, estimators, control | ⬜ Phase 3+ (replace `ScriptedCmdSource`) |
 
 **Test gates (all green):** 412 C++ unit (ASan/UBSan) · 22 integration ·
@@ -92,6 +93,7 @@ Phase 2 — Sensor & actuator models
 | 33 | #35 | Math documentation standard (§21.3): implementation-exact LaTeX equation blocks on every model class (sensors, actuators, dynamics, environment, quaternion) rendered via Doxygen→Breathe→MathJax; source-controlled Mermaid diagrams in guides (§2.4 sequence, config pipeline, frame graph, architecture) |
 | 34 | — | Phase 3 kickoff — §2.2 SITL transport: shared `lib/sitl` wire format (frozen v1, measurements-only §2.3 boundary), `SitlBridge` passive F´ component on a dedicated comm stack (`-s <port>`, inert when off), sim TCP barrier server with timeout/degrade; two-process integration gate: 100 barriers → bit-identical trace |
 | 35 | — | §2.4 barrier drives the real FSW cycle: `SitlBridge` fires a SITL `Svc::PassiveRateGroup` synchronously per STEP; new `SitlTime` serves sim time as the FSW clock (wall clock when SITL off); `SitlHandler` split into decode + caller-supplied-command reply; placeholder `ScriptedCmdSource` commands actuators from a shared deterministic profile (`-c` to enable). Second integration gate: scripted profile over the wire → bit-identical to in-process |
+| 36 | — | SITL packaged as the `PolarisSitl` subtopology (`flight/PolarisFsw/PolarisSitl/`): nine instances + internal wiring moved out of the flat topology behind `import PolarisSitl.Subtopology`, base IDs preserved so the dictionary is byte-identical; `SitlTime` kept in the main topology as the deployment-wide time source. Deliver-without-SITL is a documented topology-edit recipe (FPP has no conditional-import switch), not a CMake option; passive SITL components register no health pings per the §health active-only guidance. Both two-process gates stay bitwise green |
 
 ---
 

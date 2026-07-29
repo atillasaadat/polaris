@@ -91,3 +91,56 @@ enabled with `-c`:
 
 The wire format and the FSW-side decode/reply logic are shared, testable code in
 `lib/sitl/`.
+
+### Packaged as a subtopology
+
+The whole SITL comm stack — `SitlBridge`, its dedicated
+`Drv::TcpClient`/`Svc::ComStub`/`Svc::FrameAccumulator`/`Svc::FprimeDeframer`/
+`Svc::FprimeFramer`/`Svc::BufferManager`, the barrier-driven
+`Svc::PassiveRateGroup` (`sitlRateGroup`), and `ScriptedCmdSource` — is packaged
+as the **`PolarisSitl` subtopology** (`PolarisSitl/`), following the F´
+subtopology pattern (config module with `BASE_ID`, instances + internal
+connections in the subtopology, cross-boundary connections left to the importer).
+`Top/topology.fpp` pulls it in with `import PolarisSitl.Subtopology`. Base IDs are
+unchanged from the earlier flat layout (`0x10015000` + `0x1000` offsets), so the
+dictionary is byte-identical.
+
+`SitlTime` is deliberately **not** in the subtopology: it is the deployment-wide
+time source (`time connections`, §3.2) and must exist in every build, including a
+flight build; only its SITL activation is gated at runtime. It stays in the main
+topology, wired to the subtopology by the one cross-boundary connection
+`PolarisSitl.sitlBridge.timeSetOut -> sitlTime.timeSetIn`.
+
+### Delivering without SITL
+
+The point of the packaging is a hardware build that ships with **zero SITL code**.
+F´ has no build-time switch to conditionally drop a subtopology import (the
+`import` and its connections must resolve at autocode time, and FPP has no `#if`),
+so exclusion is a topology-authoring edit, not a CMake option. A flight variant
+deletes exactly these lines — nothing else references the SITL instances:
+
+1. `CMakeLists.txt` — the `add_fprime_subdirectory` lines for `PolarisSitl/`,
+   `SitlBridge/`, and `ScriptedCmdSource/` (the latter two would otherwise
+   remain as orphaned, unlinked SITL modules). `SitlPorts/` and `SitlTime/`
+   stay — the deployment-wide time source depends on them.
+2. `Top/CMakeLists.txt` — the `flight_PolarisFsw_PolarisSitl` dependency (and, if
+   nothing else needs them, the `Svc_FrameAccumulator` / `Svc_BufferManager` /
+   `polaris_sitl` deps used only by the SITL setup below).
+3. `Top/topology.fpp` — the `import PolarisSitl.Subtopology` line and the whole
+   `connections Sitl { ... }` block.
+4. `Top/PolarisFswTopology.cpp` — the SITL globals and the `PolarisSitl::`-qualified
+   setup/teardown lines (frame detector, allocator, buffer bins, the
+   `sitlRateGroup`/`frameAccumulatorSitl`/`commsBufferManagerSitl` config, and the
+   `if (state.sitlPort != 0) { ... }` blocks in `setupTopology`, plus the
+   `comDriverSitl` stop/join and `cleanup()` calls in `teardownTopology`), and the
+   `state.sitlPort`/`scriptedCommands` fields in `Top/PolarisFswTopologyDefs.hpp`.
+5. `Main.cpp` — the full `-s`/`-c` CLI surface: their `print_usage` lines, the
+   `sitl_port`/`scripted_commands` locals, the `s:`/`c` entries in the getopt
+   optstring, the `case 's'`/`case 'c'` blocks, and the two `inputs.`
+   assignments that populate the `TopologyState` fields deleted in step 4.
+
+After those deletions the topology autocodes and links with no dangling
+references — the remaining instances (`sitlTime` included) are self-consistent.
+The current deployment keeps SITL **in** (default), verified by the two-process
+integration gates (`tests/integration/sim_sitl_lockstep_test.cpp`) staying
+bitwise green and by the SITL-off binary starting normally with no `-s`.
