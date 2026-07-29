@@ -18,4 +18,12 @@ register_fprime_module(
         "${CMAKE_CURRENT_LIST_DIR}/PolarisFswTopology.cpp"
     DEPENDS
         Fw_Logger
+        flight_PolarisFsw_SitlBridge
+        Svc_ComStub
+        Svc_FrameAccumulator
+        Svc_FprimeDeframer
+        Svc_FprimeFramer
+        Svc_BufferManager
+        Drv_TcpClient
+        polaris_sitl
 )

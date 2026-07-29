@@ -24,7 +24,13 @@
  * @param app: name of application
  */
 void print_usage(const char* app) {
-  Fw::Logger::log("Usage: ./%s [options]\n-a\thostname/IP address\n-p\tport_number\n", app);
+  Fw::Logger::log(
+      "Usage: ./%s [options]\n"
+      "-a\thostname/IP address (GDS ground link)\n"
+      "-p\tport_number (GDS ground link)\n"
+      "-s\tSITL lockstep port (connects to the truth sim on 127.0.0.1; "
+      "0/absent = SITL disabled)\n",
+      app);
 }
 
 /**
@@ -54,11 +60,12 @@ int main(int argc, char* argv[]) {
   I32 option = 0;
   CHAR* hostname = nullptr;
   U16 port_number = 0;
+  U16 sitl_port = 0;
 
   Os::init();
 
   // Loop while reading the getopt supplied options
-  while ((option = getopt(argc, argv, "hp:a:")) != -1) {
+  while ((option = getopt(argc, argv, "hp:a:s:")) != -1) {
     switch (option) {
       // Handle the -a argument for address/hostname
       case 'a':
@@ -68,6 +75,19 @@ int main(int argc, char* argv[]) {
       case 'p':
         port_number = static_cast<U16>(atoi(optarg));
         break;
+      // Handle the -s SITL lockstep port argument (design doc §2.2). Reject
+      // garbage/out-of-range values outright rather than silently truncating
+      // (or silently disabling SITL): a wrong port must fail loudly.
+      case 's': {
+        char* end = nullptr;
+        const long parsed = strtol(optarg, &end, 10);
+        if (end == optarg || *end != '\0' || parsed < 1 || parsed > 65535) {
+          (void)printf("Invalid SITL port '%s' (expected 1-65535)\n", optarg);
+          return 1;
+        }
+        sitl_port = static_cast<U16>(parsed);
+        break;
+      }
       // Cascade intended: help output
       case 'h':
       // Cascade intended: help output
@@ -82,6 +102,7 @@ int main(int argc, char* argv[]) {
   flight::TopologyState inputs;
   inputs.hostname = hostname;
   inputs.port = port_number;
+  inputs.sitlPort = sitl_port;
 
   // Setup program shutdown via Ctrl-C
   signal(SIGINT, signalHandler);

@@ -75,8 +75,9 @@ namespace flight {
  * definition of the project. This deployment uses subtopologies.
  */
 struct TopologyState {
-  const char* hostname;                         //!< Hostname for TCP communication
-  U16 port;                                     //!< Port for TCP communication
+  const char* hostname;                         //!< Hostname for GDS TCP communication
+  U16 port;                                     //!< Port for GDS TCP communication
+  U16 sitlPort;                                 //!< SITL lockstep port (0 = SITL disabled, §2.2)
   CdhCore::SubtopologyState cdhCore;            //!< Subtopology state for CdhCore
   ComCcsds::SubtopologyState comCcsds;          //!< Subtopology state for ComCcsds
   DataProducts::SubtopologyState dataProducts;  //!< Subtopology state for DataProducts

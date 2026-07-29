@@ -33,6 +33,15 @@ module flight {
     instance comDriver
     instance cmdSeq
 
+    # SITL lockstep transport
+    instance sitlBridge
+    instance comDriverSitl
+    instance comStubSitl
+    instance frameAccumulatorSitl
+    instance deframerSitl
+    instance framerSitl
+    instance commsBufferManagerSitl
+
   # ----------------------------------------------------------------------
   # Pattern graph specifiers
   # ----------------------------------------------------------------------
@@ -129,6 +138,43 @@ module flight {
 
     connections PolarisFsw {
 
+    }
+
+    # ----------------------------------------------------------------------
+    # SITL lockstep transport (design doc §2.2, §2.4)
+    #
+    # A self-contained F´ comm stack for the plant<->FSW link. Uplink:
+    # TcpClient -> ComStub -> FrameAccumulator -> FprimeDeframer -> SitlBridge.
+    # Downlink (the reply): SitlBridge -> FprimeFramer -> ComStub -> TcpClient.
+    # Kept fully separate from the GDS ComCcsds stack; inert until --sitl-port.
+    # ----------------------------------------------------------------------
+    connections Sitl {
+      # --- Buffer allocations (shared SITL pool) ---
+      comDriverSitl.allocate            -> commsBufferManagerSitl.bufferGetCallee
+      comDriverSitl.deallocate          -> commsBufferManagerSitl.bufferSendIn
+      frameAccumulatorSitl.bufferAllocate   -> commsBufferManagerSitl.bufferGetCallee
+      frameAccumulatorSitl.bufferDeallocate -> commsBufferManagerSitl.bufferSendIn
+      framerSitl.bufferAllocate         -> commsBufferManagerSitl.bufferGetCallee
+      framerSitl.bufferDeallocate       -> commsBufferManagerSitl.bufferSendIn
+
+      # --- Uplink: driver -> stub -> accumulator -> deframer -> bridge ---
+      comDriverSitl.$recv                   -> comStubSitl.drvReceiveIn
+      comStubSitl.drvReceiveReturnOut       -> comDriverSitl.recvReturnIn
+      comStubSitl.dataOut                   -> frameAccumulatorSitl.dataIn
+      frameAccumulatorSitl.dataReturnOut    -> comStubSitl.dataReturnIn
+      frameAccumulatorSitl.dataOut          -> deframerSitl.dataIn
+      deframerSitl.dataReturnOut            -> frameAccumulatorSitl.dataReturnIn
+      deframerSitl.dataOut                  -> sitlBridge.dataIn
+      sitlBridge.dataReturnOut              -> deframerSitl.dataReturnIn
+
+      # --- Downlink (reply): bridge -> framer -> stub -> driver ---
+      sitlBridge.dataOut                    -> framerSitl.dataIn
+      framerSitl.dataReturnOut              -> sitlBridge.dataReturnIn
+      framerSitl.dataOut                    -> comStubSitl.dataIn
+      comStubSitl.dataReturnOut             -> framerSitl.dataReturnIn
+      comStubSitl.comStatusOut              -> framerSitl.comStatusIn
+      comStubSitl.drvSendOut                -> comDriverSitl.$send
+      comDriverSitl.ready                   -> comStubSitl.drvConnected
     }
 
   }

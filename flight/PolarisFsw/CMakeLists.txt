@@ -11,10 +11,10 @@
 # Topology and Components
 ###
 
-add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/Top/")
+# Custom components (added before Top/ so the topology can reference them)
+add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/SitlBridge/")
 
-# Add custom components to this specific deployment here
-# add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/MyComponent/")
+add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/Top/")
 
 register_fprime_deployment(
     SOURCES

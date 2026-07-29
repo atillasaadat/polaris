@@ -88,10 +88,11 @@ add_library(polaris::actuators ALIAS polaris_actuators)
 # driven and bit-reproducible. The F´ SITL transport (Phase 3) drives the same
 # FswCallback interface over TCP.
 add_library(polaris_io
-  io/closed_loop.cpp)
+  io/closed_loop.cpp
+  io/sitl_server.cpp)
 target_include_directories(polaris_io PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_io
-  PUBLIC polaris_scenario polaris_sensors polaris_actuators
+  PUBLIC polaris_scenario polaris_sensors polaris_actuators polaris_sitl
   PRIVATE polaris_flags)
 add_library(polaris::io ALIAS polaris_io)
 
