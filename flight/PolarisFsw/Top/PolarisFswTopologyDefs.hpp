@@ -79,6 +79,8 @@ struct TopologyState {
   U16 port;                             //!< Port for GDS TCP communication
   U16 sitlPort;                         //!< SITL lockstep port (0 = SITL disabled, §2.2)
   bool scriptedCommands;                //!< SITL only: enable the ScriptedCmdSource profile (§2.4)
+  const char* onboardEopPath;           //!< Onboard IERS EOP table file (§11.3, §22)
+  const char* onboardEphemPath;         //!< Onboard Chebyshev ephemeris fixture (§11.3, §22)
   CdhCore::SubtopologyState cdhCore;    //!< Subtopology state for CdhCore
   ComCcsds::SubtopologyState comCcsds;  //!< Subtopology state for ComCcsds
   DataProducts::SubtopologyState dataProducts;  //!< Subtopology state for DataProducts

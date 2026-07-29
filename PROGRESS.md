@@ -8,7 +8,7 @@ lives in the merged PR descriptions and the design doc's "Implemented (Push N)"
 notes — this tracker stays a rollup so it cannot rot the way a narrative does.
 
 **Current phase:** Phase 3 — F´ SITL two-process lockstep (barrier drives the real FSW cycle; GNC components next)
-**Last updated:** Push 36 (SITL packaged as the excludable `PolarisSitl` subtopology; deliver-without-SITL recipe; health-ping decision documented)
+**Last updated:** Push 37 (`OnboardTables` flight component: onboard time/EOP/Chebyshev tables loaded/validated/served, `RELOAD_TABLES` upload→activate with double-buffer swap)
 
 ---
 
@@ -37,9 +37,10 @@ notes — this tracker stays a rollup so it cannot rot the way a narrative does.
 | §2.2 SITL two-process transport: `lib/sitl` wire + `SitlBridge` F´ component + sim TCP barrier | ✅ done + tested (bit-identical two-process trace) |
 | §2.4 barrier-driven FSW cycle: SITL `PassiveRateGroup` + `SitlTime` sim-time source + real command path (placeholder `ScriptedCmdSource`) | ✅ done + tested (scripted profile crosses the wire → bit-identical to in-process) |
 | §2.2 SITL packaged as the `PolarisSitl` subtopology (excludable for a flight build; dictionary byte-identical) | ✅ done + tested (both two-process gates stay bitwise green) |
+| Onboard tables (`OnboardTables` flight component): leap/EOP/Chebyshev loaded + validated + served via typed ports; `RELOAD_TABLES` upload→activate; coverage-expiry check | ✅ done + tested (`lib/onboard` double-buffer swap; port answers vs lib evaluators) |
 | FSW GNC components, estimators, control | ⬜ Phase 3+ (replace `ScriptedCmdSource`) |
 
-**Test gates (all green):** 412 C++ unit (ASan/UBSan) · 22 integration ·
+**Test gates (all green):** 422 C++ unit (ASan/UBSan) · 22 integration ·
 4 GMAT golden · 84 Python (config compiler, GMAT harness, space weather, orbit) ·
 docs `-W` (bibliography + requirements traceability) · pre-commit
 (clang-format + ruff) · F´ flight build.
@@ -94,6 +95,7 @@ Phase 2 — Sensor & actuator models
 | 34 | — | Phase 3 kickoff — §2.2 SITL transport: shared `lib/sitl` wire format (frozen v1, measurements-only §2.3 boundary), `SitlBridge` passive F´ component on a dedicated comm stack (`-s <port>`, inert when off), sim TCP barrier server with timeout/degrade; two-process integration gate: 100 barriers → bit-identical trace |
 | 35 | — | §2.4 barrier drives the real FSW cycle: `SitlBridge` fires a SITL `Svc::PassiveRateGroup` synchronously per STEP; new `SitlTime` serves sim time as the FSW clock (wall clock when SITL off); `SitlHandler` split into decode + caller-supplied-command reply; placeholder `ScriptedCmdSource` commands actuators from a shared deterministic profile (`-c` to enable). Second integration gate: scripted profile over the wire → bit-identical to in-process |
 | 36 | — | SITL packaged as the `PolarisSitl` subtopology (`flight/PolarisFsw/PolarisSitl/`): nine instances + internal wiring moved out of the flat topology behind `import PolarisSitl.Subtopology`, base IDs preserved so the dictionary is byte-identical; `SitlTime` kept in the main topology as the deployment-wide time source. Deliver-without-SITL is a documented topology-edit recipe (FPP has no conditional-import switch), not a CMake option; passive SITL components register no health pings per the §health active-only guidance. Both two-process gates stay bitwise green |
+| 37 | — | Onboard tables (§11.3, §22): new `OnboardTables` flight component wrapping the flight-safe `lib/onboard::TableStore`. Loads leap seconds (in-code `historical()`), IERS EOP (`finals.all`, windowed to the ephemeris span), and Sun/Moon Chebyshev fits (committed `.cheb`, planets skipped) at setup; serves `getEopAt`/`getBodyPosition`/`getTaiUtcOffset` typed ports over the lib evaluators. `RELOAD_TABLES` command is the upload→activate path (FileUplink writes the file, reload restages into an inactive double-buffer slot and swaps only on full success — failed reload keeps the previous tables); `Svc.Sched` coverage-expiry warning; health telemetry (counts/spans/state). Flight component (no `lib/sitl` dep, outside `PolarisSitl`); `<cstdio>` reads at load/reload only. 7 unit tests vs lib ground truth on the committed fixtures |
 
 ---
 
@@ -101,8 +103,9 @@ Phase 2 — Sensor & actuator models
 
 1. **Phase 3 — real GNC on the SITL rate group:** replace the placeholder
    `ScriptedCmdSource` with real estimator/control components that consume
-   `EstimatedState` and the STEP_REQ sensor records (still unread today);
-   onboard time/EOP/ephemeris uploads; persistence.
+   `EstimatedState` and the STEP_REQ sensor records (still unread today). The
+   onboard time/EOP/ephemeris tables and their upload→activate path are now in
+   place (`OnboardTables`, Push 37); the GNC components wire to its query ports.
 2. **Phase 2 close-out (optional):** CMG and thruster truth models (§7) — or
    defer to the phases that consume them (§8.5 control, §17 maneuvering).
 3. **Phase 4 — attitude determination:** TRIAD/QUEST initializers, MEKF fine

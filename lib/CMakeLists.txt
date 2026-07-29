@@ -79,6 +79,19 @@ target_link_libraries(polaris_state INTERFACE
   Eigen3::Eigen polaris_math polaris_time polaris_constants)
 add_library(polaris::state ALIAS polaris_state)
 
+# --- Onboard: time/EOP/ephemeris table store (flight-safe) -------------------
+# The flight-side holder the OnboardTables F´ component wraps: loads leap/EOP/
+# Chebyshev tables from disk, validates, and answers point queries. Wraps the
+# lib tables/evaluators; file reads are cstdio at load/reload only (design doc
+# §11.3, §22; REQ-CDH-002). Flight memory/exception rules apply.
+add_library(polaris_onboard
+  onboard/tables.cpp)
+target_include_directories(polaris_onboard PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(polaris_onboard
+  PUBLIC Eigen3::Eigen polaris_math polaris_time polaris_frames polaris_ephemeris polaris_constants
+  PRIVATE polaris_flags)
+add_library(polaris::onboard ALIAS polaris_onboard)
+
 # --- SITL: plant<->FSW lockstep wire format (header-only, flight-safe) -------
 # One layout shared by the truth sim's TCP server and the F´ SitlBridge
 # component (design doc §2.2, §2.4) so the two processes cannot drift.

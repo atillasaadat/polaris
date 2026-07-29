@@ -31,7 +31,9 @@ void print_usage(const char* app) {
       "-s\tSITL lockstep port (connects to the truth sim on 127.0.0.1; "
       "0/absent = SITL disabled)\n"
       "-c\tenable the ScriptedCmdSource actuator profile (SITL only; "
-      "default off = zero commands)\n",
+      "default off = zero commands)\n"
+      "-E\tonboard IERS EOP table file (default tests/golden/finals.all.iau2000.txt)\n"
+      "-B\tonboard Chebyshev ephemeris fixture (default tests/golden/de440_bodies.cheb)\n",
       app);
 }
 
@@ -64,11 +66,13 @@ int main(int argc, char* argv[]) {
   U16 port_number = 0;
   U16 sitl_port = 0;
   bool scripted_commands = false;
+  const char* onboard_eop_path = nullptr;
+  const char* onboard_ephem_path = nullptr;
 
   Os::init();
 
   // Loop while reading the getopt supplied options
-  while ((option = getopt(argc, argv, "hp:a:s:c")) != -1) {
+  while ((option = getopt(argc, argv, "hp:a:s:cE:B:")) != -1) {
     switch (option) {
       // Handle the -a argument for address/hostname
       case 'a':
@@ -95,6 +99,13 @@ int main(int argc, char* argv[]) {
       case 'c':
         scripted_commands = true;
         break;
+      // Onboard-table paths (design doc §11.3, §22); absent = topology defaults.
+      case 'E':
+        onboard_eop_path = optarg;
+        break;
+      case 'B':
+        onboard_ephem_path = optarg;
+        break;
       // Cascade intended: help output
       case 'h':
       // Cascade intended: help output
@@ -111,6 +122,8 @@ int main(int argc, char* argv[]) {
   inputs.port = port_number;
   inputs.sitlPort = sitl_port;
   inputs.scriptedCommands = scripted_commands;
+  inputs.onboardEopPath = onboard_eop_path;
+  inputs.onboardEphemPath = onboard_ephem_path;
 
   // Setup program shutdown via Ctrl-C
   signal(SIGINT, signalHandler);
