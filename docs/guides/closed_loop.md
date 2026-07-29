@@ -48,13 +48,15 @@ flowchart LR
     SS <-->|"F´ frames over TCP loopback<br/>HELLO · STEP_REQ · STEP_REPLY · SHUTDOWN<br/>(lib/sitl/wire.hpp, measurements only — §2.3)"| TC
 
     subgraph FSW ["flight process (flight_PolarisFsw -s port)"]
-        TC["Drv.TcpClient +<br/>FrameAccumulator / Deframer / Framer<br/>(dedicated SITL comm stack)"] --> SB["SitlBridge"]
-        SB -->|"1 — sim epoch (TAI ns)"| ST["SitlTime<br/>(FSW time source)"]
-        SB -->|"2 — cycle"| RG["Svc.PassiveRateGroup<br/>(10 Hz, barrier-driven)"]
-        RG -->|run| CS["ScriptedCmdSource<br/>(Phase-4 GNC placeholder)"]
+        subgraph PS ["PolarisSitl subtopology (excludable for a flight build)"]
+            TC["Drv.TcpClient +<br/>FrameAccumulator / Deframer / Framer<br/>(dedicated SITL comm stack)"] --> SB["SitlBridge"]
+            SB -->|"2 — cycle"| RG["Svc.PassiveRateGroup<br/>(10 Hz, barrier-driven)"]
+            RG -->|run| CS["ScriptedCmdSource<br/>(Phase-4 GNC placeholder)"]
+            CS -->|"3 — wheel τ / MTQ dipoles"| SB
+            SB -->|"4 — STEP_REPLY"| TC
+        end
+        SB -->|"1 — sim epoch (TAI ns)"| ST["SitlTime<br/>(deployment-wide time source;<br/>stays in main topology)"]
         ST -.->|time port| CS
-        CS -->|"3 — wheel τ / MTQ dipoles"| SB
-        SB -->|"4 — STEP_REPLY"| TC
     end
 ```
 

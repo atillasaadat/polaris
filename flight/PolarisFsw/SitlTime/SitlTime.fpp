@@ -6,7 +6,7 @@ module flight {
   @ This is the deployment's single `time get port` source (replacing the stock
   @ Svc.ChronoTime). With SITL disabled it behaves exactly like ChronoTime:
   @ every timeGetPort call returns the workstation wall clock. With SITL enabled
-  @ (setSitlActive() called at topology setup when --sitl-port is given), the
+  @ (setSitlActive() called at topology setup when -s <port> is given), the
   @ SitlBridge pushes each macro-step's sim epoch on timeSetIn, and timeGetPort
   @ returns that epoch as TAI — so EVR/telemetry timestamps in a SITL run are
   @ pure functions of sim time, not wall time (§2.4 bit-reproducibility).

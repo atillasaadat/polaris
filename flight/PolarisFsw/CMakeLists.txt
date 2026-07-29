@@ -18,6 +18,11 @@ add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/SitlTime/")
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/ScriptedCmdSource/")
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/SitlBridge/")
 
+# SITL lockstep transport, packaged as an importable subtopology (design doc
+# §2.2). Added after the SITL components it groups and before Top, which imports
+# it. A hardware build drops this line (see PolarisFsw/README.md).
+add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/PolarisSitl/")
+
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/Top/")
 
 register_fprime_deployment(

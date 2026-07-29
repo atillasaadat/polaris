@@ -75,21 +75,23 @@ void configureTopology() {
   rateGroup1.configure(rateGroup1Context, FW_NUM_ARRAY_ELEMENTS(rateGroup1Context));
   rateGroup2.configure(rateGroup2Context, FW_NUM_ARRAY_ELEMENTS(rateGroup2Context));
   rateGroup3.configure(rateGroup3Context, FW_NUM_ARRAY_ELEMENTS(rateGroup3Context));
-  sitlRateGroup.configure(sitlRateGroupContext, FW_NUM_ARRAY_ELEMENTS(sitlRateGroupContext));
+  PolarisSitl::sitlRateGroup.configure(sitlRateGroupContext,
+                                       FW_NUM_ARRAY_ELEMENTS(sitlRateGroupContext));
 
   // Command sequencer needs to allocate memory to hold contents of command sequences
   cmdSeq.allocateBuffer(0, mallocator, 5 * 1024);
 
   // SITL comm stack: frame detector + buffer pool. Configured unconditionally so
   // the instances are valid; they stay inert until the TcpClient is started (only
-  // when --sitl-port is given), so a SITL-off run behaves exactly as before.
-  frameAccumulatorSitl.configure(sitlFrameDetector, 1, sitlAllocator, SITL_ACCUMULATOR_SIZE);
+  // when -s <port> is given), so a SITL-off run behaves exactly as before.
+  PolarisSitl::frameAccumulatorSitl.configure(sitlFrameDetector, 1, sitlAllocator,
+                                              SITL_ACCUMULATOR_SIZE);
 
   Svc::BufferManager::BufferBins sitlBins;
   memset(&sitlBins, 0, sizeof(sitlBins));
   sitlBins.bins[0].bufferSize = SITL_BUFFER_SIZE;
   sitlBins.bins[0].numBuffers = SITL_BUFFER_COUNT;
-  commsBufferManagerSitl.setup(0, 0, sitlAllocator, sitlBins);
+  PolarisSitl::commsBufferManagerSitl.setup(0, 0, sitlAllocator, sitlBins);
 }
 
 void setupTopology(const TopologyState& state) {
@@ -110,13 +112,13 @@ void setupTopology(const TopologyState& state) {
   // FrameAccumulator reassembles frames across recv buffers, so the default recv
   // buffer size is sufficient.
   if (state.sitlPort != 0) {
-    comDriverSitl.configure("127.0.0.1", state.sitlPort);
+    PolarisSitl::comDriverSitl.configure("127.0.0.1", state.sitlPort);
     // Switch the time source to sim time and arm the placeholder commander. Both
     // are inert with SITL off (sitlTime stays on the wall clock; the scripted
     // source only runs when the barrier cycles the SITL rate group), so this is
     // the one place SITL changes clock/command behavior.
     sitlTime.setSitlActive();
-    scriptedCmdSource.setEnabled(state.scriptedCommands);
+    PolarisSitl::scriptedCmdSource.setEnabled(state.scriptedCommands);
   }
   // Project-specific component configuration. Function provided above. May be inlined, if desired.
   configureTopology();
@@ -134,7 +136,7 @@ void setupTopology(const TopologyState& state) {
   // stack stays inert (design doc §2.2).
   if (state.sitlPort != 0) {
     Os::TaskString sitlName("SitlRecvTask");
-    comDriverSitl.start(sitlName, SITL_COMM_PRIORITY, Default::STACK_SIZE);
+    PolarisSitl::comDriverSitl.start(sitlName, SITL_COMM_PRIORITY, Default::STACK_SIZE);
   }
 }
 
@@ -158,13 +160,13 @@ void teardownTopology(const TopologyState& state) {
   // Other task clean-up.
   comDriver.stop();
   (void)comDriver.join();
-  comDriverSitl.stop();
-  (void)comDriverSitl.join();
+  PolarisSitl::comDriverSitl.stop();
+  (void)PolarisSitl::comDriverSitl.join();
 
   // Resource deallocation
   cmdSeq.deallocateBuffer(mallocator);
-  frameAccumulatorSitl.cleanup();
-  commsBufferManagerSitl.cleanup();
+  PolarisSitl::frameAccumulatorSitl.cleanup();
+  PolarisSitl::commsBufferManagerSitl.cleanup();
 
   tearDownComponents(state);
   deinitComponents(state);

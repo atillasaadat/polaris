@@ -18,15 +18,17 @@ register_fprime_module(
         "${CMAKE_CURRENT_LIST_DIR}/PolarisFswTopology.cpp"
     DEPENDS
         Fw_Logger
-        flight_PolarisFsw_SitlBridge
-        flight_PolarisFsw_SitlPorts
+        # SITL lockstep transport, packaged as an importable subtopology (§2.2).
+        # A hardware build drops this dep (recipe in PolarisFsw/README.md); the
+        # SITL component/Svc/Drv modules it groups come in transitively here.
+        flight_PolarisFsw_PolarisSitl
+        # SitlTime is the deployment-wide time source (stays in the main
+        # topology, not the SITL subtopology — see PolarisSitl.fpp).
         flight_PolarisFsw_SitlTime
-        flight_PolarisFsw_ScriptedCmdSource
-        Svc_PassiveRateGroup
-        Svc_ComStub
+        # Directly used by the hand-written topology setup (.cpp): the GDS
+        # TcpClient (comDriver), the SITL frame detector / buffer bins config,
+        # and the shared SITL wire constants.
         Svc_FrameAccumulator
-        Svc_FprimeDeframer
-        Svc_FprimeFramer
         Svc_BufferManager
         Drv_TcpClient
         polaris_sitl
