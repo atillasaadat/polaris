@@ -60,6 +60,11 @@ module flight {
   # same workstation wall clock as ChronoTime otherwise.
   instance sitlTime: flight.SitlTime base id 0x10010000
 
+  # Onboard time/EOP/ephemeris table provider (design doc §11.3, §22). Loads the
+  # leap/EOP/Chebyshev tables at setup and serves them to the Phase-4 GNC stack;
+  # a flight component (ships to hardware), not SITL infrastructure.
+  instance onboardTables: flight.OnboardTables base id 0x10020000
+
   instance rateGroupDriver: Svc.RateGroupDriver base id 0x10011000
 
   instance systemResources: Svc.SystemResources base id 0x10012000

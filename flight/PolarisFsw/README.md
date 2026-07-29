@@ -144,3 +144,32 @@ references — the remaining instances (`sitlTime` included) are self-consistent
 The current deployment keeps SITL **in** (default), verified by the two-process
 integration gates (`tests/integration/sim_sitl_lockstep_test.cpp`) staying
 bitwise green and by the SITL-off binary starting normally with no `-s`.
+
+## Onboard tables
+
+`OnboardTables` (`OnboardTables/`) is the onboard time/EOP/ephemeris table
+provider the Phase-4 GNC stack reads (design doc §11.3, §22; REQ-CDH-002). At
+topology setup it loads three tables from disk and serves point queries over
+three typed ports (`getEopAt`, `getBodyPosition`, `getTaiUtcOffset`), plus a
+`Svc.Sched` coverage-expiry check on the housekeeping rate group and a
+`RELOAD_TABLES` command:
+
+- **Leap seconds** — the committed in-code IERS record
+  (`time::LeapSecondTable::historical()`); no uploaded leap file exists yet.
+- **IERS EOP** — the verbatim `finals.all` product, windowed to the ephemeris
+  span (default `tests/golden/finals.all.iau2000.txt`, override with `-E`).
+- **Sun/Moon Chebyshev ephemeris** — the committed `.cheb` fixture, planets
+  skipped (default `tests/golden/de440_bodies.cheb`, override with `-B`).
+
+The load/validate/query logic lives in the flight-safe `lib/onboard`
+(`TableStore`), which only *wraps* the `lib/` tables and evaluators; `<cstdio>`
+file reads happen at load/reload only. The **upload → activate** path is F´
+FileUplink (the GDS writes a new table file) followed by `RELOAD_TABLES`, which
+restages into an inactive double-buffer slot and swaps only on full success, so
+a failed reload leaves the previous tables in service. Ports/types are shared
+via the interface-only `OnboardTablesPorts/` module (like `SitlPorts/`).
+
+`OnboardTables` is a **flight** component: it ships to hardware, lives outside
+the `PolarisSitl` subtopology, and has no `lib/sitl` dependency — the
+deliver-without-SITL recipe above does not touch it. Exercised by
+`tests/unit/onboard_tables_test.cpp`.

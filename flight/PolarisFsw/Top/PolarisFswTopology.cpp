@@ -94,6 +94,13 @@ void configureTopology() {
   PolarisSitl::commsBufferManagerSitl.setup(0, 0, sitlAllocator, sitlBins);
 }
 
+// Onboard time/EOP/ephemeris table paths (design doc §11.3, §22). Default to the
+// committed reference files the sim also loads; a real deployment points these at
+// the on-disk tables FileUplink writes (recipe: PolarisFsw/README.md). Overridden
+// by TopologyState (-E / -B in Main.cpp) when supplied.
+static const char* const kDefaultEopPath = "tests/golden/finals.all.iau2000.txt";
+static const char* const kDefaultEphemPath = "tests/golden/de440_bodies.cheb";
+
 void setupTopology(const TopologyState& state) {
   // Autocoded initialization. Function provided by autocoder.
   initComponents(state);
@@ -120,6 +127,14 @@ void setupTopology(const TopologyState& state) {
     sitlTime.setSitlActive();
     PolarisSitl::scriptedCmdSource.setEnabled(state.scriptedCommands);
   }
+  // Onboard tables: load leap/EOP/ephemeris from the configured (or default)
+  // paths (design doc §11.3, §22). A load failure emits a warning EVR and leaves
+  // the component unready; it does not abort setup (the tables are not yet on the
+  // SITL/GNC critical path). RELOAD_TABLES re-attempts from the same paths.
+  onboardTables.configureAndLoad(
+      state.onboardEopPath != nullptr ? state.onboardEopPath : kDefaultEopPath,
+      state.onboardEphemPath != nullptr ? state.onboardEphemPath : kDefaultEphemPath);
+
   // Project-specific component configuration. Function provided above. May be inlined, if desired.
   configureTopology();
   // Autocoded parameter loading. Function provided by autocoder.

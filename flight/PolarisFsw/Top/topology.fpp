@@ -27,6 +27,7 @@ module flight {
   # Instances used in the topology
   # ----------------------------------------------------------------------
     instance sitlTime
+    instance onboardTables
     instance rateGroup1
     instance rateGroup2
     instance rateGroup3
@@ -125,6 +126,8 @@ module flight {
       rateGroup3.RateGroupMemberOut[2] -> DataProducts.dpBufferManager.schedIn
       rateGroup3.RateGroupMemberOut[3] -> DataProducts.dpWriter.schedIn
       rateGroup3.RateGroupMemberOut[4] -> DataProducts.dpMgr.schedIn
+      # Onboard-table coverage-expiry check on the housekeeping rate group.
+      rateGroup3.RateGroupMemberOut[5] -> onboardTables.run
     }
 
     connections CdhCore_cmdSeq {
