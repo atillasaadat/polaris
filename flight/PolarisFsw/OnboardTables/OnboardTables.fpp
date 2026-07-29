@@ -85,6 +85,14 @@ module flight {
     @ Successful (re)loads since start.
     telemetry ReloadCount: U32
 
+    @ Grade currently served for ephemeris queries (PRECISE table vs COARSE
+    @ analytic fallback), evaluated at the current time each rate-group cycle.
+    telemetry EphemGrade: TableGrade
+
+    @ Grade currently served for EOP queries (PRECISE table vs COARSE zero-EOP
+    @ fallback), evaluated at the current time each rate-group cycle.
+    telemetry EopGrade: TableGrade
+
     # ----------------------------------------------------------------------
     # Events
     # ----------------------------------------------------------------------
@@ -122,6 +130,24 @@ module flight {
       severity warning high \
       format "Onboard table coverage expiring: eop={} ephem={}" \
       throttle 1
+
+    @ A domain's served grade dropped from PRECISE to COARSE: queries in that
+    @ domain are now answered from the table-independent fallback (analytic
+    @ Sun/Moon, or zero-EOP) rather than the uploaded table. Coarse operation is
+    @ safe (it is the Safe-mode floor) but degraded. Unthrottled by design:
+    @ emissions are already edge-gated per domain by the watchdog's last-grade
+    @ tracking (no storm is possible), and a shared throttle would suppress the
+    @ second domain's alert when both degrade.
+    @ Action: uplink/refresh the affected table (RELOAD_TABLES).
+    event TableDegraded(domain: TableDomain, servedGrade: TableGrade) \
+      severity warning high \
+      format "Onboard table degraded to coarse: domain={} grade={}"
+
+    @ A domain's served grade recovered to PRECISE (typically after a successful
+    @ RELOAD_TABLES restored coverage). Re-arms the matching TableDegraded alert.
+    event TableRecovered(domain: TableDomain) \
+      severity activity high \
+      format "Onboard table recovered to precise: domain={}"
 
     # ----------------------------------------------------------------------
     # Standard AC ports

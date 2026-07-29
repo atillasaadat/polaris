@@ -169,6 +169,19 @@ restages into an inactive double-buffer slot and swaps only on full success, so
 a failed reload leaves the previous tables in service. Ports/types are shared
 via the interface-only `OnboardTablesPorts/` module (like `SitlPorts/`).
 
+**Coarse fallbacks & grading (Push 38).** Table loss degrades to coarse
+operation instead of no answer. Each query carries a **source-quality grade** in
+its result — `PRECISE` (uploaded table), `COARSE` (table-independent fallback:
+analytic Vallado Sun/Moon, or zero-EOP with UT1 ≈ UTC and zero polar motion), or
+the reserved `UNAVAILABLE` — on the `grade` member of `EopSample`/`PosEciMeters`.
+`getTaiUtcOffset` stays `PRECISE` always (the in-code leap record answers even
+before any load). This is what makes the §10 Safe-mode coarse sun-pointing floor
+table-independent. The rate-group watchdog telemeters the per-domain served
+grade (`EphemGrade`, `EopGrade`) and emits a throttled **`TableDegraded`**
+warning on a precise→coarse transition and **`TableRecovered`** on
+coarse→precise (e.g. after a `RELOAD_TABLES` restores coverage), alongside the
+existing `CoverageExpiring` check.
+
 `OnboardTables` is a **flight** component: it ships to hardware, lives outside
 the `PolarisSitl` subtopology, and has no `lib/sitl` dependency — the
 deliver-without-SITL recipe above does not touch it. Exercised by

@@ -81,7 +81,7 @@ TEST(OnboardTables, EopPortMatchesLibEvaluator) {
   ASSERT_TRUE(report.ok()) << report.reason;
 
   polaris::frames::EopValue via_port;
-  ASSERT_TRUE(store->eopAt(kInCoverageTaiNs, via_port));
+  EXPECT_EQ(store->eopAt(kInCoverageTaiNs, via_port), ob::Quality::kPrecise);
 
   // Ground truth: same lib evaluator, historical leap, over the same windowed
   // table would need the private table; instead assert the port's answer is
@@ -91,11 +91,18 @@ TEST(OnboardTables, EopPortMatchesLibEvaluator) {
   EXPECT_LT(std::fabs(via_port.xp_arcsec), 1.0);
   EXPECT_LT(std::fabs(via_port.yp_arcsec), 1.0);
 
-  // Outside coverage → rejected, output untouched.
+  // Outside coverage → coarse zero-EOP fallback, not a hard failure: the sample
+  // is overwritten with UT1-TAI = -ΔAT (UT1 ≈ UTC) and zero polar motion.
   polaris::frames::EopValue sentinel;
   sentinel.ut1_minus_tai = 12345.0;
-  EXPECT_FALSE(store->eopAt(0, sentinel));
-  EXPECT_DOUBLE_EQ(sentinel.ut1_minus_tai, 12345.0);
+  EXPECT_EQ(store->eopAt(kInCoverageTaiNs, sentinel),
+            ob::Quality::kPrecise);  // sanity: precise here
+  polaris::frames::EopValue coarse;
+  coarse.ut1_minus_tai = 12345.0;
+  EXPECT_EQ(store->eopAt(0, coarse), ob::Quality::kCoarse);
+  EXPECT_DOUBLE_EQ(coarse.xp_arcsec, 0.0);
+  EXPECT_DOUBLE_EQ(coarse.yp_arcsec, 0.0);
+  EXPECT_TRUE(std::isfinite(coarse.ut1_minus_tai));
 }
 
 TEST(OnboardTables, BodyPositionPortMatchesLibTable) {
@@ -104,14 +111,14 @@ TEST(OnboardTables, BodyPositionPortMatchesLibTable) {
   ASSERT_TRUE(report.ok()) << report.reason;
 
   polaris::math::Vec3<polaris::math::frames::ECI> sun;
-  ASSERT_TRUE(store->bodyPositionEci(ob::Body::Sun, kInCoverageTaiNs, sun));
+  EXPECT_EQ(store->bodyPositionEci(ob::Body::Sun, kInCoverageTaiNs, sun), ob::Quality::kPrecise);
   // Sun is ~1 AU from Earth (geocentric): 1.4e11 - 1.6e11 m.
   const double r = sun.eigen().norm();
   EXPECT_GT(r, 1.3e11);
   EXPECT_LT(r, 1.7e11);
 
   polaris::math::Vec3<polaris::math::frames::ECI> moon;
-  ASSERT_TRUE(store->bodyPositionEci(ob::Body::Moon, kInCoverageTaiNs, moon));
+  EXPECT_EQ(store->bodyPositionEci(ob::Body::Moon, kInCoverageTaiNs, moon), ob::Quality::kPrecise);
   const double rm = moon.eigen().norm();
   EXPECT_GT(rm, 3.4e8);  // ~perigee
   EXPECT_LT(rm, 4.1e8);  // ~apogee
@@ -123,7 +130,7 @@ TEST(OnboardTables, TaiUtcOffsetIsCurrentDeltaAt) {
   ASSERT_TRUE(report.ok()) << report.reason;
 
   std::int32_t delta = 0;
-  ASSERT_TRUE(store->taiUtcOffset(kInCoverageTaiNs, delta));
+  EXPECT_EQ(store->taiUtcOffset(kInCoverageTaiNs, delta), ob::Quality::kPrecise);
   // ΔAT has been 37 s since 2017-01-01; the 2026 fixture epoch is in that regime.
   EXPECT_EQ(delta, 37);
 }
@@ -144,6 +151,56 @@ TEST(OnboardTables, CoverageInsideAndOutside) {
   EXPECT_FALSE(ephem_ok);
 }
 
+TEST(OnboardTables, FreshStoreServesCoarseFallbacksTableIndependent) {
+  // The Safe-mode floor: a store that never loaded any table must still answer.
+  // taiUtcOffset stays precise (in-code leap record), while EOP and ephemeris
+  // fall back to coarse — this is what makes coarse sun pointing table-independent.
+  ob::TableStore store;
+  EXPECT_FALSE(store.ready());
+
+  std::int32_t delta = 0;
+  EXPECT_EQ(store.taiUtcOffset(kInCoverageTaiNs, delta), ob::Quality::kPrecise);
+  EXPECT_EQ(delta, 37);  // 2026 regime, from the in-code historical leap table
+
+  polaris::frames::EopValue eop;
+  EXPECT_EQ(store.eopAt(kInCoverageTaiNs, eop), ob::Quality::kCoarse);
+  EXPECT_DOUBLE_EQ(eop.xp_arcsec, 0.0);
+  EXPECT_DOUBLE_EQ(eop.yp_arcsec, 0.0);
+  EXPECT_DOUBLE_EQ(eop.ut1_minus_tai, -37.0);  // UT1 ≈ UTC ⇒ UT1-TAI = -ΔAT
+
+  polaris::math::Vec3<polaris::math::frames::ECI> sun;
+  EXPECT_EQ(store.bodyPositionEci(ob::Body::Sun, kInCoverageTaiNs, sun), ob::Quality::kCoarse);
+  const double rs = sun.eigen().norm();
+  EXPECT_GT(rs, 1.3e11);  // analytic Sun is ~1 AU geocentric
+  EXPECT_LT(rs, 1.7e11);
+
+  polaris::math::Vec3<polaris::math::frames::ECI> moon;
+  EXPECT_EQ(store.bodyPositionEci(ob::Body::Moon, kInCoverageTaiNs, moon), ob::Quality::kCoarse);
+  const double rm = moon.eigen().norm();
+  EXPECT_GT(rm, 3.4e8);  // analytic Moon ~perigee..apogee
+  EXPECT_LT(rm, 4.1e8);
+}
+
+TEST(OnboardTables, UncoveredEpochDegradesToCoarse) {
+  // Tables loaded, but query outside their coverage span → coarse fallback (not a
+  // hard failure), for both the ephemeris and EOP domains.
+  ob::LoadReport report;
+  auto store = makeLoaded(report);
+  ASSERT_TRUE(report.ok()) << report.reason;
+
+  polaris::frames::EopValue eop;
+  EXPECT_EQ(store->eopAt(0, eop), ob::Quality::kCoarse);  // tai=0 (1970) is uncovered
+
+  polaris::math::Vec3<polaris::math::frames::ECI> sun;
+  EXPECT_EQ(store->bodyPositionEci(ob::Body::Sun, 0, sun), ob::Quality::kCoarse);
+  const double rs = sun.eigen().norm();
+  EXPECT_GT(rs, 1.3e11);
+  EXPECT_LT(rs, 1.7e11);
+
+  // Recovery: back inside coverage, the precise table serves again.
+  EXPECT_EQ(store->bodyPositionEci(ob::Body::Sun, kInCoverageTaiNs, sun), ob::Quality::kPrecise);
+}
+
 TEST(OnboardTables, ReloadRestagesAndFailedReloadKeepsService) {
   ob::LoadReport report;
   auto store = makeLoaded(report);
@@ -162,7 +219,7 @@ TEST(OnboardTables, ReloadRestagesAndFailedReloadKeepsService) {
   EXPECT_TRUE(store->ready());
   EXPECT_EQ(store->sunSegments(), sun0);
   polaris::math::Vec3<polaris::math::frames::ECI> sun;
-  EXPECT_TRUE(store->bodyPositionEci(ob::Body::Sun, kInCoverageTaiNs, sun));
+  EXPECT_EQ(store->bodyPositionEci(ob::Body::Sun, kInCoverageTaiNs, sun), ob::Quality::kPrecise);
 }
 
 }  // namespace
@@ -226,8 +283,12 @@ TEST(OnboardTables, ConcurrentReloadNeverServesTornRead) {
   std::atomic<int> served{0};
   std::thread reader([&] {
     while (!stop.load(std::memory_order_relaxed)) {
+      // Both the precise table and the coarse fallback (analytic Sun ~1 AU,
+      // zero-EOP UT1-TAI = -ΔAT) satisfy the same physical bounds, so a torn read
+      // is still the only way to produce an out-of-bounds magnitude here.
       polaris::math::Vec3<polaris::math::frames::ECI> sun;
-      if (store->bodyPositionEci(ob::Body::Sun, kInCoverageTaiNs, sun)) {
+      if (store->bodyPositionEci(ob::Body::Sun, kInCoverageTaiNs, sun) !=
+          ob::Quality::kUnavailable) {
         const double r = sun.eigen().norm();
         if (!std::isfinite(r) || r < 1.3e11 || r > 1.7e11) {
           torn.fetch_add(1, std::memory_order_relaxed);
@@ -235,7 +296,7 @@ TEST(OnboardTables, ConcurrentReloadNeverServesTornRead) {
         served.fetch_add(1, std::memory_order_relaxed);
       }
       polaris::frames::EopValue eop;
-      if (store->eopAt(kInCoverageTaiNs, eop)) {
+      if (store->eopAt(kInCoverageTaiNs, eop) != ob::Quality::kUnavailable) {
         if (!std::isfinite(eop.ut1_minus_tai) || std::abs(eop.ut1_minus_tai) > 45.0) {
           torn.fetch_add(1, std::memory_order_relaxed);
         }

@@ -38,7 +38,9 @@ add_library(polaris::time ALIAS polaris_time)
 
 # --- Ephemeris: onboard Chebyshev evaluation of Sun/Moon/planet positions -----
 add_library(polaris_ephemeris
-  ephemeris/chebyshev.cpp)
+  ephemeris/chebyshev.cpp
+  ephemeris/analytic_sun.cpp
+  ephemeris/analytic_moon.cpp)
 target_include_directories(polaris_ephemeris PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_ephemeris
   PUBLIC Eigen3::Eigen polaris_math polaris_time polaris_constants
