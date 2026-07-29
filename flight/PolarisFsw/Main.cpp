@@ -29,7 +29,9 @@ void print_usage(const char* app) {
       "-a\thostname/IP address (GDS ground link)\n"
       "-p\tport_number (GDS ground link)\n"
       "-s\tSITL lockstep port (connects to the truth sim on 127.0.0.1; "
-      "0/absent = SITL disabled)\n",
+      "0/absent = SITL disabled)\n"
+      "-c\tenable the ScriptedCmdSource actuator profile (SITL only; "
+      "default off = zero commands)\n",
       app);
 }
 
@@ -61,11 +63,12 @@ int main(int argc, char* argv[]) {
   CHAR* hostname = nullptr;
   U16 port_number = 0;
   U16 sitl_port = 0;
+  bool scripted_commands = false;
 
   Os::init();
 
   // Loop while reading the getopt supplied options
-  while ((option = getopt(argc, argv, "hp:a:s:")) != -1) {
+  while ((option = getopt(argc, argv, "hp:a:s:c")) != -1) {
     switch (option) {
       // Handle the -a argument for address/hostname
       case 'a':
@@ -88,6 +91,10 @@ int main(int argc, char* argv[]) {
         sitl_port = static_cast<U16>(parsed);
         break;
       }
+      // Enable the placeholder scripted actuator profile (SITL only, §2.4)
+      case 'c':
+        scripted_commands = true;
+        break;
       // Cascade intended: help output
       case 'h':
       // Cascade intended: help output
@@ -103,6 +110,7 @@ int main(int argc, char* argv[]) {
   inputs.hostname = hostname;
   inputs.port = port_number;
   inputs.sitlPort = sitl_port;
+  inputs.scriptedCommands = scripted_commands;
 
   // Setup program shutdown via Ctrl-C
   signal(SIGINT, signalHandler);

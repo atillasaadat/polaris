@@ -8,13 +8,17 @@ module flight {
   @ (lib/sitl/wire.hpp) arrive on dataIn; the component validates and answers on
   @ dataOut, which the framer wraps and the same TcpClient returns to the sim.
   @
-  @ THIS PUSH the bridge answers autonomously with zero actuator commands: it is
-  @ not yet wired to the control rate group (that is the next push). Passive
-  @ component because the whole uplink->reply path runs synchronously on the
-  @ TcpClient receive task; no queue is needed. The synchronous reply cannot
-  @ deadlock against the sim's blocking send only while both messages stay far
-  @ below the TCP socket buffers (STEP_REQ <= ~3.8 KB, STEP_REPLY <= 336 B
-  @ today) -- revisit if the reply ever grows toward that scale.
+  @ Each STEP_REQ synchronously drives the FSW's 10 Hz cycle before the reply is
+  @ built (design doc §2.4 steps 3-4): dataIn decodes the barrier request, pushes
+  @ the sim epoch to the time provider (timeSetOut), fires the SITL rate group
+  @ (sitlCycleOut -> Svc.PassiveRateGroup, run-to-completion on this task), then
+  @ assembles the STEP_REPLY from the actuator commands the rate group latched
+  @ back on wheelCmdIn/mtqCmdIn. Passive component because the whole
+  @ uplink->cycle->reply path runs synchronously on the TcpClient receive task;
+  @ no queue is needed. The synchronous reply cannot deadlock against the sim's
+  @ blocking send only while both messages stay far below the TCP socket buffers
+  @ (STEP_REQ <= ~3.8 KB, STEP_REPLY <= 336 B) -- revisit if the reply ever grows
+  @ toward that scale (command values changed but not the reply size).
   @
   @ Decode/reply logic lives in lib/sitl/handler.hpp (SitlHandler) so the byte
   @ protocol is unit-tested without a topology.
@@ -36,6 +40,30 @@ module flight {
     @ Receives back ownership of the reply buffer after framing (a fixed
     @ internal buffer, so nothing is deallocated)
     sync input port dataReturnIn: Svc.ComDataWithContext
+
+    # ----------------------------------------------------------------------
+    # SITL rate-group coupling (design doc §2.4 steps 3-4)
+    # ----------------------------------------------------------------------
+
+    @ Drives the SITL PassiveRateGroup synchronously, once per STEP, between
+    @ decoding the barrier request and building the reply. The Os.RawTime this
+    @ port carries is a wall-clock read the rate group uses only for its
+    @ CycleTime/MaxCycleTime diagnostics -- those two channels are exempt from
+    @ sim-time determinism (never reproducible run-to-run); nothing on the
+    @ command/reply path consumes them.
+    output port sitlCycleOut: Svc.Cycle
+
+    @ Publishes the macro-step sim epoch to the SITL time provider, before the
+    @ rate group fires, so FSW time keys off sim time
+    output port timeSetOut: SitlTimeSet
+
+    @ Latest reaction-wheel torque commands from the rate group, latched for the
+    @ next STEP_REPLY
+    sync input port wheelCmdIn: WheelTorqueCmd
+
+    @ Latest magnetorquer dipole commands from the rate group, latched for the
+    @ next STEP_REPLY
+    sync input port mtqCmdIn: MtqDipoleCmd
 
     # ----------------------------------------------------------------------
     # Telemetry

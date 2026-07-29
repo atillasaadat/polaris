@@ -33,6 +33,7 @@ add_executable(polaris_unit_tests
   sim_scenario_gnss_faults_test.cpp
   sim_io_closed_loop_test.cpp
   sim_io_sitl_server_test.cpp
+  sim_io_sitl_server_fault_test.cpp
   sitl_handler_test.cpp
   sim_vehicle_test.cpp)
 

@@ -19,6 +19,10 @@ register_fprime_module(
     DEPENDS
         Fw_Logger
         flight_PolarisFsw_SitlBridge
+        flight_PolarisFsw_SitlPorts
+        flight_PolarisFsw_SitlTime
+        flight_PolarisFsw_ScriptedCmdSource
+        Svc_PassiveRateGroup
         Svc_ComStub
         Svc_FrameAccumulator
         Svc_FprimeDeframer

@@ -5,11 +5,14 @@
 // Decodes deframed SITL payloads (lib/sitl/wire.hpp) arriving from a dedicated
 // SITL comm stack and answers them, per the two-process macro-step barrier. The
 // byte-level protocol lives in polaris::sitl::SitlHandler; this component is the
-// F´ shell: buffer plumbing, events, and telemetry. Flight rules apply — no heap
-// after init, no exceptions, fixed reply buffer, every message validated.
+// F´ shell: buffer plumbing, events, telemetry, and the §2.4 rate-group cycle.
+// Flight rules apply — no heap after init, no exceptions, fixed reply buffer,
+// every message validated.
 //
-// THIS PUSH the bridge answers with zero actuator commands; it is not yet wired
-// to the control rate group (next push).
+// Each STEP_REQ drives the FSW's 10 Hz cycle synchronously (§2.4 steps 3-4):
+// decode the request, push the sim epoch to the time provider, fire the SITL
+// rate group (which commands actuators back on wheelCmdIn/mtqCmdIn), then build
+// the STEP_REPLY from those latched commands.
 // ======================================================================
 
 #ifndef FLIGHT_POLARISFSW_SITLBRIDGE_HPP
@@ -45,9 +48,22 @@ class SitlBridge final : public SitlBridgeComponentBase {
   void dataReturnIn_handler(FwIndexType portNum, Fw::Buffer& data,
                             const ComCfg::FrameContext& context) override;
 
+  //! Latch the rate group's reaction-wheel torque commands for the next reply.
+  //! Invoked synchronously during sitlCycleOut, on this same task.
+  void wheelCmdIn_handler(FwIndexType portNum, const flight::WheelTorqueSet& cmds) override;
+
+  //! Latch the rate group's magnetorquer dipole commands for the next reply.
+  void mtqCmdIn_handler(FwIndexType portNum, const flight::MtqDipoleSet& cmds) override;
+
   // ----------------------------------------------------------------------
   // Helpers
   // ----------------------------------------------------------------------
+
+  //! Run the §2.4 macro-step cycle for a decoded STEP_REQ and send the reply:
+  //! push the sim epoch, fire the SITL rate group, build the STEP_REPLY from the
+  //! latched commands. Emits MalformedMessage and sends nothing on reply overflow.
+  void runStepCycle(const polaris::sitl::HandleResult& result, const ComCfg::FrameContext& context,
+                    U32 reqBytes);
 
   //! Wrap the fixed reply buffer (first @p len bytes) and send it to the SITL
   //! framer for framing and downlink.
@@ -61,6 +77,12 @@ class SitlBridge final : public SitlBridgeComponentBase {
   bool connected_ = false;              //!< Emit SitlConnected once, on first message
   bool quiescent_ = false;              //!< True after SHUTDOWN: stop answering
   U64 steps_ = 0;                       //!< Macro steps exchanged (telemetry)
+
+  //! Latest actuator commands from the SITL rate group, indexed by unit build
+  //! order. Written by wheelCmdIn/mtqCmdIn during the cycle, read when building
+  //! the STEP_REPLY. Fixed-size (kMaxUnits); zero until the rate group commands.
+  polaris::sitl::WheelCommandRecord latest_wheel_[polaris::sitl::kMaxUnits] = {};
+  polaris::sitl::MtqCommandRecord latest_mtq_[polaris::sitl::kMaxUnits] = {};
 
   //! Fixed reply buffer; largest possible STEP_REPLY (no heap). Reused each
   //! step: the framer copies out synchronously before we are re-entered.

@@ -12,5 +12,7 @@ register_fprime_module(
         "${CMAKE_CURRENT_LIST_DIR}/SitlBridge.cpp"
     DEPENDS
         polaris_sitl
+        flight_PolarisFsw_SitlPorts
         Svc_Ports_CommsPorts
+        Svc_Cycle
 )

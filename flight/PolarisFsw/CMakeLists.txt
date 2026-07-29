@@ -11,7 +11,11 @@
 # Topology and Components
 ###
 
-# Custom components (added before Top/ so the topology can reference them)
+# Custom components (added before Top/ so the topology can reference them).
+# SitlPorts (shared port/type defs) first — the others depend on it.
+add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/SitlPorts/")
+add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/SitlTime/")
+add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/ScriptedCmdSource/")
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/SitlBridge/")
 
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/Top/")

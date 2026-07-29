@@ -8,19 +8,15 @@
 // Verifies REQ-SIM-004 (only measurements cross the boundary — the wire
 // records carry no TruthState fields).
 
-#include <arpa/inet.h>
 #include <gtest/gtest.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
-#include <array>
 #include <cstring>
 #include <thread>
 #include <vector>
 
 #include "io/sitl_server.hpp"
 #include "sitl/wire.hpp"
+#include "sitl_test_util.hpp"
 
 namespace {
 
@@ -28,94 +24,7 @@ using polaris::sim::io::FswInputs;
 using polaris::sim::io::FswOutputs;
 using polaris::sim::io::SitlServer;
 namespace sitl = polaris::sitl;
-
-// --- Minimal fake-FSW framing (mirrors Svc::FprimeProtocol) -----------------
-
-std::uint32_t crc32Ref(const std::uint8_t* d, std::size_t n) {
-  std::uint32_t crc = 0xFFFFFFFFu;
-  for (std::size_t i = 0; i < n; ++i) {
-    crc ^= d[i];
-    for (int k = 0; k < 8; ++k) {
-      crc = (crc & 1u) ? (0xEDB88320u ^ (crc >> 1)) : (crc >> 1);
-    }
-  }
-  return ~crc;
-}
-
-void putBe(std::uint8_t* p, std::uint32_t v) {
-  p[0] = static_cast<std::uint8_t>(v >> 24);
-  p[1] = static_cast<std::uint8_t>(v >> 16);
-  p[2] = static_cast<std::uint8_t>(v >> 8);
-  p[3] = static_cast<std::uint8_t>(v);
-}
-
-std::uint32_t getBe(const std::uint8_t* p) {
-  return (std::uint32_t(p[0]) << 24) | (std::uint32_t(p[1]) << 16) | (std::uint32_t(p[2]) << 8) |
-         std::uint32_t(p[3]);
-}
-
-bool sendAll(int fd, const std::uint8_t* d, std::size_t n) {
-  std::size_t off = 0;
-  while (off < n) {
-    const ssize_t r = ::send(fd, d + off, n - off, MSG_NOSIGNAL);
-    if (r <= 0) {
-      return false;
-    }
-    off += static_cast<std::size_t>(r);
-  }
-  return true;
-}
-
-bool sendFramed(int fd, const void* payload, std::size_t len) {
-  std::vector<std::uint8_t> f(8 + len + 4);
-  putBe(f.data(), 0xDEADBEEFu);
-  putBe(f.data() + 4, static_cast<std::uint32_t>(len));
-  std::memcpy(f.data() + 8, payload, len);
-  putBe(f.data() + 8 + len, crc32Ref(f.data(), 8 + len));
-  return sendAll(fd, f.data(), f.size());
-}
-
-/// Blocking read of one frame; returns payload bytes.
-bool recvFramed(int fd, std::vector<std::uint8_t>& payload) {
-  auto recvExact = [fd](std::uint8_t* d, std::size_t n) {
-    std::size_t off = 0;
-    while (off < n) {
-      const ssize_t r = ::recv(fd, d + off, n - off, 0);
-      if (r <= 0) {
-        return false;
-      }
-      off += static_cast<std::size_t>(r);
-    }
-    return true;
-  };
-  std::uint8_t hdr[8];
-  if (!recvExact(hdr, 8) || getBe(hdr) != 0xDEADBEEFu) {
-    return false;
-  }
-  const std::uint32_t len = getBe(hdr + 4);
-  payload.resize(len);
-  std::uint8_t crc[4];
-  if (!recvExact(payload.data(), len) || !recvExact(crc, 4)) {
-    return false;
-  }
-  std::vector<std::uint8_t> whole(8 + len);
-  std::memcpy(whole.data(), hdr, 8);
-  std::memcpy(whole.data() + 8, payload.data(), len);
-  return getBe(crc) == crc32Ref(whole.data(), whole.size());
-}
-
-int connectTo(std::uint16_t port) {
-  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  addr.sin_port = htons(port);
-  if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    ::close(fd);
-    return -1;
-  }
-  return fd;
-}
+using namespace polaris::sitl_testutil;
 
 /// A fake FSW: connect, ack HELLO, answer @p n_steps STEP_REQs with scripted
 /// wheel torques (step index encoded in the command values), then wait for
@@ -172,20 +81,6 @@ void fakeFsw(std::uint16_t port, int n_steps, std::vector<sitl::StepReqHeader>* 
     }
   }
   ::close(fd);
-}
-
-FswInputs makeInputs(std::uint64_t step) {
-  FswInputs in;
-  in.epoch = polaris::time::Tai::fromNanosecondsSinceEpoch(1'000'000'000LL *
-                                                           static_cast<std::int64_t>(step));
-  in.macro_step = step;
-  in.imus.resize(1);
-  in.imus[0].delta_angle_rad =
-      polaris::math::Vec3<polaris::math::frames::Body>(Eigen::Vector3d(1e-3, 2e-3, 3e-3));
-  in.imus[0].samples = 25;
-  in.magnetometers.resize(1);
-  in.gnss.resize(1);
-  return in;
 }
 
 TEST(SitlServer, LockstepExchangeCarriesScriptedCommandsAndBarrierEcho) {

@@ -77,6 +77,17 @@ connects to the truth sim, which listens. Enable it with the SITL port option:
 ```
 
 `-s 0` (or omitting it) disables SITL; the deployment then runs exactly as
-before. This push the bridge answers the sim autonomously with zero actuator
-commands — rate-group coupling is the next push. The wire format and the
-FSW-side decode/reply logic are shared, testable code in `lib/sitl/`.
+before. Each STEP_REQ drives a real 10 Hz FSW cycle: `SitlBridge` publishes the
+step epoch to `SitlTime` (the sim-time source), fires the SITL `PassiveRateGroup`
+(`sitlRateGroup`) synchronously, then builds the STEP_REPLY from the actuator
+commands the rate group produced. Until Phase-4 GNC exists, the rate group's sole
+member is `ScriptedCmdSource`, a placeholder that commands actuators from a
+deterministic profile (`lib/sitl/scripted_profile.hpp`); it is off by default and
+enabled with `-c`:
+
+```
+./flight_PolarisFsw -s 50500 -c
+```
+
+The wire format and the FSW-side decode/reply logic are shared, testable code in
+`lib/sitl/`.

@@ -51,6 +51,11 @@ U32 rateGroup1Context[Svc::ActiveRateGroup::CONNECTION_COUNT_MAX] = {};
 U32 rateGroup2Context[Svc::ActiveRateGroup::CONNECTION_COUNT_MAX] = {};
 U32 rateGroup3Context[Svc::ActiveRateGroup::CONNECTION_COUNT_MAX] = {};
 
+// SITL rate group context array (design doc §2.4). Contexts are unused in this
+// project (all zero), like the wall-clock rate groups above. Sized to the
+// PassiveRateGroup member-port count (config constant).
+U32 sitlRateGroupContext[PassiveRateGroupOutputPorts] = {};
+
 enum TopologyConstants {
   COMM_PRIORITY = 34,
 };
@@ -70,6 +75,7 @@ void configureTopology() {
   rateGroup1.configure(rateGroup1Context, FW_NUM_ARRAY_ELEMENTS(rateGroup1Context));
   rateGroup2.configure(rateGroup2Context, FW_NUM_ARRAY_ELEMENTS(rateGroup2Context));
   rateGroup3.configure(rateGroup3Context, FW_NUM_ARRAY_ELEMENTS(rateGroup3Context));
+  sitlRateGroup.configure(sitlRateGroupContext, FW_NUM_ARRAY_ELEMENTS(sitlRateGroupContext));
 
   // Command sequencer needs to allocate memory to hold contents of command sequences
   cmdSeq.allocateBuffer(0, mallocator, 5 * 1024);
@@ -105,6 +111,12 @@ void setupTopology(const TopologyState& state) {
   // buffer size is sufficient.
   if (state.sitlPort != 0) {
     comDriverSitl.configure("127.0.0.1", state.sitlPort);
+    // Switch the time source to sim time and arm the placeholder commander. Both
+    // are inert with SITL off (sitlTime stays on the wall clock; the scripted
+    // source only runs when the barrier cycles the SITL rate group), so this is
+    // the one place SITL changes clock/command behavior.
+    sitlTime.setSitlActive();
+    scriptedCmdSource.setEnabled(state.scriptedCommands);
   }
   // Project-specific component configuration. Function provided above. May be inlined, if desired.
   configureTopology();
