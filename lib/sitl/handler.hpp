@@ -18,10 +18,15 @@
 /// before any reply is built; a bad message yields `kMalformed` and no reply,
 /// never an assert.
 ///
-/// **This push:** the FSW answers autonomously with *zero* actuator commands —
-/// every `WheelCommandRecord`/`MtqCommandRecord` is left default (torque mode,
-/// 0). Coupling the reply to the control rate group is the NEXT push; until then
-/// the reply-record loop below is the seam that GNC output will fill.
+/// **STEP is two-phase (Push 35).** A STEP_REQ's reply carries the actuator
+/// commands the FSW's 10 Hz rate group produces *for this step* (§2.4 steps
+/// 3-4), so decoding and replying straddle the rate-group cycle. `handle`
+/// therefore only decodes a STEP_REQ — it returns `kStepReq` with the barrier
+/// step and the sim epoch and writes no reply. The caller drives the rate group
+/// (setting sim time from that epoch first), then calls `buildStepReply` with
+/// the latched per-unit commands. HELLO/SHUTDOWN still resolve entirely inside
+/// `handle`. This keeps the byte protocol here and the topology plumbing in the
+/// `SitlBridge` component, and stays unit-testable without a running topology.
 
 #include <cstddef>
 #include <cstdint>
@@ -33,7 +38,8 @@ namespace polaris::sitl {
 /// What `handle` decoded and how the caller should react.
 enum class HandleStatus : std::uint8_t {
   kHelloAck,   ///< reply buffer holds a HELLO_ACK; send it
-  kStepReply,  ///< reply buffer holds a STEP_REPLY; send it
+  kStepReq,    ///< a valid STEP_REQ was decoded; run the rate group, then
+               ///< `buildStepReply` to produce the STEP_REPLY (no reply yet)
   kShutdown,   ///< peer asked to stop; no reply, bridge should go quiet
   kMalformed,  ///< unusable message; no reply (caller emits a warning EVR)
 };
@@ -41,10 +47,11 @@ enum class HandleStatus : std::uint8_t {
 /// Outcome of decoding one SITL message.
 struct HandleResult {
   HandleStatus status = HandleStatus::kMalformed;
-  std::size_t reply_len = 0;     ///< bytes written into the reply buffer
-  std::uint16_t msg_type = 0;    ///< raw MsgHeader::type seen (for the EVR/telemetry)
-  std::uint64_t macro_step = 0;  ///< echoed step (valid for kStepReply)
-  HelloMsg hello{};              ///< decoded HELLO (valid for kHelloAck)
+  std::size_t reply_len = 0;      ///< bytes written into the reply buffer (kHelloAck)
+  std::uint16_t msg_type = 0;     ///< raw MsgHeader::type seen (for the EVR/telemetry)
+  std::uint64_t macro_step = 0;   ///< barrier step to echo (valid for kStepReq)
+  std::int64_t epoch_tai_ns = 0;  ///< macro-step sim epoch (valid for kStepReq)
+  HelloMsg hello{};               ///< decoded HELLO (valid for kHelloAck)
 };
 
 /// Decodes SITL requests and builds replies. Holds the only cross-message state
@@ -52,10 +59,12 @@ struct HandleResult {
 /// later STEP_REPLY (STEP_REQ does not repeat them). One instance per link.
 class SitlHandler {
  public:
-  /// Decode one message from @p in (@p in_len bytes) and, when a reply is due,
-  /// write it into @p out (capacity @p out_cap). Returns the outcome; on
-  /// `kHelloAck`/`kStepReply` `reply_len` bytes of @p out are the payload to
-  /// frame. Touches nothing it cannot fully validate.
+  /// Decode one message from @p in (@p in_len bytes). For HELLO the HELLO_ACK is
+  /// written into @p out (capacity @p out_cap) and `kHelloAck`/`reply_len` are
+  /// returned. For STEP_REQ nothing is written to @p out: `kStepReq` is returned
+  /// with the barrier `macro_step` and sim `epoch_tai_ns`, and the caller must
+  /// then call `buildStepReply` after running the rate group. SHUTDOWN yields
+  /// `kShutdown`. Touches nothing it cannot fully validate.
   HandleResult handle(const std::uint8_t* in, std::size_t in_len, std::uint8_t* out,
                       std::size_t out_cap) {
     HandleResult r;
@@ -72,13 +81,47 @@ class SitlHandler {
       case MsgType::kHello:
         return buildHelloAck(in, in_len, out, out_cap);
       case MsgType::kStepReq:
-        return buildStepReply(in, in_len, out, out_cap);
+        return decodeStepReq(in, in_len);
       case MsgType::kShutdown:
         r.status = HandleStatus::kShutdown;
         return r;
       default:
         return r;  // kHelloAck/kStepReply are FSW→sim only; anything else is bad
     }
+  }
+
+  /// Build the STEP_REPLY for barrier step @p macro_step into @p out (capacity
+  /// @p out_cap): the reply header then `nWheel()` wheel records and `nMtq()`
+  /// MTQ records. Command values come from the caller — @p wheels points to at
+  /// least `nWheel()` `WheelCommandRecord`s (the rate group's latched wheel
+  /// commands) and @p mtqs to at least `nMtq()` `MtqCommandRecord`s; passing
+  /// `nullptr` for either fills that section with default (zero) records.
+  /// Returns the reply length, or 0 if @p out cannot hold it (caller emits a
+  /// warning EVR — never overruns). Requires a prior HELLO (`helloSeen()`).
+  std::size_t buildStepReply(std::uint64_t macro_step, const WheelCommandRecord* wheels,
+                             const MtqCommandRecord* mtqs, std::uint8_t* out, std::size_t out_cap) {
+    if (!hello_seen_) {
+      return 0;  // STEP_REPLY before HELLO breaks the handshake order
+    }
+    std::size_t woff = 0;
+    StepReplyHeader rhdr;
+    rhdr.macro_step = macro_step;  // barrier echo (§2.4)
+    if (!writeRecord(out, out_cap, woff, rhdr)) {
+      return 0;  // reply would overflow the caller buffer
+    }
+    for (std::uint32_t i = 0; i < n_wheel_; ++i) {
+      const WheelCommandRecord rec = wheels != nullptr ? wheels[i] : WheelCommandRecord{};
+      if (!writeRecord(out, out_cap, woff, rec)) {
+        return 0;
+      }
+    }
+    for (std::uint32_t i = 0; i < n_mtq_; ++i) {
+      const MtqCommandRecord rec = mtqs != nullptr ? mtqs[i] : MtqCommandRecord{};
+      if (!writeRecord(out, out_cap, woff, rec)) {
+        return 0;
+      }
+    }
+    return woff;
   }
 
   bool helloSeen() const { return hello_seen_; }
@@ -120,11 +163,12 @@ class SitlHandler {
     return r;
   }
 
-  /// STEP_REQ → STEP_REPLY: echo the barrier step, then n_wheel + n_mtq zeroed
-  /// command records. Sensor records in the request are intentionally not read
-  /// this push (no rate-group coupling yet) — only the header is validated.
-  HandleResult buildStepReply(const std::uint8_t* in, std::size_t in_len, std::uint8_t* out,
-                              std::size_t out_cap) {
+  /// STEP_REQ decode only: validate the header and the handshake order, then
+  /// surface the barrier step and sim epoch. The reply is built later by
+  /// `buildStepReply`, once the caller has run the rate group. Sensor records in
+  /// the request are intentionally not read yet (Phase-4 GNC will consume them);
+  /// only the fixed header is validated here.
+  HandleResult decodeStepReq(const std::uint8_t* in, std::size_t in_len) {
     HandleResult r;
     r.msg_type = static_cast<std::uint16_t>(MsgType::kStepReq);
     StepReqHeader req;
@@ -135,27 +179,15 @@ class SitlHandler {
     if (!hello_seen_) {
       return r;  // kMalformed: STEP before HELLO breaks the handshake order
     }
-    r.macro_step = req.macro_step;
-
-    std::size_t woff = 0;
-    StepReplyHeader rhdr;
-    rhdr.macro_step = req.macro_step;  // barrier echo (§2.4)
-    if (!writeRecord(out, out_cap, woff, rhdr)) {
+    if (req.epoch_tai_ns < 0) {
+      // Trust-boundary check: a negative TAI epoch off the wire must be
+      // rejected here, so downstream sim-time consumers (SitlTime) can keep
+      // `epoch >= 0` as a true invariant rather than asserting on wire data.
       return r;  // kMalformed
     }
-    // NEXT PUSH: replace these zeros with the control loop's actuator commands.
-    for (std::uint32_t i = 0; i < n_wheel_; ++i) {
-      if (!writeRecord(out, out_cap, woff, WheelCommandRecord{})) {
-        return r;  // kMalformed: reply would overflow the caller buffer
-      }
-    }
-    for (std::uint32_t i = 0; i < n_mtq_; ++i) {
-      if (!writeRecord(out, out_cap, woff, MtqCommandRecord{})) {
-        return r;  // kMalformed
-      }
-    }
-    r.status = HandleStatus::kStepReply;
-    r.reply_len = woff;
+    r.status = HandleStatus::kStepReq;
+    r.macro_step = req.macro_step;
+    r.epoch_tai_ns = req.epoch_tai_ns;
     return r;
   }
 

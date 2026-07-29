@@ -55,7 +55,10 @@ module flight {
   # Passive component instances
   # ----------------------------------------------------------------------
 
-  instance chronoTime: Svc.ChronoTime base id 0x10010000
+  # SITL sim-time provider — the deployment's single time source (design doc
+  # §2.4, §3.2). Replaces Svc.ChronoTime: serves sim time in a SITL run, and the
+  # same workstation wall clock as ChronoTime otherwise.
+  instance sitlTime: flight.SitlTime base id 0x10010000
 
   instance rateGroupDriver: Svc.RateGroupDriver base id 0x10011000
 
@@ -75,6 +78,15 @@ module flight {
   # inert unless --sitl-port is given (the TcpClient is never started).
 
   instance sitlBridge: flight.SitlBridge base id 0x10015000
+
+  # SITL rate group (passive → runs to completion on the SITL receive task, so
+  # the 10 Hz FSW cycle is deterministic and barrier-driven, not wall-clock
+  # driven). Cycled only by sitlBridge.sitlCycleOut, never by rateGroupDriver.
+  instance sitlRateGroup: Svc.PassiveRateGroup base id 0x1001C000
+
+  # Phase-4 placeholder actuator commander; the SITL rate group's only member
+  # until real GNC components replace it.
+  instance scriptedCmdSource: flight.ScriptedCmdSource base id 0x1001D000
 
   instance comDriverSitl: Drv.TcpClient base id 0x10016000
 

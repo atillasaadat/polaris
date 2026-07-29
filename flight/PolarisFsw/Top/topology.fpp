@@ -23,7 +23,7 @@ module flight {
   # ----------------------------------------------------------------------
   # Instances used in the topology
   # ----------------------------------------------------------------------
-    instance chronoTime
+    instance sitlTime
     instance rateGroup1
     instance rateGroup2
     instance rateGroup3
@@ -35,6 +35,8 @@ module flight {
 
     # SITL lockstep transport
     instance sitlBridge
+    instance sitlRateGroup
+    instance scriptedCmdSource
     instance comDriverSitl
     instance comStubSitl
     instance frameAccumulatorSitl
@@ -52,7 +54,7 @@ module flight {
     text event connections instance CdhCore.textLogger
     health connections instance CdhCore.$health
     param connections instance FileHandling.prmDb
-    time connections instance chronoTime
+    time connections instance sitlTime
 
   # ----------------------------------------------------------------------
   # Telemetry packets (only used when TlmPacketizer is used)
@@ -149,6 +151,15 @@ module flight {
     # Kept fully separate from the GDS ComCcsds stack; inert until --sitl-port.
     # ----------------------------------------------------------------------
     connections Sitl {
+      # --- Barrier-driven rate group (design doc §2.4 steps 3-4) ---
+      # sitlBridge drives the SITL rate group synchronously per STEP; the scripted
+      # command source is its member and commands actuators back to sitlBridge.
+      sitlBridge.sitlCycleOut                  -> sitlRateGroup.CycleIn
+      sitlBridge.timeSetOut                    -> sitlTime.timeSetIn
+      sitlRateGroup.RateGroupMemberOut[0]      -> scriptedCmdSource.run
+      scriptedCmdSource.wheelCmdOut            -> sitlBridge.wheelCmdIn
+      scriptedCmdSource.mtqCmdOut              -> sitlBridge.mtqCmdIn
+
       # --- Buffer allocations (shared SITL pool) ---
       comDriverSitl.allocate            -> commsBufferManagerSitl.bufferGetCallee
       comDriverSitl.deallocate          -> commsBufferManagerSitl.bufferSendIn

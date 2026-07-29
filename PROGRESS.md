@@ -7,8 +7,8 @@ baseline (`docs/requirements/`) remain the sources of truth. Per-push detail
 lives in the merged PR descriptions and the design doc's "Implemented (Push N)"
 notes — this tracker stays a rollup so it cannot rot the way a narrative does.
 
-**Current phase:** Phase 3 — F´ SITL two-process lockstep (transport live; rate-group coupling next)
-**Last updated:** Push 34 (SITL transport: SitlBridge F´ component + sim TCP barrier, bit-identical two-process gate)
+**Current phase:** Phase 3 — F´ SITL two-process lockstep (barrier drives the real FSW cycle; GNC components next)
+**Last updated:** Push 35 (SITL barrier-driven rate group + sim-time provider + real command path via placeholder ScriptedCmdSource)
 
 ---
 
@@ -34,10 +34,11 @@ notes — this tracker stays a rollup so it cannot rot the way a narrative does.
 | Scenario controls: seed, sensor-noise switches (global + per-unit), GNSS jamming KML + fault schedule | ✅ done + tested |
 | CMGs, thrusters (truth models) | ⬜ remaining in Phase 2 scope (§7) |
 | §2.4 closed loop (`sim/io`): sensors sampled at native rates, actuator feedback into the plant, fault bindings live | ✅ done + tested |
-| §2.2 SITL two-process transport: `lib/sitl` wire + `SitlBridge` F´ component + sim TCP barrier | ✅ done + tested (bit-identical two-process trace; zero-command bridge — rate-group coupling next) |
-| FSW GNC components, estimators, control | ⬜ Phase 3+ |
+| §2.2 SITL two-process transport: `lib/sitl` wire + `SitlBridge` F´ component + sim TCP barrier | ✅ done + tested (bit-identical two-process trace) |
+| §2.4 barrier-driven FSW cycle: SITL `PassiveRateGroup` + `SitlTime` sim-time source + real command path (placeholder `ScriptedCmdSource`) | ✅ done + tested (scripted profile crosses the wire → bit-identical to in-process) |
+| FSW GNC components, estimators, control | ⬜ Phase 3+ (replace `ScriptedCmdSource`) |
 
-**Test gates (all green):** 393 C++ unit (ASan/UBSan) · 21 integration ·
+**Test gates (all green):** 412 C++ unit (ASan/UBSan) · 22 integration ·
 4 GMAT golden · 84 Python (config compiler, GMAT harness, space weather, orbit) ·
 docs `-W` (bibliography + requirements traceability) · pre-commit
 (clang-format + ruff) · F´ flight build.
@@ -90,15 +91,16 @@ Phase 2 — Sensor & actuator models
 | 32 | #34 | Docs overhaul: sectioned API reference (per-namespace pages grouped `lib`/`sim`/tools) + MyST user guides reusing per-folder READMEs; frame-safe quaternion + closed-loop docstring examples |
 | 33 | #35 | Math documentation standard (§21.3): implementation-exact LaTeX equation blocks on every model class (sensors, actuators, dynamics, environment, quaternion) rendered via Doxygen→Breathe→MathJax; source-controlled Mermaid diagrams in guides (§2.4 sequence, config pipeline, frame graph, architecture) |
 | 34 | — | Phase 3 kickoff — §2.2 SITL transport: shared `lib/sitl` wire format (frozen v1, measurements-only §2.3 boundary), `SitlBridge` passive F´ component on a dedicated comm stack (`-s <port>`, inert when off), sim TCP barrier server with timeout/degrade; two-process integration gate: 100 barriers → bit-identical trace |
+| 35 | — | §2.4 barrier drives the real FSW cycle: `SitlBridge` fires a SITL `Svc::PassiveRateGroup` synchronously per STEP; new `SitlTime` serves sim time as the FSW clock (wall clock when SITL off); `SitlHandler` split into decode + caller-supplied-command reply; placeholder `ScriptedCmdSource` commands actuators from a shared deterministic profile (`-c` to enable). Second integration gate: scripted profile over the wire → bit-identical to in-process |
 
 ---
 
 ## What's next
 
-1. **Phase 3 — sim-driven rate groups:** couple `SitlBridge`'s STEP exchange to
-   the FSW rate groups (sim time drives the 10 Hz tick, commands come from real
-   components instead of the zero-command bridge); onboard time/EOP/ephemeris
-   uploads; persistence.
+1. **Phase 3 — real GNC on the SITL rate group:** replace the placeholder
+   `ScriptedCmdSource` with real estimator/control components that consume
+   `EstimatedState` and the STEP_REQ sensor records (still unread today);
+   onboard time/EOP/ephemeris uploads; persistence.
 2. **Phase 2 close-out (optional):** CMG and thruster truth models (§7) — or
    defer to the phases that consume them (§8.5 control, §17 maneuvering).
 3. **Phase 4 — attitude determination:** TRIAD/QUEST initializers, MEKF fine
