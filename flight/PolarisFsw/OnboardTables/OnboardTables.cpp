@@ -15,6 +15,18 @@ namespace flight {
 namespace {
 constexpr I64 kNsPerSecond = 1000000000LL;
 constexpr I64 kNsPerMicrosecond = 1000LL;
+
+//! Map the lib source-quality grade to the port/telemetry enum.
+TableGrade toTableGrade(polaris::onboard::Quality q) {
+  switch (q) {
+    case polaris::onboard::Quality::kPrecise:
+      return TableGrade::PRECISE;
+    case polaris::onboard::Quality::kCoarse:
+      return TableGrade::COARSE;
+    default:
+      return TableGrade::UNAVAILABLE;
+  }
+}
 }  // namespace
 
 // ----------------------------------------------------------------------
@@ -91,10 +103,11 @@ void OnboardTables ::writeTelemetry() {
 
 bool OnboardTables ::getEopAt_handler(FwIndexType portNum, I64 taiNs, EopSample& sample) {
   polaris::frames::EopValue v;
-  if (!this->store_.eopAt(taiNs, v)) {
+  const polaris::onboard::Quality q = this->store_.eopAt(taiNs, v);
+  if (q == polaris::onboard::Quality::kUnavailable) {
     return false;
   }
-  sample = EopSample(v.ut1_minus_tai, v.xp_arcsec, v.yp_arcsec);
+  sample = EopSample(v.ut1_minus_tai, v.xp_arcsec, v.yp_arcsec, toTableGrade(q));
   return true;
 }
 
@@ -103,16 +116,18 @@ bool OnboardTables ::getBodyPosition_handler(FwIndexType portNum, const OnboardB
   const polaris::onboard::Body b =
       (body.e == OnboardBody::MOON) ? polaris::onboard::Body::Moon : polaris::onboard::Body::Sun;
   polaris::math::Vec3<polaris::math::frames::ECI> pos;
-  if (!this->store_.bodyPositionEci(b, taiNs, pos)) {
+  const polaris::onboard::Quality q = this->store_.bodyPositionEci(b, taiNs, pos);
+  if (q == polaris::onboard::Quality::kUnavailable) {
     return false;
   }
-  posEciM = PosEciMeters(pos.x(), pos.y(), pos.z());
+  posEciM = PosEciMeters(pos.x(), pos.y(), pos.z(), toTableGrade(q));
   return true;
 }
 
 bool OnboardTables ::getTaiUtcOffset_handler(FwIndexType portNum, I64 taiNs, I32& deltaAtSec) {
   std::int32_t delta = 0;
-  if (!this->store_.taiUtcOffset(taiNs, delta)) {
+  const polaris::onboard::Quality q = this->store_.taiUtcOffset(taiNs, delta);
+  if (q == polaris::onboard::Quality::kUnavailable) {
     return false;
   }
   deltaAtSec = static_cast<I32>(delta);
@@ -120,19 +135,51 @@ bool OnboardTables ::getTaiUtcOffset_handler(FwIndexType portNum, I64 taiNs, I32
 }
 
 void OnboardTables ::run_handler(FwIndexType portNum, U32 context) {
-  if (!this->store_.ready()) {
-    return;  // nothing loaded; the load-failure EVR already fired
-  }
+  using polaris::onboard::Quality;
+
+  // Evaluate the grade actually being served at the current time, per domain.
+  // Precise iff the uploaded table covers now; otherwise the coarse fallback is
+  // what a query would return (analytic ephemeris / zero-EOP). This holds even
+  // when nothing is loaded — coverageAt returns false and both grades are coarse.
   bool eop_ok = false;
   bool ephem_ok = false;
-  (void)this->store_.coverageAt(this->currentTaiNs(), eop_ok, ephem_ok);
-  const bool expiring = !eop_ok || !ephem_ok;
-  if (expiring && !this->coverage_warned_) {
-    // throttle 1 in the FPP also bounds this to a single downlink; the flag
-    // stops the handler re-issuing every cycle until a reload re-arms it.
-    this->log_WARNING_HI_CoverageExpiring(!eop_ok, !ephem_ok);
-    this->coverage_warned_ = true;
+  const bool covered = this->store_.coverageAt(this->currentTaiNs(), eop_ok, ephem_ok);
+  const Quality eop_grade = (covered && eop_ok) ? Quality::kPrecise : Quality::kCoarse;
+  const Quality ephem_grade = (covered && ephem_ok) ? Quality::kPrecise : Quality::kCoarse;
+
+  this->tlmWrite_EopGrade(toTableGrade(eop_grade));
+  this->tlmWrite_EphemGrade(toTableGrade(ephem_grade));
+
+  this->noteGrade(TableDomain::EOP, eop_grade, this->last_eop_grade_);
+  this->noteGrade(TableDomain::EPHEMERIS, ephem_grade, this->last_ephem_grade_);
+
+  // Coverage-expiring warning: only meaningful when tables are loaded (the not-
+  // loaded case is already flagged by the load-failure EVR and by TableDegraded).
+  if (this->store_.ready()) {
+    const bool expiring = !eop_ok || !ephem_ok;
+    if (expiring && !this->coverage_warned_) {
+      // throttle 1 in the FPP also bounds this to a single downlink; the flag
+      // stops the handler re-issuing every cycle until a reload re-arms it.
+      this->log_WARNING_HI_CoverageExpiring(!eop_ok, !ephem_ok);
+      this->coverage_warned_ = true;
+    }
   }
+}
+
+void OnboardTables ::noteGrade(TableDomain domain, polaris::onboard::Quality current,
+                               polaris::onboard::Quality& last) {
+  using polaris::onboard::Quality;
+  if (current == last) {
+    return;
+  }
+  if (current == Quality::kCoarse && last == Quality::kPrecise) {
+    this->log_WARNING_HI_TableDegraded(domain, toTableGrade(current));
+  } else if (current == Quality::kPrecise && last == Quality::kCoarse) {
+    // TableDegraded is unthrottled (edge-gated here per domain), so recovery
+    // needs no throttle-clear; the next genuine degrade always emits.
+    this->log_ACTIVITY_HI_TableRecovered(domain);
+  }
+  last = current;
 }
 
 // ----------------------------------------------------------------------

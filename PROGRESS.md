@@ -8,7 +8,7 @@ lives in the merged PR descriptions and the design doc's "Implemented (Push N)"
 notes — this tracker stays a rollup so it cannot rot the way a narrative does.
 
 **Current phase:** Phase 3 — F´ SITL two-process lockstep (barrier drives the real FSW cycle; GNC components next)
-**Last updated:** Push 37 (`OnboardTables` flight component: onboard time/EOP/Chebyshev tables loaded/validated/served, `RELOAD_TABLES` upload→activate with double-buffer swap)
+**Last updated:** Push 38 (coarse/analytic fallbacks + source-quality grading for the onboard tables: table loss degrades to coarse operation instead of no answer, guaranteeing the table-independent Safe-mode sun-pointing floor)
 
 ---
 
@@ -96,6 +96,7 @@ Phase 2 — Sensor & actuator models
 | 35 | — | §2.4 barrier drives the real FSW cycle: `SitlBridge` fires a SITL `Svc::PassiveRateGroup` synchronously per STEP; new `SitlTime` serves sim time as the FSW clock (wall clock when SITL off); `SitlHandler` split into decode + caller-supplied-command reply; placeholder `ScriptedCmdSource` commands actuators from a shared deterministic profile (`-c` to enable). Second integration gate: scripted profile over the wire → bit-identical to in-process |
 | 36 | — | SITL packaged as the `PolarisSitl` subtopology (`flight/PolarisFsw/PolarisSitl/`): nine instances + internal wiring moved out of the flat topology behind `import PolarisSitl.Subtopology`, base IDs preserved so the dictionary is byte-identical; `SitlTime` kept in the main topology as the deployment-wide time source. Deliver-without-SITL is a documented topology-edit recipe (FPP has no conditional-import switch), not a CMake option; passive SITL components register no health pings per the §health active-only guidance. Both two-process gates stay bitwise green |
 | 37 | — | Onboard tables (§11.3, §22): new `OnboardTables` flight component wrapping the flight-safe `lib/onboard::TableStore`. Loads leap seconds (in-code `historical()`), IERS EOP (`finals.all`, windowed to the ephemeris span), and Sun/Moon Chebyshev fits (committed `.cheb`, planets skipped) at setup; serves `getEopAt`/`getBodyPosition`/`getTaiUtcOffset` typed ports over the lib evaluators. `RELOAD_TABLES` command is the upload→activate path (FileUplink writes the file, reload restages into an inactive double-buffer slot and swaps only on full success — failed reload keeps the previous tables); `Svc.Sched` coverage-expiry warning; health telemetry (counts/spans/state). Flight component (no `lib/sitl` dep, outside `PolarisSitl`); `<cstdio>` reads at load/reload only. 7 unit tests vs lib ground truth on the committed fixtures |
+| 38 | — | Coarse fallbacks + source-quality grading (§8.1, §11.3): table loss degrades to coarse operation instead of no answer. New table-independent analytic ephemerides (`lib/ephemeris/analytic_{sun,moon}`, Vallado §5.1 Alg 29 / §5.3.2 — pure functions of the clock, no data dependency) and a zero-EOP fallback (UT1 ≈ UTC ⇒ `UT1−TAI = −ΔAT`, zero polar motion). Every `TableStore` query returns a grade (`kPrecise`/`kCoarse`/`kUnavailable`); ΔAT stays precise always (in-code leap record, load-independent). Grade surfaced on the F´ ports (`grade` on `EopSample`/`PosEciMeters`) and per-domain telemetry; `TableDegraded`/`TableRecovered` EVRs on precise↔coarse transitions; the watchdog reports the served grade. This is the mechanism that makes the §10 Safe-mode coarse sun-pointing floor star-tracker- and table-independent. Analytic vs DE440 agree ≤ 0.37°/0.48° (Sun/Moon) across the fixture; +2 test files/tests |
 
 ---
 
@@ -105,7 +106,9 @@ Phase 2 — Sensor & actuator models
    `ScriptedCmdSource` with real estimator/control components that consume
    `EstimatedState` and the STEP_REQ sensor records (still unread today). The
    onboard time/EOP/ephemeris tables and their upload→activate path are now in
-   place (`OnboardTables`, Push 37); the GNC components wire to its query ports.
+   place (`OnboardTables`, Push 37) with coarse/analytic fallbacks and
+   source-quality grading (Push 38); the GNC components wire to its query ports
+   and gate on the returned grade (precise table vs coarse fallback).
 2. **Phase 2 close-out (optional):** CMG and thruster truth models (§7) — or
    defer to the phases that consume them (§8.5 control, §17 maneuvering).
 3. **Phase 4 — attitude determination:** TRIAD/QUEST initializers, MEKF fine

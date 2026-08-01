@@ -20,7 +20,7 @@ to size, validate, and verify the design.
 | **Shared library** | `lib/` | C++ | Math, frames, time, canonical state, constants, environment, ephemeris — used by both FSW and sim. |
 | **Analysis** | `analysis/` | Python (via `bindings/` pybind11) | Momentum/sizing, detumble MC, contacts, link budget, post-processing — exercising the *same* C++ that flies. |
 
-Plus `mc/` (Monte Carlo), `config/` (spacecraft/scenario/hardware config), `tests/`
+Plus `mc/` (Monte Carlo), `config/` (spacecraft/scenario/hardware config + the committed Claude Code dev-environment snapshot), `tests/`
 (unit → component → integration → golden), and `tools/` (config compiler, GMAT
 golden-data harness).
 

@@ -30,3 +30,7 @@ analysis inputs — don't hand-edit derived params.
   scenario/environment block). `leo_smallsat.yaml` is the ready-to-compile template.
 - `scenarios/` — scenario side-data: GNSS-jamming region KMLs (`jamming/`), and
   future scenario/dispersion sets (§13).
+- `claude/` — committed snapshot of the global `~/.claude` Claude Code development
+  environment (rules, agents, commands, hooks, settings), with an `install.sh` to
+  reproduce it on another machine. Not spacecraft configuration; see
+  [`claude/README.md`](claude/README.md).

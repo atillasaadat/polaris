@@ -13,6 +13,8 @@
 #include <cstdio>
 #include <cstring>
 
+#include "ephemeris/analytic_moon.hpp"
+#include "ephemeris/analytic_sun.hpp"
 #include "ephemeris/chebyshev.hpp"
 #include "time/civil.hpp"
 #include "time/tdb.hpp"
@@ -289,50 +291,60 @@ bool TableStore::loadInto(TableSet& set, const char* eop_path, const char* ephem
 }
 
 // Every query computes into locals inside the seqlock read and assigns the
-// caller's out-params only after the snapshot proved consistent — so "returns
-// false with out untouched" holds even when an attempt raced a reload.
+// caller's out-param only after the snapshot proved consistent. A read that
+// finds no covering precise table — whether unloaded, uncovered, or a
+// retry-exhausted torn read — falls through to the coarse fallback and reports
+// `kCoarse`, so a consumer always gets a finite, usable answer (the fallback is
+// safe; a spurious coarse under contention is preferable to no answer).
 
-bool TableStore::eopAt(std::int64_t tai_ns, frames::EopValue& out) const {
+Quality TableStore::eopAt(std::int64_t tai_ns, frames::EopValue& out) const {
   frames::EopValue v{};
-  const bool ok = readConsistent([&](const TableSet& s) {
+  const bool precise = readConsistent([&](const TableSet& s) {
     return s.valid && s.eop.lookup(time::Tai::fromNanosecondsSinceEpoch(tai_ns), s.leap, v);
   });
-  if (ok) {
+  if (precise) {
     out = v;
+    return Quality::kPrecise;
   }
-  return ok;
+  // Zero-EOP degraded fallback (design doc §11.3 coarse-fallback note): UT1 ≈ UTC
+  // (ΔUT1 = 0), polar motion zero. The one exact quantity is ΔAT from the in-code
+  // leap table, so UT1 − TAI = (UT1 − UTC) + (UTC − TAI) = 0 − ΔAT = −ΔAT.
+  const std::int32_t delta_at = leap_.deltaAtForTaiSeconds(tai_ns / 1'000'000'000LL);
+  out = frames::EopValue{-static_cast<double>(delta_at), 0.0, 0.0};
+  return Quality::kCoarse;
 }
 
-bool TableStore::bodyPositionEci(Body body, std::int64_t tai_ns,
-                                 math::Vec3<math::frames::ECI>& out) const {
+Quality TableStore::bodyPositionEci(Body body, std::int64_t tai_ns,
+                                    math::Vec3<math::frames::ECI>& out) const {
+  const time::Tdb tdb = time::toTdb(time::toTt(time::Tai::fromNanosecondsSinceEpoch(tai_ns)));
   math::Vec3<math::frames::ECI> v;
-  const bool ok = readConsistent([&](const TableSet& s) {
+  const bool precise = readConsistent([&](const TableSet& s) {
     if (!s.valid) {
       return false;
     }
-    const time::Tdb tdb = time::toTdb(time::toTt(time::Tai::fromNanosecondsSinceEpoch(tai_ns)));
     const ephemeris::EphemerisTable<kEphCapacity>& table = (body == Body::Sun) ? s.sun : s.moon;
     return table.position(tdb, v);
   });
-  if (ok) {
+  if (precise) {
     out = v;
+    return Quality::kPrecise;
   }
-  return ok;
+  // Table-independent analytic fallback (Vallado low-precision Sun/Moon). Pure
+  // arithmetic from the clock — no data dependency — so coarse sun pointing holds
+  // even with no ephemeris loaded.
+  const math::Vec3<math::frames::ECI> coarse =
+      (body == Body::Sun) ? ephemeris::sunPositionEci(tdb) : ephemeris::moonPositionEci(tdb);
+  if (!coarse.isFinite()) {
+    return Quality::kUnavailable;
+  }
+  out = coarse;
+  return Quality::kCoarse;
 }
 
-bool TableStore::taiUtcOffset(std::int64_t tai_ns, std::int32_t& out) const {
-  std::int32_t v = 0;
-  const bool ok = readConsistent([&](const TableSet& s) {
-    if (!s.valid) {
-      return false;
-    }
-    v = s.leap.deltaAtForTaiSeconds(tai_ns / 1'000'000'000LL);
-    return true;
-  });
-  if (ok) {
-    out = v;
-  }
-  return ok;
+Quality TableStore::taiUtcOffset(std::int64_t tai_ns, std::int32_t& out) const {
+  // Always precise: the in-code leap table answers independently of any load.
+  out = leap_.deltaAtForTaiSeconds(tai_ns / 1'000'000'000LL);
+  return Quality::kPrecise;
 }
 
 bool TableStore::coverageAt(std::int64_t tai_ns, bool& eop_ok, bool& ephem_ok) const {

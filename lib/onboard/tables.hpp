@@ -56,6 +56,17 @@ namespace polaris::onboard {
 /// so planet segments are skipped at load.
 enum class Body { Sun, Moon };
 
+/// Source quality of a query answer (design doc §8.1, §11.3 coarse-fallback
+/// note; REQ-CDH-002). Callers gate on this so table loss degrades to coarse
+/// operation instead of "no answer":
+///  - `kPrecise` — served from the uploaded table (DE440 Chebyshev / IERS EOP).
+///  - `kCoarse`  — served from a table-independent fallback (analytic Vallado
+///    Sun/Moon, or zero-EOP with UT1 ≈ UTC and zero polar motion). This is what
+///    guarantees the coarse sun-pointing Safe-mode floor is table-independent.
+///  - `kUnavailable` — no answer at all (reserved; in practice the coarse path
+///    always produces a finite value, so ephemeris/EOP queries never return it).
+enum class Quality : std::uint8_t { kUnavailable = 0, kCoarse = 1, kPrecise = 2 };
+
 /// Daily-EOP capacity: a mission-arc window (about a year) of daily records with
 /// margin. `finals.all` holds ~20 000 days; the load keeps only the window
 /// around the ephemeris span (see @ref TableStore::load), so this bounds that
@@ -149,18 +160,26 @@ class TableStore {
   /// True once a full load has succeeded (queries can answer).
   bool ready() const { return active().valid; }
 
-  /// EOP at @p tai_ns. False (leaving @p out untouched) if no tables are loaded
-  /// or the epoch is outside the EOP span (§3.6: no extrapolation).
-  [[nodiscard]] bool eopAt(std::int64_t tai_ns, frames::EopValue& out) const;
+  /// EOP at @p tai_ns, always answered (out is always written). `kPrecise` when
+  /// the uploaded EOP table covers the epoch; otherwise the **zero-EOP** coarse
+  /// fallback (UT1−TAI = −ΔAT from the in-code leap table, i.e. UT1 ≈ UTC; polar
+  /// motion zero) and `kCoarse`. Error budget of the fallback: |ΔUT1| ≤ 0.9 s (by
+  /// leap-second scheduling) and |polar motion| ≤ ~0.4 arcsec (≈ 12 m ground
+  /// projection). Never `kUnavailable`.
+  [[nodiscard]] Quality eopAt(std::int64_t tai_ns, frames::EopValue& out) const;
 
   /// Geocentric ECI position [m] of @p body at @p tai_ns (TAI converted to the
-  /// TDB the fit uses). False if not loaded or the epoch is uncovered.
-  [[nodiscard]] bool bodyPositionEci(Body body, std::int64_t tai_ns,
-                                     math::Vec3<math::frames::ECI>& out) const;
+  /// TDB the fit uses). `kPrecise` when the uploaded Chebyshev fit covers the
+  /// epoch; otherwise the analytic Vallado Sun/Moon fallback and `kCoarse`
+  /// (out always written). `kUnavailable` only if the analytic value is non-finite
+  /// (does not occur for finite epochs).
+  [[nodiscard]] Quality bodyPositionEci(Body body, std::int64_t tai_ns,
+                                        math::Vec3<math::frames::ECI>& out) const;
 
-  /// ΔAT = TAI − UTC [s] at @p tai_ns. False only if no tables are loaded (the
-  /// leap table itself always answers once populated).
-  [[nodiscard]] bool taiUtcOffset(std::int64_t tai_ns, std::int32_t& out) const;
+  /// ΔAT = TAI − UTC [s] at @p tai_ns. Always `kPrecise`: the leap table is an
+  /// in-code IERS record held independently of the uploaded tables, so it answers
+  /// even before any load and never degrades.
+  [[nodiscard]] Quality taiUtcOffset(std::int64_t tai_ns, std::int32_t& out) const;
 
   /// Whether @p tai_ns is inside the EOP and ephemeris coverage. Coarse (span
   /// endpoints only); an actual query is authoritative. Used by the scheduler
@@ -243,6 +262,11 @@ class TableStore {
                        LoadReport& report);
 
   static constexpr int kMaxReadAttempts = 3;
+
+  /// In-code IERS leap-second record, held independently of the uploaded tables
+  /// so ΔAT (and the zero-EOP fallback's UT1−TAI = −ΔAT) answer even before any
+  /// load — the table-independent piece of the coarse Safe-mode floor.
+  time::LeapSecondTable leap_{time::LeapSecondTable::historical()};
 
   TableSet slots_[2]{};
   std::atomic<int> active_{0};

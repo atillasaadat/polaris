@@ -71,6 +71,11 @@ class OnboardTables final : public OnboardTablesComponentBase {
   //! Write the health telemetry channels from the active tables.
   void writeTelemetry();
 
+  //! Emit a degrade/recover EVR (and re-arm on recovery) when @p current differs
+  //! from @p last for @p domain, then update @p last. Called from the watchdog.
+  void noteGrade(TableDomain domain, polaris::onboard::Quality current,
+                 polaris::onboard::Quality& last);
+
   //! Current master-clock epoch as TAI nanoseconds (Fw::Time from timeCaller).
   I64 currentTaiNs();
 
@@ -83,6 +88,13 @@ class OnboardTables final : public OnboardTablesComponentBase {
   char ephem_path_[kMaxPathLength]{};
   U32 reload_count_{0};
   bool coverage_warned_{false};  //!< de-bounce the once-per-cycle coverage EVR
+  //! Last served grade per domain (watchdog transition detection). Seeded to
+  //! kPrecise so a coarse first cycle (tables missing at setup) flags each
+  //! degraded domain exactly once, while a precise first cycle stays silent.
+  //! TableDegraded is unthrottled — this edge-gating is the only rate limit,
+  //! and it is per-domain, so both domains degrading each get their alert.
+  polaris::onboard::Quality last_eop_grade_{polaris::onboard::Quality::kPrecise};
+  polaris::onboard::Quality last_ephem_grade_{polaris::onboard::Quality::kPrecise};
 };
 
 }  // namespace flight

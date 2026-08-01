@@ -10,6 +10,7 @@ add_executable(polaris_unit_tests
   time_test.cpp
   tdb_test.cpp
   chebyshev_test.cpp
+  analytic_ephemeris_test.cpp
   state_test.cpp
   sim_dynamics_test.cpp
   sim_world_gravity_test.cpp
