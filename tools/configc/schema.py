@@ -119,6 +119,22 @@ class Spacecraft(_Strict):
         default_factory=dict,
         description="control gains keyed by mode, e.g. gains['detumble']['k_bdot']",
     )
+    # bool first: pydantic's smart union would otherwise coerce `true` to 1.0 and
+    # a bool-typed F´ parameter would fail at struct.pack with a confusing error.
+    fsw_parameters: dict[str, bool | float | int] = Field(
+        default_factory=dict,
+        description=(
+            "FSW tuning delivered to the F´ ParameterDb (§19.3), keyed by the "
+            "fully-qualified parameter name the topology dictionary declares — "
+            "e.g. 'flight.attitudeEstimator.SigmaSunWhiteRad'. Deliberately a "
+            "flat name->value map rather than a per-component schema: the "
+            "authoritative list of parameters, their IDs and their types is the "
+            "generated dictionary, so mirroring it here would be a second copy "
+            "free to drift. The compiler validates this map against the "
+            "dictionary in both directions, so a typo and a missing value are "
+            "both compile-time failures"
+        ),
+    )
     drag_area_m2: float = Field(
         default=0.06, gt=0.0, description="drag reference area [m²]"
     )

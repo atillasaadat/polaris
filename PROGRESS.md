@@ -7,8 +7,8 @@ baseline (`docs/requirements/`) remain the sources of truth. Per-push detail
 lives in the merged PR descriptions and the design doc's "Implemented (Push N)"
 notes — this tracker stays a rollup so it cannot rot the way a narrative does.
 
-**Current phase:** Phase 4 — attitude determination (the `lib/gnc` coarse chain is in; the F´ estimator component that wires it to the SITL rate group is next)
-**Last updated:** Push 40 (F´ `AttitudeEstimator` component: the Push 39 coarse chain running on the barrier-driven 10 Hz GNC cycle, fed by multi-unit measurement port arrays and the OnboardTables/IGRF-14 references)
+**Current phase:** Phase 4 — attitude determination (the coarse chain now runs closed-loop in SITL on compiler-delivered tuning; MEKF fine mode and multi-unit fusion are next)
+**Last updated:** Push 41 (config compiler → `ParameterDb` tuning delivery: a SITL run with the compiled parameter file demonstrates coarse attitude estimation end to end)
 
 ---
 
@@ -40,11 +40,13 @@ notes — this tracker stays a rollup so it cannot rot the way a narrative does.
 | Onboard tables (`OnboardTables` flight component): leap/EOP/Chebyshev loaded + validated + served via typed ports; `RELOAD_TABLES` upload→activate; coverage-expiry check | ✅ done + tested (`lib/onboard` double-buffer swap; port answers vs lib evaluators) |
 | `lib/gnc` coarse attitude chain: TRIAD + Shuster covariance, SS+MAG+IMU coarse estimator (gyro propagation, eclipse coasting, coast-horizon invalidation, systematic covariance floor, canonical-state output) | ✅ done + tested (exact recovery, Monte-Carlo NEES, degeneracy rejection, floor + clock-fault refusal) |
 | `AttitudeEstimator` F´ component: coarse chain on the 10 Hz GNC rate group, multi-unit measurement port arrays, OnboardTables sun + onboard IGRF-14 magnetic references, ParameterDb tuning with no defaults, mode/health telemetry (REQ-ADET-004) | ✅ done + tested (SITL sensor decode + flight IGRF loader unit tests; two-process lockstep run through the estimator) |
+| Tuning delivery: `configc` → `Svc::PrmDb` parameter file (IDs from the FPP dictionary) → `-P` at startup → estimator configures and acquires attitude in SITL | ✅ done + tested (byte layout vs the F´ reader; full-chain SITL integration gate) |
 | FSW control components (control wiring, actuator commanding), MEKF fine mode, sensor fusion | ⬜ Phase 4 (replace `ScriptedCmdSource`) |
 
 **Test gates (all green):** 457 C++ lib unit (ASan/UBSan) · 9 F´ component unit ·
-22 integration ·
-4 GMAT golden · 84 Python (config compiler, GMAT harness, space weather, orbit) ·
+23 integration ·
+4 GMAT golden · 103 Python, 2 skipped without GMAT (config compiler, PrmDb emitter,
+GMAT harness, space weather, orbit) ·
 docs `-W` (bibliography + requirements traceability) · pre-commit
 (clang-format + ruff) · F´ flight build.
 
@@ -102,19 +104,15 @@ Phase 2 — Sensor & actuator models
 | 38 | — | Coarse fallbacks + source-quality grading (§8.1, §11.3): table loss degrades to coarse operation instead of no answer. New table-independent analytic ephemerides (`lib/ephemeris/analytic_{sun,moon}`, Vallado §5.1 Alg 29 / §5.3.2 — pure functions of the clock, no data dependency) and a zero-EOP fallback (UT1 ≈ UTC ⇒ `UT1−TAI = −ΔAT`, zero polar motion). Every `TableStore` query returns a grade (`kPrecise`/`kCoarse`/`kUnavailable`); ΔAT stays precise always (in-code leap record, load-independent). Grade surfaced on the F´ ports (`grade` on `EopSample`/`PosEciMeters`) and per-domain telemetry; `TableDegraded`/`TableRecovered` EVRs on precise↔coarse transitions; the watchdog reports the served grade. This is the mechanism that makes the §10 Safe-mode coarse sun-pointing floor star-tracker- and table-independent. Analytic vs DE440 agree ≤ 0.37°/0.48° (Sun/Moon) across the fixture; +2 test files/tests |
 | 39 | — | Phase 4 kickoff — coarse attitude chain in the flight-safe `lib/gnc` (§8.1): `gnc::triad` deterministic two-vector initializer (sun primary, mag secondary) with **Shuster's TRIAD covariance** on the body-frame `δθ` error [black1964][markley2014][shuster1981], degenerate geometry gated in both frames and reported as invalid rather than asserted; `gnc::CoarseAttitudeEstimator` — closed-form gyro propagation, TRIAD acquisition/update, fixed-gain eigenaxis complementary blend (not a Kalman update: the safe-mode floor wants always-available, not optimal), covariance propagated and blended over a **systematic floor** (each source's σ splits into a white part the blend may reduce and a systematic part — ephemeris/IGRF/alignment — that never averages down, so the reported uncertainty converges to the floor instead of to zero). Eclipse coasts on the gyro with a growing covariance and a reported age; past the coast horizon the attitude goes **invalid** and the next TRIAD re-acquires whole. Overlong gaps are dropouts, not extrapolation; non-increasing clocks (backwards *and* stuck) and non-finite measurements are refused without destroying the solution, and a refused cycle publishes a default-constructed product rather than a half-written one. Output written to the canonical `EstimatedState` (attitude block only, and only when valid). 25 unit tests: exact recovery over random attitudes, covariance pinned analytically in the triad basis + for budget linearity + by whitened 20 000-sample Monte Carlo (NEES = 3), degeneracy/malformed-input rejection, 30 s eclipse propagation, coast invalidation + re-acquisition, floor-bounded blend convergence, clock-fault refusal, `q0 ≥ 0` and positive-definiteness throughout |
 | 40 | — | F´ `AttitudeEstimator` component (§8.1, §10; REQ-ADET-004): the Push 39 coarse chain running on the vehicle, as member 0 of the barrier-driven 10 Hz GNC rate group (§2.4) so estimation precedes anything acting on the estimate. New interface-only `GncPorts` module defines the measurement/estimate seam — `ImuMeas`/`SunSensorMeas`/`MagnetometerMeas`/`GnssMeas`/`StarTrackerMeas`/`AttitudeEstimate` — as **port arrays** (`GncMaxUnits = 8`) so the multi-sensor vehicle and the §8.2 fusion layer never need a port-interface rework; this push consumes the first valid, fresh unit of each type (deterministic build-order priority, not fusion) and leaves the star-tracker input latched-but-unfused so coarse mode stays tracker-independent (§10). `SitlBridge` now decodes the per-unit sensor records the STEP_REQ always carried and republishes them on that seam before cycling the rate group; a length that does not match the HELLO-declared suite is rejected whole, leaving the previous measurements intact. Sun reference from `OnboardTables.getBodyPosition` with its source grade carried through; magnetic reference from the **onboard IGRF-14** at the GNSS position, rotated ECEF→ECI with onboard EOP — which moved the IAGA parser into the flight-safe `lib/environment/igrf_iaga` (`<cstdio>`, fixed buffers, load-time only) with `sim/world/igrf_file.cpp` now a façade over it, and `decimalYear` into `lib/time/utc`, so sim and FSW share one parser and one epoch convention. Twelve tuning values are **F´ parameters with no defaults** (§19.3), including the §9.1 staleness window and the geocentric-radius band a GNSS fix must fall in: missing/out-of-range emits edge-gated `ConfigInvalid` and refuses the cycle rather than inventing a noise budget. Position is GNSS-only until §8.3, flagged by an edge-gated `PositionUnavailable` warning rather than a guessed position. Health telemetry (mode, quaternion, rate, covariance trace, age, TRIAD accept/reject, refused cycles, reference grade, per-source validity) + `AttitudeAcquired`/`AttitudeLost`/`ReferenceDegraded`/`ReferenceRecovered`/`MagneticReferenceStale` EVRs, the grade alerts carrying which domain (ephemeris vs EOP) degraded. 5 new lib unit tests (STEP_REQ sensor decode incl. positional unit identity and rejected-message atomicity; the flight IGRF loader against the sim façade coefficient-for-coefficient) plus the deployment's **first F´ component GTest harness** — 9 tests covering acquisition of a known attitude through the real reference assembly, eclipse coast + whole re-acquisition, parameter refusal, the §9.1 staleness and position-range gates, grade passthrough/alerting, position loss, an expired IGRF snapshot, and `RESET_ESTIMATOR` re-arming every edge-gated alert. Writing it uncovered that `cmake/Dependencies.cmake` had been forcing `BUILD_TESTING` off repo-wide (to suppress Eigen's test tree), which silently disabled `register_fprime_ut` for every F´ component; it now saves and restores the flag |
+| 41 | — | Tuning delivery — the `configc` → `ParameterDb` path (§19.3), which is what turns Push 40's estimator from a component that refuses to run into a closed attitude loop. FSW tuning now lives in the vehicle config as `spacecraft.fsw_parameters`, a flat map keyed by **fully-qualified F´ parameter name**; the compiler emits `PrmDb.dat` in the `Svc::PrmDb` on-disk format (CRC-32 header + `0xA5`/record-size/ID/value records, F´ big-endian serialization) and the deployment's new `-P` option re-points `prmDb` at it. Parameter **IDs are read from the FPP-generated topology dictionary**, never hand-written, so a base-ID move or a reordered `param` declaration cannot silently desynchronise a delivered file from the flight build; validation runs both ways (an unknown name and an unset declared parameter are both compile failures), because with no flight defaults an incomplete file ships a component that refuses to fly. The reference vehicle's twelve estimator values are **derived from the units it carries** — GomSpace FSS field-edge accuracy plus a 2° albedo term and the ~0.4° analytic-ephemeris floor for the sun pair, generic-magnetometer noise against a ~30 µT LEO field plus its uncalibrated 1 µT hard-iron bias for the magnetic pair, STIM300 angle random walk for the gyro — so the reported covariance is the one the hardware justifies. Wiring this uncovered that the deployment's hand-rolled `setupTopology` had never called the autocoded `readParameters()` phase, so `prmDb` had been loading nothing at all regardless of the file it was configured with. New end-to-end gate `tests/integration/sitl_attitude_tuning_test.cpp` runs the whole chain against a live SITL session (`leo_smallsat.yaml` → `configc` → `PrmDb.dat` → `prmDb` → `attitudeEstimator`) and asserts on the deployment's own event stream: all twelve records loaded, no `ConfigInvalid`, `AttitudeAcquired` on the first cycle with a sun/magnetometer pair (cov trace 4.8e-3 rad², i.e. ~2.3° per axis — the systematic floor the two vector sources justify, as designed). 17 Python tests pin the byte layout against the F´ v4.2.2 reader rather than against the emitter's own helpers, plus NaN/inf, out-of-range and type-coercion refusals |
 
 ---
 
 ## What's next
 
-1. **Tuning delivery (`configc` → `ParameterDb`):** the estimator refuses to run
-   without its ten parameters, and nothing writes them today — so a default SITL
-   run telemeters mode `INVALID` with one `ConfigInvalid`. Wiring the config
-   compiler's resolved values into a `PrmDb` file (or a startup command sequence)
-   is what turns Push 40 into a closed attitude loop in SITL.
-2. **Phase 4 remainder:** MEKF fine mode, QUEST, multi-IMU/multi-sun-sensor
+1. **Phase 4 remainder:** MEKF fine mode, QUEST, multi-IMU/multi-sun-sensor
    fusion (§8.2), and the fine↔coarse arbitration surfaced to FDIR.
-3. **Phase 2 close-out (optional):** CMG and thruster truth models (§7) — or
+2. **Phase 2 close-out (optional):** CMG and thruster truth models (§7) — or
    defer to the phases that consume them (§8.5 control, §17 maneuvering).
 
 ---
@@ -131,6 +129,15 @@ uv sync                             # F´ toolchain + dev tools (from uv.lock)
 
 # F´ flight build
 uv run fprime-util generate && uv run fprime-util build
+
+# FSW tuning: compile the vehicle config into a Svc::PrmDb parameter file and
+# run the deployment against it (the flight build must exist first — the
+# parameter IDs come from the generated topology dictionary)
+PYTHONPATH=tools uv run python -m configc \
+    --config config/spacecraft/leo_smallsat.yaml --hardware config/hardware \
+    --dictionary build-artifacts/Linux/flight_PolarisFsw/dict/PolarisFswTopologyDictionary.json \
+    --out build/config
+./build-artifacts/Linux/flight_PolarisFsw/bin/flight_PolarisFsw -P build/config/PrmDb.dat -s 50051
 
 # C++ test suites (unit runs under ASan/UBSan)
 uv run cmake --build build-fprime-automatic-native-ut \

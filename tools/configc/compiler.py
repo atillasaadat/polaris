@@ -6,16 +6,19 @@ representations that must agree — YAML config, F´ ``ParameterDb`` params, and
 setup — cannot drift. The pipeline is:
 
     load hardware library  ->  load + validate config  ->  resolve model-IDs
-      ->  one resolved/validated object  ->  provenance hash  ->  emit 3 artifacts
+      ->  one resolved/validated object  ->  provenance hash  ->  emit artifacts
 
 Every consumer reads the derived artifacts, never the raw YAML (REQ-CFG-001), and
 each artifact records the source config hash so any FSW param / sim run / fixture
 is traceable to the exact config that produced it (REQ-CFG-003).
 
-The emitters here are **stubs** (design doc Phase-0 checklist): they write the
-resolved values as JSON rather than a real F´ ``ParameterDb`` binary or sim
-harness input. The pipeline — validation, model-ID resolution, single resolved
-object, provenance — is real; only the artifact *encoding* is provisional.
+Four artifacts. Three are JSON: ``sim_setup.json`` is the real truth-sim input,
+while ``fprime_params.json`` and ``analysis_inputs.json`` are readable summaries
+whose *encoding* is still provisional. The fourth, ``PrmDb.dat``, is the flight
+article: the binary ``Svc::PrmDb`` parameter file the deployment loads at
+startup, encoded by :mod:`configc.prmdb` against the FPP-generated topology
+dictionary. It is emitted only when a dictionary is supplied, because the
+parameter IDs it needs exist only in a built flight deployment.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ import yaml
 from pydantic import ValidationError
 
 from .orbit import keplerian_to_cartesian
+from .prmdb import PrmDbError, build_param_file, load_dictionary
 from .schema import Config, HardwareModel, MountedUnit
 
 
@@ -133,6 +137,9 @@ def resolve(
     body = {
         "spacecraft": {
             **config.spacecraft.model_dump(exclude={"sensors", "actuators"}),
+            # fsw_parameters comes through the model_dump above verbatim: it is a
+            # flat name->value map validated against the topology dictionary at
+            # emit time, not against the hardware library.
             "sensors": _resolve_units(config.spacecraft.sensors, library, "sensor"),
             "actuators": _resolve_units(
                 config.spacecraft.actuators, library, "actuator"
@@ -150,7 +157,7 @@ def resolve(
     return resolved
 
 
-# --- Artifact emitters (stubs): all derive from the one resolved object -------
+# --- Artifact emitters: all derive from the one resolved object ---------------
 
 
 def _provenance(resolved: dict[str, Any]) -> dict[str, Any]:
@@ -158,7 +165,14 @@ def _provenance(resolved: dict[str, Any]) -> dict[str, Any]:
 
 
 def emit_fprime_params(resolved: dict[str, Any]) -> dict[str, Any]:
-    """Flat name->value map destined for the F´ ``ParameterDb`` (stub)."""
+    """Flat name->value map destined for the F´ ``ParameterDb``.
+
+    The human-readable twin of ``PrmDb.dat``: the same values, keyed by name
+    instead of by generated ID, so a delivered parameter file can be inspected
+    and diffed without decoding the binary. Vehicle mass properties and control
+    gains are kept alongside as ``sc.*``/``gains.*`` entries — they are not F´
+    parameters yet (no component declares them), and are stubs until one does.
+    """
     sc = resolved["spacecraft"]
     params: dict[str, Any] = {
         "sc.mass_kg": sc["mass_kg"],
@@ -168,7 +182,11 @@ def emit_fprime_params(resolved: dict[str, Any]) -> dict[str, Any]:
     for mode, gains in sc.get("gains", {}).items():
         for key, value in gains.items():
             params[f"gains.{mode}.{key}"] = value
-    return {"provenance": _provenance(resolved), "parameters": params}
+    return {
+        "provenance": _provenance(resolved),
+        "parameters": params,
+        "fsw_parameters": dict(sc.get("fsw_parameters", {})),
+    }
 
 
 def emit_sim_setup(resolved: dict[str, Any]) -> dict[str, Any]:
@@ -229,13 +247,39 @@ _ARTIFACTS = {
 }
 
 
+#: Name of the emitted ``Svc::PrmDb`` file. Fixed: it is what the topology's
+#: ``prmDb.configure(...)`` call names, and what the deployment's ``-P`` option
+#: points at (design doc §19.3).
+PRMDB_FILENAME = "PrmDb.dat"
+
+
+def emit_prmdb(resolved: dict[str, Any], dictionary_path: Path) -> bytes:
+    """Encode the resolved FSW tuning into a ``Svc::PrmDb`` file image (§19.3).
+
+    IDs and types come from the FPP-generated topology dictionary at
+    @p dictionary_path, never from this config — see ``configc.prmdb``.
+    """
+    dictionary = load_dictionary(dictionary_path)
+    values = resolved["spacecraft"].get("fsw_parameters", {})
+    return build_param_file(values, dictionary)
+
+
 def compile_config(
-    config_path: Path, hardware_dir: Path, out_dir: Path
+    config_path: Path,
+    hardware_dir: Path,
+    out_dir: Path,
+    dictionary_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Full pipeline: load -> validate -> resolve -> emit 3 artifacts to @p out_dir.
+    """Full pipeline: load -> validate -> resolve -> emit artifacts to @p out_dir.
+
+    Emits the three JSON artifacts always, plus the binary ``PrmDb.dat`` when
+    @p dictionary_path names an FPP topology dictionary — that file needs the
+    generated parameter IDs, so it can only be produced against a built flight
+    deployment.
 
     Returns the resolved config object. Raises ConfigError on any semantic
-    failure (unknown model-ID, malformed library/config).
+    failure (unknown model-ID, malformed library/config, a tuning value that
+    does not match the flight build's parameter set).
     """
     library = load_hardware_library(hardware_dir)
     config = load_config(config_path)
@@ -243,6 +287,12 @@ def compile_config(
         "config": f"{config_path.name}:{_file_hash(config_path)}",
         "hardware_dir": f"{hardware_dir.name}:{_hardware_hash(hardware_dir)}",
     }
+    if dictionary_path is not None:
+        sources["dictionary"] = (
+            f"{dictionary_path.name}:{_file_hash(dictionary_path)}"
+            if dictionary_path.is_file()
+            else f"{dictionary_path.name}:missing"
+        )
     resolved = resolve(config, library, sources=sources)
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -251,6 +301,14 @@ def compile_config(
             json.dumps(emit(resolved), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+    if dictionary_path is not None:
+        try:
+            image = emit_prmdb(resolved, dictionary_path)
+        except PrmDbError as exc:
+            raise ConfigError(
+                f"{config_path}: parameter file not emitted\n{exc}"
+            ) from exc
+        (out_dir / PRMDB_FILENAME).write_bytes(image)
     return resolved
 
 

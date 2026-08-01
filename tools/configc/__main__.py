@@ -16,7 +16,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .compiler import ConfigError, compile_config
+from .compiler import PRMDB_FILENAME, ConfigError, compile_config
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -33,17 +33,33 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--out", required=True, type=Path, help="output directory for emitted artifacts"
     )
+    parser.add_argument(
+        "--dictionary",
+        type=Path,
+        default=None,
+        help=(
+            "FPP topology dictionary JSON (build-artifacts/Linux/"
+            "flight_PolarisFsw/dict/PolarisFswTopologyDictionary.json). Supplying "
+            "it emits the binary PrmDb.dat parameter file, whose IDs come from "
+            "the dictionary; omit it to emit only the JSON artifacts"
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
-        resolved = compile_config(args.config, args.hardware, args.out)
+        resolved = compile_config(
+            args.config, args.hardware, args.out, dictionary_path=args.dictionary
+        )
     except (ConfigError, FileNotFoundError) as exc:
         print(f"configc: {exc}", file=sys.stderr)
         return 1
 
+    artifacts = "{fprime_params,sim_setup,analysis_inputs}.json"
+    if args.dictionary is not None:
+        artifacts += f" + {PRMDB_FILENAME}"
     print(
         f"configc: ok — config_hash={resolved['provenance']['config_hash'][:12]} "
-        f"-> {args.out}/{{fprime_params,sim_setup,analysis_inputs}}.json"
+        f"-> {args.out}/{artifacts}"
     )
     return 0
 

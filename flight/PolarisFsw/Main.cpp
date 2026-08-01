@@ -35,7 +35,8 @@ void print_usage(const char* app) {
       "-E\tonboard IERS EOP table file (default tests/golden/finals.all.iau2000.txt)\n"
       "-B\tonboard Chebyshev ephemeris fixture (default tests/golden/de440_bodies.cheb)\n"
       "-I\tonboard IAGA IGRF-14 coefficients (default tests/golden/igrf14coeffs.txt)\n"
-      "-Y\tmission epoch for the IGRF snapshot, decimal year (default: system clock)\n",
+      "-Y\tmission epoch for the IGRF snapshot, decimal year (default: system clock)\n"
+      "-P\tParameterDb file from the config compiler (default ./PrmDb.dat)\n",
       app);
 }
 
@@ -71,12 +72,13 @@ int main(int argc, char* argv[]) {
   const char* onboard_eop_path = nullptr;
   const char* onboard_ephem_path = nullptr;
   const char* onboard_igrf_path = nullptr;
+  const char* prm_db_path = nullptr;
   double igrf_epoch_year = 0.0;  // 0 = derive from the system clock at setup
 
   Os::init();
 
   // Loop while reading the getopt supplied options
-  while ((option = getopt(argc, argv, "hp:a:s:cE:B:I:Y:")) != -1) {
+  while ((option = getopt(argc, argv, "hp:a:s:cE:B:I:Y:P:")) != -1) {
     switch (option) {
       // Handle the -a argument for address/hostname
       case 'a':
@@ -127,6 +129,16 @@ int main(int argc, char* argv[]) {
         igrf_epoch_year = parsed;
         break;
       }
+      // ParameterDb file the config compiler emitted for this vehicle (§19.3).
+      // An empty path is rejected here rather than passed on: PrmDb asserts on a
+      // zero-length filename, so `-P ""` would abort the deployment at setup.
+      case 'P':
+        if (optarg[0] == '\0') {
+          (void)printf("Invalid ParameterDb path: expected a filename\n");
+          return 1;
+        }
+        prm_db_path = optarg;
+        break;
       // Cascade intended: help output
       case 'h':
       // Cascade intended: help output
@@ -147,6 +159,7 @@ int main(int argc, char* argv[]) {
   inputs.onboardEphemPath = onboard_ephem_path;
   inputs.onboardIgrfPath = onboard_igrf_path;
   inputs.igrfEpochYear = igrf_epoch_year;
+  inputs.prmDbPath = prm_db_path;
 
   // Setup program shutdown via Ctrl-C
   signal(SIGINT, signalHandler);

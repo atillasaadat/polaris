@@ -133,6 +133,20 @@ void setupTopology(const TopologyState& state) {
   regCommands();
   // Autocoded configuration. Function provided by autocoder.
   configComponents(state);
+  // Parameter file (design doc §19.3). The FileHandling subtopology's config
+  // phase (just run) points prmDb at a fixed "PrmDb.dat" relative to the working
+  // directory; re-pointing it here — after that phase and before
+  // loadParameters() below reads it — is what lets a run name the file the
+  // config compiler emitted for *this* vehicle without editing vendored F´.
+  // A missing or corrupt file is not fatal: prmDb warns, every parameter reads
+  // back INVALID, and each component decides what that means (the attitude
+  // estimator refuses to run and says so via ConfigInvalid).
+  // An empty path is treated as absent: PrmDb asserts on a zero-length filename,
+  // and a caller that assembled a path badly should get the default file and a
+  // read warning, not an abort at setup.
+  if (state.prmDbPath != nullptr && state.prmDbPath[0] != '\0') {
+    FileHandling::prmDb.configure(state.prmDbPath);
+  }
   if (state.hostname != nullptr && state.port != 0) {
     comDriver.configure(state.hostname, state.port);
   }
@@ -173,6 +187,11 @@ void setupTopology(const TopologyState& state) {
 
   // Project-specific component configuration. Function provided above. May be inlined, if desired.
   configureTopology();
+  // Autocoded parameter-file read: prmDb loads the ParameterDb file configured
+  // above into its table. Must precede loadParameters(), which is where each
+  // component reads its parameters back out of that table — without this the
+  // database is empty and every parameter comes back INVALID.
+  readParameters();
   // Autocoded parameter loading. Function provided by autocoder.
   loadParameters();
   // Autocoded task kick-off (active components). Function provided by autocoder.
