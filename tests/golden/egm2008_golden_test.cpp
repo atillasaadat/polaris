@@ -69,8 +69,7 @@ TEST(Egm2008Golden, CommittedModelLoadsToDegree200AndEvaluates) {
 
   // The loaded field evaluates to a sane LEO acceleration (~8.4 m/s^2 at 700 km)
   // and a = grad U holds by central difference of the independent potential().
-  const world::SphericalHarmonicGravity g(c, Eigen::Matrix3d::Identity(), kDegree, kDegree, hdr.gm,
-                                          hdr.radius);
+  const world::SphericalHarmonicGravity g(c, kDegree, kDegree, hdr.gm, hdr.radius);
   const Eigen::Vector3d r(6.6e6, 1.9e6, 2.7e6);  // |r| ~ 7.4e6 m
   const Eigen::Vector3d a = g.acceleration(at(r)).eigen();
   ASSERT_TRUE(a.allFinite());

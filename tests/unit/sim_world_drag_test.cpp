@@ -339,6 +339,9 @@ TEST(Drag, CenterOfPressureOffsetProducesPerpendicularDisturbanceTorque) {
   const Eigen::Matrix3d A = s.attitude.core().toRotationMatrix();
   const Eigen::Vector3d f_body = A * (500.0 * drag.acceleration(s).eigen());
   EXPECT_NEAR(tau.norm(), r_cp.cross(f_body).norm(), 1e-18);
+  // Not just the magnitude: the whole vector, against the cross product computed
+  // here from the force the model itself reports (design doc §5.3 lever arm).
+  EXPECT_LT((tau - r_cp.cross(f_body)).norm(), 1e-18);
 }
 
 TEST(Drag, TorqueVanishesInVacuum) {

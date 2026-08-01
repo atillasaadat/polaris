@@ -44,6 +44,14 @@ scenario::SimConfig freeSpace(double duration_s, double fsw_rate_hz = 10.0) {
   c.environment.magnetic_field = scenario::MagneticModel::kNone;
   c.environment.drag_enabled = false;
   c.environment.srp_enabled = false;
+  // §5.3 disturbance torques off: this is the analytic no-environment baseline, so
+  // actuator feedback must be the only torque on the body. Stating it explicitly
+  // rather than relying on the free-drift/spherical-inertia geometry that makes
+  // the gravity gradient happen to vanish here.
+  c.environment.gravity_gradient_torque_enabled = false;
+  c.environment.aero_torque_enabled = false;
+  c.environment.srp_torque_enabled = false;
+  c.environment.residual_dipole_torque_enabled = false;
   c.propagation.duration_s = duration_s;
   c.propagation.output_step_s = duration_s;
   c.propagation.fsw_rate_hz = fsw_rate_hz;

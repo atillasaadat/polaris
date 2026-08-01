@@ -309,12 +309,18 @@ bool readSpacecraft(const json& root, SpacecraftConfig& out, std::string* error)
   }
 
   Eigen::Vector3d com = Eigen::Vector3d::Zero();
-  Eigen::Vector3d cp = Eigen::Vector3d::Zero();
+  Eigen::Vector3d cp_aero = Eigen::Vector3d::Zero();
+  Eigen::Vector3d cp_srp = Eigen::Vector3d::Zero();
   Eigen::Vector3d dipole = Eigen::Vector3d::Zero();
   if (node->contains("com_m") && !readVec3(*node, "com_m", "spacecraft", com, error)) {
     return false;
   }
-  if (node->contains("cp_offset_m") && !readVec3(*node, "cp_offset_m", "spacecraft", cp, error)) {
+  if (node->contains("cp_offset_aero_m") &&
+      !readVec3(*node, "cp_offset_aero_m", "spacecraft", cp_aero, error)) {
+    return false;
+  }
+  if (node->contains("cp_offset_srp_m") &&
+      !readVec3(*node, "cp_offset_srp_m", "spacecraft", cp_srp, error)) {
     return false;
   }
   if (node->contains("residual_dipole_am2") &&
@@ -322,7 +328,8 @@ bool readSpacecraft(const json& root, SpacecraftConfig& out, std::string* error)
     return false;
   }
   out.com_m = math::Vec3<math::frames::Body>(com);
-  out.cp_offset_m = math::Vec3<math::frames::Body>(cp);
+  out.cp_offset_aero_m = math::Vec3<math::frames::Body>(cp_aero);
+  out.cp_offset_srp_m = math::Vec3<math::frames::Body>(cp_srp);
   out.residual_dipole_am2 = math::Vec3<math::frames::Body>(dipole);
 
   return readUnits(*node, "sensors", "sensor", out.sensors, error) &&
@@ -397,6 +404,12 @@ bool readEnvironment(const json& root, EnvironmentConfig& out, std::string* erro
   out.drag_enabled = node->value("drag_enabled", true);
   out.srp_enabled = node->value("srp_enabled", true);
   out.eclipse_enabled = node->value("eclipse_enabled", true);
+  // §5.3 disturbance torques. Default on: they are physically present, and a
+  // scenario that omits the key wants the real environment.
+  out.gravity_gradient_torque_enabled = node->value("gravity_gradient_torque_enabled", true);
+  out.aero_torque_enabled = node->value("aero_torque_enabled", true);
+  out.srp_torque_enabled = node->value("srp_torque_enabled", true);
+  out.residual_dipole_torque_enabled = node->value("residual_dipole_torque_enabled", true);
 
   const auto bodies = node->find("third_bodies");
   if (bodies != node->end()) {
@@ -519,6 +532,39 @@ bool readInitialState(const json& root, const time::LeapSecondTable& leap, state
   return true;
 }
 
+/// Cross-check between the two sections: a §5.3 torque that is switched on needs
+/// its lever arm (or dipole) to have been *written down*. These are no-default
+/// vehicle-config fields — an absent one is a config error, not a zero, because a
+/// silently-zero lever arm produces a run with no aero torque that looks exactly
+/// like a run with a well-balanced vehicle. The schema makes them required on the
+/// YAML path; this catches a hand-edited artifact.
+bool checkTorqueFields(const json& root, const EnvironmentConfig& env, std::string* error) {
+  const auto sc = root.find("spacecraft");
+  if (sc == root.end()) {
+    return true;  // already reported by readSpacecraft
+  }
+
+  struct Requirement {
+    bool enabled;
+    const char* key;
+    const char* torque;
+  };
+
+  const Requirement required[] = {
+      {env.drag_enabled && env.aero_torque_enabled, "cp_offset_aero_m", "aero_torque_enabled"},
+      {env.srp_enabled && env.srp_torque_enabled, "cp_offset_srp_m", "srp_torque_enabled"},
+      {env.magnetic_field == MagneticModel::kIgrf && env.residual_dipole_torque_enabled,
+       "residual_dipole_am2", "residual_dipole_torque_enabled"},
+  };
+  for (const Requirement& r : required) {
+    if (r.enabled && !sc->contains(r.key)) {
+      return fail(error, std::string("environment.") + r.torque + " is set but spacecraft." +
+                             r.key + " is missing");
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 bool loadSimConfig(const std::string& path, const time::LeapSecondTable& leap, SimConfig& out,
@@ -550,10 +596,13 @@ bool loadSimConfig(const std::string& path, const time::LeapSecondTable& leap, S
     out.config_hash = provenance->value("config_hash", std::string{});
   }
 
-  return readSpacecraft(root, out.spacecraft, error) &&
-         readEnvironment(root, out.environment, error) &&
-         readPropagation(root, out.propagation, error) &&
-         readInitialState(root, leap, out.initial_state, error);
+  if (!readSpacecraft(root, out.spacecraft, error) ||
+      !readEnvironment(root, out.environment, error) ||
+      !readPropagation(root, out.propagation, error) ||
+      !readInitialState(root, leap, out.initial_state, error)) {
+    return false;
+  }
+  return checkTorqueFields(root, out.environment, error);
 }
 
 }  // namespace polaris::sim::scenario

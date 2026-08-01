@@ -18,6 +18,7 @@ add_library(polaris::dynamics ALIAS polaris_dynamics)
 # --- World: environment models (gravity, ... ) (REQ-SIM-002) -----------------
 add_library(polaris_world
   world/gravity_field.cpp
+  world/gravity_gradient.cpp
   world/egm2008.cpp
   world/third_body.cpp
   world/eclipse.cpp

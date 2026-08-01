@@ -289,6 +289,27 @@ TEST(Srp, CenterOfPressureOffsetProducesPerpendicularDisturbanceTorque) {
   EXPECT_LT(std::abs(tau.dot(r_cp_perp.eigen())) / (tau.norm() * 0.1), 1e-12);
 }
 
+TEST(Srp, TorqueIsTheExactLeverArmCrossProductAtANonTrivialAttitude) {
+  RecordProperty("verifies", "REQ-SIM-002");
+  // Identity attitude hides a missing ECI->Body rotation of the force, because
+  // the two frames coincide. Rotate the vehicle and compare against the cross
+  // product computed here, component by component (design doc §5.3).
+  world::SolarRadiationPressure srp(2.0, 100.0, 1.3, fixedAt(kSunX));
+  const Eigen::Vector3d r_cp(0.03, -0.07, 0.11);
+  srp.setCenterOfPressureOffset(pm::Vec3<pmf::Body>(r_cp));
+
+  polaris::state::TruthState s = at(Eigen::Vector3d(4.0e6, 5.0e6, 1.0e6));
+  s.attitude = pm::Quat<pmf::Body, pmf::ECI>(
+      pm::Quaternion::FromAxisAngle(Eigen::Vector3d(1.0, 2.0, -1.0).normalized(), 0.9));
+
+  const Eigen::Matrix3d a_body_from_eci = s.attitude.core().toRotationMatrix();
+  const Eigen::Vector3d f_body = a_body_from_eci * (100.0 * srp.acceleration(s).eigen());
+  const Eigen::Vector3d expected = r_cp.cross(f_body);
+
+  ASSERT_GT(expected.norm(), 0.0);
+  EXPECT_LT((srp.torque(s).eigen() - expected).norm(), 1.0e-16 * expected.norm());
+}
+
 TEST(Srp, TorqueVanishesInTheUmbra) {
   RecordProperty("verifies", "REQ-SIM-002");
   world::SolarRadiationPressure srp(2.0, 100.0, 1.3, fixedAt(kSunX));

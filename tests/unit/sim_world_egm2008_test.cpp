@@ -131,8 +131,8 @@ TEST(Egm2008Loader, ParsedZonalFieldReproducesEarthZonalAcceleration) {
   }
   const world::GravityCoeffs loaded = parse(gfc.str(), 6, nullptr);
 
-  const world::SphericalHarmonicGravity g_ref(ref, Eigen::Matrix3d::Identity(), 6, 0);
-  const world::SphericalHarmonicGravity g_loaded(loaded, Eigen::Matrix3d::Identity(), 6, 0);
+  const world::SphericalHarmonicGravity g_ref(ref, 6, 0);
+  const world::SphericalHarmonicGravity g_loaded(loaded, 6, 0);
   const Eigen::Vector3d r(6.9e6, 1.1e6, 2.3e6);
   const Eigen::Vector3d a_ref = g_ref.acceleration(at(r)).eigen();
   const Eigen::Vector3d a_loaded = g_loaded.acceleration(at(r)).eigen();
@@ -155,8 +155,8 @@ TEST(EcefGravity, TesseralEvaluatedInEcefMatchesRotatedGradient) {
          {0.0, 2.5e-7, -0.6e-6, 1.4e-6},
          {0.0, -4.7e-7, 6.6e-7, -2.0e-7, 3.1e-7}};
 
-  world::SphericalHarmonicGravity g(c, Eigen::Matrix3d::Identity(), 4, 4);
-  const world::SphericalHarmonicGravity g_plain(c, Eigen::Matrix3d::Identity(), 4, 4);
+  world::SphericalHarmonicGravity g(c, 4, 4);
+  const world::SphericalHarmonicGravity g_plain(c, 4, 4);
 
   // A fixed, finite EOP; the reduction core always succeeds for finite inputs, so
   // this exercises the gravity rotation wiring, not the table lookup (tested
@@ -206,8 +206,7 @@ TEST(EcefGravity, ZonalFieldIsInvariantOnlyUnderRotationAboutItsOwnAxis) {
   // 2026, worth ~100 m per revolution in LEO. The mis-axed field is still
   // conservative, so no energy or momentum check can detect it; the error was
   // found by cross-validation against GMAT (design doc §23.1).
-  world::SphericalHarmonicGravity g(world::GravityCoeffs::earthZonal(), Eigen::Matrix3d::Identity(),
-                                    6, 0);
+  world::SphericalHarmonicGravity g(world::GravityCoeffs::earthZonal(), 6, 0);
   const Eigen::Vector3d r(5.5e6, 4.1e6, -2.7e6);
   const Eigen::Vector3d unrotated = g.acceleration(at(r)).eigen();
 

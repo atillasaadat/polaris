@@ -34,6 +34,11 @@ def _minimal_config_dict(model_id: str = "STIM300") -> dict:
             "mass_kg": 10.0,
             "com_m": [0.0, 0.0, 0.0],
             "inertia_kgm2": {"ixx": 0.1, "iyy": 0.1, "izz": 0.1},
+            # No-default §5.3 disturbance-torque fields: a perfectly balanced
+            # vehicle still has to say so.
+            "cp_offset_aero_m": [0.0, 0.0, 0.0],
+            "cp_offset_srp_m": [0.0, 0.0, 0.0],
+            "residual_dipole_am2": [0.0, 0.0, 0.0],
             "sensors": [{"name": "imu_a", "model_id": model_id}],
         },
         "scenario": {
@@ -450,6 +455,56 @@ def test_sim_setup_carries_the_resolved_cartesian_initial_state(tmp_path):
     assert setup["environment"]["occultation_atmosphere_km"] == 100.0
     assert setup["spacecraft"]["residual_dipole_am2"] == [0.002, -0.001, 0.0015]
     assert setup["epoch_utc"] == "2026-01-01T00:00:00Z"
+
+
+@pytest.mark.verifies("REQ-SIM-002")
+def test_disturbance_torque_switches_and_lever_arms_reach_the_sim(tmp_path):
+    # Design doc §5.3: each disturbance torque is a scenario switch, and the two
+    # CP-CM offsets are separate fields — the optical CP is not the aerodynamic
+    # one, and a compiler that emitted one for both would make them silently equal.
+    compile_config(_TEMPLATE, _HARDWARE, tmp_path)
+    setup = json.loads((tmp_path / "sim_setup.json").read_text())
+    env = setup["environment"]
+    assert env["gravity_gradient_torque_enabled"] is True
+    assert env["aero_torque_enabled"] is True
+    assert env["srp_torque_enabled"] is True
+    assert env["residual_dipole_torque_enabled"] is True
+
+    sc = setup["spacecraft"]
+    assert sc["cp_offset_aero_m"] == [0.01, 0.0, 0.0]
+    assert sc["cp_offset_srp_m"] == [0.012, 0.0, 0.0]
+    assert sc["cp_offset_aero_m"] != sc["cp_offset_srp_m"]
+
+
+@pytest.mark.verifies("REQ-SIM-002")
+@pytest.mark.parametrize(
+    "field", ["cp_offset_aero_m", "cp_offset_srp_m", "residual_dipole_am2"]
+)
+def test_disturbance_torque_fields_have_no_default(field):
+    # The other direction: these are no-default fields (§5.3). Omitting one is a
+    # validation error, not a zero — a defaulted zero lever arm is
+    # indistinguishable in the output from a perfectly balanced vehicle, and the
+    # run would quietly answer a different question.
+    config = _minimal_config_dict()
+    del config["spacecraft"][field]
+    with pytest.raises(ValidationError, match=field):
+        Config.model_validate(config)
+
+
+@pytest.mark.verifies("REQ-SIM-002")
+def test_disturbance_torques_can_be_switched_off_individually():
+    # An MC study isolating one disturbance is a config edit, not a code change.
+    config = _minimal_config_dict()
+    config["scenario"]["environment"] = {
+        "gravity_gradient_torque_enabled": False,
+        "aero_torque_enabled": False,
+    }
+    env = Config.model_validate(config).scenario.environment
+    assert env.gravity_gradient_torque_enabled is False
+    assert env.aero_torque_enabled is False
+    # Untouched switches keep the physical default.
+    assert env.srp_torque_enabled is True
+    assert env.residual_dipole_torque_enabled is True
 
 
 @pytest.mark.verifies("REQ-CFG-001")

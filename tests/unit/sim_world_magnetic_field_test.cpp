@@ -14,6 +14,7 @@
 #include <Eigen/Core>
 #include <string>
 
+#include "actuators/magnetorquer.hpp"
 #include "environment/igrf.hpp"
 #include "math/frames.hpp"
 #include "math/quaternion.hpp"
@@ -274,6 +275,37 @@ TEST(ResidualDipoleTorque, IsZeroWithoutAField) {
   const world::ResidualDipoleTorque declined(m, [](const pt::Tai&, const pm::Vec3<pm::frames::ECI>&,
                                                    pm::Vec3<pm::frames::ECI>&) { return false; });
   EXPECT_EQ(declined.torque(s).eigen(), Eigen::Vector3d::Zero());
+}
+
+TEST(ResidualDipoleTorque, AgreesWithTheMagnetorquerPath) {
+  RecordProperty("verifies", "REQ-SIM-002");
+  // The residual dipole and a commanded magnetorquer dipole are the same physics
+  // with a different source, so the two paths must produce the same torque for
+  // the same m and B. Two independent m x B implementations that disagree by a
+  // sign would show as a control loop that works in one mode and diverges in
+  // another (design doc §5.3).
+  const Eigen::Vector3d m(0.4, -0.15, 0.6);            // A·m^2
+  const Eigen::Vector3d b(18.0e-6, -25.0e-6, 9.0e-6);  // T, ECI
+
+  polaris::state::TruthState s{};
+  s.epoch = taiAt(2026, 6, 1);
+  s.position = pm::Vec3<pm::frames::ECI>(Eigen::Vector3d(6.9e6, 1.0e6, -2.0e6));
+  s.attitude = pm::Quat<pm::frames::Body, pm::frames::ECI>(
+      pm::Quaternion::FromAxisAngle(Eigen::Vector3d(0.0, 1.0, 1.0).normalized(), 1.1));
+
+  const world::ResidualDipoleTorque residual(pm::Vec3<pm::frames::Body>(m), uniformField(b));
+
+  // The magnetorquer path as `closed_loop.cpp` runs it: an ideal rod (no
+  // saturation, no hysteresis, no scale-factor error) commanded to exactly m,
+  // crossed with the field in Body.
+  polaris::sim::actuators::MagnetorquerSpec spec;
+  spec.max_dipole_am2 = 10.0;
+  polaris::sim::actuators::Magnetorquer mtq(spec);
+  const Eigen::Vector3d m_actual = mtq.commandDipole(pm::Vec3<pm::frames::Body>(m)).eigen();
+  ASSERT_LT((m_actual - m).norm(), 1.0e-15) << "ideal rod should reproduce the command";
+  const Eigen::Vector3d b_body = s.attitude.core().rotate(b);
+
+  EXPECT_LT((residual.torque(s).eigen() - m_actual.cross(b_body)).norm(), 1.0e-20);
 }
 
 TEST(ResidualDipoleTorque, HasAPlausibleMagnitudeInLowEarthOrbit) {
