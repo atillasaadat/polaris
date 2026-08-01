@@ -61,10 +61,11 @@ spacecraft:
   # deliberately no flight defaults: a component with a missing parameter refuses
   # to run rather than inventing one.
   #
-  # The coarse attitude estimator's noise budget below is *derived from the units
-  # this vehicle actually carries* — the GomSpace NanoSense FSS, the generic
-  # magnetometer and the STIM300 above — not chosen to make the estimator look
-  # good. Re-derive these whenever a model_id changes.
+  # The attitude estimator's noise budget below — coarse chain and MEKF fine mode
+  # alike — is *derived from the units this vehicle actually carries*: the
+  # GomSpace NanoSense FSS, the generic magnetometer and the STIM300 above, not
+  # chosen to make the estimator look good. Re-derive these whenever a model_id
+  # changes.
   fsw_parameters:
     # Sun pair. The FSS is specified 2.0 deg 3-sigma out at the 60 deg field
     # edge (0.5 deg inside 45 deg), so 2.0/3 deg = 11.6 mrad is the conservative
@@ -96,7 +97,7 @@ spacecraft:
     flight.attitudeEstimator.SigmaMagSysRad: 0.0337       # [rad]
     # STIM300 angle random walk, 0.15 deg/sqrt(hr) converted to SI:
     # 0.15 * (pi/180) / 60 = 4.363e-5 rad/sqrt(s).
-    flight.attitudeEstimator.GyroArw: 4.363e-5            # [rad/s^(1/2)]
+    flight.attitudeEstimator.GyroArw: 4.363e-5            # [rad·s^(-1/2)]
     # TRIAD geometry gate: 0.17 ~= sin(10 deg). Below this the sun and field
     # directions are close enough to parallel that roll about the sun is
     # unobservable and the solve is refused rather than reported as a fix.
@@ -123,6 +124,51 @@ spacecraft:
     # can reach, so both ends catch a corrupt fix without gating a real one.
     flight.attitudeEstimator.MinPositionRadiusM: 6.5e6    # [m]
     flight.attitudeEstimator.MaxPositionRadiusM: 5.0e7    # [m]
+    # --- Fine mode (MEKF) -------------------------------------------------
+    # The filter's angle random walk is GyroArw above and its largest
+    # propagation step is MaxDtSec: same gyro, same rate group, so they are not
+    # duplicated here.
+    #
+    # Rate random walk sigma_u, from the STIM300 bias instability. The datasheet
+    # 0.3 deg/hr is an Allan-deviation floor; for a first-order Gauss-Markov
+    # process that floor is ~0.437 of the steady-state sigma, so
+    # sigma_GM = (0.3 * pi/180 / 3600) / 0.437 = 3.33e-6 rad/s. Converting to the
+    # equivalent random walk over the modelled 100 s correlation time,
+    # sigma_u = sigma_GM * sqrt(2/tau) = 3.33e-6 * 0.1414 = 4.7e-7. That grows
+    # the bias uncertainty by ~1 deg/hr over 100 s, the right order against the
+    # 10 deg/hr turn-on repeatability below.
+    flight.attitudeEstimator.MekfRrw: 4.7e-7              # [rad·s^(-3/2)]
+    # NIS gate: chi-square, 2 degrees of freedom (the innovation between two unit
+    # vectors is transverse, so the third component carries no variance), at
+    # 99.9% = 13.82. One rejection in a thousand good measurements is the price
+    # of a guard that stops an outlier dragging the reference attitude.
+    flight.attitudeEstimator.MekfNisGate: 13.82           # [-]
+    # Fine coast horizon: 300 s without an accepted update. Much shorter than the
+    # coarse 2400 s, and deliberately so — the two horizons answer different
+    # questions. Eclipse alone does not trigger it (the magnetic pair still
+    # updates the filter in shadow); it takes losing *both* vector sources, e.g.
+    # eclipse plus a GNSS outage, which is a fault, and after five minutes of it
+    # the always-available floor is the honest product.
+    flight.attitudeEstimator.MekfMaxCoastSec: 300.0       # [s]
+    # Initial gyro-bias 1-sigma: the STIM300 bias repeatability over temperature,
+    # 10 deg/hr = 10 * (pi/180) / 3600 = 4.848e-5 rad/s. The seed bias itself is
+    # zero, so this is the whole of what the filter is told at cold start.
+    flight.attitudeEstimator.MekfBiasSigmaInit: 4.848e-5  # [rad/s]
+    # Demotion streaks at the 10 Hz GNC rate. Five refused cycles (0.5 s) is a
+    # filter that cannot take input at all — not something to wait out. Twenty
+    # consecutive NIS rejections (2 s) is a measurement stream the filter has
+    # disbelieved without interruption; below that, a burst is the chi-square
+    # tail plus the odd albedo transient, which is exactly what the gate is for.
+    flight.attitudeEstimator.MekfRefusalStreak: 5         # [cycles]
+    flight.attitudeEstimator.MekfNisStreak: 20            # [cycles]
+    # Davenport seed observability gate, lambda_min/lambda_max of the information
+    # matrix. Set to match the coarse chain's MinSinAngle = sin(10 deg): two
+    # equally-weighted observations separated by theta give
+    # (1 - cos theta)/2 = sin^2(theta/2), so 10 deg of separation is
+    # sin^2(5 deg) = 0.0076. The same geometry that refuses a TRIAD refuses a
+    # seed. (sin^2(theta)/2 is the easy mistake here — it agrees at 90 deg and
+    # is nearly double at small separations, which would gate at ~14 deg.)
+    flight.attitudeEstimator.SeedMinObservability: 0.0076 # [-]
   drag_area_m2: 0.06                 # 6U broadside, ~0.2 x 0.3 m
   drag_cd: 2.2
   srp_area_m2: 0.06

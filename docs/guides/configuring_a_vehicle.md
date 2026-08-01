@@ -59,6 +59,21 @@ parameter fails the compile rather than the mission — there are no flight
 defaults (design doc §19.3). The deployment points `prmDb` at the file with
 `-P`; see `flight/PolarisFsw/README.md` for the bring-up recipe.
 
+The attitude estimator's nineteen values are worth reading as **two sets**,
+because they fail differently. The twelve coarse-chain values (sun/magnetic
+white and systematic sigmas, `GyroArw`, `MinSinAngle`, `TriadGain`,
+`MaxCoastSec`, `MaxDtSec`, `MaxMeasAgeSec`, the GNSS radius band) are what the
+§10 Safe-mode floor runs on: one missing and the vehicle has no attitude at all.
+The seven fine-mode values (`MekfRrw`, `MekfNisGate`, `MekfMaxCoastSec`,
+`MekfBiasSigmaInit`, `MekfRefusalStreak`, `MekfNisStreak`,
+`SeedMinObservability`) gate the MEKF only: one missing costs the fine mode and
+emits `FineConfigInvalid`, leaving a flyable vehicle on the coarse solution. The
+MEKF's angle random walk and largest propagation step are the coarse chain's
+`GyroArw` and `MaxDtSec` — same gyro, same rate group, so they are not
+duplicated. `config/spacecraft/leo_smallsat.yaml` derives every one of the
+nineteen from the units that vehicle carries, in comments; re-derive them
+whenever a `model_id` changes.
+
 The hardware-library authoring contract — file layout, required keys and their
 units, the datasheet-comment standard, and the step-by-step *add a catalog
 entry* walkthrough — is the repository's `config/hardware/README.md`, included
