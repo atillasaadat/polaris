@@ -22,6 +22,16 @@ flowchart LR
     CC -.->|same resolved object| FP2["F´ params / analysis<br/>artifacts"]
 ```
 
+Vehicle configuration also carries **FSW tuning**. `spacecraft.fsw_parameters`
+is a flat map keyed by fully-qualified F´ parameter name; given the FPP topology
+dictionary (`--dictionary`), the compiler resolves each name to its generated
+parameter ID and emits `PrmDb.dat`, the file `Svc::PrmDb` loads at startup. The
+IDs are read from the dictionary rather than written by hand, so a parameter
+file can never drift out of step with the flight build, and an unknown or unset
+parameter fails the compile rather than the mission — there are no flight
+defaults (design doc §19.3). The deployment points `prmDb` at the file with
+`-P`; see `flight/PolarisFsw/README.md` for the bring-up recipe.
+
 The hardware-library authoring contract — file layout, required keys and their
 units, the datasheet-comment standard, and the step-by-step *add a catalog
 entry* walkthrough — is the repository's `config/hardware/README.md`, included

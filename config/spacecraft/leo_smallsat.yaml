@@ -54,6 +54,75 @@ spacecraft:
     pointing:
       kp: 0.2                        # proportional (attitude)
       kd: 0.8                        # derivative (rate)
+  # FSW tuning delivered to the F´ ParameterDb (design doc §19.3). Keys are the
+  # fully-qualified parameter names in the generated topology dictionary; the
+  # config compiler resolves each to its generated ID and writes PrmDb.dat, and
+  # fails if a name is unknown or a declared parameter is left unset. There are
+  # deliberately no flight defaults: a component with a missing parameter refuses
+  # to run rather than inventing one.
+  #
+  # The coarse attitude estimator's noise budget below is *derived from the units
+  # this vehicle actually carries* — the GomSpace NanoSense FSS, the generic
+  # magnetometer and the STIM300 above — not chosen to make the estimator look
+  # good. Re-derive these whenever a model_id changes.
+  fsw_parameters:
+    # Sun pair. The FSS is specified 2.0 deg 3-sigma out at the 60 deg field
+    # edge (0.5 deg inside 45 deg), so 2.0/3 deg = 11.6 mrad is the conservative
+    # white part.
+    #
+    # The systematic part has two contributors, and **albedo dominates**. The
+    # analytic sun ephemeris fallback (§11.3) is good to ~0.4 deg = 7.0 mrad.
+    # Earthshine is far larger: GomSpace warn that uncorrected albedo "can
+    # generate errors >10 deg", with an ISS-orbit histogram whose bulk sits
+    # under 2 deg and whose tail runs past 10 deg. It is budgeted here as
+    # systematic rather than white because it is a function of the sunlit-Earth
+    # geometry in the field of view, which changes over minutes of orbit, not
+    # cycle to cycle — repeated fixes at 10 Hz do not average it away. 2.0 deg
+    # = 34.9 mrad is the histogram bulk, not the tail: budgeting the 12 deg
+    # peak would make the sun pair worthless as the primary TRIAD vector, and
+    # the tail is a transient the coarse chain rides out on the gyro. RSS with
+    # the ephemeris term: sqrt(7.0^2 + 34.9^2) = 35.6 mrad.
+    #
+    # The datasheet quotes no installed mounting alignment, so none is added.
+    flight.attitudeEstimator.SigmaSunWhiteRad: 0.0116     # [rad]
+    flight.attitudeEstimator.SigmaSunSysRad: 0.0356       # [rad]
+    # Magnetic pair. MAG-GENERIC noise is 0.05 uT rms against a ~30 uT LEO
+    # field, so the transverse direction error is 0.05/30 = 1.7 mrad white. The
+    # systematic part is dominated by the uncalibrated hard-iron bias (1.0 uT /
+    # 30 uT = 33 mrad) with 5 mrad of soft-iron/non-orthogonality in quadrature:
+    # sqrt(33.3^2 + 5^2) = 33.7 mrad. This is why the magnetometer is the
+    # secondary TRIAD vector and the sun the primary.
+    flight.attitudeEstimator.SigmaMagWhiteRad: 0.0017     # [rad]
+    flight.attitudeEstimator.SigmaMagSysRad: 0.0337       # [rad]
+    # STIM300 angle random walk, 0.15 deg/sqrt(hr) converted to SI:
+    # 0.15 * (pi/180) / 60 = 4.363e-5 rad/sqrt(s).
+    flight.attitudeEstimator.GyroArw: 4.363e-5            # [rad/s^(1/2)]
+    # TRIAD geometry gate: 0.17 ~= sin(10 deg). Below this the sun and field
+    # directions are close enough to parallel that roll about the sun is
+    # unobservable and the solve is refused rather than reported as a fix.
+    flight.attitudeEstimator.MinSinAngle: 0.17            # [-]
+    # Complementary blend gain: 0.3 pulls ~30% of the TRIAD-vs-propagated error
+    # in per fix, so the solution follows the gyro between fixes and converges
+    # over ~1 s at 10 Hz — fast enough for the Safe-mode floor without passing
+    # the magnetometer's 34 mrad systematic straight through to the output.
+    flight.attitudeEstimator.TriadGain: 0.3               # [-]
+    # Coast horizon: the longest eclipse in this 500 km SSO is ~35.6 min, so
+    # 2400 s covers a full umbra pass with margin. Riding the gyro that long
+    # costs 4.363e-5 * sqrt(2400) = 2.1 mrad of random walk, small against the
+    # 34 mrad magnetic floor — the coast is limited by bias drift, not ARW.
+    flight.attitudeEstimator.MaxCoastSec: 2400.0          # [s]
+    # Largest propagation step: 0.5 s is five 10 Hz frames. A longer gap is a
+    # dropout, and the attitude is held rather than extrapolated on a stale rate.
+    flight.attitudeEstimator.MaxDtSec: 0.5                # [s]
+    # Staleness window (§9.1): 1.0 s admits the slowest sensor on this vehicle
+    # while excluding anything a full second behind the cycle epoch.
+    flight.attitudeEstimator.MaxMeasAgeSec: 1.0           # [s]
+    # Geocentric radius band a GNSS fix must fall in to be used as the point the
+    # geomagnetic reference is evaluated at (§9.1). 6.5e6 m is below this orbit
+    # but above the Earth's surface; 5.0e7 m is well past any orbit this vehicle
+    # can reach, so both ends catch a corrupt fix without gating a real one.
+    flight.attitudeEstimator.MinPositionRadiusM: 6.5e6    # [m]
+    flight.attitudeEstimator.MaxPositionRadiusM: 5.0e7    # [m]
   drag_area_m2: 0.06                 # 6U broadside, ~0.2 x 0.3 m
   drag_cd: 2.2
   srp_area_m2: 0.06
