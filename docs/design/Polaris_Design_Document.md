@@ -424,7 +424,7 @@ Verified by `tests/unit/davenport_test.cpp` and `tests/unit/mekf_test.cpp` (19 t
 ### 8.4 Guidance
 - **Pointing modes** generate reference attitude/rate: sun-point, nadir, LVLH, inertial hold, star-track, ground-track.
 - **Slew planning:** eigenaxis slews with rate/accel limits; **constrained attitude guidance** honoring keep-out cones (star-tracker vs Sun/Earth/Moon) and keep-in cones (comms, solar-array sun-pointing).
-- **Maneuver targeting:** compute burns to reach target Keplerian elements / altitude; impulsive and finite-burn reference generation (§17).
+- **Maneuver targeting:** compute burns to reach target Keplerian elements / altitude; **finite-burn reference generation is the default for every burn type** — impulsive solutions are first-guess/analysis approximations only, always refined to and executed as finite burns (§17).
 
 ### 8.5 Control
 - **B-dot** detumble (MTQ-based).
@@ -557,7 +557,8 @@ Per §18.7, analysis tools **reuse the same C++/FSW code through pybind11 bindin
 ## 17. Orbit Maintenance & Maneuvering
 
 - **Thruster orbit change:** simple maintenance and raise/lower to **target Keplerian elements (SMA / altitude)**.
-- **Targeting:** compute required Δv; **finite-burn** modeling (thrust, Isp, duration) with guidance hand-off (§8.4) and a **Delta-V/Maneuver mode** (§10).
+- **All burns are finite burns (decision, 2026-08-01).** Every burn — chemical, cold-gas, electric — is modeled and executed as a **finite burn by default**: thrust and mass-flow profiles (rise/fall from the §7 thruster models) integrated through the §5.1 dynamics, with mass depletion and the resulting CM/inertia shift applied over the burn arc, attitude held by the §8.5 controller against the §5.3 disturbances *during* the burn, and the burn's own thrust-misalignment torque (thrust axis vs current CM) included. The impulsive model is retained only as a **first-guess/analysis approximation** inside targeting: compute the impulsive Δv, convert to a finite-burn arc (duration from thrust and current mass, centered on the impulsive point per the standard split-burn correction), then refine against the finite-burn propagation. Electric-propulsion burns are inherently long-arc/low-thrust and never had an impulsive representation. Ground products (§20) and GMAT validation cases use finite-burn propagation to match.
+- **Targeting:** compute required Δv (impulsive first guess only); **finite-burn** targeting (thrust, Isp, duration, steering law — inertial hold or velocity-tracking) with guidance hand-off (§8.4) and a **Delta-V/Maneuver mode** (§10).
 - **Products:** CCSDS OEM + TLE ephemeris **pre- and post-burn** (§20).
 - **Expandable later** to station-keeping boxes, phasing, and drag make-up scheduling.
 
@@ -799,7 +800,7 @@ Dependency-ordered so the suite is buildable and testable at every step:
 - **Phase 5 — Attitude control:** B-dot, PID, RW L-norm/L-∞ allocation **or** CMG steering (modular), momentum management + MTQ desaturation; **onboard disturbance feedforward** (§8.5 — model-based gravity-gradient/`m_res×B` first, then the momentum-based residual-torque observer shared with the §9 momentum-anomaly monitor).
 - **Phase 6 — Orbit determination & propagation:** GNSS-sim, onboard MEKF OD + self-covariance, multi-object propagation, batch LS, SGP4, CCSDS OEM (GMAT-validated).
 - **Phase 7 — Guidance + full state machine:** pointing modes, slew planning with keep-out/keep-in cones, GS tracking, complete mode set.
-- **Phase 8 — Maneuvering + interop outputs:** thruster targeting (SMA/altitude), Delta-V mode, pre/post-burn CCSDS/TLE, STK/FreeFlyer export.
+- **Phase 8 — Maneuvering + interop outputs:** thruster targeting (SMA/altitude) with **finite burns as the default for every burn type** (impulsive = first guess only, §17), Delta-V mode, pre/post-burn CCSDS/TLE, STK/FreeFlyer export.
 - **Phase 9 — Subsystems:** simple power, thermal, comms/link budget; subsystem monitors into FDIR; **CCSDS CFDP (Class 1/2) file transfer** over the `ComCcsds` stack (§20 — adopt upstream F´ CFDP if available by then, else implement; decision checkpoint at the §22.4 push).
 - **Phase 10 — FDIR:** monitors, isolation, responses, safing escalation across sensors/actuators/subsystems; **fault-injection integration suite** (sensor faults/loss, occlusions, GPS outage/spoofing, actuator faults, subsystem limits, cascades — §23.1.1); **reboot-surviving time-tagged sequencing** (§23.6 — persisted absolute/relative-time sequences that resume past-due-skipped after a reset).
 - **Phase 11 — Monte Carlo + analysis tools:** dispersion framework, momentum/sizing, detumble MC, contact scheduling, link budget, consistency metrics, per-REQ margin reporting.
