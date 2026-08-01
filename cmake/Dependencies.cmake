@@ -7,7 +7,13 @@ include(FetchContent)
 # --- Eigen (header-only linear algebra) -------------------------------------
 set(EIGEN_BUILD_DOC OFF CACHE BOOL "" FORCE)
 set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "" FORCE)
-set(BUILD_TESTING OFF CACHE BOOL "" FORCE)  # suppress Eigen's own test tree
+# Eigen adds its own (very large) test tree when BUILD_TESTING is on, so it is
+# forced off across the fetch — and then **restored**. BUILD_TESTING is not a
+# private Eigen switch: F´ keys `register_fprime_ut` off it, so leaving it forced
+# off here silently drops every F´ component unit test in the deployment (which
+# it did, undetected, until the first one was written in Push 40).
+set(POLARIS_SAVED_BUILD_TESTING "${BUILD_TESTING}")
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
   Eigen3
   GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
@@ -16,6 +22,11 @@ FetchContent_Declare(
   SYSTEM
 )
 FetchContent_MakeAvailable(Eigen3)
+if (DEFINED POLARIS_SAVED_BUILD_TESTING)
+  set(BUILD_TESTING "${POLARIS_SAVED_BUILD_TESTING}" CACHE BOOL "" FORCE)
+else()
+  unset(BUILD_TESTING CACHE)  # it was never set; leave it that way
+endif()
 
 # --- ERFA (Essential Routines for Fundamental Astronomy) ---------------------
 # The IAU 2006/2000A ECI<->ECEF reduction used by lib/frames (REQ-CONV-002).

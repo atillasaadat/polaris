@@ -65,6 +65,12 @@ module flight {
   # a flight component (ships to hardware), not SITL infrastructure.
   instance onboardTables: flight.OnboardTables base id 0x10020000
 
+  # Coarse attitude estimator (design doc §8.1, §10). A flight component: it runs
+  # on the GNC rate group, consumes the GncPorts measurement seam (fed by
+  # SitlBridge under SITL, by Drv sensor drivers on the vehicle) and the
+  # OnboardTables query ports, and publishes the §8.0 estimate.
+  instance attitudeEstimator: flight.AttitudeEstimator base id 0x10030000
+
   instance rateGroupDriver: Svc.RateGroupDriver base id 0x10011000
 
   instance systemResources: Svc.SystemResources base id 0x10012000

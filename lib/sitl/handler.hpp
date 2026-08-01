@@ -54,9 +54,11 @@ struct HandleResult {
   HelloMsg hello{};               ///< decoded HELLO (valid for kHelloAck)
 };
 
-/// Decodes SITL requests and builds replies. Holds the only cross-message state
-/// the barrier needs: the wheel/MTQ counts negotiated at HELLO, which size every
-/// later STEP_REPLY (STEP_REQ does not repeat them). One instance per link.
+/// Decodes SITL requests and builds replies. Holds the cross-message state the
+/// barrier needs: the per-type unit counts negotiated at HELLO, which size every
+/// later STEP exchange (neither STEP message repeats them), and the sensor
+/// records of the most recently decoded STEP_REQ, which the caller publishes to
+/// the GNC components. One instance per link; ~4 kB by value, no heap.
 class SitlHandler {
  public:
   /// Decode one message from @p in (@p in_len bytes). For HELLO the HELLO_ACK is
@@ -130,6 +132,36 @@ class SitlHandler {
 
   std::uint32_t nMtq() const { return n_mtq_; }
 
+  /// @name Latest decoded STEP_REQ measurements
+  ///
+  /// Valid after `handle` returned `kStepReq`; the arrays hold the records of
+  /// the most recently decoded STEP_REQ, in vehicle build order, and are only
+  /// written by a fully validated message — a rejected STEP_REQ leaves the
+  /// previous step's measurements in place rather than tearing them. Indices
+  /// past the matching count are unwritten and must not be read.
+  /// @{
+  std::uint32_t nImu() const { return n_imu_; }
+
+  std::uint32_t nStarTracker() const { return n_star_tracker_; }
+
+  std::uint32_t nSunSensor() const { return n_sun_sensor_; }
+
+  std::uint32_t nMagnetometer() const { return n_magnetometer_; }
+
+  std::uint32_t nGnss() const { return n_gnss_; }
+
+  const ImuRecord& imu(std::uint32_t i) const { return imu_[i]; }
+
+  const StarTrackerRecord& starTracker(std::uint32_t i) const { return star_tracker_[i]; }
+
+  const SunSensorRecord& sunSensor(std::uint32_t i) const { return sun_sensor_[i]; }
+
+  const MagnetometerRecord& magnetometer(std::uint32_t i) const { return magnetometer_[i]; }
+
+  const GnssRecord& gnss(std::uint32_t i) const { return gnss_[i]; }
+
+  /// @}
+
  private:
   /// HELLO → echo the struct back with type flipped to HELLO_ACK, after latching
   /// the reply counts. Rejects counts above the wire maxima.
@@ -147,6 +179,11 @@ class SitlHandler {
         hello.n_gnss > kMaxUnits || hello.n_wheel > kMaxUnits || hello.n_mtq > kMaxUnits) {
       return r;  // kMalformed: implausible unit count
     }
+    n_imu_ = hello.n_imu;
+    n_star_tracker_ = hello.n_star_tracker;
+    n_sun_sensor_ = hello.n_sun_sensor;
+    n_magnetometer_ = hello.n_magnetometer;
+    n_gnss_ = hello.n_gnss;
     n_wheel_ = hello.n_wheel;
     n_mtq_ = hello.n_mtq;
     hello_seen_ = true;
@@ -163,11 +200,15 @@ class SitlHandler {
     return r;
   }
 
-  /// STEP_REQ decode only: validate the header and the handshake order, then
-  /// surface the barrier step and sim epoch. The reply is built later by
-  /// `buildStepReply`, once the caller has run the rate group. Sensor records in
-  /// the request are intentionally not read yet (Phase-4 GNC will consume them);
-  /// only the fixed header is validated here.
+  /// STEP_REQ decode: validate the header and the handshake order, read the
+  /// per-unit sensor records that follow (in the HELLO-declared order and
+  /// counts), then surface the barrier step and sim epoch. The reply is built
+  /// later by `buildStepReply`, once the caller has run the rate group.
+  ///
+  /// The whole message is length-checked *before* any record is copied, so a
+  /// truncated or over-long request is rejected whole and the previously decoded
+  /// measurements stay intact — a partially overwritten sensor set would be
+  /// indistinguishable downstream from a fresh one.
   HandleResult decodeStepReq(const std::uint8_t* in, std::size_t in_len) {
     HandleResult r;
     r.msg_type = static_cast<std::uint16_t>(MsgType::kStepReq);
@@ -185,15 +226,66 @@ class SitlHandler {
       // `epoch >= 0` as a true invariant rather than asserting on wire data.
       return r;  // kMalformed
     }
+    const std::size_t expected =
+        sizeof(StepReqHeader) + static_cast<std::size_t>(n_imu_) * sizeof(ImuRecord) +
+        static_cast<std::size_t>(n_star_tracker_) * sizeof(StarTrackerRecord) +
+        static_cast<std::size_t>(n_sun_sensor_) * sizeof(SunSensorRecord) +
+        static_cast<std::size_t>(n_magnetometer_) * sizeof(MagnetometerRecord) +
+        static_cast<std::size_t>(n_gnss_) * sizeof(GnssRecord);
+    if (in_len != expected) {
+      return r;  // kMalformed: not the sensor set HELLO declared
+    }
+
+    // Counts are bounded by kMaxUnits at HELLO, so every loop below is bounded
+    // by the fixed array sizes.
+    for (std::uint32_t i = 0; i < n_imu_; ++i) {
+      if (!readRecord(in, in_len, off, imu_[i])) {
+        return r;
+      }
+    }
+    for (std::uint32_t i = 0; i < n_star_tracker_; ++i) {
+      if (!readRecord(in, in_len, off, star_tracker_[i])) {
+        return r;
+      }
+    }
+    for (std::uint32_t i = 0; i < n_sun_sensor_; ++i) {
+      if (!readRecord(in, in_len, off, sun_sensor_[i])) {
+        return r;
+      }
+    }
+    for (std::uint32_t i = 0; i < n_magnetometer_; ++i) {
+      if (!readRecord(in, in_len, off, magnetometer_[i])) {
+        return r;
+      }
+    }
+    for (std::uint32_t i = 0; i < n_gnss_; ++i) {
+      if (!readRecord(in, in_len, off, gnss_[i])) {
+        return r;
+      }
+    }
+
     r.status = HandleStatus::kStepReq;
     r.macro_step = req.macro_step;
     r.epoch_tai_ns = req.epoch_tai_ns;
     return r;
   }
 
+  std::uint32_t n_imu_ = 0;
+  std::uint32_t n_star_tracker_ = 0;
+  std::uint32_t n_sun_sensor_ = 0;
+  std::uint32_t n_magnetometer_ = 0;
+  std::uint32_t n_gnss_ = 0;
   std::uint32_t n_wheel_ = 0;
   std::uint32_t n_mtq_ = 0;
   bool hello_seen_ = false;
+
+  // Latest decoded measurements, fixed capacity (kMaxUnits bounds the HELLO
+  // counts). ~3.5 kB held by value: no heap, and the component owns one handler.
+  ImuRecord imu_[kMaxUnits]{};
+  StarTrackerRecord star_tracker_[kMaxUnits]{};
+  SunSensorRecord sun_sensor_[kMaxUnits]{};
+  MagnetometerRecord magnetometer_[kMaxUnits]{};
+  GnssRecord gnss_[kMaxUnits]{};
 };
 
 }  // namespace polaris::sitl

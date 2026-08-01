@@ -28,6 +28,7 @@ module flight {
   # ----------------------------------------------------------------------
     instance sitlTime
     instance onboardTables
+    instance attitudeEstimator
     instance rateGroup1
     instance rateGroup2
     instance rateGroup3
@@ -137,7 +138,15 @@ module flight {
     }
 
     connections PolarisFsw {
+      # GNC reference queries: the attitude estimator reads the Sun ephemeris and
+      # EOP it needs for its inertial references off the onboard tables (§8.1,
+      # §11.3). Both are synchronous, lock-free point queries.
+      attitudeEstimator.getBodyPosition -> onboardTables.getBodyPosition
+      attitudeEstimator.getEopAt        -> onboardTables.getEopAt
 
+      # attitudeEstimator.estimateOut has no consumer yet: guidance and control
+      # (§8.2, §12) are later pushes. The component guards the call on
+      # isConnected, so an unconnected product port is inert, not an assert.
     }
 
     # ----------------------------------------------------------------------
@@ -152,6 +161,23 @@ module flight {
     # ----------------------------------------------------------------------
     connections Sitl {
       PolarisSitl.sitlBridge.timeSetOut -> sitlTime.timeSetIn
+
+      # The barrier-driven 10 Hz GNC cycle (§2.4): the estimator is the first
+      # member of the SITL rate group, so it runs on this step's measurements
+      # before anything that would act on the estimate. On hardware the SITL
+      # subtopology is dropped and this connection becomes a wall-clock 10 Hz
+      # rate group instead (recipe: PolarisFsw/README.md).
+      PolarisSitl.sitlRateGroup.RateGroupMemberOut[0] -> attitudeEstimator.run
+
+      # Sensor measurements, SITL end of the GncPorts seam. One unit of each type
+      # today (config/spacecraft/leo_smallsat.yaml), so port 0 of each array;
+      # adding a unit is one line here plus the vehicle config, with no port or
+      # component change. SitlBridge skips units nothing is connected to.
+      PolarisSitl.sitlBridge.imuOut[0]           -> attitudeEstimator.imuIn[0]
+      PolarisSitl.sitlBridge.sunSensorOut[0]     -> attitudeEstimator.sunSensorIn[0]
+      PolarisSitl.sitlBridge.magnetometerOut[0]  -> attitudeEstimator.magnetometerIn[0]
+      PolarisSitl.sitlBridge.gnssOut[0]          -> attitudeEstimator.gnssIn[0]
+      PolarisSitl.sitlBridge.starTrackerOut[0]   -> attitudeEstimator.starTrackerIn[0]
     }
 
   }

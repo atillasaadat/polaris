@@ -69,6 +69,12 @@ class SitlBridge final : public SitlBridgeComponentBase {
   //! framer for framing and downlink.
   void sendReply(FwSizeType len, const ComCfg::FrameContext& context);
 
+  //! Republish this STEP_REQ's decoded sensor records on the GncPorts
+  //! measurement outputs, unit i to port i, before the rate group is cycled.
+  //! @p epochTaiNs is this step's sim epoch, used to derive the IMU
+  //! accumulation interval from the previous step.
+  void publishMeasurements(I64 epochTaiNs);
+
   // ----------------------------------------------------------------------
   // State
   // ----------------------------------------------------------------------
@@ -87,6 +93,12 @@ class SitlBridge final : public SitlBridgeComponentBase {
   //! Fixed reply buffer; largest possible STEP_REPLY (no heap). Reused each
   //! step: the framer copies out synchronously before we are re-entered.
   U8 reply_[polaris::sitl::kMaxStepReplyBytes] = {};
+
+  //! Previous step's sim epoch, for the IMU accumulation interval. Zero/unset
+  //! on the first step, where no interval can be formed and the increments are
+  //! published invalid rather than divided by a guessed dt.
+  I64 last_epoch_tai_ns_ = 0;
+  bool have_last_epoch_ = false;
 };
 
 }  // namespace flight

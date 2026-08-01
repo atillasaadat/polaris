@@ -66,6 +66,34 @@ module flight {
     sync input port mtqCmdIn: MtqDipoleCmd
 
     # ----------------------------------------------------------------------
+    # Sensor measurement outputs (the SITL end of the GncPorts seam, §8.0)
+    # ----------------------------------------------------------------------
+    #
+    # Each STEP_REQ's per-unit sensor records are republished on these arrays
+    # before the rate group is cycled, so the GNC components see this step's
+    # measurements in the very cycle the barrier drives. Unit i of the wire
+    # message goes to port i (positional identity, §19.4 vehicle build order);
+    # ports past the HELLO-declared count are never called. On hardware these
+    # come from Drv sensor drivers instead and this component is not built —
+    # which is exactly why the seam is a shared port module.
+
+    @ Per-IMU delta-angle/delta-velocity increments for this macro step.
+    output port imuOut: [GncMaxUnits] ImuMeasPort
+
+    @ Per-sun-sensor processed unit vectors.
+    output port sunSensorOut: [GncMaxUnits] SunSensorMeasPort
+
+    @ Per-magnetometer field measurements.
+    output port magnetometerOut: [GncMaxUnits] MagnetometerMeasPort
+
+    @ Per-receiver GNSS PVT fixes.
+    output port gnssOut: [GncMaxUnits] GnssMeasPort
+
+    @ Per-tracker attitude solutions (no coarse-mode consumer; fine mode is the
+    @ MEKF push).
+    output port starTrackerOut: [GncMaxUnits] StarTrackerMeasPort
+
+    # ----------------------------------------------------------------------
     # Telemetry
     # ----------------------------------------------------------------------
 

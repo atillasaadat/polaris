@@ -33,7 +33,9 @@ void print_usage(const char* app) {
       "-c\tenable the ScriptedCmdSource actuator profile (SITL only; "
       "default off = zero commands)\n"
       "-E\tonboard IERS EOP table file (default tests/golden/finals.all.iau2000.txt)\n"
-      "-B\tonboard Chebyshev ephemeris fixture (default tests/golden/de440_bodies.cheb)\n",
+      "-B\tonboard Chebyshev ephemeris fixture (default tests/golden/de440_bodies.cheb)\n"
+      "-I\tonboard IAGA IGRF-14 coefficients (default tests/golden/igrf14coeffs.txt)\n"
+      "-Y\tmission epoch for the IGRF snapshot, decimal year (default: system clock)\n",
       app);
 }
 
@@ -68,11 +70,13 @@ int main(int argc, char* argv[]) {
   bool scripted_commands = false;
   const char* onboard_eop_path = nullptr;
   const char* onboard_ephem_path = nullptr;
+  const char* onboard_igrf_path = nullptr;
+  double igrf_epoch_year = 0.0;  // 0 = derive from the system clock at setup
 
   Os::init();
 
   // Loop while reading the getopt supplied options
-  while ((option = getopt(argc, argv, "hp:a:s:cE:B:")) != -1) {
+  while ((option = getopt(argc, argv, "hp:a:s:cE:B:I:Y:")) != -1) {
     switch (option) {
       // Handle the -a argument for address/hostname
       case 'a':
@@ -106,6 +110,23 @@ int main(int argc, char* argv[]) {
       case 'B':
         onboard_ephem_path = optarg;
         break;
+      // Onboard IGRF-14 coefficient file (design doc §6.2, §8.1).
+      case 'I':
+        onboard_igrf_path = optarg;
+        break;
+      // Mission epoch the IGRF snapshot is taken at, as a decimal year. Which
+      // snapshot the vehicle holds is a ground decision (§19.3); absent this,
+      // setup falls back to the system clock.
+      case 'Y': {
+        char* end = nullptr;
+        const double parsed = strtod(optarg, &end);
+        if (end == optarg || *end != '\0' || !(parsed > 0.0)) {
+          (void)printf("Invalid IGRF epoch year '%s' (expected e.g. 2026.5)\n", optarg);
+          return 1;
+        }
+        igrf_epoch_year = parsed;
+        break;
+      }
       // Cascade intended: help output
       case 'h':
       // Cascade intended: help output
@@ -124,6 +145,8 @@ int main(int argc, char* argv[]) {
   inputs.scriptedCommands = scripted_commands;
   inputs.onboardEopPath = onboard_eop_path;
   inputs.onboardEphemPath = onboard_ephem_path;
+  inputs.onboardIgrfPath = onboard_igrf_path;
+  inputs.igrfEpochYear = igrf_epoch_year;
 
   // Setup program shutdown via Ctrl-C
   signal(SIGINT, signalHandler);

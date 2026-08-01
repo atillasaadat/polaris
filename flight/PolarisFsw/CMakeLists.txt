@@ -12,8 +12,12 @@
 ###
 
 # Custom components (added before Top/ so the topology can reference them).
-# SitlPorts (shared port/type defs) first — the others depend on it.
+# Interface-only port/type modules first — the components depend on them.
+# SitlPorts: the SITL rate-group/actuator seam (§2.4).
+# GncPorts:  the sensor-measurement and estimate seam (§8.0, §8.1) — SitlBridge
+#            is the SITL measurement source, so it depends on this too.
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/SitlPorts/")
+add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/GncPorts/")
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/SitlTime/")
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/ScriptedCmdSource/")
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/SitlBridge/")
@@ -23,6 +27,11 @@ add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/SitlBridge/")
 # (OnboardTablesPorts) are registered first, like SitlPorts.
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/OnboardTablesPorts/")
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/OnboardTables/")
+
+# Coarse attitude determination (design doc §8.1, §10). A flight component: it
+# ships to hardware and consumes the GncPorts measurement seam, whichever source
+# fills it (SitlBridge under SITL, Drv sensor drivers on the vehicle).
+add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/AttitudeEstimator/")
 
 # SITL lockstep transport, packaged as an importable subtopology (design doc
 # §2.2). Added after the SITL components it groups and before Top, which imports

@@ -85,6 +85,13 @@ inline constexpr double kIgrfReferenceRadius = 6371200.0;
 struct IgrfCoefficients {
   /// Decimal year the @ref g / @ref h tables are valid at.
   double epoch_year{0.0};
+  /// Decimal year past which this snapshot's linear model stops being the
+  /// published one: the next tabulated epoch when the snapshot came from inside
+  /// the IAGA grid, or the last epoch + 5 years when it came from the
+  /// secular-variation column. Beyond it the extrapolation is unvalidated and
+  /// its error is invisible to a consumer, so onboard users refuse rather than
+  /// evaluate (see `flight.AttitudeEstimator`). Zero when unset.
+  double valid_until_year{0.0};
   /// Highest degree populated in @ref g / @ref h.
   int degree{0};
   /// Highest degree populated in @ref g_sv / @ref h_sv.

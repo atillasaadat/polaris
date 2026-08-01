@@ -113,9 +113,11 @@ class EarthMagneticField {
 
 /// Convert a TAI epoch to the decimal year IGRF is parameterised by.
 ///
-/// Exposed because it is worth testing directly: the year fraction must account
-/// for leap years, and getting it wrong is a silent sub-year epoch offset that
-/// shows up only as a small secular-variation bias.
+/// Sim-side alias for `time::decimalYear` (lib/time/utc.hpp), where the
+/// conversion now lives so the FSW's onboard IGRF reference (§8.1) shares it.
+/// Kept because it is worth testing directly: the year fraction must account for
+/// leap years, and getting it wrong is a silent sub-year epoch offset that shows
+/// up only as a small secular-variation bias.
 ///
 /// @return false if @p epoch cannot be converted with @p leap.
 bool decimalYear(const time::Tai& epoch, const time::LeapSecondTable& leap, double& out);
