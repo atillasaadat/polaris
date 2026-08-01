@@ -273,10 +273,26 @@ Worked example (Push 9): `tests/golden/finals.all.iau2000.txt` is the raw IERS p
 | **Geomagnetic field** | **IGRF-14** (valid through 2030); **WMM** available as alternative/backup | onboard modeled field backs up the magnetometer measurement (measured-vs-modeled consistency check, FDIR, and coarse attitude estimation — §6.2, §8.1, §9) |
 
 ### 5.3 Disturbance Torques
-Explicitly modeled on the body: gravity-gradient (gravity field + inertia), aerodynamic (CP–CM offset × drag), SRP (CP–CM offset, panel geometry), residual magnetic dipole (residual dipole × B).
+
+Explicitly modeled on the body, each as a `ForceTorqueSource` provider (§5.1) summed into the plant's torque term alongside actuator torques. Gyroscopic coupling — precession, nutation, and the intermediate-axis (Dzhanibekov) instability — needs no separate model: it is the `ω×(Jω)` term of Euler's equation, already integrated, and exercised whenever the configured inertia tensor is asymmetric.
+
+| Torque | Model | Inputs it reuses |
+|---|---|---|
+| **Gravity-gradient** | `τ = 3(μ/r³)·r̂×(J·r̂)` in Body, with `r̂` the unit nadir vector rotated into Body; point-mass (degree-0) gradient is the committed baseline — the J2 correction to the gradient is ~1e-3 of it in LEO and can be added later as a config option | gravity field (§5.2), inertia tensor from the compiled vehicle config |
+| **Aerodynamic** | `τ = r_cp/aero × F_drag`, with the drag force from the existing NRLMSIS path and `r_cp/aero` the CP–CM offset from the vehicle config; CM tracks the configured mass properties | drag (§5.2), vehicle geometry (§19.4) |
+| **SRP** | `τ = r_cp/srp × F_srp`, cannonball force with its own CP–CM offset (the optical CP is generally not the aerodynamic CP), gated by the eclipse model; upgrades to the panel/facet force model when that lands | SRP + eclipse (§5.2) |
+| **Residual magnetic dipole** | `τ = m_res × B`, with `m_res` a body-fixed residual dipole [A·m²] from the vehicle config and `B` from the IGRF path — same physics as the MTQ torque with an uncommanded, constant dipole | geomagnetic field (§5.2) |
+
+All four are per-torque enable/disable in the scenario config (an MC study isolating one disturbance is a config edit, not a code change), and each CP–CM offset and the residual dipole are no-default vehicle-config fields. Verification: gravity-gradient stable/unstable equilibria and libration frequency against the closed-form results (Hughes ch. 9 / Wertz §18), aero/SRP lever arms against hand-computed cross products, residual dipole against the existing MTQ `m×B` path, and a long-arc secular momentum-buildup check that the summed environmental torque matches the per-source integrals.
 
 ### 5.4 Advanced / Optional Fidelity (later phases)
-Fuel slosh (pendulum/mass-spring) coupled to dynamics; structural flexibility for large appendages; CG migration and inertia change with propellant depletion.
+
+Committed later-phase fidelity (Phase 12 unless noted), each with the model class fixed now so interfaces don't need rework:
+
+- **Fuel slosh:** lumped-parameter pendulum or spring-mass-damper per tank (mass fraction, hinge point, natural frequency, damping ratio from tank geometry via the standard Dodge/NASA SP-106 correlations), coupled two-way into the rigid-body dynamics. Baseline is the linear model; a rotary-slosh upgrade only if a mission needs it.
+- **Hinged solar arrays (lumped flexible-appendage model):** each array a rigid panel on a torsional spring-damper hinge (stiffness, damping, hinge axis and location from the vehicle config). This contributes (a) the array's mass to the system CM and inertia — including the CM/inertia shift with any articulation angle, (b) the first cantilever/torsion mode frequency `f₁ = (1/2π)√(k_hinge/J_panel)`, which is the number the §8.5 control bandwidth must stay well below (the committed check: closed-loop bandwidth ≤ f₁/10 flagged at config-compile time), and (c) reaction torques at the hinge back onto the bus during slews. Deliberately not FEM — the lumped model captures everything the GNC loop can see.
+- **CG migration and inertia change with propellant depletion**, coupled to the §7 propulsion mass-flow models; the aero/SRP lever arms in §5.3 read the *current* CM so depletion shifts disturbance torques consistently.
+- **Main propulsion** (§7): chemical (Isp, thrust, mass flow, minimum impulse) and electric (low-thrust, throttle curve, power draw coupled to the §12 EPS model); both deplete mass through the same CM/inertia path.
 
 ---
 
@@ -417,6 +433,12 @@ Verified by `tests/unit/davenport_test.cpp` and `tests/unit/mekf_test.cpp` (19 t
 - **Momentum management & desaturation:** RW momentum monitoring with MTQ (and/or thruster) desaturation.
 - **CMG steering law:** singularity-robust steering (singularity-robust inverse / null-motion) when CMG-equipped.
 - **Actuator abstraction:** guidance/control produce a commanded body torque; the allocation layer (RW-pyramid **or** CMG-steering) is the swappable piece, keeping upstream logic actuator-agnostic.
+- **Onboard disturbance estimation → feedforward (planned, with Phase 5 control).** The flight software estimates the slowly-varying environmental torque from its own on-orbit data and feeds it forward, shrinking the unmodeled error the PID has to fight. Three tiers, cheapest first:
+  1. **Model-based feedforward (free):** gravity-gradient and modeled-field `m_res×B` torques computed onboard from the §8.1 attitude, the §8.3 position, and the onboard IGRF — same formulas as §5.3, using *estimated* states. No new estimator; available as soon as the §5.3 sim torques exist to validate against.
+  2. **Momentum-based residual-torque observer:** total system momentum `H = Jω + h_rw` is measured (gyro + wheel tachometers); its rate minus commanded/modeled torques is the *unmodeled* external torque. A low-pass/bias filter on that residual yields a body-frame disturbance estimate for feedforward — and doubles as the §9 FDIR momentum-anomaly monitor. This is the standard industrial approach and the committed baseline.
+  3. **Parameter estimation (later, with §8.3 OD in place):** fit the physically-parameterized sources from long-arc data — residual dipole `m_res` (regresses against the known, rotating `B`; separable from constant-in-body biases by its `×B` signature), and drag/SRP scale factors (estimated in the OD filter from orbit decay/along-track residuals, as flight OD systems conventionally do). Estimated parameters update the feedforward model and are telemetered for trending.
+
+  The MEKF's gyro-bias states (§8.1) already absorb what a *sensor*-side bias explains; the observer targets what they cannot — true external torque. The two are distinguishable because a gyro bias does not move wheel momentum. NIS trending (§8.1) flags when the disturbance environment departs from the estimated model.
 
 ---
 
@@ -770,18 +792,18 @@ Onboard persistent state across resets: time/epoch, OD state + covariance, ephem
 Dependency-ordered so the suite is buildable and testable at every step:
 
 - **Phase 0 — Foundations:** conventions (§3) including **boundary-only typed frame/unit vectors** and the **physical-constants registry**; **canonical state structs** (`EstimatedState`/`TruthState`, §8.0); math/frames/time/ephemeris libraries (fixed-size Eigen, JPL scalar-first quaternions, TAI + GPS/ECEF conversions); config schema + hardware-model library + **config compiler** (§19.3); repo + CI skeleton, **Requirements ICD**, **docs site + GMAT golden-data harness**, license.
-- **Phase 1 — Truth sim core:** 6DOF + RK89, gravity (EGM2008, settable order), third-body (SPICE), drag (NRLMSIS 2.1), SRP + eclipse, IGRF-14, disturbance torques. Validate via conservation/analytic + **GMAT golden cases** (propagation/conversions).
+- **Phase 1 — Truth sim core:** 6DOF + RK89, gravity (EGM2008, settable order), third-body (SPICE), drag (NRLMSIS 2.1), SRP + eclipse, IGRF-14, disturbance torques. Validate via conservation/analytic + **GMAT golden cases** (propagation/conversions). *Open item — next push:* the four §5.3 disturbance-torque providers (gravity-gradient, aero CP–CM, SRP CP–CM, residual dipole); the forces are in, but rotation currently sees only actuator torques.
 - **Phase 2 — Sensor & actuator models + hardware library:** generic framework + each model with full error stacks; model-ID selection; GNSS reports GPS time/ECEF.
 - **Phase 3 — FSW skeleton (F´) + two-process SITL:** topology, rate groups, telemetry/command/event/param, mode-manager stub, **plant↔FSW F´ TCP IPC + sim-time lockstep**, onboard time/EOP/Chebyshev ephemeris, persistence.
 - **Phase 4 — Attitude determination:** initializers (TRIAD/QUEST), MEKF fine mode + **coarse mode (SS+MAG+IMU)**, multi-IMU/multi-sun-sensor fusion, validity flags + occlusion handling. *Started (Push 39, 40, 41, 42):* the `lib/gnc` coarse chain — TRIAD with Shuster covariance + the coarse SS+MAG+IMU estimator behind the §10 Safe-mode floor — and the F´ `AttitudeEstimator` component running it on the barrier-driven 10 Hz GNC cycle, fed by the `GncPorts` measurement seam (port arrays, multi-unit ready) and the `OnboardTables`/IGRF-14 references (§8.1). Push 41 closed the config-compiler→`ParameterDb` tuning path the estimator refuses without, so a SITL run with the compiled parameter file now demonstrates closed-loop coarse attitude estimation end to end (§19.3). Push 42 added the fine mode at the `lib/gnc` level — Davenport's q-method N-vector initializer and the 6-state attitude/gyro-bias MEKF with per-update NIS gating and Monte-Carlo-validated NEES/NIS consistency (§8.1). Remaining: an onboard position source for the magnetic reference that does not depend on a live GNSS fix (§8.3), the MEKF wired onto the F´ `AttitudeEstimator` with fine↔coarse arbitration and its own no-default tuning, and the multi-unit fusion layer (§8.2).
-- **Phase 5 — Attitude control:** B-dot, PID, RW L-norm/L-∞ allocation **or** CMG steering (modular), momentum management + MTQ desaturation.
+- **Phase 5 — Attitude control:** B-dot, PID, RW L-norm/L-∞ allocation **or** CMG steering (modular), momentum management + MTQ desaturation; **onboard disturbance feedforward** (§8.5 — model-based gravity-gradient/`m_res×B` first, then the momentum-based residual-torque observer shared with the §9 momentum-anomaly monitor).
 - **Phase 6 — Orbit determination & propagation:** GNSS-sim, onboard MEKF OD + self-covariance, multi-object propagation, batch LS, SGP4, CCSDS OEM (GMAT-validated).
 - **Phase 7 — Guidance + full state machine:** pointing modes, slew planning with keep-out/keep-in cones, GS tracking, complete mode set.
 - **Phase 8 — Maneuvering + interop outputs:** thruster targeting (SMA/altitude), Delta-V mode, pre/post-burn CCSDS/TLE, STK/FreeFlyer export.
 - **Phase 9 — Subsystems:** simple power, thermal, comms/link budget; subsystem monitors into FDIR; **CCSDS CFDP (Class 1/2) file transfer** over the `ComCcsds` stack (§20 — adopt upstream F´ CFDP if available by then, else implement; decision checkpoint at the §22.4 push).
 - **Phase 10 — FDIR:** monitors, isolation, responses, safing escalation across sensors/actuators/subsystems; **fault-injection integration suite** (sensor faults/loss, occlusions, GPS outage/spoofing, actuator faults, subsystem limits, cascades — §23.1.1); **reboot-surviving time-tagged sequencing** (§23.6 — persisted absolute/relative-time sequences that resume past-due-skipped after a reset).
 - **Phase 11 — Monte Carlo + analysis tools:** dispersion framework, momentum/sizing, detumble MC, contact scheduling, link budget, consistency metrics, per-REQ margin reporting.
-- **Phase 12 — Advanced / future:** CMG singularity refinements, main propulsion (chemical/electric), fuel slosh/flex, mass-depletion coupling, RPOD module fill-in, **live web tools** (§21.4).
+- **Phase 12 — Advanced / future:** CMG singularity refinements, main propulsion (chemical: Isp/thrust/mass-flow/min-impulse; electric: low-thrust/throttle-curve/EPS-coupled — §5.4/§7), fuel slosh (per-tank pendulum / spring-mass-damper, §5.4), **hinged solar arrays** (lumped panel-on-torsional-hinge model: CM/inertia contribution, first-mode frequency vs control bandwidth, hinge reaction torques — §5.4), CG-migration/inertia depletion coupling, onboard **disturbance-parameter estimation** (residual dipole + drag/SRP scale factors, §8.5 tier 3), RPOD module fill-in, **live web tools** (§21.4).
 
 Cross-cutting throughout: unit-to-integration tests, static analysis, sourced documentation, and traceability.
 
