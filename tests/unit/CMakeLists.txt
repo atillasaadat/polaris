@@ -37,6 +37,8 @@ add_executable(polaris_unit_tests
   sim_io_sitl_server_fault_test.cpp
   sitl_handler_test.cpp
   onboard_tables_test.cpp
+  triad_test.cpp
+  coarse_attitude_test.cpp
   sim_vehicle_test.cpp)
 
 # The committed DE440 Chebyshev fit (tests/golden/de440_bodies.cheb), the
@@ -67,6 +69,7 @@ target_link_libraries(polaris_unit_tests
     polaris::ephemeris
     polaris::onboard
     polaris::environment
+    polaris::gnc
     polaris::state
     polaris::sitl
     polaris::dynamics

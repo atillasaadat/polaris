@@ -41,8 +41,8 @@ in Phase 4; firm seeds below.
    :tags: adcs, estimation, init
    :method: Test
    :derived_from: REQ-ADET-001
-   :allocation: lib/models
-   :refs: markley2014
+   :allocation: lib/gnc
+   :refs: markley2014, black1964, shuster1981
 
    The FSW **shall** seed the coarse solution and the MEKF from two vector
    measurements using a deterministic single-frame initializer (TRIAD / QUEST /

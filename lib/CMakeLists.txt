@@ -94,6 +94,20 @@ target_link_libraries(polaris_onboard
   PRIVATE polaris_flags)
 add_library(polaris::onboard ALIAS polaris_onboard)
 
+# --- GNC: estimation/guidance/control algorithms (flight-safe) ---------------
+# Phase 4 starts here with the coarse attitude chain: the TRIAD single-frame
+# initializer and the SS+MAG+IMU coarse estimator behind the Safe-mode floor
+# (§8.1, §10). Pure math on the canonical state — no F´ types, no I/O; the F´
+# AttitudeEstimator component wraps it.
+add_library(polaris_gnc
+  gnc/triad.cpp
+  gnc/coarse_attitude.cpp)
+target_include_directories(polaris_gnc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(polaris_gnc
+  PUBLIC Eigen3::Eigen polaris_math polaris_time polaris_state
+  PRIVATE polaris_flags)
+add_library(polaris::gnc ALIAS polaris_gnc)
+
 # --- SITL: plant<->FSW lockstep wire format (header-only, flight-safe) -------
 # One layout shared by the truth sim's TCP server and the F´ SitlBridge
 # component (design doc §2.2, §2.4) so the two processes cannot drift.

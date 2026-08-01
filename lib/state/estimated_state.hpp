@@ -49,7 +49,12 @@ struct StateValidity {
   bool velocity{false};    ///< `velocity` is trustworthy
   bool gyro_bias{false};   ///< `gyro_bias` estimate has converged
   bool accel_bias{false};  ///< `accel_bias` estimate has converged
-  bool covariance{false};  ///< `covariance` is populated and meaningful
+  /// The `covariance` **blocks belonging to the fields flagged valid above**
+  /// are populated and meaningful. A partial estimator populates its own blocks
+  /// only — the coarse attitude mode (§8.1) writes the attitude block and
+  /// leaves the orbit blocks to §8.3 — so a consumer reads the block it needs
+  /// and checks that field's own flag, never the whole matrix.
+  bool covariance{false};
 };
 
 /// Row/column offsets of the 15-element MEKF error state within `Covariance`.
