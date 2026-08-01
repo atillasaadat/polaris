@@ -7,8 +7,8 @@ baseline (`docs/requirements/`) remain the sources of truth. Per-push detail
 lives in the merged PR descriptions and the design doc's "Implemented (Push N)"
 notes — this tracker stays a rollup so it cannot rot the way a narrative does.
 
-**Current phase:** Phase 3 — F´ SITL two-process lockstep (barrier drives the real FSW cycle; GNC components next)
-**Last updated:** Push 38 (coarse/analytic fallbacks + source-quality grading for the onboard tables: table loss degrades to coarse operation instead of no answer, guaranteeing the table-independent Safe-mode sun-pointing floor)
+**Current phase:** Phase 4 — attitude determination (the `lib/gnc` coarse chain is in; the F´ estimator component that wires it to the SITL rate group is next)
+**Last updated:** Push 39 (coarse attitude chain in `lib/gnc`: TRIAD with Shuster covariance + the SS+MAG+IMU coarse estimator that stands behind the Safe-mode sun-pointing floor)
 
 ---
 
@@ -38,9 +38,10 @@ notes — this tracker stays a rollup so it cannot rot the way a narrative does.
 | §2.4 barrier-driven FSW cycle: SITL `PassiveRateGroup` + `SitlTime` sim-time source + real command path (placeholder `ScriptedCmdSource`) | ✅ done + tested (scripted profile crosses the wire → bit-identical to in-process) |
 | §2.2 SITL packaged as the `PolarisSitl` subtopology (excludable for a flight build; dictionary byte-identical) | ✅ done + tested (both two-process gates stay bitwise green) |
 | Onboard tables (`OnboardTables` flight component): leap/EOP/Chebyshev loaded + validated + served via typed ports; `RELOAD_TABLES` upload→activate; coverage-expiry check | ✅ done + tested (`lib/onboard` double-buffer swap; port answers vs lib evaluators) |
-| FSW GNC components, estimators, control | ⬜ Phase 3+ (replace `ScriptedCmdSource`) |
+| `lib/gnc` coarse attitude chain: TRIAD + Shuster covariance, SS+MAG+IMU coarse estimator (gyro propagation, eclipse coasting, coast-horizon invalidation, systematic covariance floor, canonical-state output) | ✅ done + tested (exact recovery, Monte-Carlo NEES, degeneracy rejection, floor + clock-fault refusal) |
+| FSW GNC components (estimator/control wiring), MEKF fine mode, sensor fusion | ⬜ Phase 4 (replace `ScriptedCmdSource`) |
 
-**Test gates (all green):** 422 C++ unit (ASan/UBSan) · 22 integration ·
+**Test gates (all green):** 451 C++ unit (ASan/UBSan) · 22 integration ·
 4 GMAT golden · 84 Python (config compiler, GMAT harness, space weather, orbit) ·
 docs `-W` (bibliography + requirements traceability) · pre-commit
 (clang-format + ruff) · F´ flight build.
@@ -97,22 +98,23 @@ Phase 2 — Sensor & actuator models
 | 36 | — | SITL packaged as the `PolarisSitl` subtopology (`flight/PolarisFsw/PolarisSitl/`): nine instances + internal wiring moved out of the flat topology behind `import PolarisSitl.Subtopology`, base IDs preserved so the dictionary is byte-identical; `SitlTime` kept in the main topology as the deployment-wide time source. Deliver-without-SITL is a documented topology-edit recipe (FPP has no conditional-import switch), not a CMake option; passive SITL components register no health pings per the §health active-only guidance. Both two-process gates stay bitwise green |
 | 37 | — | Onboard tables (§11.3, §22): new `OnboardTables` flight component wrapping the flight-safe `lib/onboard::TableStore`. Loads leap seconds (in-code `historical()`), IERS EOP (`finals.all`, windowed to the ephemeris span), and Sun/Moon Chebyshev fits (committed `.cheb`, planets skipped) at setup; serves `getEopAt`/`getBodyPosition`/`getTaiUtcOffset` typed ports over the lib evaluators. `RELOAD_TABLES` command is the upload→activate path (FileUplink writes the file, reload restages into an inactive double-buffer slot and swaps only on full success — failed reload keeps the previous tables); `Svc.Sched` coverage-expiry warning; health telemetry (counts/spans/state). Flight component (no `lib/sitl` dep, outside `PolarisSitl`); `<cstdio>` reads at load/reload only. 7 unit tests vs lib ground truth on the committed fixtures |
 | 38 | — | Coarse fallbacks + source-quality grading (§8.1, §11.3): table loss degrades to coarse operation instead of no answer. New table-independent analytic ephemerides (`lib/ephemeris/analytic_{sun,moon}`, Vallado §5.1 Alg 29 / §5.3.2 — pure functions of the clock, no data dependency) and a zero-EOP fallback (UT1 ≈ UTC ⇒ `UT1−TAI = −ΔAT`, zero polar motion). Every `TableStore` query returns a grade (`kPrecise`/`kCoarse`/`kUnavailable`); ΔAT stays precise always (in-code leap record, load-independent). Grade surfaced on the F´ ports (`grade` on `EopSample`/`PosEciMeters`) and per-domain telemetry; `TableDegraded`/`TableRecovered` EVRs on precise↔coarse transitions; the watchdog reports the served grade. This is the mechanism that makes the §10 Safe-mode coarse sun-pointing floor star-tracker- and table-independent. Analytic vs DE440 agree ≤ 0.37°/0.48° (Sun/Moon) across the fixture; +2 test files/tests |
+| 39 | — | Phase 4 kickoff — coarse attitude chain in the flight-safe `lib/gnc` (§8.1): `gnc::triad` deterministic two-vector initializer (sun primary, mag secondary) with **Shuster's TRIAD covariance** on the body-frame `δθ` error [black1964][markley2014][shuster1981], degenerate geometry gated in both frames and reported as invalid rather than asserted; `gnc::CoarseAttitudeEstimator` — closed-form gyro propagation, TRIAD acquisition/update, fixed-gain eigenaxis complementary blend (not a Kalman update: the safe-mode floor wants always-available, not optimal), covariance propagated and blended over a **systematic floor** (each source's σ splits into a white part the blend may reduce and a systematic part — ephemeris/IGRF/alignment — that never averages down, so the reported uncertainty converges to the floor instead of to zero). Eclipse coasts on the gyro with a growing covariance and a reported age; past the coast horizon the attitude goes **invalid** and the next TRIAD re-acquires whole. Overlong gaps are dropouts, not extrapolation; non-increasing clocks (backwards *and* stuck) and non-finite measurements are refused without destroying the solution, and a refused cycle publishes a default-constructed product rather than a half-written one. Output written to the canonical `EstimatedState` (attitude block only, and only when valid). 25 unit tests: exact recovery over random attitudes, covariance pinned analytically in the triad basis + for budget linearity + by whitened 20 000-sample Monte Carlo (NEES = 3), degeneracy/malformed-input rejection, 30 s eclipse propagation, coast invalidation + re-acquisition, floor-bounded blend convergence, clock-fault refusal, `q0 ≥ 0` and positive-definiteness throughout |
 
 ---
 
 ## What's next
 
-1. **Phase 3 — real GNC on the SITL rate group:** replace the placeholder
-   `ScriptedCmdSource` with real estimator/control components that consume
-   `EstimatedState` and the STEP_REQ sensor records (still unread today). The
-   onboard time/EOP/ephemeris tables and their upload→activate path are now in
-   place (`OnboardTables`, Push 37) with coarse/analytic fallbacks and
-   source-quality grading (Push 38); the GNC components wire to its query ports
-   and gate on the returned grade (precise table vs coarse fallback).
-2. **Phase 2 close-out (optional):** CMG and thruster truth models (§7) — or
+1. **F´ `AttitudeEstimator` component:** wrap the `lib/gnc` coarse chain
+   (Push 39) in a real GNC component on the SITL rate group, replacing the
+   placeholder `ScriptedCmdSource`. It reads the STEP_REQ sensor records (still
+   unread today), pulls its inertial sun reference and EOP from the
+   `OnboardTables` query ports (Push 37/38) and gates on the returned
+   source-quality grade, and publishes `EstimatedState` with the estimation mode
+   telemetered (REQ-ADET-004).
+2. **Phase 4 remainder:** MEKF fine mode, QUEST, multi-IMU/multi-sun-sensor
+   fusion (§8.2), and the fine↔coarse arbitration surfaced to FDIR.
+3. **Phase 2 close-out (optional):** CMG and thruster truth models (§7) — or
    defer to the phases that consume them (§8.5 control, §17 maneuvering).
-3. **Phase 4 — attitude determination:** TRIAD/QUEST initializers, MEKF fine
-   mode, coarse SS+MAG+IMU mode — the consumers the sensor models were built for.
 
 ---
 
