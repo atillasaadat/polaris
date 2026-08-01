@@ -42,11 +42,11 @@ in Phase 4; firm seeds below.
    :method: Test
    :derived_from: REQ-ADET-001
    :allocation: lib/gnc
-   :refs: markley2014, black1964, shuster1981
+   :refs: markley2014, black1964, shuster1981, davenport1968
 
-   The FSW **shall** seed the coarse solution and the MEKF from two vector
-   measurements using a deterministic single-frame initializer (TRIAD / QUEST /
-   q-method), giving a defined cold-start/acquisition path.
+   The FSW **shall** seed the coarse solution and the MEKF from two or more
+   vector measurements using a deterministic single-frame initializer (TRIAD /
+   QUEST / q-method), giving a defined cold-start/acquisition path.
 
 .. req:: Telemetered estimation mode and consistency
    :id: REQ-ADET-004
