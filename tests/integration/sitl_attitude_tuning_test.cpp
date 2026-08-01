@@ -121,6 +121,14 @@ scenario::SimConfig estimationOrbit() {
   c.environment.magnetic_field = scenario::MagneticModel::kIgrf;
   c.environment.drag_enabled = false;
   c.environment.srp_enabled = false;
+  // §5.3 disturbance torques off: the near-inertial hold this test depends on is a
+  // property of the initial rate, and a disturbance torque would slowly turn the
+  // sun out of the sensor's field for reasons that have nothing to do with the
+  // estimator under test.
+  c.environment.gravity_gradient_torque_enabled = false;
+  c.environment.aero_torque_enabled = false;
+  c.environment.srp_torque_enabled = false;
+  c.environment.residual_dipole_torque_enabled = false;
   c.propagation.duration_s = kDurationS;
   c.propagation.output_step_s = kDurationS;
   c.propagation.fsw_rate_hz = 10.0;

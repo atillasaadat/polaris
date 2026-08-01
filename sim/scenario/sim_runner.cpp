@@ -12,6 +12,7 @@
 #include "world/eop_file.hpp"
 #include "world/ephemeris_file.hpp"
 #include "world/gravity_field.hpp"
+#include "world/gravity_gradient.hpp"
 #include "world/igrf_file.hpp"
 #include "world/magnetic_field.hpp"
 #include "world/space_weather_file.hpp"
@@ -68,6 +69,7 @@ struct SimRunner::Impl {
   std::unique_ptr<world::SolarRadiationPressure> srp;
   std::unique_ptr<world::AtmosphericDrag> drag;
   std::unique_ptr<world::ResidualDipoleTorque> dipole;
+  std::unique_ptr<world::GravityGradientTorque> gravity_gradient;
 #ifdef POLARIS_HAS_NRLMSIS
   std::unique_ptr<world::NrlmsisAtmosphere> nrlmsis;
   std::unique_ptr<world::SpaceWeatherTable> space_weather;
@@ -152,7 +154,7 @@ bool SimRunner::build(const SimConfig& config, const DataPaths& paths, std::stri
     // survives every self-consistency check. Cross-validation against GMAT is
     // what surfaced it.
     d.gravity = std::make_unique<world::SphericalHarmonicGravity>(
-        std::move(coeffs), sc.inertia_kgm2, env.gravity_degree, order, header.gm, header.radius);
+        std::move(coeffs), env.gravity_degree, order, header.gm, header.radius);
     d.gravity->setEciToEcef(d.eciToEcef());
     composite_->add(d.gravity.get());
   }
@@ -196,7 +198,11 @@ bool SimRunner::build(const SimConfig& config, const DataPaths& paths, std::stri
   if (env.srp_enabled) {
     d.srp = std::make_unique<world::SolarRadiationPressure>(
         sc.srp_area_m2, sc.mass_kg, sc.srp_cr, world::bodyPositionFn(d.ephemeris->sun));
-    d.srp->setCenterOfPressureOffset(sc.cp_offset_m);
+    // The lever arm is what turns the force into a torque, so leaving it zero is
+    // exactly how the torque is switched off — no separate gate needed.
+    if (env.srp_torque_enabled) {
+      d.srp->setCenterOfPressureOffset(sc.cp_offset_srp_m);
+    }
     d.srp->setEclipseEnabled(env.eclipse_enabled);
     composite_->add(d.srp.get());
   }
@@ -248,7 +254,9 @@ bool SimRunner::build(const SimConfig& config, const DataPaths& paths, std::stri
     }
     d.drag = std::make_unique<world::AtmosphericDrag>(sc.drag_area_m2, sc.mass_kg, sc.drag_cd,
                                                       std::move(density));
-    d.drag->setCenterOfPressureOffset(sc.cp_offset_m);
+    if (env.aero_torque_enabled) {
+      d.drag->setCenterOfPressureOffset(sc.cp_offset_aero_m);
+    }
     composite_->add(d.drag.get());
   }
 
@@ -268,9 +276,29 @@ bool SimRunner::build(const SimConfig& config, const DataPaths& paths, std::stri
     d.magnetic->setEciToEcef(d.eciToEcef());
     d.magnetic->setLeapSeconds(&d.leap);
 
-    d.dipole = std::make_unique<world::ResidualDipoleTorque>(sc.residual_dipole_am2,
-                                                             d.magnetic->fieldFn());
-    composite_->add(d.dipole.get());
+    if (env.residual_dipole_torque_enabled) {
+      d.dipole = std::make_unique<world::ResidualDipoleTorque>(sc.residual_dipole_am2,
+                                                               d.magnetic->fieldFn());
+      composite_->add(d.dipole.get());
+    }
+  }
+
+  // --- Gravity gradient ----------------------------------------------------
+  // Uses the gravity model's own GM where there is one, so the gradient and the
+  // central force are consistent (EGM2008's GM differs from WGS84's in the 8th
+  // digit — small, but there is no reason to introduce the discrepancy). The
+  // inertia is referenced from the stored config, which outlives the composite.
+  //
+  // A negative gravity_degree is free drift — no gravity at all — so there is no
+  // GM to take a gradient of, and a scenario that switched gravity off would be
+  // surprised to find a gravity torque on the body. The couple is therefore
+  // gated on gravity being modelled; an MC run that wants it can ask for
+  // gravity_degree: 0 (point mass), which is the term the gradient uses anyway.
+  if (env.gravity_gradient_torque_enabled && env.gravity_degree >= 0) {
+    const double mu = d.gravity != nullptr ? d.gravity->mu() : constants::wgs84::kGM;
+    d.gravity_gradient =
+        std::make_unique<world::GravityGradientTorque>(config_.spacecraft.inertia_kgm2, mu);
+    composite_->add(d.gravity_gradient.get());
   }
 
   // The closed loop's actuator-feedback channel (or any test-supplied extra

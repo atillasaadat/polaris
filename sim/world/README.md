@@ -7,16 +7,17 @@ format and parsed as-is — never pre-digested).
 
 | File | Model / loader | Reference data |
 |---|---|---|
-| `gravity_field.{hpp,cpp}` | Fully-normalized spherical-harmonic gravity (Holmes-Featherstone recursion, stable to 200×200) + gravity-gradient torque | — |
+| `gravity_field.{hpp,cpp}` | Fully-normalized spherical-harmonic gravity (Holmes-Featherstone recursion, stable to 200×200); torque-free | — |
+| `gravity_gradient.{hpp,cpp}` | Gravity-gradient torque `3(mu/r^3) r_hat x (J r_hat)` (§5.3) | — |
 | `egm2008.{hpp,cpp}` | ICGEM `.gfc` coefficient loader (EGM2008) | `tests/golden/EGM2008_to200.gfc` |
 | `third_body.{hpp,cpp}` | Point-mass differential gravity: Sun, Moon, and config-selectable planets — mercury, venus, mars, jupiter, saturn, uranus, neptune (DE440 barycenters) | via ephemeris |
 | `ephemeris_file.{hpp,cpp}` | DE440-fitted Chebyshev segment loader | `tests/golden/de440_bodies.cheb` |
 | `body_position.{hpp,cpp?}` | Injected body-position resolver plumbing (one ephemeris, many consumers) | — |
-| `drag.{hpp,cpp}` | Cannonball atmospheric drag | atmosphere below |
+| `drag.{hpp,cpp}` | Cannonball atmospheric drag + aero CP-CM disturbance torque | atmosphere below |
 | `atmosphere.{hpp,cpp}` | Piecewise-exponential density (Vallado Table 8-4) | — |
 | `nrlmsis.{hpp,cpp}` + `msis_shim.F90` | NRLMSIS 2.1 (optional build; non-commercial license — see `LICENSING.md`) | fetched upstream tree |
 | `space_weather_file.{hpp,cpp}` | CelesTrak SW-All loader (F10.7, ap) driving NRLMSIS | `tests/golden/SW-All.csv` |
-| `srp.{hpp,cpp}` | Cannonball solar radiation pressure | via ephemeris |
+| `srp.{hpp,cpp}` | Cannonball solar radiation pressure + optical CP-CM disturbance torque | via ephemeris |
 | `eclipse.{hpp,cpp}` | Conical umbra/penumbra shadow factor | — |
 | `magnetic_field.{hpp,cpp}` | IGRF field at the vehicle + residual-dipole torque | via `igrf_file` |
 | `igrf_file.{hpp,cpp}` | IAGA IGRF-14 coefficient loader | `tests/golden/igrf14coeffs.txt` |

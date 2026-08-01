@@ -92,9 +92,13 @@ struct SpacecraftConfig {
   /// Phase 8). Parsed rather than silently dropped: a schema-required field the
   /// sim discards would violate the §19.4 no-silent-default rule.
   math::Vec3<math::frames::Body> com_m{};
-  /// Centre-of-pressure offset from the centre of mass, Body frame [m]. Drives
-  /// the aerodynamic and SRP disturbance torques.
-  math::Vec3<math::frames::Body> cp_offset_m{};
+  /// Aerodynamic centre-of-pressure offset from the centre of mass, Body frame
+  /// [m] — the lever arm of the §5.3 aero disturbance torque.
+  math::Vec3<math::frames::Body> cp_offset_aero_m{};
+  /// Optical centre-of-pressure offset from the centre of mass, Body frame [m].
+  /// Separate from the aerodynamic one: the optical CP is set by the illuminated
+  /// area and the aerodynamic CP by the ram area, and they generally differ.
+  math::Vec3<math::frames::Body> cp_offset_srp_m{};
   /// Residual magnetic moment, Body frame [A·m^2].
   math::Vec3<math::frames::Body> residual_dipole_am2{};
   /// Installed sensors and actuators, in config order (`vehicle.hpp` turns these
@@ -138,6 +142,19 @@ struct EnvironmentConfig {
   bool drag_enabled{true};
   bool srp_enabled{true};
   bool eclipse_enabled{true};
+  /// @name §5.3 disturbance torques — one switch each
+  /// Separate from the force switches above because isolating one disturbance is
+  /// a routine MC study: `aero_torque_enabled: false` keeps the drag *force* (and
+  /// so the orbit) while removing its couple. Each is physically present, so the
+  /// default is on; the lever arms and the dipole they need are no-default
+  /// vehicle-config fields, and asking for a torque without its field is a config
+  /// error rather than a silently-zero torque.
+  /// @{
+  bool gravity_gradient_torque_enabled{true};
+  bool aero_torque_enabled{true};
+  bool srp_torque_enabled{true};
+  bool residual_dipole_torque_enabled{true};
+  /// @}
   AtmosphereModel atmosphere{AtmosphereModel::kExponential};
   MagneticModel magnetic_field{MagneticModel::kIgrf};
   /// Optically obstructing atmosphere thickness above the surface [m], for the

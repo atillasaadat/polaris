@@ -9,7 +9,7 @@ upstream of the physics lives here.
 | `sim_config.{hpp,cpp}` | Parses `sim_setup.json` into plain config structs (`SimConfig`, `SpacecraftConfig`, `EnvironmentConfig`, `UnitConfig`, `GnssFaultEvent`). Validates at the boundary — malformed artifacts fail here, not downstream. Param maps pass through **uninterpreted**. |
 | `vehicle.{hpp,cpp}` | Builds the installed hardware suite: each unit's params → its model's `fromParams`, seeded by FNV-1a(instance name) under the master seed (§3.5), noise switches applied (global + per-unit), wheel spin axes consolidated into the `RwAssembly` W matrix. The **only** place a catalog number becomes a model. |
 | `gnss_faults.{hpp,cpp}` | Resolves the scenario's time-windowed GNSS fault schedule (outage/spoof/clock-jump) to the state active at time *t* and reconciles a receiver's fault hooks to it (idempotent; window end clears the fault). |
-| `sim_runner.{hpp,cpp}` | Assembles the force/torque stack (gravity, third-body, drag, SRP, magnetic) from the environment config + committed reference data, and propagates the 6DOF plant to a trajectory. |
+| `sim_runner.{hpp,cpp}` | Assembles the force/torque stack (gravity, third-body, drag, SRP, and the §5.3 disturbance torques — gravity-gradient, aero and SRP lever arms, residual dipole — each behind its own scenario switch) from the environment config + committed reference data, and propagates the 6DOF plant to a trajectory. |
 
 **Not yet here:** the §2.4 macro-step loop that samples sensors, applies the
 fault schedule per step, and feeds actuator torques back into the plant — that

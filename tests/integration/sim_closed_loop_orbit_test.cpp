@@ -75,6 +75,14 @@ scenario::SimConfig fullEnvironmentOrbit(double duration_s, double inc_deg, doub
   c.environment.srp_enabled = true;
   c.environment.drag_enabled = true;
   c.environment.magnetic_field = scenario::MagneticModel::kIgrf;
+  // §5.3 disturbance torques left ON (the schema default), stated explicitly
+  // because this is the full-environment closed-loop case: the point is that
+  // the controller holds attitude against the real environment, so the ~1e-8
+  // N·m the four torques contribute is the thing being flown against.
+  c.environment.gravity_gradient_torque_enabled = true;
+  c.environment.aero_torque_enabled = true;
+  c.environment.srp_torque_enabled = true;
+  c.environment.residual_dipole_torque_enabled = true;
 
   c.propagation.duration_s = duration_s;
   c.propagation.output_step_s = duration_s;

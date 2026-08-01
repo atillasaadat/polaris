@@ -14,6 +14,7 @@ add_executable(polaris_unit_tests
   state_test.cpp
   sim_dynamics_test.cpp
   sim_world_gravity_test.cpp
+  sim_world_gravity_gradient_test.cpp
   sim_world_egm2008_test.cpp
   sim_world_third_body_test.cpp
   sim_world_srp_test.cpp

@@ -159,8 +159,12 @@ class SimRunner {
 
  private:
   struct Impl;
-  /// Everything the resolvers capture. Held behind a pointer so wiring survives
-  /// the runner being stored by value elsewhere.
+  /// Everything the resolvers capture, held behind a pointer so the resolvers'
+  /// captured addresses stay valid for the runner's lifetime. `config_` is
+  /// address-stable for the same reason the members are: copy is deleted and the
+  /// user-declared destructor suppresses the implicit move, so a built runner
+  /// cannot be relocated — which is what makes the gravity-gradient provider's
+  /// pointer into `config_.spacecraft.inertia_kgm2` safe.
   std::unique_ptr<Impl> impl_;
   std::unique_ptr<dynamics::CompositeForceModel> composite_;
   std::unique_ptr<dynamics::RigidBody6Dof> body_;

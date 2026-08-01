@@ -2,10 +2,11 @@
 #define POLARIS_SIM_WORLD_GRAVITY_FIELD_HPP
 
 /// @file
-/// @brief Spherical-harmonic gravity + gravity-gradient torque (REQ-SIM-002).
+/// @brief Spherical-harmonic gravity (REQ-SIM-002).
 ///
-/// `SphericalHarmonicGravity` is a `ForceTorqueModel`: it returns the geopotential
-/// acceleration (ECI) and the gravity-gradient torque (Body). The field uses
+/// `SphericalHarmonicGravity` is a `ForceTorqueModel` returning the geopotential
+/// acceleration (ECI); it is torque-free, because the gravity-gradient couple is
+/// its own §5.3 provider (`world/gravity_gradient.hpp`). The field uses
 /// FULLY-NORMALIZED coefficients Cbar_nm/Sbar_nm and the singularity-free
 /// **normalized Gottlieb** recursion, ported from NASA/TP-2016-218604 Appendix
 /// C.9 (`gottliebnorm.m`). This is numerically stable to high degree/order
@@ -97,7 +98,7 @@ struct GravityCoeffs {
   static GravityCoeffs earthZonal();
 };
 
-/// Spherical-harmonic gravity with the matching gravity-gradient torque.
+/// Spherical-harmonic gravity.
 ///
 /// **Model.** The geopotential is the fully-normalized spherical-harmonic sum
 /// (\f$\sin\phi = z/r\f$, \f$\lambda = \operatorname{atan2}(y,x)\f$, \f$\bar
@@ -122,27 +123,25 @@ struct GravityCoeffs {
 class SphericalHarmonicGravity : public dynamics::ForceTorqueModel {
  public:
   /// @param coeffs  harmonic coefficients (owned).
-  /// @param inertia Body inertia J [kg·m^2] — needed for the gravity-gradient
-  ///        torque; pass the same tensor the plant integrates.
   /// @param degree  max harmonic degree n to evaluate (clamped to `coeffs.nmax`).
   /// @param order   max harmonic order m to evaluate (clamped to `degree`).
   /// @param mu      gravitational parameter [m^3/s^2].
   /// @param ref_radius reference radius Re [m] the coefficients are scaled to.
-  SphericalHarmonicGravity(GravityCoeffs coeffs, const Eigen::Matrix3d& inertia, int degree,
-                           int order, double mu = constants::wgs84::kGM,
+  SphericalHarmonicGravity(GravityCoeffs coeffs, int degree, int order,
+                           double mu = constants::wgs84::kGM,
                            double ref_radius = constants::wgs84::kSemiMajorAxis);
 
   math::Vec3<math::frames::ECI> acceleration(const state::TruthState& s) const override;
 
-  /// Gravity-gradient torque about the center of mass,
-  /// \f[
-  ///   \boldsymbol\tau = \frac{3GM}{r^3}\,\hat{\mathbf c}\times(\mathbf J\,\hat{\mathbf c}),
-  /// \f]
-  /// with \f$\hat{\mathbf c}\f$ the Body-frame nadir (spacecraft\f$\to\f$geocenter)
-  /// unit vector and \f$\mathbf J\f$ the inertia tensor (Vallado §8) [vallado2013].
-  /// Uses the point-mass term (standard; the harmonic contribution to the
-  /// gravity-gradient torque is negligible).
-  math::Vec3<math::frames::Body> torque(const state::TruthState& s) const override;
+  /// Torque-free. The gravity-gradient couple is its own provider
+  /// (`world/gravity_gradient.hpp`, design doc §5.3) rather than a side effect of
+  /// this one: it needs the point-mass term only, it applies equally to a
+  /// point-mass or free-drift scenario where no harmonic field is built, and it
+  /// carries its own enable switch. Returning it from here as well would
+  /// double-count it in the composite whenever both are wired.
+  math::Vec3<math::frames::Body> torque(const state::TruthState&) const override {
+    return math::Vec3<math::frames::Body>::Zero();
+  }
 
   /// Geopotential U at ECI position [m^2/s^2]; the acceleration is grad U. Exposed
   /// for finite-difference validation of the recursion (all orders).
@@ -186,7 +185,6 @@ class SphericalHarmonicGravity : public dynamics::ForceTorqueModel {
   void buildNormTables();
 
   GravityCoeffs coeffs_;
-  Eigen::Matrix3d inertia_;
   int degree_;
   int order_;
   double mu_;

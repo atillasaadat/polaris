@@ -145,14 +145,23 @@ class Spacecraft(_Strict):
     srp_cr: float = Field(
         default=1.3, gt=0.0, description="SRP reflectivity coefficient [-]"
     )
-    cp_offset_m: Vec3 = Field(
-        default=(0.0, 0.0, 0.0),
-        description="center of pressure offset from CoM, body frame [m]; "
-        "the moment arm for aero/SRP disturbance torques",
+    # No defaults: these three are the §5.3 disturbance-torque lever arms, and a
+    # defaulted zero is indistinguishable in the output from a perfectly balanced
+    # vehicle. Writing "we have not measured it yet" as an explicit [0, 0, 0] is
+    # a decision the config has to make out loud.
+    cp_offset_aero_m: Vec3 = Field(
+        description="aerodynamic center of pressure offset from CoM, body frame "
+        "[m]; the moment arm of the aero disturbance torque (design doc §5.3)",
+    )
+    cp_offset_srp_m: Vec3 = Field(
+        description="optical center of pressure offset from CoM, body frame [m]; "
+        "the moment arm of the SRP disturbance torque. Separate from the "
+        "aerodynamic CP — one is set by the illuminated area, the other by the "
+        "ram area (design doc §5.3)",
     )
     residual_dipole_am2: Vec3 = Field(
-        default=(0.0, 0.0, 0.0),
-        description="residual magnetic dipole moment, body frame [A·m²]",
+        description="residual magnetic dipole moment, body frame [A·m²]; with "
+        "the ambient field this gives the m x B disturbance torque (design doc §5.3)",
     )
 
 
@@ -218,6 +227,38 @@ class Environment(_Strict):
     )
     drag_enabled: bool = True
     srp_enabled: bool = True
+    # §5.3 disturbance torques, one switch each. Separate from the force switches
+    # because isolating one disturbance is a routine MC study: turning the aero
+    # torque off keeps the drag force (and so the orbit decay) while removing its
+    # couple. All default on — they are physically present.
+    gravity_gradient_torque_enabled: bool = Field(
+        default=True,
+        description=(
+            "gravity-gradient torque 3(mu/r^3) r_hat x (J r_hat) on the body "
+            "(design doc §5.3)"
+        ),
+    )
+    aero_torque_enabled: bool = Field(
+        default=True,
+        description=(
+            "aero disturbance torque cp_offset_aero_m x F_drag; independent of "
+            "drag_enabled, which governs the force (design doc §5.3)"
+        ),
+    )
+    srp_torque_enabled: bool = Field(
+        default=True,
+        description=(
+            "SRP disturbance torque cp_offset_srp_m x F_srp, eclipse-gated like "
+            "the SRP force itself (design doc §5.3)"
+        ),
+    )
+    residual_dipole_torque_enabled: bool = Field(
+        default=True,
+        description=(
+            "residual-dipole torque residual_dipole_am2 x B; needs "
+            "magnetic_field: igrf for a field to cross with (design doc §5.3)"
+        ),
+    )
     third_bodies: list[
         Literal[
             "sun",

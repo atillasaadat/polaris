@@ -63,6 +63,12 @@ scenario::SimConfig circularOrbit(double duration_s, double output_step_s) {
   // need everything off unless a test opts back in.
   c.environment.drag_enabled = false;
   c.environment.srp_enabled = false;
+  // Including the §5.3 disturbance torques: gravity gradient is on by default and
+  // would put a torque on the body in what is supposed to be a torque-free run.
+  c.environment.gravity_gradient_torque_enabled = false;
+  c.environment.aero_torque_enabled = false;
+  c.environment.srp_torque_enabled = false;
+  c.environment.residual_dipole_torque_enabled = false;
   c.propagation.duration_s = duration_s;
   c.propagation.output_step_s = output_step_s;
   return c;
@@ -197,6 +203,7 @@ TEST(SimIntegration, FullEnvironmentPropagatesACompleteOrbit) {
   config.spacecraft.srp_area_m2 = 0.06;
   config.spacecraft.residual_dipole_am2 =
       pm::Vec3<pm::frames::Body>(Eigen::Vector3d(0.002, -0.001, 0.0015));
+  config.environment.residual_dipole_torque_enabled = true;
 
   scenario::SimRunner runner;
   std::string error;
@@ -501,6 +508,67 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
   EXPECT_EQ(vehicle.unmodelled[0], "acs_1:thruster");
 }
 
+TEST(SimIntegration, AnEnabledTorqueWithoutItsLeverArmIsAConfigError) {
+  RecordProperty("verifies", "REQ-SIM-002");
+  // The §5.3 no-default rule, enforced on the artifact as well as in the pydantic
+  // schema: a hand-edited sim_setup.json that switches a torque on without the
+  // field it needs is refused, rather than run with a silently-zero lever arm.
+  const std::string path = testing::TempDir() + "/polaris_torque_fields.json";
+  auto write = [&path](const std::string& spacecraft_extra, const std::string& environment) {
+    std::ofstream out(path);
+    out << R"({
+      "scenario_name": "torque-fields",
+      "epoch_utc": "2026-01-01T00:00:00Z",
+      "spacecraft": {
+        "name": "v", "mass_kg": 12.0,
+        "inertia_kgm2": {"ixx": 0.12, "iyy": 0.12, "izz": 0.10},
+        "drag_area_m2": 0.06, "srp_area_m2": 0.06)"
+        << spacecraft_extra << R"(
+      },
+      "initial_state": {
+        "position_m": [6878137.0, 0.0, 0.0],
+        "velocity_m_s": [0.0, 7612.0, 0.0],
+        "attitude_quaternion": [1.0, 0.0, 0.0, 0.0],
+        "body_rate_rad_s": [0.0, 0.0, 0.0]
+      },
+      "propagation": {"duration_s": 60.0, "output_step_s": 10.0},
+      "environment": )"
+        << environment << "}";
+  };
+
+  scenario::SimConfig config;
+  std::string error;
+  const std::string drag_on =
+      R"({"gravity_degree": 0, "magnetic_field": "none", "third_bodies": [],
+          "drag_enabled": true, "srp_enabled": false})";
+
+  write("", drag_on);
+  EXPECT_FALSE(scenario::loadSimConfig(path, pt::LeapSecondTable::historical(), config, &error));
+  EXPECT_NE(error.find("cp_offset_aero_m"), std::string::npos) << error;
+
+  // Supplying it — even as an explicit zero — is what makes the run legal.
+  write(R"(, "cp_offset_aero_m": [0.0, 0.0, 0.0])", drag_on);
+  EXPECT_TRUE(scenario::loadSimConfig(path, pt::LeapSecondTable::historical(), config, &error))
+      << error;
+
+  // So is switching the torque off: the field is only required by the torque
+  // that consumes it.
+  write("", R"({"gravity_degree": 0, "magnetic_field": "none", "third_bodies": [],
+                "drag_enabled": true, "srp_enabled": false,
+                "aero_torque_enabled": false})");
+  EXPECT_TRUE(scenario::loadSimConfig(path, pt::LeapSecondTable::historical(), config, &error))
+      << error;
+  EXPECT_FALSE(config.environment.aero_torque_enabled);
+
+  // Same rule for the residual dipole, which is gated on the field model.
+  write("", R"({"gravity_degree": 0, "magnetic_field": "igrf", "third_bodies": [],
+                "drag_enabled": false, "srp_enabled": false})");
+  EXPECT_FALSE(scenario::loadSimConfig(path, pt::LeapSecondTable::historical(), config, &error));
+  EXPECT_NE(error.find("residual_dipole_am2"), std::string::npos) << error;
+
+  std::remove(path.c_str());
+}
+
 TEST(SimIntegration, PlanetMissingFromTheFixtureRefusesToBuild) {
   // A pre-planet Sun/Moon-only fixture loads fine, so a configured planet whose
   // table came back empty would otherwise be skipped silently on every epoch —
@@ -615,4 +683,202 @@ TEST(SimIntegration, GravityUsesTheCoefficientModelsOwnConstants) {
   // those values this test would silently become vacuous.
   EXPECT_NE(field->mu(), polaris::constants::wgs84::kGM);
   EXPECT_NE(field->referenceRadius(), polaris::constants::wgs84::kSemiMajorAxis);
+}
+
+// --- §5.3 disturbance torques ------------------------------------------------
+
+namespace {
+
+/// A perturbed 500 km orbit with every §5.3 disturbance torque available: real
+/// lever arms, a real residual dipole, and the environment each torque consumes.
+/// Which torques are actually *on* is left to the caller.
+scenario::SimConfig disturbanceScenario(double duration_s, double output_step_s) {
+  scenario::SimConfig c = circularOrbit(duration_s, output_step_s);
+  c.environment.gravity_degree = 0;  // point mass: the gradient's own baseline
+  c.environment.srp_enabled = true;
+  c.environment.drag_enabled = true;
+  c.environment.sun_third_body = true;  // SRP needs the Sun ephemeris loaded
+  c.environment.magnetic_field = scenario::MagneticModel::kIgrf;
+  c.spacecraft.drag_area_m2 = 0.06;
+  c.spacecraft.srp_area_m2 = 0.06;
+  // Deliberately different aero and optical lever arms, so a test that crossed
+  // the two would fail rather than pass by coincidence.
+  c.spacecraft.cp_offset_aero_m = pm::Vec3<pm::frames::Body>(Eigen::Vector3d(0.01, 0.0, 0.0));
+  c.spacecraft.cp_offset_srp_m = pm::Vec3<pm::frames::Body>(Eigen::Vector3d(0.0, 0.012, 0.0));
+  c.spacecraft.residual_dipole_am2 =
+      pm::Vec3<pm::frames::Body>(Eigen::Vector3d(0.002, -0.001, 0.0015));
+  // An asymmetric inertia, or the gravity gradient has nothing to act on.
+  c.spacecraft.inertia_kgm2 = Eigen::Vector3d(0.12, 0.10, 0.05).asDiagonal();
+  // circularOrbit() switches the torques off for the analytic baselines; here
+  // they are the subject, so put them back to the schema default.
+  c.environment.gravity_gradient_torque_enabled = true;
+  c.environment.aero_torque_enabled = true;
+  c.environment.srp_torque_enabled = true;
+  c.environment.residual_dipole_torque_enabled = true;
+  return c;
+}
+
+/// Trapezoidal integral of the composed torque of @p runner over @p trajectory —
+/// the angular impulse the body absorbs, which is what the secular momentum
+/// budget is made of.
+Eigen::Vector3d angularImpulse(const scenario::SimRunner& runner,
+                               const std::vector<scenario::TrajectorySample>& trajectory) {
+  Eigen::Vector3d total = Eigen::Vector3d::Zero();
+  for (std::size_t i = 1; i < trajectory.size(); ++i) {
+    const Eigen::Vector3d a = runner.forceModel()->torque(trajectory[i - 1].state).eigen();
+    const Eigen::Vector3d b = runner.forceModel()->torque(trajectory[i].state).eigen();
+    total += 0.5 * (a + b) * (trajectory[i].t_s - trajectory[i - 1].t_s);
+  }
+  return total;
+}
+
+}  // namespace
+
+TEST(SimIntegration, DisturbanceTorquesAreExactlyInertWhenDisabled) {
+  RecordProperty("verifies", "REQ-SIM-002");
+  // The regression guard for this push: with all four switches off, the plant
+  // must see precisely the torque it saw before the providers existed — zero.
+  // Not "small", zero: a provider that is merely tiny when disabled would drift a
+  // long Monte-Carlo run away from its own baseline.
+  scenario::SimConfig config = disturbanceScenario(5677.0, 60.0);
+  // Degree 8 on purpose: the spherical-harmonic field used to return the
+  // gravity-gradient torque itself, which would both survive this switch and be
+  // double-counted when the standalone provider is on. It must be torque-free.
+  config.environment.gravity_degree = 8;
+  config.environment.gravity_gradient_torque_enabled = false;
+  config.environment.aero_torque_enabled = false;
+  config.environment.srp_torque_enabled = false;
+  config.environment.residual_dipole_torque_enabled = false;
+
+  scenario::SimRunner runner;
+  std::string error;
+  ASSERT_TRUE(runner.build(config, dataPaths(), &error)) << error;
+  // Gravity + third-body + SRP + drag. No gravity-gradient provider, and no
+  // residual-dipole provider even though IGRF is loaded (the field is still
+  // wired for the magnetometer).
+  EXPECT_EQ(runner.modelCount(), 4u);
+
+  std::vector<scenario::TrajectorySample> trajectory;
+  ASSERT_TRUE(runner.run(trajectory, &error)) << error;
+  ASSERT_GT(trajectory.size(), 50u);
+
+  for (const scenario::TrajectorySample& sample : trajectory) {
+    EXPECT_EQ(runner.forceModel()->torque(sample.state).eigen(), Eigen::Vector3d::Zero())
+        << "t=" << sample.t_s;
+  }
+  // And with no torque the body rate is a torque-free Euler solution, so |H|
+  // holds to integrator precision.
+  const Eigen::Matrix3d inertia = config.spacecraft.inertia_kgm2;
+  const double h0 = (inertia * config.initial_state.body_rate.eigen()).norm();
+  for (const scenario::TrajectorySample& sample : trajectory) {
+    EXPECT_NEAR((inertia * sample.state.body_rate.eigen()).norm() / h0, 1.0, 1.0e-10);
+  }
+}
+
+TEST(SimIntegration, FreeDriftComposesNoGravityGradientEvenWhenEnabled) {
+  RecordProperty("verifies", "REQ-SIM-002");
+  // gravity_degree < 0 is free drift — no gravity at all, so there is no GM to
+  // take a gradient of. The couple is gated on gravity being modelled rather
+  // than falling back to WGS84's GM, which would put a gravity torque on a body
+  // the scenario deliberately gave no gravity force.
+  scenario::SimConfig config = disturbanceScenario(600.0, 60.0);
+  config.environment.gravity_degree = -1;
+  config.environment.aero_torque_enabled = false;
+  config.environment.srp_torque_enabled = false;
+  config.environment.residual_dipole_torque_enabled = false;
+  ASSERT_TRUE(config.environment.gravity_gradient_torque_enabled);
+
+  scenario::SimRunner runner;
+  std::string error;
+  ASSERT_TRUE(runner.build(config, dataPaths(), &error)) << error;
+
+  std::vector<scenario::TrajectorySample> trajectory;
+  ASSERT_TRUE(runner.run(trajectory, &error)) << error;
+  ASSERT_GT(trajectory.size(), 5u);
+  for (const scenario::TrajectorySample& sample : trajectory) {
+    EXPECT_EQ(runner.forceModel()->torque(sample.state).eigen(), Eigen::Vector3d::Zero())
+        << "t=" << sample.t_s;
+  }
+
+  // Point mass (degree 0) is how a run that wants the couple asks for it. Sample
+  // the END of the trajectory: at t = 0 the body is at identity attitude with
+  // nadir along a principal axis, which is an equilibrium and would give zero
+  // torque for reasons that have nothing to do with the gate.
+  config.environment.gravity_degree = 0;
+  ASSERT_TRUE(runner.build(config, dataPaths(), &error)) << error;
+  EXPECT_GT(runner.forceModel()->torque(trajectory.back().state).eigen().norm(), 0.0);
+}
+
+TEST(SimIntegration, EachDisturbanceTorqueCanBeIsolated) {
+  RecordProperty("verifies", "REQ-SIM-002");
+  // The MC knob the design doc asks for: one torque at a time, by config alone.
+  // Each isolated run must produce a nonzero torque of its own, and the four must
+  // differ — a switch wired to the wrong provider would show as two identical
+  // runs.
+  const std::vector<std::string> names = {"gravity_gradient", "aero", "srp", "residual_dipole"};
+  std::vector<Eigen::Vector3d> impulses;
+
+  scenario::SimConfig reference = disturbanceScenario(5677.0, 60.0);
+  scenario::SimRunner reference_runner;
+  std::string error;
+  ASSERT_TRUE(reference_runner.build(reference, dataPaths(), &error)) << error;
+  std::vector<scenario::TrajectorySample> trajectory;
+  ASSERT_TRUE(reference_runner.run(trajectory, &error)) << error;
+  ASSERT_GT(trajectory.size(), 50u);
+
+  for (std::size_t which = 0; which < names.size(); ++which) {
+    scenario::SimConfig config = disturbanceScenario(5677.0, 60.0);
+    config.environment.gravity_gradient_torque_enabled = which == 0;
+    config.environment.aero_torque_enabled = which == 1;
+    config.environment.srp_torque_enabled = which == 2;
+    config.environment.residual_dipole_torque_enabled = which == 3;
+
+    scenario::SimRunner runner;
+    ASSERT_TRUE(runner.build(config, dataPaths(), &error)) << error;
+    // All four torques are evaluated on the SAME trajectory, so the per-source
+    // impulses are directly comparable and their sum is meaningful.
+    impulses.push_back(angularImpulse(runner, trajectory));
+    EXPECT_GT(impulses.back().norm(), 0.0) << names[which] << " produced no angular impulse";
+  }
+
+  for (std::size_t i = 0; i < impulses.size(); ++i) {
+    for (std::size_t k = i + 1; k < impulses.size(); ++k) {
+      EXPECT_GT((impulses[i] - impulses[k]).norm(), 0.0)
+          << names[i] << " and " << names[k] << " gave the same impulse";
+    }
+  }
+}
+
+TEST(SimIntegration, SummedDisturbanceTorqueMatchesThePerSourceIntegrals) {
+  RecordProperty("verifies", "REQ-SIM-002");
+  // The secular momentum-buildup consistency check (design doc §5.3): over a full
+  // orbit, the angular impulse of the composite with all four torques on must
+  // equal the sum of the four one-at-a-time impulses. Torque is linear in the
+  // sources, so this is an identity to roundoff — what it actually tests is that
+  // the composite registers each provider exactly once and that no switch leaks.
+  scenario::SimConfig all_on = disturbanceScenario(5677.0, 60.0);
+  scenario::SimRunner combined;
+  std::string error;
+  ASSERT_TRUE(combined.build(all_on, dataPaths(), &error)) << error;
+
+  std::vector<scenario::TrajectorySample> trajectory;
+  ASSERT_TRUE(combined.run(trajectory, &error)) << error;
+  ASSERT_GT(trajectory.size(), 50u);
+
+  const Eigen::Vector3d total = angularImpulse(combined, trajectory);
+  ASSERT_GT(total.norm(), 0.0);
+
+  Eigen::Vector3d summed = Eigen::Vector3d::Zero();
+  for (std::size_t which = 0; which < 4; ++which) {
+    scenario::SimConfig config = disturbanceScenario(5677.0, 60.0);
+    config.environment.gravity_gradient_torque_enabled = which == 0;
+    config.environment.aero_torque_enabled = which == 1;
+    config.environment.srp_torque_enabled = which == 2;
+    config.environment.residual_dipole_torque_enabled = which == 3;
+    scenario::SimRunner runner;
+    ASSERT_TRUE(runner.build(config, dataPaths(), &error)) << error;
+    summed += angularImpulse(runner, trajectory);
+  }
+
+  EXPECT_LT((total - summed).norm(), 1.0e-12 * total.norm());
 }

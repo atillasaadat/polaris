@@ -166,6 +166,9 @@ def test_integer_and_bool_values_survive_the_schema(tmp_path):
             "mass_kg": 10.0,
             "com_m": [0.0, 0.0, 0.0],
             "inertia_kgm2": {"ixx": 0.1, "iyy": 0.1, "izz": 0.1},
+            "cp_offset_aero_m": [0.0, 0.0, 0.0],
+            "cp_offset_srp_m": [0.0, 0.0, 0.0],
+            "residual_dipole_am2": [0.0, 0.0, 0.0],
             "fsw_parameters": {"count": 7, "flag": True, "sigma": 0.5},
         }
     )

@@ -55,11 +55,9 @@ GravityCoeffs GravityCoeffs::earthZonal() {
   return g;
 }
 
-SphericalHarmonicGravity::SphericalHarmonicGravity(GravityCoeffs coeffs,
-                                                   const Eigen::Matrix3d& inertia, int degree,
-                                                   int order, double mu, double ref_radius)
+SphericalHarmonicGravity::SphericalHarmonicGravity(GravityCoeffs coeffs, int degree, int order,
+                                                   double mu, double ref_radius)
     : coeffs_(std::move(coeffs)),
-      inertia_(inertia),
       degree_(std::clamp(degree, 0, coeffs_.nmax)),
       order_(std::clamp(order, 0, std::clamp(degree, 0, coeffs_.nmax))),
       mu_(mu),
@@ -322,19 +320,6 @@ math::Vec3<math::frames::ECI> SphericalHarmonicGravity::acceleration(
     // rather than masking a real gap.
   }
   return math::Vec3<math::frames::ECI>(gradient(r));
-}
-
-math::Vec3<math::frames::Body> SphericalHarmonicGravity::torque(const state::TruthState& s) const {
-  const Eigen::Vector3d r = s.position.eigen();
-  const double rn = r.norm();
-  if (rn < kMinRadius_) {
-    return math::Vec3<math::frames::Body>::Zero();
-  }
-  // Nadir (spacecraft -> geocenter) unit vector in Body, via A = Body<-ECI.
-  const Eigen::Matrix3d A = s.attitude.core().toRotationMatrix();
-  const Eigen::Vector3d c_hat = A * (-r / rn);
-  const Eigen::Vector3d tau = (3.0 * mu_ / (rn * rn * rn)) * c_hat.cross(inertia_ * c_hat);
-  return math::Vec3<math::frames::Body>(tau);
 }
 
 }  // namespace polaris::sim::world

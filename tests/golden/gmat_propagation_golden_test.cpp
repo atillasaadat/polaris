@@ -126,6 +126,14 @@ scenario::SimConfig configFor(const json& c, const pt::LeapSecondTable& leap) {
     config.spacecraft.inertia_kgm2 =
         Eigen::Matrix3d::Identity() * att.at("spherical_inertia_kg_m2").get<double>();
     config.initial_state.body_rate = pm::Vec3<pm::frames::Body>(vec3(att.at("body_rate_rad_s")));
+    // GMAT's Spinner propagates kinematics only, so the §5.3 disturbance torques
+    // are switched off rather than left to vanish on the spherical inertia — a
+    // future fixture with a non-spherical J would otherwise pick up a real
+    // gravity-gradient couple and read as a propagation defect.
+    config.environment.gravity_gradient_torque_enabled = false;
+    config.environment.aero_torque_enabled = false;
+    config.environment.srp_torque_enabled = false;
+    config.environment.residual_dipole_torque_enabled = false;
   }
 
   // Tight tolerances: the residual being measured is centimetres, so integrator

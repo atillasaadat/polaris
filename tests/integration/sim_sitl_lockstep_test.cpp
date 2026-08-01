@@ -74,6 +74,12 @@ scenario::SimConfig transportOrbit(double duration_s) {
   c.environment.magnetic_field = scenario::MagneticModel::kNone;
   c.environment.drag_enabled = false;
   c.environment.srp_enabled = false;
+  // §5.3 disturbance torques off: the transport is under test, not the plant, so the
+  // trajectory stays the simplest thing both processes can agree on.
+  c.environment.gravity_gradient_torque_enabled = false;
+  c.environment.aero_torque_enabled = false;
+  c.environment.srp_torque_enabled = false;
+  c.environment.residual_dipole_torque_enabled = false;
   c.propagation.duration_s = duration_s;
   c.propagation.output_step_s = duration_s;
   c.propagation.fsw_rate_hz = 10.0;
