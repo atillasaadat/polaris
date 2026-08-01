@@ -38,7 +38,9 @@ add_executable(polaris_unit_tests
   sitl_handler_test.cpp
   onboard_tables_test.cpp
   triad_test.cpp
+  davenport_test.cpp
   coarse_attitude_test.cpp
+  mekf_test.cpp
   sim_vehicle_test.cpp)
 
 # The committed DE440 Chebyshev fit (tests/golden/de440_bodies.cheb), the
