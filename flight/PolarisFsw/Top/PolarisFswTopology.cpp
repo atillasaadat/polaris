@@ -13,6 +13,7 @@
 
 // SITL comm stack configuration types (design doc §2.2, §2.4)
 #include <cstring>
+#include <ctime>
 #include <Svc/FrameAccumulator/FrameDetector/FprimeFrameDetector.hpp>
 
 #include "sitl/wire.hpp"
@@ -100,6 +101,26 @@ void configureTopology() {
 // by TopologyState (-E / -B in Main.cpp) when supplied.
 static const char* const kDefaultEopPath = "tests/golden/finals.all.iau2000.txt";
 static const char* const kDefaultEphemPath = "tests/golden/de440_bodies.cheb";
+// Onboard IGRF-14 snapshot source: the verbatim IAGA coefficient file (§3.7),
+// the same product the truth sim reads. Overridden by TopologyState (-I).
+static const char* const kDefaultIgrfPath = "tests/golden/igrf14coeffs.txt";
+
+//! Decimal year of the *system* clock, the fallback mission epoch for the IGRF
+//! snapshot when none was given (-Y). Startup-only, and deliberately the OS
+//! clock rather than the FSW master clock: it only has to land inside the right
+//! 5-year IAGA bracket, and the estimator refuses a snapshot that is stale for
+//! the epochs it is actually asked about (AttitudeEstimator::
+//! kMaxIgrfEpochGapYears), so a wrong RTC degrades loudly rather than quietly.
+static double systemDecimalYear() {
+  const std::time_t now = std::time(nullptr);
+  std::tm utc = {};
+  if (::gmtime_r(&now, &utc) == nullptr) {
+    return 0.0;  // refused by configureIgrf, which EVRs
+  }
+  // tm_yday is 0-based; 365.25 is adequate to place a date inside a 5-year grid
+  // interval, which is all the snapshot selection depends on.
+  return 1900.0 + static_cast<double>(utc.tm_year) + static_cast<double>(utc.tm_yday) / 365.25;
+}
 
 void setupTopology(const TopologyState& state) {
   // Autocoded initialization. Function provided by autocoder.
@@ -134,6 +155,21 @@ void setupTopology(const TopologyState& state) {
   onboardTables.configureAndLoad(
       state.onboardEopPath != nullptr ? state.onboardEopPath : kDefaultEopPath,
       state.onboardEphemPath != nullptr ? state.onboardEphemPath : kDefaultEphemPath);
+
+  // Attitude estimator: load the onboard IGRF-14 snapshot its magnetic reference
+  // is evaluated from (design doc §6.2, §8.1), for the mission epoch. That epoch
+  // comes from TopologyState (-Y) or, absent it, the *system* clock —
+  // deliberately not the FSW master clock, which under SITL has not been served
+  // a sim epoch at setup and would snapshot the 1970 bracket and then
+  // extrapolate it half a century. A failure emits a warning EVR and leaves the
+  // estimator unable to acquire attitude (it still publishes body rate); it does
+  // not abort setup. Tuning is *not* set here — it comes from ParameterDb
+  // (§19.3), and a missing parameter refuses the cycle with ConfigInvalid rather
+  // than running on an invented budget.
+  const double igrfEpochYear =
+      (state.igrfEpochYear > 0.0) ? state.igrfEpochYear : systemDecimalYear();
+  (void)attitudeEstimator.configureIgrf(
+      state.onboardIgrfPath != nullptr ? state.onboardIgrfPath : kDefaultIgrfPath, igrfEpochYear);
 
   // Project-specific component configuration. Function provided above. May be inlined, if desired.
   configureTopology();

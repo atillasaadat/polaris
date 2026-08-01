@@ -64,10 +64,12 @@ add_library(polaris::frames ALIAS polaris_frames)
 # Dual-use by design: the truth sim needs the field for magnetometer truth and
 # residual-dipole torque, and the FSW needs the same model onboard as the
 # inertial reference for measured-vs-modelled checks and coarse attitude (§6.2).
-# Flight path, so it obeys the flight memory/exception rules; file parsing lives
-# on the sim side (sim/world/igrf_file.cpp).
+# Flight path, so it obeys the flight memory/exception rules — including the IAGA
+# coefficient reader (igrf_iaga.cpp), which the FSW needs to obtain its onboard
+# snapshot; sim/world/igrf_file.cpp is now just a std::string façade over it.
 add_library(polaris_environment
-  environment/igrf.cpp)
+  environment/igrf.cpp
+  environment/igrf_iaga.cpp)
 target_include_directories(polaris_environment PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_environment
   PUBLIC Eigen3::Eigen polaris_math polaris_constants

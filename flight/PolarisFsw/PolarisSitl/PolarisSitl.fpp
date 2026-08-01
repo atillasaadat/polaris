@@ -67,11 +67,14 @@ module PolarisSitl {
 
         connections Sitl {
             # --- Barrier-driven rate group (design doc §2.4 steps 3-4) ---
-            # sitlBridge drives the SITL rate group synchronously per STEP; the
-            # scripted command source is its member and commands actuators back
-            # to sitlBridge.
+            # sitlBridge drives the SITL rate group synchronously per STEP; its
+            # members run in port order, and the scripted command source commands
+            # actuators back to sitlBridge. Member 0 is left to the importing
+            # topology's GNC estimator (Top/topology.fpp): estimation must run
+            # before anything that acts on the estimate, so the placeholder
+            # commander sits behind it.
             sitlBridge.sitlCycleOut             -> sitlRateGroup.CycleIn
-            sitlRateGroup.RateGroupMemberOut[0] -> scriptedCmdSource.run
+            sitlRateGroup.RateGroupMemberOut[1] -> scriptedCmdSource.run
             scriptedCmdSource.wheelCmdOut       -> sitlBridge.wheelCmdIn
             scriptedCmdSource.mtqCmdOut         -> sitlBridge.mtqCmdIn
 

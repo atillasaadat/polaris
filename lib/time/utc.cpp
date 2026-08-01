@@ -4,6 +4,7 @@
 #include "time/utc.hpp"
 
 #include <cassert>
+#include <cmath>
 
 #include "constants/constants.hpp"
 #include "time/civil.hpp"
@@ -98,6 +99,31 @@ UtcDateTime utcFromTai(const Tai& tai, const LeapSecondTable& leap) {
   out.minute = static_cast<unsigned>((sec_of_day % 3600) / 60);
   out.second = static_cast<unsigned>(sec_of_day % 60);
   return out;
+}
+
+bool decimalYear(const Tai& epoch, const LeapSecondTable& leap, double& out) {
+  const UtcDateTime utc = utcFromTai(epoch, leap);
+  const std::int64_t year_start = daysFromCivil(utc.year, 1, 1);
+  const std::int64_t next_year_start = daysFromCivil(utc.year + 1, 1, 1);
+  const double days_in_year = static_cast<double>(next_year_start - year_start);
+  if (!(days_in_year > 0.0)) {
+    return false;
+  }
+
+  const double day_of_year =
+      static_cast<double>(daysFromCivil(utc.year, utc.month, utc.day) - year_start);
+  const double seconds_of_day =
+      static_cast<double>(utc.hour) * 3600.0 + static_cast<double>(utc.minute) * 60.0 +
+      static_cast<double>(utc.second) + static_cast<double>(utc.nanosecond) * 1e-9;
+
+  const double year =
+      static_cast<double>(utc.year) +
+      (day_of_year + seconds_of_day / static_cast<double>(kSecondsPerDay)) / days_in_year;
+  if (!std::isfinite(year)) {
+    return false;
+  }
+  out = year;
+  return true;
 }
 
 }  // namespace polaris::time

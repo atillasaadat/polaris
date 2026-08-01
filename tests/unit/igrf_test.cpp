@@ -32,6 +32,7 @@
 #include <string>
 #include <vector>
 
+#include "environment/igrf_iaga.hpp"
 #include "math/frames.hpp"
 #include "math/typed_vector.hpp"
 #include "world/igrf_file.hpp"
@@ -427,4 +428,81 @@ TEST(IgrfFile, RejectsANonFiniteEpoch) {
   std::string error;
   EXPECT_FALSE(world::loadIgrfFile(coeffsPath(), std::nan(""), c, &error));
   EXPECT_NE(error.find("finite"), std::string::npos) << error;
+}
+
+// --- Flight-safe entry point (lib/environment/igrf_iaga.hpp) -----------------
+//
+// The FSW obtains its onboard snapshot through this reader directly (the sim's
+// loadIgrfFile above is a std::string façade over it), so the flight signature
+// gets its own coverage: same coefficients out, a fixed reason buffer, and no
+// path/parameter that can reach the parse unchecked.
+
+TEST(IgrfIaga, FlightEntryPointMatchesTheSimFacade) {
+  env::IgrfCoefficients via_flight{};
+  env::IgrfCoefficients via_sim{};
+  char reason[env::kIgrfMaxReasonLength] = {};
+  ASSERT_TRUE(env::loadIgrfIaga(coeffsPath().c_str(), 2026.5, via_flight, reason, sizeof(reason)))
+      << reason;
+  std::string error;
+  ASSERT_TRUE(world::loadIgrfFile(coeffsPath(), 2026.5, via_sim, &error)) << error;
+
+  EXPECT_DOUBLE_EQ(via_flight.epoch_year, via_sim.epoch_year);
+  EXPECT_EQ(via_flight.degree, via_sim.degree);
+  EXPECT_EQ(via_flight.sv_degree, via_sim.sv_degree);
+  for (int n = 1; n <= env::kIgrfMaxDegree; ++n) {
+    for (int m = 0; m <= n; ++m) {
+      EXPECT_DOUBLE_EQ(via_flight.g[n][m], via_sim.g[n][m]) << "g " << n << " " << m;
+      EXPECT_DOUBLE_EQ(via_flight.h[n][m], via_sim.h[n][m]) << "h " << n << " " << m;
+      EXPECT_DOUBLE_EQ(via_flight.g_sv[n][m], via_sim.g_sv[n][m]) << "g_sv " << n << " " << m;
+    }
+  }
+}
+
+TEST(IgrfIaga, ReportsTheHorizonTheSnapshotIsPublishedFor) {
+  // The snapshot's linear model is only the published one up to the next
+  // tabulated epoch (inside the grid) or five years past the last (on the SV
+  // column). Onboard users refuse the field beyond it, so the loader has to
+  // report it rather than leave callers to assume a fixed gap from the base
+  // epoch — which expires a mid-interval snapshot almost immediately.
+  env::IgrfCoefficients inside{};
+  char reason[env::kIgrfMaxReasonLength] = {};
+  ASSERT_TRUE(env::loadIgrfIaga(coeffsPath().c_str(), 2012.0, inside, reason, sizeof(reason)))
+      << reason;
+  EXPECT_DOUBLE_EQ(inside.epoch_year, 2010.0);
+  EXPECT_DOUBLE_EQ(inside.valid_until_year, 2015.0);
+
+  // Past the last tabulated epoch the SV column applies for five years.
+  env::IgrfCoefficients extrapolated{};
+  ASSERT_TRUE(env::loadIgrfIaga(coeffsPath().c_str(), 2026.5, extrapolated, reason, sizeof(reason)))
+      << reason;
+  EXPECT_DOUBLE_EQ(extrapolated.valid_until_year,
+                   extrapolated.epoch_year + env::kIgrfSvIntervalYears);
+}
+
+TEST(IgrfIaga, ReportsFailuresThroughTheFixedReasonBuffer) {
+  env::IgrfCoefficients c{};
+  char reason[env::kIgrfMaxReasonLength] = {};
+  EXPECT_FALSE(env::loadIgrfIaga("/nonexistent/igrf.txt", 2026.0, c, reason, sizeof(reason)));
+  EXPECT_NE(std::string(reason).find("cannot open"), std::string::npos) << reason;
+
+  // A null path is a caller error, not a crash: refused like any other bad input
+  // (flight code has no exceptions to throw at it).
+  EXPECT_FALSE(env::loadIgrfIaga(nullptr, 2026.0, c, reason, sizeof(reason)));
+
+  // The reason is optional — a caller that does not want one must not fault.
+  EXPECT_FALSE(env::loadIgrfIaga("/nonexistent/igrf.txt", 2026.0, c));
+}
+
+TEST(IgrfIaga, RejectsARowWithMoreValuesThanEpochs) {
+  // The sim façade's cases cover the too-short row; the too-long one matters
+  // just as much, because an extra column means the file is not the layout the
+  // epoch header declared and the snapshot would silently come from the wrong
+  // column.
+  const std::string path =
+      writeTemp("igrf_long_row.txt", "g/h n m 2020.0 2025.0 2025-30\ng 1 0 -29404 -29350 12.6 9\n");
+  env::IgrfCoefficients c{};
+  char reason[env::kIgrfMaxReasonLength] = {};
+  EXPECT_FALSE(env::loadIgrfIaga(path.c_str(), 2026.0, c, reason, sizeof(reason)));
+  EXPECT_NE(std::string(reason).find("expected"), std::string::npos) << reason;
+  std::remove(path.c_str());
 }

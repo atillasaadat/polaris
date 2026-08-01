@@ -54,6 +54,22 @@ Tai taiFromUtc(const UtcDateTime& utc, const LeapSecondTable& leap);
 /// `second = 60` for the inserted leap second so the round-trip is exact.
 UtcDateTime utcFromTai(const Tai& tai, const LeapSecondTable& leap);
 
+/// Convert a TAI instant to the **decimal year** the IGRF geomagnetic model is
+/// parameterised by (e.g. 2026.5), using @p leap for the UTC reduction.
+///
+/// The fraction divides by the actual length of *that* year rather than a fixed
+/// 365.25, so a date lands at the same fraction the IGRF epoch grid means by it.
+/// The difference is under a day — negligible against a field that drifts tens
+/// of nT per year — but a fixed divisor also drifts 1 January off `.0` in leap
+/// years, which is confusing to read in a log.
+///
+/// Flight-safe: pure arithmetic, no allocation. Both the truth sim's magnetic
+/// field and the FSW's onboard IGRF reference (§8.1) go through this one
+/// conversion, so their epochs cannot disagree.
+///
+/// @return false, leaving @p out untouched, if the conversion is not finite.
+bool decimalYear(const Tai& epoch, const LeapSecondTable& leap, double& out);
+
 }  // namespace polaris::time
 
 #endif  // POLARIS_TIME_UTC_HPP

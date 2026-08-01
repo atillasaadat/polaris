@@ -49,6 +49,65 @@ void doHello(ps::SitlHandler& h, std::uint32_t n_wheel, std::uint32_t n_mtq) {
   EXPECT_EQ(ack.macro_dt_ns, hello.macro_dt_ns);
 }
 
+// A full STEP_REQ for the sensor suite makeHello() declares: the fixed header
+// followed by 1 IMU, 1 star tracker, 2 sun sensors, 1 magnetometer and 1 GNSS
+// record, in that order. Sensor values are seeded from @p seed so a decode can
+// be checked field by field.
+struct StepReqMessage {
+  std::array<std::uint8_t, ps::kMaxStepReqBytes> bytes{};
+  std::size_t len = 0;
+};
+
+StepReqMessage makeStepReq(std::uint64_t macro_step, std::int64_t epoch_tai_ns, double seed = 1.0) {
+  StepReqMessage msg;
+  ps::StepReqHeader hdr;
+  hdr.macro_step = macro_step;
+  hdr.epoch_tai_ns = epoch_tai_ns;
+  std::size_t off = 0;
+  EXPECT_TRUE(ps::writeRecord(msg.bytes.data(), msg.bytes.size(), off, hdr));
+
+  ps::ImuRecord imu;
+  imu.delta_angle_rad[0] = 0.001 * seed;
+  imu.delta_angle_rad[1] = 0.002 * seed;
+  imu.delta_angle_rad[2] = 0.003 * seed;
+  imu.time_tag_tai_ns = epoch_tai_ns;
+  imu.valid = 1;
+  EXPECT_TRUE(ps::writeRecord(msg.bytes.data(), msg.bytes.size(), off, imu));
+
+  ps::StarTrackerRecord st;
+  st.q_body_eci[0] = 1.0;
+  st.time_tag_tai_ns = epoch_tai_ns;
+  st.valid = 1;
+  EXPECT_TRUE(ps::writeRecord(msg.bytes.data(), msg.bytes.size(), off, st));
+
+  for (int i = 0; i < 2; ++i) {
+    ps::SunSensorRecord ss;
+    ss.sun_dir_body[0] = 1.0;
+    ss.accuracy_sigma_rad = 0.01 * seed * static_cast<double>(i + 1);
+    ss.time_tag_tai_ns = epoch_tai_ns;
+    ss.fresh = 1;
+    ss.sun_present = 1;
+    ss.valid = 1;
+    EXPECT_TRUE(ps::writeRecord(msg.bytes.data(), msg.bytes.size(), off, ss));
+  }
+
+  ps::MagnetometerRecord mag;
+  mag.field_tesla[1] = 3.0e-5 * seed;
+  mag.time_tag_tai_ns = epoch_tai_ns;
+  mag.valid = 1;
+  EXPECT_TRUE(ps::writeRecord(msg.bytes.data(), msg.bytes.size(), off, mag));
+
+  ps::GnssRecord gnss;
+  gnss.position_ecef_m[0] = 7.0e6 * seed;
+  gnss.time_tag_gps_ns = epoch_tai_ns;
+  gnss.fresh = 1;
+  gnss.valid = 1;
+  EXPECT_TRUE(ps::writeRecord(msg.bytes.data(), msg.bytes.size(), off, gnss));
+
+  msg.len = off;
+  return msg;
+}
+
 }  // namespace
 
 TEST(SitlHandler, HelloAckEchoesCounts) {
@@ -64,18 +123,67 @@ TEST(SitlHandler, StepReqDecodesStepAndEpoch) {
   ps::SitlHandler h;
   doHello(h, 4, 3);
 
-  ps::StepReqHeader req;
-  req.epoch_tai_ns = 123456789;
-  req.macro_step = 42;
+  const StepReqMessage req = makeStepReq(42, 123456789);
   std::array<std::uint8_t, ps::kMaxStepReplyBytes> out{};
-  const ps::HandleResult r =
-      h.handle(reinterpret_cast<const std::uint8_t*>(&req), sizeof(req), out.data(), out.size());
+  const ps::HandleResult r = h.handle(req.bytes.data(), req.len, out.data(), out.size());
 
   // handle() only decodes a STEP_REQ; it writes no reply.
   ASSERT_EQ(r.status, ps::HandleStatus::kStepReq);
   EXPECT_EQ(r.macro_step, 42u);
   EXPECT_EQ(r.epoch_tai_ns, 123456789);
   EXPECT_EQ(r.reply_len, 0u);
+}
+
+TEST(SitlHandler, StepReqDecodesSensorRecords) {
+  // Push 40: the per-unit sensor records the request carries are decoded and
+  // held for the component to republish on the GNC measurement ports.
+  RecordProperty("verifies", "REQ-ADET-002");
+  ps::SitlHandler h;
+  doHello(h, 4, 3);
+
+  const StepReqMessage req = makeStepReq(7, 1'770'000'000'000'000'000LL, 2.0);
+  std::array<std::uint8_t, ps::kMaxStepReplyBytes> out{};
+  ASSERT_EQ(h.handle(req.bytes.data(), req.len, out.data(), out.size()).status,
+            ps::HandleStatus::kStepReq);
+
+  // Counts come from HELLO (makeHello: 1 IMU, 1 ST, 2 SS, 1 MAG, 1 GNSS).
+  ASSERT_EQ(h.nImu(), 1u);
+  ASSERT_EQ(h.nStarTracker(), 1u);
+  ASSERT_EQ(h.nSunSensor(), 2u);
+  ASSERT_EQ(h.nMagnetometer(), 1u);
+  ASSERT_EQ(h.nGnss(), 1u);
+
+  EXPECT_EQ(h.imu(0).valid, 1);
+  EXPECT_DOUBLE_EQ(h.imu(0).delta_angle_rad[1], 0.004);
+  EXPECT_EQ(h.imu(0).time_tag_tai_ns, 1'770'000'000'000'000'000LL);
+  // Unit identity is positional: sun sensor 1 must not be sun sensor 0.
+  EXPECT_DOUBLE_EQ(h.sunSensor(0).accuracy_sigma_rad, 0.02);
+  EXPECT_DOUBLE_EQ(h.sunSensor(1).accuracy_sigma_rad, 0.04);
+  EXPECT_EQ(h.sunSensor(0).sun_present, 1);
+  EXPECT_DOUBLE_EQ(h.magnetometer(0).field_tesla[1], 6.0e-5);
+  EXPECT_DOUBLE_EQ(h.gnss(0).position_ecef_m[0], 1.4e7);
+  EXPECT_DOUBLE_EQ(h.starTracker(0).q_body_eci[0], 1.0);
+}
+
+TEST(SitlHandler, StepReqOfWrongLengthKeepsPreviousMeasurements) {
+  // A request whose byte count does not match the HELLO-declared sensor suite is
+  // rejected whole. The previously decoded measurements must survive: a
+  // partially overwritten sensor set is indistinguishable downstream from a
+  // fresh one, which is the failure mode worth designing out.
+  ps::SitlHandler h;
+  doHello(h, 4, 3);
+
+  const StepReqMessage good = makeStepReq(1, 1'000'000'000LL, 3.0);
+  std::array<std::uint8_t, ps::kMaxStepReplyBytes> out{};
+  ASSERT_EQ(h.handle(good.bytes.data(), good.len, out.data(), out.size()).status,
+            ps::HandleStatus::kStepReq);
+  const double kept = h.gnss(0).position_ecef_m[0];
+
+  // Same message one record short of what the counts imply.
+  const ps::HandleResult r =
+      h.handle(good.bytes.data(), good.len - sizeof(ps::GnssRecord), out.data(), out.size());
+  EXPECT_EQ(r.status, ps::HandleStatus::kMalformed);
+  EXPECT_DOUBLE_EQ(h.gnss(0).position_ecef_m[0], kept);
 }
 
 TEST(SitlHandler, BuildStepReplyZeroesCommandsWhenCallerSuppliesNone) {
@@ -280,11 +388,9 @@ TEST(SitlHandler, ReHelloReLatchesCounts) {
   EXPECT_EQ(h.nMtq(), 1u);
 
   // A subsequent STEP_REPLY reflects the re-latched counts.
-  ps::StepReqHeader req;
-  req.macro_step = 5;
+  const StepReqMessage req = makeStepReq(5, 5'000'000'000LL);
   std::array<std::uint8_t, ps::kMaxStepReplyBytes> out{};
-  const ps::HandleResult r =
-      h.handle(reinterpret_cast<const std::uint8_t*>(&req), sizeof(req), out.data(), out.size());
+  const ps::HandleResult r = h.handle(req.bytes.data(), req.len, out.data(), out.size());
   ASSERT_EQ(r.status, ps::HandleStatus::kStepReq);
   const std::size_t reply_len = h.buildStepReply(5, nullptr, nullptr, out.data(), out.size());
   const std::size_t expected = sizeof(ps::StepReplyHeader) + 2 * sizeof(ps::WheelCommandRecord) +

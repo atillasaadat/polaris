@@ -21,16 +21,11 @@
 /// one snapshot instead of the full history is ~26× less to push through the
 /// link (design doc §11.3, §19.3).
 ///
-/// Ground/sim side: this does file I/O and returns errors by value. Nothing here
-/// is on a flight path.
-///
-/// Format (IAGA `igrf14coeffs.txt`): `#` comment lines, a `c/s deg ord …` type
-/// row, a `g/h n m <epoch> … <sv>` header row naming each epoch, then one row per
-/// coefficient,
-///
-///     g|h  <n>  <m>  <value at each epoch…>  <secular variation>
-///
-/// with main-field values in nT and secular variation in nT/yr.
+/// **The parse itself lives in `lib/environment/igrf_iaga.hpp`** — the FSW needs
+/// the same snapshot onboard (the coarse attitude reference, §8.1), so the reader
+/// is flight-safe and shared. This header is the sim-side façade over it:
+/// `std::string` path in, `std::string` reason out, which is what the sim's
+/// loaders all look like. The file format is documented there.
 
 #include <string>
 
