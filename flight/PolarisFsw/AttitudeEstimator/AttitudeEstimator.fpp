@@ -1,29 +1,59 @@
 module flight {
 
-  @ Coarse attitude estimator (design doc §8.1, §10; REQ-ADET-002, REQ-ADET-003,
-  @ REQ-ADET-004).
+  @ Why a fine solution was given up and the published product fell back to the
+  @ coarse chain (design doc §8.1 arbitration, §9; REQ-ADET-004). Carried on
+  @ FineModeDemoted so FDIR can tell a geometry/outage fallback apart from a
+  @ measurement stream the filter no longer believes.
+  enum FineDemotionReason : U8 {
+    REFUSAL_STREAK = 0 @< the filter refused propagate/update on N consecutive cycles
+    NIS_STREAK = 1 @< the NIS gate rejected a measurement on N consecutive cycles
+    COAST = 2 @< no accepted update inside the fine coast horizon
+    COMMANDED = 3 @< RESET_ESTIMATOR, or a tuning change that rebuilt the filter
+    FILTER_FAULT = 4 @< a non-finite internal result dropped the filter itself
+  }
+
+  @ Attitude estimator — coarse chain plus MEKF fine mode with arbitration
+  @ (design doc §8.1, §10; REQ-ADET-002, REQ-ADET-003, REQ-ADET-004).
   @
-  @ The F´ wrapper around the flight-safe `polaris::gnc::CoarseAttitudeEstimator`
-  @ (lib/gnc/coarse_attitude.hpp): sun sensor + magnetometer + gyro, TRIAD-seeded
-  @ and gyro-propagated. This is the estimator the §10 Safe-mode floor rests on,
-  @ so it is deliberately star-tracker- and table-independent — the sun reference
-  @ falls back to the analytic ephemeris (§11.3) and the magnetic reference is
-  @ the onboard IGRF-14 snapshot, neither of which needs a working uplink.
+  @ The F´ wrapper around the two flight-safe estimators in lib/gnc. The
+  @ **coarse chain** (`polaris::gnc::CoarseAttitudeEstimator`) is sun sensor +
+  @ magnetometer + gyro, TRIAD-seeded and gyro-propagated: the estimator the §10
+  @ Safe-mode floor rests on, deliberately star-tracker- and table-independent —
+  @ the sun reference falls back to the analytic ephemeris (§11.3) and the
+  @ magnetic reference is the onboard IGRF-14 snapshot, neither of which needs a
+  @ working uplink. The **fine mode** (`polaris::gnc::Mekf`) is the 6-state
+  @ multiplicative EKF that estimates gyro bias alongside attitude.
   @
   @ Per cycle the component: picks the first valid, fresh unit of each sensor
   @ type off its measurement port arrays; builds the inertial references (Sun
   @ position from OnboardTables, geomagnetic field from the onboard IGRF-14
   @ evaluated at the GNSS position and rotated ECEF->ECI with onboard EOP); runs
-  @ one estimator cycle; and publishes the estimate plus its health telemetry.
-  @ No math and no I/O live here — the algorithm is in lib/gnc, the field model
-  @ in lib/environment, the tables behind the OnboardTables ports.
+  @ one coarse cycle; arbitrates fine vs coarse; and publishes whichever solution
+  @ is active plus its health telemetry. No math and no I/O live here — the
+  @ algorithms are in lib/gnc, the field model in lib/environment, the tables
+  @ behind the OnboardTables ports.
+  @
+  @ **Arbitration (REQ-ADET-004).** The coarse chain runs **every** cycle,
+  @ whether or not fine mode is engaged, so the fallback is always a live
+  @ solution rather than one that has to re-acquire from cold. Cold start
+  @ acquires coarse; once the coarse attitude is valid and both vector pairs are
+  @ present, a Davenport q-method solve over that cycle's pairs seeds the MEKF
+  @ (attitude and its covariance from the solve, bias zero at the configured
+  @ turn-on sigma) and fine mode engages. Fine mode is given up — demoted, with
+  @ FineModeDemoted naming the reason — on a refusal streak, an NIS rejection
+  @ streak, the fine coast horizon, an internal filter fault, or command. A
+  @ demotion **drops the filter state**: a solution no longer trusted is not
+  @ worth carrying, so re-promotion goes through a fresh Davenport seed, never a
+  @ resumed filter. Demotion and promotion are one cycle apart at the earliest,
+  @ so an oscillating condition is visible in the event stream rather than hidden
+  @ inside one cycle.
   @
   @ **Multiple units are the design point.** The measurement inputs are port
   @ arrays sized `GncMaxUnits` because the vehicle will fly several sun sensors,
   @ magnetometers and IMUs and one or more star trackers. This push consumes the
   @ first valid unit of each type — genuine multi-unit fusion is the §8.2 layer,
-  @ and the star-tracker input is declared but only counted until fine mode (the
-  @ MEKF push). Adding units is then a topology change, not a port change.
+  @ and the star-tracker input is declared but only counted until that layer
+  @ lands. Adding units is then a topology change, not a port change.
   @
   @ **Tuning has no defaults, by design (§19.3).** Every parameter below is
   @ mission configuration; a coarse estimator quietly running on an invented
@@ -66,12 +96,12 @@ module flight {
     @ that) and does not consume the velocity.
     sync input port gnssIn: [GncMaxUnits] GnssMeasPort
 
-    @ Star-tracker attitude solutions, one port per unit. TODO(fine mode): the
-    @ MEKF push consumes these; declared now so that push adds a handler body
-    @ rather than reworking the port interface. Counted for health telemetry only
-    @ — the solutions themselves are not even stored, and nothing is fused into
-    @ the coarse attitude, which must stay tracker-independent to remain the
-    @ Safe-mode floor (§10).
+    @ Star-tracker attitude solutions, one port per unit. TODO(§8.2): the fusion
+    @ layer feeds these to the MEKF as a third measurement source; declared now
+    @ so that push adds a handler body rather than reworking the port interface.
+    @ Counted for health telemetry only — the solutions themselves are not even
+    @ stored, and nothing is fused into the coarse attitude, which must stay
+    @ tracker-independent to remain the Safe-mode floor (§10).
     sync input port starTrackerIn: [GncMaxUnits] StarTrackerMeasPort
 
     # ----------------------------------------------------------------------
@@ -95,9 +125,11 @@ module flight {
     # Commands
     # ----------------------------------------------------------------------
 
-    @ Drop the attitude solution and re-acquire from the next TRIAD (cold start).
-    @ Configuration and parameters are retained. Use after a sensor calibration
-    @ change, or to force re-acquisition when the solution is suspect.
+    @ Drop **both** solutions — the coarse chain and the MEKF — and re-acquire
+    @ from cold: the next TRIAD for coarse, then a fresh Davenport seed for fine.
+    @ Every edge-gated alert is re-armed and the tuning re-read. Configuration
+    @ and parameters are retained. Use after a sensor calibration change, or to
+    @ force re-acquisition when the solution is suspect.
     sync command RESET_ESTIMATOR
 
     # ----------------------------------------------------------------------
@@ -156,11 +188,70 @@ module flight {
     param MaxPositionRadiusM: F64
 
     # ----------------------------------------------------------------------
+    # Fine-mode (MEKF) parameters — a second, independent validity gate
+    # ----------------------------------------------------------------------
+    #
+    # These are validated separately from the coarse set above. A coarse
+    # parameter missing leaves the vehicle with no attitude at all; a *fine*
+    # parameter missing leaves it with the Safe-mode floor, which is a working
+    # vehicle. So the fine set failing emits FineConfigInvalid and the component
+    # runs coarse-only, rather than refusing every cycle.
+    #
+    # The MEKF's angle random walk is `GyroArw` above: it is the same gyro and
+    # the same parametrisation, and two parameters for one physical quantity is
+    # two chances to disagree.
+
+    @ Gyro **rate** random walk [rad*s^(-3/2)]: the bias standard deviation
+    @ accumulated per sqrt(second). Convert a datasheet bias instability (deg/hr,
+    @ Allan floor) and its correlation time to the equivalent random walk before
+    @ setting this. May be zero — a bias modelled as exactly constant, which
+    @ real hardware rarely is.
+    param MekfRrw: F64
+
+    @ NIS rejection threshold [dimensionless] for one 3-vector update. A
+    @ chi-square quantile on **2** degrees of freedom, not 3: the innovation
+    @ between two unit vectors is transverse by construction (chi2_2 at 99.9% =
+    @ 13.82). Must be positive.
+    param MekfNisGate: F64
+
+    @ Longest interval without an accepted fine update before the fine solution
+    @ is given up and the published product falls back to coarse [s]. Distinct
+    @ from MaxCoastSec: the coarse horizon asks "is this solution still usable?",
+    @ this one asks "is the filter still better than the floor underneath it?".
+    param MekfMaxCoastSec: F64
+
+    @ 1-sigma of the initial gyro-bias estimate [rad/s], per axis. Size it to the
+    @ hardware's turn-on bias repeatability — the seed bias itself is zero, so
+    @ this is the whole of what the filter is told about the bias at cold start.
+    @ Must be positive: a zero would tell the filter the bias is known exactly
+    @ and it would never learn one.
+    param MekfBiasSigmaInit: F64
+
+    @ Consecutive cycles on which the filter refused a propagate or an update
+    @ (malformed input, not a gate rejection) before fine mode is demoted. Must
+    @ be positive.
+    param MekfRefusalStreak: U32
+
+    @ Consecutive cycles on which the NIS gate rejected a measurement before fine
+    @ mode is demoted. One rejection is a chi-square tail; a streak is a
+    @ measurement stream the filter no longer believes. Must be positive.
+    param MekfNisStreak: U32
+
+    @ Observability gate for the Davenport seed [dimensionless], in (0, 1): the
+    @ ratio lambda_min/lambda_max of the observation set's Fisher information
+    @ matrix, required in both the body and the reference frame. Scale-free, so
+    @ it gates geometry rather than noise level; two equally-weighted
+    @ observations separated by theta give (1 - cos theta)/2 = sin^2(theta/2),
+    @ i.e. 0.5 at 90 degrees and 0.0076 at 10 degrees.
+    param SeedMinObservability: F64
+
+    # ----------------------------------------------------------------------
     # Telemetry (health: mode, solution, margins, source quality)
     # ----------------------------------------------------------------------
 
     @ Active estimation mode (REQ-ADET-004): INVALID until acquisition, COARSE
-    @ once a TRIAD has been accepted and the coast horizon has not expired.
+    @ once a TRIAD has been accepted and the coast horizon has not expired, FINE
+    @ while the MEKF is engaged and inside its own coast horizon.
     telemetry EstMode: EstimationMode
 
     @ Attitude Body <- ECI, JPL scalar-first [q0,q1,q2,q3]. Meaningful only when
@@ -170,12 +261,15 @@ module flight {
     @ Bias-corrected body rate [rad/s]. Meaningful only when RateValid is true.
     telemetry BodyRate: Vec3F64
 
-    @ Trace of the body-frame attitude-error covariance [rad^2] — the one-number
-    @ summary of solution quality; grows through eclipse and coast.
+    @ Trace of the body-frame attitude-error covariance [rad^2] of the **active**
+    @ solution — the one-number summary of solution quality; grows through
+    @ eclipse and coast. NaN when there is no valid attitude.
     telemetry AttCovTrace: F64
 
-    @ Time since the last accepted TRIAD fix [s]. Compared against MaxCoastSec,
-    @ this is the margin before the solution is declared invalid.
+    @ Time since the last accepted fix [s] of the active solution: the last TRIAD
+    @ in coarse mode, the last accepted MEKF update in fine mode. Compared
+    @ against MaxCoastSec / MekfMaxCoastSec, this is the margin before the
+    @ solution is given up.
     telemetry SolutionAge: F64
 
     @ TRIAD solutions accepted and blended in since start.
@@ -210,21 +304,65 @@ module flight {
     @ no magnetic reference, so the estimator coasts on the gyro.
     telemetry PositionValid: bool
 
-    @ Star-tracker solutions received since start. Counted for health only — the
-    @ coarse mode never fuses them (fine mode is the MEKF push).
+    @ Star-tracker solutions received since start. Counted for health only —
+    @ nothing fuses them until the §8.2 layer.
     telemetry StarTrackerCount: U32
+
+    @ **Largest** NIS of this cycle's fine-mode updates [dimensionless], accepted
+    @ or rejected. ~chi2_2 when the filter is consistent, so a channel that sits
+    @ well above 2 is the covariance-consistency diagnostic of REQ-ADET-004. The
+    @ maximum rather than the last, because a rejection is above the gate and an
+    @ accepted update below it — reporting the last would let a good magnetic
+    @ update hide the sun outlier that preceded it. NaN on a cycle with no fine
+    @ update.
+    telemetry MekfNis: F64
+
+    @ Fine-mode measurements rejected by the NIS gate by the **currently seeded**
+    @ filter. Resets to zero at every demotion, since the filter it counted for
+    @ is gone; MekfRejectedTotal is the one to watch a trend on.
+    telemetry MekfRejected: U32
+
+    @ Fine-mode NIS-gate rejections since the last commanded reset, across every
+    @ filter this component has seeded. A demotion clears the filter's own count
+    @ (Mekf::reset treats that as the operator saying "start over"), which would
+    @ erase the FDIR signal at the moment a NIS_STREAK demotion created it — so
+    @ this total carries across demotions and only RESET_ESTIMATOR clears it.
+    @ A rising count is the FDIR signal, not a single rejection.
+    telemetry MekfRejectedTotal: U32
+
+    @ Estimated gyro bias [rad/s], body axes. Zero while fine mode is not
+    @ engaged — the coarse chain does not estimate bias, and reporting anything
+    @ else would be inventing one.
+    telemetry GyroBias: Vec3F64
+
+    @ Trace of the MEKF's attitude-error covariance block [rad^2]. Telemetered
+    @ next to AttCovTrace so the fine solution's uncertainty can be compared
+    @ against the coarse floor directly. NaN while fine mode is not engaged.
+    telemetry FineAttCovTrace: F64
+
+    @ Trace of the MEKF's gyro-bias covariance block [rad^2/s^2]: how well the
+    @ bias is known. Falls from MekfBiasSigmaInit^2 * 3 as the filter converges.
+    @ NaN while fine mode is not engaged.
+    telemetry BiasCovTrace: F64
+
+    @ Fine->coarse demotions since start. Non-zero is not itself a fault — an
+    @ eclipse with no magnetic reference will do it — but a rising count is a
+    @ filter that cannot hold onto a solution.
+    telemetry FineDemotions: U32
 
     # ----------------------------------------------------------------------
     # Events
     # ----------------------------------------------------------------------
 
     @ The estimator produced a valid attitude after having none — cold-start
-    @ acquisition, or re-acquisition after a coast expiry.
+    @ acquisition, or re-acquisition after a coast expiry. Keyed on the
+    @ **published** solution, so a fine->coarse demotion with a live coarse
+    @ solution underneath does not produce one (nothing was lost).
     @ Action: none; informational. Expected once after boot and after each
     @ eclipse long enough to expire the coast horizon.
     event AttitudeAcquired(ageSec: F64, covTraceRad2: F64) \
       severity activity high \
-      format "Coarse attitude acquired: age={} s, cov trace={} rad^2"
+      format "Attitude acquired: age={} s, cov trace={} rad^2"
 
     @ The attitude was valid and no longer is: the gyro-only coast ran past
     @ MaxCoastSec, or the estimator refused a cycle. Consumers see the validity
@@ -234,11 +372,58 @@ module flight {
     @ repeats outside eclipse, check sun-sensor and magnetometer validity.
     event AttitudeLost(ageSec: F64) \
       severity warning high \
-      format "Coarse attitude lost: coasted {} s without a vector fix"
+      format "Attitude lost: coasted {} s without a vector fix"
 
-    @ A parameter is missing from ParameterDb or outside its valid range, so the
-    @ estimator refuses to run: there are no flight defaults to fall back on
-    @ (§19.3). Edge-gated to the transition into the invalid state.
+    @ Fine mode engaged: a Davenport solve over this cycle's vector pairs seeded
+    @ the MEKF and the published solution is now the filter's. The reported trace
+    @ is the **seed** covariance, i.e. the single-frame solution's, which the
+    @ filter converges below as it folds in further measurements.
+    @ Action: none; informational, and the mode transition REQ-ADET-004 requires
+    @ be surfaced to FDIR.
+    event FineModeEngaged(seedCovTraceRad2: F64) \
+      severity activity high \
+      format "Fine mode engaged: MEKF seeded from Davenport, seed cov trace={} rad^2"
+
+    @ Fine mode given up; the published solution falls back to the coarse chain,
+    @ which has been running underneath all along. The filter state is dropped —
+    @ re-promotion goes through a fresh Davenport seed, never a resumed filter.
+    @ Action: depends on the reason. COAST is expected on a long dual-source
+    @ outage and clears itself. NIS_STREAK means the measurements and the filter
+    @ disagree persistently — check sensor calibration and the configured sigmas.
+    @ REFUSAL_STREAK or FILTER_FAULT is a software/numerics fault: capture the
+    @ telemetry and keep the vehicle on the coarse floor.
+    event FineModeDemoted(reason: FineDemotionReason, ageSec: F64) \
+      severity warning high \
+      format "Fine mode demoted to coarse: reason={}, age={} s"
+
+    @ A fine-mode promotion was attempted and refused: the Davenport solve did
+    @ not clear the observability gate, or the MEKF rejected the seed (a
+    @ covariance that is not positive-definite, a non-finite value). The coarse
+    @ solution is unaffected. Edge-gated to the first failure of a run of them,
+    @ so degenerate sun/field geometry does not warn at 10 Hz.
+    @ Action: none if it clears within an orbit — near-parallel sun and field
+    @ directions are a normal flight condition. Persistent failure with good
+    @ geometry means the configured seed sigmas or SeedMinObservability are wrong.
+    event FineInitFailed(detail: string size 80) \
+      severity warning low \
+      format "Fine mode could not be seeded: {}"
+
+    @ A fine-mode parameter is missing from ParameterDb or outside its valid
+    @ range. Unlike ConfigInvalid this is **not** fatal: the coarse chain still
+    @ runs and the vehicle keeps the §10 Safe-mode floor, it just never promotes
+    @ to fine. Edge-gated to the transition into the invalid state.
+    @ Action: uplink the missing/corrected parameter (PRM_SET + PRM_SAVE). The
+    @ vehicle is flyable meanwhile, on a coarse attitude.
+    event FineConfigInvalid(detail: string size 80) \
+      severity warning high \
+      format "Fine mode configuration invalid, running coarse-only: {}"
+
+    @ A **coarse-chain** parameter is missing from ParameterDb or outside its
+    @ valid range, so the estimator refuses to run at all: there are no flight
+    @ defaults to fall back on (§19.3), and without the coarse chain there is no
+    @ floor for fine mode to fall back to either. The fine-mode set has its own,
+    @ non-fatal gate — see FineConfigInvalid. Edge-gated to the transition into
+    @ the invalid state.
     @ Action: uplink the missing/corrected parameter (PRM_SET + PRM_SAVE), then
     @ RESET_ESTIMATOR. The vehicle has no attitude solution until then.
     event ConfigInvalid(detail: string size 80) \
@@ -297,11 +482,12 @@ module flight {
       severity activity high \
       format "Onboard IGRF loaded: epoch {} yr, valid until {} yr, degree {}"
 
-    @ The estimator was reset by operator command; the solution is dropped and
-    @ re-acquires from the next TRIAD.
+    @ The estimator was reset by operator command; both solutions are dropped and
+    @ the coarse chain re-acquires from the next TRIAD, fine mode from the
+    @ Davenport seed after it.
     event EstimatorReset \
       severity activity high \
-      format "Attitude estimator reset: solution dropped, awaiting re-acquisition"
+      format "Attitude estimator reset: solutions dropped, awaiting re-acquisition"
 
     # ----------------------------------------------------------------------
     # Standard AC ports

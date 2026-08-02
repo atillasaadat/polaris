@@ -76,6 +76,36 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! refused rather than extrapolated, with one warning.
   void testExpiredIgrfSnapshotRefusesTheMagneticReference();
 
+  //! With the fine tuning present the component promotes to FINE off a Davenport
+  //! seed, converges the injected gyro bias, and reports a covariance well below
+  //! the single-frame seed — which is the whole reason to run a filter.
+  void testPromotesToFineAndEstimatesGyroBias();
+
+  //! A sun measurement persistently inconsistent with the filter is rejected by
+  //! the NIS gate every cycle; past the configured streak the fine solution is
+  //! given up and the published product falls back to the live coarse chain.
+  void testNisStreakDemotesToCoarse();
+
+  //! A measurement the filter cannot use at all — finite but unnormalisable, so
+  //! it clears the component's gates and is refused rather than gate-rejected —
+  //! demotes on the refusal streak, which is a different fault from an outlier
+  //! stream and must not be counted as one.
+  void testRefusalStreakDemotesToCoarse();
+
+  //! Losing *both* vector sources past the fine coast horizon demotes to coarse
+  //! — without an AttitudeLost, because nothing was lost: the coarse solution
+  //! was running underneath the whole time.
+  void testCoastDemotesFineMode();
+
+  //! A missing fine-mode parameter costs the fine mode, not the estimator: one
+  //! FineConfigInvalid, no ConfigInvalid, and the vehicle keeps a coarse
+  //! attitude (§10 Safe-mode floor).
+  void testMissingFineTuningLeavesCoarseRunning();
+
+  //! RESET_ESTIMATOR drops the fine solution as well as the coarse one, and the
+  //! component re-promotes through a fresh seed rather than a resumed filter.
+  void testResetDropsFineMode();
+
  private:
   // ----------------------------------------------------------------------
   // Stubbed query ports (the component's outputs, this harness's inputs)
@@ -93,8 +123,10 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   // Helpers
   // ----------------------------------------------------------------------
 
-  //! Load a valid tuning set into the tester's parameter table.
-  void setValidParameters();
+  //! Load a valid tuning set into the tester's parameter table. @p withFine adds
+  //! the seven fine-mode parameters; without them the component runs coarse-only
+  //! (one FineConfigInvalid), which is what the coarse-behaviour tests want.
+  void setValidParameters(bool withFine = false);
 
   //! Load the onboard IGRF snapshot from the committed IAGA file, taken at
   //! @p decimalYear (default: the era the other tests run in).
@@ -137,6 +169,21 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! Time tag offset applied to the fed measurements [ns] — negative values age
   //! them for the staleness test.
   I64 meas_time_offset_ns_{0};
+
+  //! Constant gyro bias [rad/s] added to the reported delta-angle while the sun
+  //! and magnetic vectors keep following the *true* attitude: the error the MEKF
+  //! exists to estimate and the coarse chain cannot.
+  Eigen::Vector3d gyro_bias_{Eigen::Vector3d::Zero()};
+
+  //! Angle [rad] the fed sun body vector is rotated by, away from the direction
+  //! the true attitude implies. Large values are the implausible measurement
+  //! stream the NIS gate is supposed to reject.
+  double sun_body_error_rad_{0.0};
+
+  //! Feed a zero-length (but finite) sun body vector: it clears the component's
+  //! finiteness gate and is then refused by the filter as unnormalisable, which
+  //! is a *refusal* rather than a gate rejection.
+  bool sun_body_degenerate_{false};
 
   //! Last estimate seen on estimateOut.
   AttitudeEstimate last_estimate_{};

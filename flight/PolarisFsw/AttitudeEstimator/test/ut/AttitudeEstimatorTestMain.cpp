@@ -54,6 +54,41 @@ TEST(AttitudeEstimator, ExpiredIgrfSnapshotRefusesTheMagneticReference) {
   tester.testExpiredIgrfSnapshotRefusesTheMagneticReference();
 }
 
+TEST(AttitudeEstimator, PromotesToFineAndEstimatesGyroBias) {
+  RecordProperty("verifies", "REQ-ADET-004");
+  flight::AttitudeEstimatorTester tester;
+  tester.testPromotesToFineAndEstimatesGyroBias();
+}
+
+TEST(AttitudeEstimator, NisStreakDemotesToCoarse) {
+  RecordProperty("verifies", "REQ-ADET-004");
+  flight::AttitudeEstimatorTester tester;
+  tester.testNisStreakDemotesToCoarse();
+}
+
+TEST(AttitudeEstimator, RefusalStreakDemotesToCoarse) {
+  RecordProperty("verifies", "REQ-ADET-004");
+  flight::AttitudeEstimatorTester tester;
+  tester.testRefusalStreakDemotesToCoarse();
+}
+
+TEST(AttitudeEstimator, CoastDemotesFineMode) {
+  RecordProperty("verifies", "REQ-ADET-004");
+  flight::AttitudeEstimatorTester tester;
+  tester.testCoastDemotesFineMode();
+}
+
+TEST(AttitudeEstimator, MissingFineTuningLeavesCoarseRunning) {
+  flight::AttitudeEstimatorTester tester;
+  tester.testMissingFineTuningLeavesCoarseRunning();
+}
+
+TEST(AttitudeEstimator, ResetDropsFineMode) {
+  RecordProperty("verifies", "REQ-ADET-004");
+  flight::AttitudeEstimatorTester tester;
+  tester.testResetDropsFineMode();
+}
+
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

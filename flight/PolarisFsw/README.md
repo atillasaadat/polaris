@@ -239,13 +239,43 @@ against the F´ v4.2.2 reader.
 
 ## Attitude estimation
 
-`AttitudeEstimator` (`AttitudeEstimator/`) runs the coarse sun + magnetometer +
-gyro attitude solution the §10 Safe-mode floor rests on (design doc §8.1;
-REQ-ADET-002/-003/-004). It is a passive component on the **barrier-driven 10 Hz
-GNC cycle** (§2.4) — member 0 of that rate group, so estimation happens before
-anything that acts on the estimate — and a thin wrapper: the algorithm is
-`polaris::gnc::CoarseAttitudeEstimator` (`lib/gnc`), the field model is
-`lib/environment`, the references come off the `OnboardTables` ports.
+`AttitudeEstimator` (`AttitudeEstimator/`) runs both attitude modes of §8.1
+(REQ-ADET-002/-003/-004): the coarse sun + magnetometer + gyro solution the §10
+Safe-mode floor rests on, and the MEKF fine mode on top of it. It is a passive
+component on the **barrier-driven 10 Hz GNC cycle** (§2.4) — member 0 of that
+rate group, so estimation happens before anything that acts on the estimate —
+and a thin wrapper: the algorithms are `polaris::gnc::CoarseAttitudeEstimator`,
+`polaris::gnc::davenport` and `polaris::gnc::Mekf` (`lib/gnc`), the field model
+is `lib/environment`, the references come off the `OnboardTables` ports.
+
+**Mode arbitration.** The coarse chain runs **every** cycle regardless of mode,
+so the fallback under a demotion is a live solution rather than one that has to
+re-acquire from cold. Cold start acquires coarse; once the coarse attitude is
+valid and both vector pairs are present, a Davenport q-method solve over that
+cycle's pairs seeds the MEKF (attitude and covariance from the solve, bias zero
+at `MekfBiasSigmaInit`) and `FineModeEngaged` fires. That cycle still publishes
+**coarse**: `Mekf::initialize` seeds an attitude but no rate, so publishing the
+filter immediately would hand the GNC chain a one-cycle `rateValid == false`
+while coarse had a good rate. The filter takes over the next cycle; a demotion,
+by contrast, takes effect immediately. Note the published body rate **steps** at
+each transition — coarse publishes the raw gyro, fine publishes it
+bias-corrected — by the estimated bias, a few 0.01 °/s on this hardware. Each is
+the honest value in its mode; a consumer that cannot take that step at a
+telemetered mode change should be filtering. Fine mode is given up —
+`FineModeDemoted`, carrying the reason — on a refusal streak, an NIS rejection
+streak, the fine coast horizon, an internal filter fault, or command. A demotion
+**drops the filter state**, so re-promotion goes through a fresh seed rather than
+a resumed filter, and it happens at least one cycle before the next promotion
+attempt so an oscillating condition is visible in the event stream. Because the
+coarse solution is live underneath, a demotion does **not** emit `AttitudeLost`:
+nothing was lost. Health telemetry for the fine mode is `EstMode`, `MekfNis`
+(the cycle's largest, so a good update cannot hide the outlier before it),
+`MekfRejected`, `MekfRejectedTotal`, `GyroBias`, `FineAttCovTrace`,
+`BiasCovTrace` and `FineDemotions`. Trend `MekfRejectedTotal`, not
+`MekfRejected`: dropping the filter clears the filter's own count (`Mekf::reset`
+treats that as "start over"), which would erase the signal a `NIS_STREAK`
+demotion just created, so the component carries a running total that only
+`RESET_ESTIMATOR` clears.
 
 **Measurement seam.** Inputs arrive on **port arrays** (`GncMaxUnits = 8`)
 defined in the interface-only `GncPorts/` module: `imuIn`, `sunSensorIn`,
@@ -273,12 +303,26 @@ events. Position is **GNSS-only** until the §8.3 orbit filter exists: a GNSS
 outage costs the magnetic reference and the estimator gyro-coasts, flagged by an
 edge-gated `PositionUnavailable` warning.
 
-**Tuning is ParameterDb, with no defaults.** All twelve values (sun/magnetic
-white and systematic sigmas, gyro ARW, `MinSinAngle`, `TriadGain`,
-`MaxCoastSec`, `MaxDtSec`, `MaxMeasAgeSec`, and the `Min`/`MaxPositionRadiusM`
-band a GNSS fix must fall in) are F´ parameters without defaults (§19.3). A
-missing or out-of-range value emits an edge-gated `ConfigInvalid` and leaves the
-estimator inert with mode `INVALID` telemetered — it never substitutes a value.
+**Tuning is ParameterDb, with no defaults, behind two validity gates.** The
+twelve coarse values (sun/magnetic white and systematic sigmas, gyro ARW,
+`MinSinAngle`, `TriadGain`, `MaxCoastSec`, `MaxDtSec`, `MaxMeasAgeSec`, and the
+`Min`/`MaxPositionRadiusM` band a GNSS fix must fall in) and the seven fine-mode
+values (`MekfRrw`, `MekfNisGate`, `MekfMaxCoastSec`, `MekfBiasSigmaInit`,
+`MekfRefusalStreak`, `MekfNisStreak`, `SeedMinObservability`) are F´ parameters
+without defaults (§19.3). A missing or out-of-range **coarse** value emits an
+edge-gated `ConfigInvalid` and leaves the estimator inert with mode `INVALID`
+telemetered; a missing **fine** value emits `FineConfigInvalid` and leaves the
+component running coarse-only, because a vehicle on the Safe-mode floor is a
+flyable vehicle and a dead estimator is not. Neither ever substitutes a value.
+One cross-field gate ties the sets together — `MekfMaxCoastSec` must not exceed
+`MaxCoastSec`, since the live-fallback premise requires the coarse chain to
+outlast the fine one.
+The MEKF's angle random walk and largest propagation step are `GyroArw` and
+`MaxDtSec`: same gyro, same rate group, and two parameters for one physical
+quantity is two chances to disagree. The per-update measurement sigma the filter
+sees is the white and systematic parts of each source root-sum-squared — the
+filter treats `R` as white, so the systematic budget has to be inflated into
+sigma or the covariance it reports converges below the true error.
 The values are delivered by the config compiler (§19.3): `spacecraft.fsw_parameters`
 in the vehicle config carries them keyed by fully-qualified parameter name, and
 `configc --dictionary` emits the `Svc::PrmDb` file the deployment loads with `-P`
@@ -289,11 +333,18 @@ autogenerated `SET_*` commands (and `SAVE_*` to persist), followed by
 **Testing.** `AttitudeEstimator/test/ut/` is the deployment's first F´ component
 GTest harness (`register_fprime_ut`, built and run by `fprime-util check`). It
 stubs the two OnboardTables query ports, so the references the component
-consumes are fully controlled, and covers acquisition of a known attitude
-through the real reference assembly, eclipse coast and re-acquisition, refusal
-without parameters, the staleness and position-range gates, grade passthrough,
-position loss, an expired IGRF snapshot, and `RESET_ESTIMATOR` re-arming every
-edge-gated alert.
+consumes are fully controlled, and covers (15 tests) acquisition of a known
+attitude through the real reference assembly, eclipse coast and re-acquisition,
+refusal without parameters, the staleness and position-range gates, grade
+passthrough, position loss, an expired IGRF snapshot, `RESET_ESTIMATOR`
+re-arming every edge-gated alert, and the fine-mode arbitration: promotion off a
+Davenport seed with the injected gyro bias converging and the fine covariance
+falling well below the seed, demotion on an NIS rejection streak, on a *refusal*
+streak (a finite but unnormalisable measurement, which is a different fault and
+must not raise the rejection count), and on the fine coast horizon (none
+producing an `AttitudeLost`, since coarse is live underneath), coarse-only
+operation when the fine tuning is absent, and
+`RESET_ESTIMATOR` dropping the fine solution and re-seeding.
 The estimation math is pinned separately at the `lib/gnc` level, so this harness
 tests only what the component adds. Note that F´ gates `register_fprime_ut` on
 `BUILD_TESTING`, which `cmake/Dependencies.cmake` used to force off for Eigen's

@@ -1,4 +1,4 @@
-/// @file Closed-loop coarse attitude estimation in SITL (design doc §8.1, §19.3).
+/// @file Closed-loop attitude estimation in SITL (design doc §8.1, §19.3).
 ///
 /// The end-to-end gate on the **tuning delivery path**: the config compiler
 /// resolves this vehicle's estimator tuning, encodes it into a `Svc::PrmDb`
@@ -14,7 +14,15 @@
 ///
 /// The assertions read the deployment's own event stream, which is what an
 /// operator would see: the parameter file loaded with every record, no
-/// `ConfigInvalid`, and `AttitudeAcquired`.
+/// `ConfigInvalid` from either validity gate, `AttitudeAcquired`, and — since
+/// Push 44 — `FineModeEngaged` with no demotion over the run, which is the
+/// fine↔coarse arbitration of REQ-ADET-004 exercised on the vehicle.
+///
+/// Note the covariance comparison that would round this out (fine trace below
+/// the coarse floor) is asserted in the component harness instead: the only
+/// channel back from the deployment here is its text event stream, and adding a
+/// periodic covariance EVR to serve a test would be telemetry noise on a real
+/// vehicle.
 ///
 /// Skips (never fails) when the flight binary or the Python toolchain is absent
 /// — CI's unit-test job builds only the native-ut tree. `POLARIS_FSW_BIN` and
@@ -291,24 +299,40 @@ TEST(SitlAttitudeTuning, CompiledParametersLetTheEstimatorAcquireAttitude) {
   EXPECT_NE(log.find("PrmFileLoadComplete"), std::string::npos)
       << "prmDb never loaded the compiled parameter file:\n"
       << log;
-  EXPECT_NE(log.find("Records: 12"), std::string::npos)
-      << "prmDb loaded a record count other than the 12 declared parameters:\n"
+  EXPECT_NE(log.find("Records: 19"), std::string::npos)
+      << "prmDb loaded a record count other than the 19 declared parameters:\n"
       << log;
 
-  // 2. The estimator accepted the whole tuning set. ConfigInvalid is the
-  //    edge-gated refusal Push 40 emits when a parameter is missing or out of
-  //    range, and is exactly what this push exists to eliminate.
+  // 2. The estimator accepted the whole tuning set — both gates. ConfigInvalid
+  //    is the edge-gated refusal Push 40 emits when a coarse parameter is
+  //    missing or out of range; FineConfigInvalid is its non-fatal fine-mode
+  //    counterpart, and a vehicle stuck on the coarse floor because its MEKF
+  //    tuning never arrived is exactly the silent degradation to catch here.
   EXPECT_EQ(log.find("configuration invalid"), std::string::npos)
       << "estimator refused the compiled tuning:\n"
+      << log;
+  EXPECT_EQ(log.find("running coarse-only"), std::string::npos)
+      << "estimator refused the compiled fine-mode tuning:\n"
       << log;
 
   // 3. Configured *and* working: a TRIAD was accepted and the attitude left the
   //    INVALID mode (REQ-ADET-004).
-  EXPECT_NE(log.find("Coarse attitude acquired"), std::string::npos)
+  EXPECT_NE(log.find("Attitude acquired"), std::string::npos)
       << "estimator never acquired an attitude over " << kDurationS << " s:\n"
       << log;
-  EXPECT_EQ(log.find("Coarse attitude lost"), std::string::npos)
+  EXPECT_EQ(log.find("Attitude lost"), std::string::npos)
       << "estimator lost the attitude it had acquired:\n"
+      << log;
+
+  // 4. And the fine mode engaged off a Davenport seed and stayed engaged: the
+  //    arbitration clause of REQ-ADET-004, asserted on the vehicle rather than
+  //    in the component harness. A demotion inside a 10 s run with good geometry
+  //    and both sensors healthy would mean the flight tuning is wrong.
+  EXPECT_NE(log.find("Fine mode engaged"), std::string::npos)
+      << "estimator never promoted to fine mode over " << kDurationS << " s:\n"
+      << log;
+  EXPECT_EQ(log.find("Fine mode demoted"), std::string::npos)
+      << "estimator could not hold the fine solution it acquired:\n"
       << log;
 }
 

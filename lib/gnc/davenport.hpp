@@ -125,9 +125,11 @@ struct DavenportInput {
   /// reference set.
   ///
   /// The ratio is scale-free, so it gates geometry rather than noise level. Two
-  /// equally-weighted orthogonal observations give exactly `0.5`; a pair
-  /// separated by θ gives roughly `sin²θ / 2` (≈ 0.015 at 10°). No default —
-  /// this is mission configuration (§19.3), and zero fails validation.
+  /// equally-weighted observations separated by θ give
+  /// `(1 − cos θ)/2 = sin²(θ/2)` — exactly `0.5` at 90°, and `0.0076` at 10°.
+  /// (Note this is *not* `sin²θ/2`, which happens to agree at 90° and is nearly
+  /// double the true value at small separations.) No default — this is mission
+  /// configuration (§19.3), and zero fails validation.
   double min_observability{0.0};
 };
 
