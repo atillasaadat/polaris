@@ -170,6 +170,15 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! boresight to another unit fails silently rather than loudly.
   void testAlbedoSkippedForASunSensorOtherThanUnitZero();
 
+  //! A negative sun sigma on the good side of either pair is refused: the hypot
+  //! composition would otherwise absorb the sign silently.
+  void testNegativeSunSigmaIsRefused();
+
+  //! The sun systematic follows the served ephemeris grade: a PRECISE-graded
+  //! cycle (DE440 tables covering the epoch) reports a tighter covariance floor
+  //! than an otherwise identical analytic-fallback cycle.
+  void testSunSigmaFollowsTheEphemerisGrade();
+
   //! A missing albedo parameter costs the correction and nothing else: one
   //! edge-gated alert, and a vehicle still acquiring attitude on the wider
   //! uncorrected budget.
@@ -197,7 +206,7 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! (one FineConfigInvalid), which is what the coarse-behaviour tests want.
   //! @p withAlbedo adds the three Earth-albedo parameters; without them the
   //! correction never runs (one AlbedoConfigInvalid) and every cycle is weighted
-  //! at SigmaSunSysUncorrRad — the default, so the pre-existing tests keep
+  //! at SigmaSunAlbedoUncorrRad — the default, so the pre-existing tests keep
   //! proving the estimator works with no albedo tuning at all.
   void setValidParameters(bool withFine = false, bool withAlbedo = false);
 

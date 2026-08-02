@@ -30,7 +30,7 @@ using ECI = pm::frames::ECI;
 using Body = pm::frames::Body;
 
 //! Number of coarse-chain tuning parameters read from ParameterDb.
-constexpr FwSizeType kParamCount = 13;
+constexpr FwSizeType kParamCount = 15;
 
 //! Number of fine-mode (MEKF + Davenport seed) tuning parameters. Validated
 //! separately: a missing one costs the fine mode, not the whole estimator.
@@ -147,7 +147,7 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
   Fw::ParamValid valids[kParamCount];
   F64 values[kParamCount];
   values[0] = this->paramGet_SigmaSunWhiteRad(valids[0]);
-  values[1] = this->paramGet_SigmaSunSysRad(valids[1]);
+  values[1] = this->paramGet_SigmaSunAlbedoRad(valids[1]);
   values[2] = this->paramGet_SigmaMagWhiteRad(valids[2]);
   values[3] = this->paramGet_SigmaMagSysRad(valids[3]);
   values[4] = this->paramGet_GyroArw(valids[4]);
@@ -158,10 +158,12 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
   values[9] = this->paramGet_MaxMeasAgeSec(valids[9]);
   values[10] = this->paramGet_MinPositionRadiusM(valids[10]);
   values[11] = this->paramGet_MaxPositionRadiusM(valids[11]);
-  values[12] = this->paramGet_SigmaSunSysUncorrRad(valids[12]);
+  values[12] = this->paramGet_SigmaSunAlbedoUncorrRad(valids[12]);
+  values[13] = this->paramGet_SigmaSunEphemRad(valids[13]);
+  values[14] = this->paramGet_SigmaSunEphemPreciseRad(valids[14]);
 
   static const char* const kNames[kParamCount] = {"SigmaSunWhiteRad",
-                                                  "SigmaSunSysRad",
+                                                  "SigmaSunAlbedoRad",
                                                   "SigmaMagWhiteRad",
                                                   "SigmaMagSysRad",
                                                   "GyroArw",
@@ -172,7 +174,9 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
                                                   "MaxMeasAgeSec",
                                                   "MinPositionRadiusM",
                                                   "MaxPositionRadiusM",
-                                                  "SigmaSunSysUncorrRad"};
+                                                  "SigmaSunAlbedoUncorrRad",
+                                                  "SigmaSunEphemRad",
+                                                  "SigmaSunEphemPreciseRad"};
 
   for (FwSizeType i = 0; i < kParamCount; ++i) {
     if (valids[i] != Fw::ParamValid::VALID || !std::isfinite(values[i])) {
@@ -186,7 +190,12 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
 
   polaris::gnc::CoarseAttitudeConfig cfg;
   cfg.sigma_sun_white_rad = values[0];
-  cfg.sigma_sun_sys_rad = values[1];
+  // The config's sun systematic is the **worst case** of the four-way per-cycle
+  // composition below (no albedo correction, analytic ephemeris). Nothing reads
+  // it — every cycle supplies its own through CoarseAttitudeInput — so what
+  // matters is that it passes isValid() and that, if a future caller ever did
+  // fall back to it, it would err wide rather than narrow.
+  cfg.sigma_sun_sys_rad = std::hypot(values[12], values[13]);
   cfg.sigma_mag_white_rad = values[2];
   cfg.sigma_mag_sys_rad = values[3];
   cfg.gyro_arw = values[4];
@@ -209,13 +218,23 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
     this->failConfig("position radius gate must satisfy 0 < Min < Max");
     return false;
   }
-  // The uncorrected sun systematic must be the *wider* of the two. A pair the
-  // other way round says the albedo correction makes the measurement worse,
-  // which is a configuration error rather than a flight condition, and flying it
-  // would have the estimator report a covariance tighter than the truth on
-  // exactly the cycles it should be least confident.
-  if (!(values[12] >= values[1])) {
-    this->failConfig("SigmaSunSysUncorrRad must be >= SigmaSunSysRad");
+  // Each pair must be ordered: the degraded member wider than the good one. A
+  // pair the other way round says the albedo correction makes the measurement
+  // worse, or that the analytic fallback beats the DE440 tables — configuration
+  // errors rather than flight conditions, and flying either would have the
+  // estimator report a covariance tighter than the truth on exactly the cycles
+  // it should be least confident.
+  // The non-negativity check on the *good* member of each pair rides here too.
+  // It has nowhere else to live: the composition is a hypot, which squares its
+  // arguments and would absorb a sign typo silently — a negative sigma would
+  // pass both this validation and every runtime finiteness check while quietly
+  // meaning its own absolute value.
+  if (!(values[1] >= 0.0) || !(values[12] >= values[1])) {
+    this->failConfig("need 0 <= SigmaSunAlbedoRad <= SigmaSunAlbedoUncorrRad");
+    return false;
+  }
+  if (!(values[14] >= 0.0) || !(values[13] >= values[14])) {
+    this->failConfig("need 0 <= SigmaSunEphemPreciseRad <= SigmaSunEphemRad");
     return false;
   }
 
@@ -237,9 +256,10 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
   // Precomputed here rather than per cycle: a hypot in the 10 Hz path to pick
   // between two constants is arithmetic the configuration already knows.
   this->sigma_sun_white_rad_ = cfg.sigma_sun_white_rad;
-  this->sigma_sun_sys_corr_rad_ = cfg.sigma_sun_sys_rad;
-  this->sigma_sun_sys_uncorr_rad_ = values[12];
-  this->sigma_sun_total_uncorr_rad_ = std::hypot(cfg.sigma_sun_white_rad, values[12]);
+  this->sigma_sun_albedo_corr_rad_ = values[1];
+  this->sigma_sun_albedo_uncorr_rad_ = values[12];
+  this->sigma_sun_ephem_rad_ = values[13];
+  this->sigma_sun_ephem_precise_rad_ = values[14];
   this->config_invalid_flagged_ = false;
   return true;
 }
@@ -338,12 +358,20 @@ bool AttitudeEstimator ::refreshFineConfig() {
   return true;
 }
 
-double AttitudeEstimator ::applyAlbedoCorrection(const SunSensorMeas* sun,
-                                                 const pm::Vec3<ECEF>& r_ecef,
-                                                 const pm::Quat<ECI, ECEF>& q_eci_ecef,
-                                                 const pm::Vec3<ECI>& sun_geocentric,
-                                                 bool havePositionAndRotation,
-                                                 bool haveSunGeocentric, pm::Vec3<Body>& sunBody) {
+void AttitudeEstimator ::setSunSigmaForCycle(double albedoSigmaRad, double ephemSigmaRad) {
+  // The two terms are independent — one is how well the sensor measured the Sun,
+  // the other how well the vehicle knows where the Sun is — so they compose in
+  // quadrature. Both are per-cycle: the albedo term depends on whether the
+  // correction ran and on how well the attitude is known, the ephemeris term on
+  // whether the onboard tables cover this epoch.
+  this->sigma_sun_sys_cycle_ = std::hypot(albedoSigmaRad, ephemSigmaRad);
+  this->sigma_sun_total_cycle_ = std::hypot(this->sigma_sun_white_rad_, this->sigma_sun_sys_cycle_);
+}
+
+double AttitudeEstimator ::applyAlbedoCorrection(
+    const SunSensorMeas* sun, const pm::Vec3<ECEF>& r_ecef, const pm::Quat<ECI, ECEF>& q_eci_ecef,
+    const pm::Vec3<ECI>& sun_geocentric, bool havePositionAndRotation, bool haveSunGeocentric,
+    double ephemSigmaRad, pm::Vec3<Body>& sunBody) {
   // **The one application point** for the Earth-albedo correction (§8.1), called
   // between unit selection and every consumer for the same reason the
   // magnetometer calibration is applied where it is: the coarse chain, the MEKF
@@ -360,8 +388,7 @@ double AttitudeEstimator ::applyAlbedoCorrection(const SunSensorMeas* sun,
   // uncorrected sigma is used, rather than correcting on geometry the vehicle
   // does not have — which would inject a bias the size of the one removed,
   // pointed in an arbitrary direction.
-  this->sigma_sun_sys_cycle_ = this->sigma_sun_sys_uncorr_rad_;
-  this->sigma_sun_total_cycle_ = this->sigma_sun_total_uncorr_rad_;
+  this->setSunSigmaForCycle(this->sigma_sun_albedo_uncorr_rad_, ephemSigmaRad);
 
   // Multi-unit gate. `selectSunSensor` takes the first valid unit at *any* index,
   // but there is one set of albedo parameters and it describes the unit at index
@@ -428,8 +455,8 @@ double AttitudeEstimator ::applyAlbedoCorrection(const SunSensorMeas* sun,
   const double sigma_att =
       (std::isfinite(cov_trace) && cov_trace > 0.0) ? std::sqrt(cov_trace) : 0.0;
   const double attitude_driven = this->albedo_config_.albedo_error_rad * sigma_att * 0.5;
-  this->sigma_sun_sys_cycle_ = std::hypot(this->sigma_sun_sys_corr_rad_, attitude_driven);
-  this->sigma_sun_total_cycle_ = std::hypot(this->sigma_sun_white_rad_, this->sigma_sun_sys_cycle_);
+  this->setSunSigmaForCycle(std::hypot(this->sigma_sun_albedo_corr_rad_, attitude_driven),
+                            ephemSigmaRad);
   return applied;
 }
 
@@ -935,18 +962,27 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
                            this->have_eop_grade_);
 
   // --- Measurement pairs ----------------------------------------------------
+  // How well this cycle's sun *reference* is known, from the grade the ephemeris
+  // query answered at. PRECISE means the uploaded DE440 Chebyshev tables covered
+  // the epoch and the direction is arcsecond-class; anything else means the
+  // analytic fallback answered, two orders of magnitude wider. The grade is a
+  // fact about the current epoch and the current upload, not a configuration
+  // choice, so it is read per cycle rather than latched.
+  const double ephem_sigma_rad = (ephem_grade == TableGrade::PRECISE)
+                                     ? this->sigma_sun_ephem_precise_rad_
+                                     : this->sigma_sun_ephem_rad_;
+
   const SunSensorMeas* const sun = this->selectSunSensor(nowNs);
-  // Default for a cycle with no sun measurement at all: the uncorrected budget,
-  // so nothing downstream can read a corrected sigma off a cycle that had no
-  // measurement to correct.
-  this->sigma_sun_sys_cycle_ = this->sigma_sun_sys_uncorr_rad_;
-  this->sigma_sun_total_cycle_ = this->sigma_sun_total_uncorr_rad_;
+  // Default for a cycle with no sun measurement at all: the uncorrected albedo
+  // budget, so nothing downstream can read a corrected sigma off a cycle that
+  // had no measurement to correct.
+  this->setSunSigmaForCycle(this->sigma_sun_albedo_uncorr_rad_, ephem_sigma_rad);
   double albedo_applied_rad = kNoValue;
   if (sun != nullptr && have_sun_ref) {
     pm::Vec3<Body> sun_body(toEigen(sun->get_dirBody()));
-    albedo_applied_rad =
-        this->applyAlbedoCorrection(sun, r_ecef, q_eci_ecef, sun_geocentric,
-                                    have_position && have_rotation, have_sun_geocentric, sun_body);
+    albedo_applied_rad = this->applyAlbedoCorrection(
+        sun, r_ecef, q_eci_ecef, sun_geocentric, have_position && have_rotation,
+        have_sun_geocentric, ephem_sigma_rad, sun_body);
 
     in.sun_body = sun_body;
     in.sun_ref = sun_ref;

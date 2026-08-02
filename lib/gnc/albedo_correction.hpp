@@ -53,7 +53,7 @@
 /// \f]
 /// With the truth-side dispersion at zero this recovers the true direction to
 /// round-off; with it at its flight value the residual is the dispersion, which
-/// is what the vehicle's post-correction `SigmaSunSysRad` is derived from.
+/// is what the vehicle's post-correction `SigmaSunAlbedoRad` is derived from.
 ///
 /// Both endpoints of \f$\psi\f$ are **doubly covered**, which is why neither
 /// needs special handling: at \f$\psi = 0\f$ and at \f$\psi = \pi\f$ the Sun and

@@ -83,9 +83,10 @@ parameter fails the compile rather than the mission — there are no flight
 defaults (design doc §19.3). The deployment points `prmDb` at the file with
 `-P`; see `flight/PolarisFsw/README.md` for the bring-up recipe.
 
-The attitude estimator's thirty values are worth reading as **four sets**,
-because they fail differently. The thirteen coarse-chain values (sun/magnetic
-white and systematic sigmas, `GyroArw`, `MinSinAngle`, `TriadGain`,
+The attitude estimator's thirty-two values are worth reading as **four sets**,
+because they fail differently. The fifteen coarse-chain values (the magnetic
+white and systematic sigmas, the sun white sigma and the four terms its
+systematic is composed from, `GyroArw`, `MinSinAngle`, `TriadGain`,
 `MaxCoastSec`, `MaxDtSec`, `MaxMeasAgeSec`, the GNSS radius band) are what the
 §10 Safe-mode floor runs on: one missing and the vehicle has no attitude at all.
 The seven fine-mode values (`MekfRrw`, `MekfNisGate`, `MekfMaxCoastSec`,
@@ -101,7 +102,7 @@ calibration is an activity, not a flight function, so it does not get a
 per-cycle alert. The three Earth-albedo values (`SunAlbedoPeakRad`,
 `SunAlbedoHalfFovRad`, `SunAlbedoBoresightBody`) gate only the sun-vector albedo
 correction: one missing emits `AlbedoConfigInvalid` once and every cycle is then
-weighted at `SigmaSunSysUncorrRad`, which is how the vehicle flew before the
+weighted at `SigmaSunAlbedoUncorrRad`, which is how the vehicle flew before the
 correction existed. All three describe **one** sun sensor — the unit's datasheet
 albedo peak and field of view, and its mounting quaternion applied to the
 sensor's +Z — so re-derive them if that unit's `model_id` or its mounting
@@ -110,26 +111,41 @@ changes. `SunAlbedoBoresightBody` is written as a YAML **list** of three numbers
 parameter, and refuses one of the wrong length. The MEKF's angle random walk and
 largest propagation step are the coarse chain's `GyroArw` and `MaxDtSec` — same
 gyro, same rate group, so they are not duplicated.
-`config/spacecraft/leo_smallsat.yaml` derives every one of the thirty from the
-units that vehicle carries, in comments; re-derive them whenever a `model_id`
+`config/spacecraft/leo_smallsat.yaml` derives every one of the thirty-two from
+the units that vehicle carries, in comments; re-derive them whenever a `model_id`
 changes.
 
-The sun pair carries **two** systematic sigmas rather than one, and that is not
-redundancy. `SigmaSunSysRad` is the budget *with* the albedo correction applied
-and `SigmaSunSysUncorrRad` the budget without it; the estimator picks between
-them per cycle, on whether the correction actually ran (it needs a position fix,
-a sunlit Earth in the sensor's field, and an attitude to place that field with).
-A single value would be wrong on one class of cycle or the other. The component
-refuses a pair with the uncorrected value tighter than the corrected one
-(`ConfigInvalid`, estimator inert) — a correction that made the measurement worse
-is a configuration error, not a flight condition.
+The sun pair carries **four** systematic values rather than one, and none of it
+is redundancy. The estimator composes them per cycle as
 
-`SigmaSunSysRad` is a *floor*, not the whole story on a corrected cycle: the
-component adds `SunAlbedoPeakRad·σ_att/2` in quadrature, the correction's own
-error from placing the Earth with an imperfect attitude. That term is runtime
-state rather than tuning — there is nothing to configure — but it is why the
-value you derive for `SigmaSunSysRad` should be the *converged* budget and not an
-average over acquisition transients, which the component already handles.
+```
+sigma_sun_sys = hypot(albedo term, ephemeris term)
+```
+
+and picks each side independently. The **albedo** side is the sensor's:
+`SigmaSunAlbedoRad` when the correction ran (it needs a position fix, a sunlit
+Earth in the sensor's field, and an attitude to place that field with) and
+`SigmaSunAlbedoUncorrRad` when it did not. The **ephemeris** side is the
+*reference's*: `SigmaSunEphemPreciseRad` while the onboard DE440 tables cover the
+epoch and `SigmaSunEphemRad` (the analytic fallback) when they do not — chosen by
+the served `TableGrade`, which is a fact about the current upload rather than
+anything you configure. A single pre-composed number would be wrong on three of
+the four combinations. The component refuses either pair ordered the wrong way
+(`ConfigInvalid`, estimator inert): a correction that made the measurement worse,
+or an analytic fallback that beat the tables, is a configuration error rather
+than a flight condition.
+
+Two consequences worth knowing when you derive these. First, `SigmaSunAlbedoRad`
+is a *floor*: the component adds `SunAlbedoPeakRad·σ_att/2` in quadrature, the
+correction's own error from placing the Earth with an imperfect attitude. That is
+runtime state, not tuning — there is nothing to configure — but it is why the
+value you derive should be the *converged* budget rather than an average over
+acquisition transients, which the component already handles. Second, an
+**ephemeris upload needs no parameter change at all**: the vehicle carries both
+grades, so it starts using the tighter term on the first cycle the tables answer
+at `PRECISE`. Set `SigmaSunEphemPreciseRad` to what your uploaded tables are
+actually worth — it is a parameter rather than an assumed zero precisely so that
+claim is the ground's and not the code's.
 
 The two albedo values are also the first parameter pair the compiler
 **cross-checks against the hardware library**: `SunAlbedoPeakRad` and

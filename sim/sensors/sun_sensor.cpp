@@ -262,7 +262,7 @@ SunSensorMeasurement SunSensor::sample(const time::Tai& epoch, const SunSensorIn
       // fraction is the **total** 1σ over both dispersion axes, so each of the
       // two independent axes carries 1/√2 of it and their quadrature sum is the
       // configured number — which is then exactly what the vehicle's
-      // post-correction `SigmaSunSysRad` is derived from, with no hidden √2.
+      // post-correction `SigmaSunAlbedoRad` is derived from, with no hidden √2.
       albedo_peak *=
           1.0 + kDispersionPerAxis * spec_.albedo_dispersion_fraction * albedo_scale_dispersion_;
       albedo_peak = std::max(0.0, albedo_peak);

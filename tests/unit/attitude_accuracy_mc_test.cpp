@@ -75,7 +75,7 @@ constexpr int kSteps = 15;
 // numbers the requirement thresholds were measured against, so a budget change
 // in the YAML has to be re-measured here, not silently diverge.
 constexpr double kSigmaSunWhite = 0.0116;    ///< [rad] FSS noise at the FOV edge
-constexpr double kSigmaSunSys = 0.0356;      ///< [rad] albedo ⊕ analytic ephemeris
+constexpr double kSunSysUncal = 0.0356;      ///< [rad] albedo ⊕ analytic ephemeris
 constexpr double kSigmaMagWhite = 0.0017;    ///< [rad] 0.05 µT rms on a 30 µT field
 constexpr double kSigmaMagSys = 0.0337;      ///< [rad] hard/soft-iron residual
 constexpr double kGyroArw = 4.363e-5;        ///< [rad·s^(-1/2)] STIM300 0.15°/√h
@@ -127,7 +127,24 @@ constexpr double kSigmaMagSysPostCal = 0.087 * kDeg;
 /// uniform Lambertian sphere. Read the projection below as a statement about
 /// `f`, and treat 0.30 as the honest mid-range figure it is rather than a
 /// measured property of any orbit.
-constexpr double kSigmaSunSysPostAlbedo = 0.0126;
+constexpr double kSunSysPostAlbedo = 0.0126;
+
+/// The same budget with the **onboard DE440 Chebyshev tables** answering the sun
+/// query at grade PRECISE, rather than the analytic fallback [rad].
+///
+/// The two terms the component composes per cycle are independent — the albedo
+/// residual is the sensor's, the ephemeris error is the reference's — so this is
+/// the same 10.5 mrad albedo residual against an ephemeris term that all but
+/// vanishes: `sqrt(10.5² + 0.05²) = 10.5 mrad`. The tables give an
+/// arcsecond-class sun direction from *time alone*, and the ~10 arcsec LEO
+/// parallax the component already subtracts when it has a position fix.
+///
+/// This is the budget the vehicle actually flies with an ephemeris upload in
+/// place, so it — not the analytic-fallback figure above — is what the eventual
+/// REQ-ADET-006 tightening should be conditioned on. `kSunSysPostAlbedo` is
+/// then the *degraded* floor: what the vehicle falls back to with no upload or
+/// past the end of the uploaded span.
+constexpr double kSunSysPostAlbedoTables = 0.0105;
 
 /// The Davenport seed's observability gate for the post-calibration projection
 /// [dimensionless].
@@ -209,7 +226,7 @@ struct Systematics {
   double mag2{0.0};
 
   /// @param sun_sys the sun systematic 1σ [rad] this campaign runs at —
-  ///        `kSigmaSunSys` uncalibrated, the post-albedo-correction residual for
+  ///        `kSunSysUncal` uncalibrated, the post-albedo-correction residual for
   ///        the informative projection.
   /// @param mag_sys the magnetic systematic 1σ [rad], likewise —
   ///        `kSigmaMagSys` for the requirement campaigns, the post-calibration
@@ -456,11 +473,21 @@ std::vector<PairedRun> runCampaign(double sun_sys, double mag_sys, double seed_m
   }
 }
 
+/// The **both-corrections** projection campaign, on the analytic-ephemeris
+/// fallback. Run once on first use and shared by the two projection cases below
+/// — they compare against the same 800 runs, and at ~15 s a campaign that is a
+/// meaningful share of this binary's runtime.
+const std::vector<PairedRun>& postCorrectionsFallbackRuns() {
+  static const std::vector<PairedRun> runs =
+      runCampaign(kSunSysPostAlbedo, kSigmaMagSysPostCal, kSeedMinObservabilityPostCal);
+  return runs;
+}
+
 /// The requirement campaign — the reference vehicle's **uncalibrated** budget —
 /// run once on first use and shared by every requirement test in this file.
 const std::vector<PairedRun>& campaignRuns() {
   static const std::vector<PairedRun> runs =
-      runCampaign(kSigmaSunSys, kSigmaMagSys, kSeedMinObservability);
+      runCampaign(kSunSysUncal, kSigmaMagSys, kSeedMinObservability);
   return runs;
 }
 
@@ -668,7 +695,7 @@ TEST(AttitudeAccuracyMonteCarlo, CrossBoresightProjectionOfFineModeError) {
 
 TEST(AttitudeAccuracyMonteCarlo, PostMagCalibrationProjection) {
   const std::vector<PairedRun> runs =
-      runCampaign(kSigmaSunSys, kSigmaMagSysPostCal, kSeedMinObservabilityPostCal);
+      runCampaign(kSunSysUncal, kSigmaMagSysPostCal, kSeedMinObservabilityPostCal);
   ASSERT_EQ(runs.size(), static_cast<std::size_t>(kRuns));
   for (std::size_t i = 0; i < runs.size(); ++i) {
     ASSERT_TRUE(runs[i].ok) << "run " << i << " left an estimator invalid";
@@ -718,8 +745,7 @@ TEST(AttitudeAccuracyMonteCarlo, PostMagCalibrationProjection) {
 // the baseline draw for draw, as the single-item projection above is.
 
 TEST(AttitudeAccuracyMonteCarlo, PostBothCorrectionsProjection) {
-  const std::vector<PairedRun> runs =
-      runCampaign(kSigmaSunSysPostAlbedo, kSigmaMagSysPostCal, kSeedMinObservabilityPostCal);
+  const std::vector<PairedRun>& runs = postCorrectionsFallbackRuns();
   ASSERT_EQ(runs.size(), static_cast<std::size_t>(kRuns));
   for (std::size_t i = 0; i < runs.size(); ++i) {
     ASSERT_TRUE(runs[i].ok) << "run " << i << " left an estimator invalid";
@@ -737,7 +763,7 @@ TEST(AttitudeAccuracyMonteCarlo, PostBothCorrectionsProjection) {
       "mag %.3f -> %.3f deg\n"
       "  coarse: median %.3f -> %.3f deg   3sigma-bound %.3f -> %.3f deg  (committed %.1f deg)\n"
       "  fine:   median %.3f -> %.3f deg   3sigma-bound %.3f -> %.3f deg  (committed %.1f deg)\n",
-      kSigmaSunSys / kDeg, kSigmaSunSysPostAlbedo / kDeg, kSigmaMagSys / kDeg,
+      kSunSysUncal / kDeg, kSunSysPostAlbedo / kDeg, kSigmaMagSys / kDeg,
       kSigmaMagSysPostCal / kDeg, coarse_now.median(), coarse.median(), coarse_now.max(),
       coarse.max(), kCommittedCoarseDeg, fine_now.median(), fine.median(), fine_now.max(),
       fine.max(), kCommittedFineDeg);
@@ -757,6 +783,56 @@ TEST(AttitudeAccuracyMonteCarlo, PostBothCorrectionsProjection) {
   // Neither chain can do better than the white noise it is left with: a bound
   // near zero would mean the systematics were zeroed rather than reduced.
   EXPECT_GT(fine.max(), 0.2) << "bound implausibly small — is the noise wired in?";
+}
+
+// ── Both corrections **and** the onboard ephemeris tables — informative ──────
+//
+// **Verifies nothing**, like the two above. What it answers is which budget the
+// eventual REQ-ADET-006 tightening should be *conditioned* on. The analytic
+// ephemeris fallback is 7.0 mrad of the 12.6 mrad post-albedo sun systematic —
+// over half of it, and the largest single term left once the albedo correction
+// has run. But the vehicle does not have to fly on the fallback: the Push 37
+// onboard DE440 Chebyshev tables give an arcsecond-class sun direction from time
+// alone, and the estimator now follows the served grade per cycle.
+//
+// So there are two honest numbers, not one: what the vehicle achieves with an
+// ephemeris upload in place, and what it falls back to without one.
+
+TEST(AttitudeAccuracyMonteCarlo, PostBothCorrectionsWithEphemerisTablesProjection) {
+  const std::vector<PairedRun> runs =
+      runCampaign(kSunSysPostAlbedoTables, kSigmaMagSysPostCal, kSeedMinObservabilityPostCal);
+  ASSERT_EQ(runs.size(), static_cast<std::size_t>(kRuns));
+  for (std::size_t i = 0; i < runs.size(); ++i) {
+    ASSERT_TRUE(runs[i].ok) << "run " << i << " left an estimator invalid";
+  }
+
+  const Campaign coarse = errorNorms(runs, false);
+  const Campaign fine = errorNorms(runs, true);
+  const Campaign coarse_fallback = errorNorms(postCorrectionsFallbackRuns(), false);
+  const Campaign fine_fallback = errorNorms(postCorrectionsFallbackRuns(), true);
+
+  constexpr double kCommittedCoarseDeg = 5.0;
+  constexpr double kCommittedFineDeg = 3.0;
+  std::printf(
+      "[post-both + DE440 tables, informative] sun systematic %.3f deg (analytic) "
+      "-> %.3f deg (tables)\n"
+      "  coarse: median %.3f -> %.3f deg   3sigma-bound %.3f -> %.3f deg  (committed %.1f deg)\n"
+      "  fine:   median %.3f -> %.3f deg   3sigma-bound %.3f -> %.3f deg  (committed %.1f deg)\n",
+      kSunSysPostAlbedo / kDeg, kSunSysPostAlbedoTables / kDeg, coarse_fallback.median(),
+      coarse.median(), coarse_fallback.max(), coarse.max(), kCommittedCoarseDeg,
+      fine_fallback.median(), fine.median(), fine_fallback.max(), fine.max(), kCommittedFineDeg);
+  RecordProperty("coarse_bound_millideg", static_cast<int>(1000.0 * coarse.max()));
+  RecordProperty("fine_bound_millideg", static_cast<int>(1000.0 * fine.max()));
+
+  // Removing a term cannot make either chain worse.
+  EXPECT_LE(coarse.max(), coarse_fallback.max()) << "the tables did not improve the coarse bound";
+  EXPECT_LE(fine.max(), fine_fallback.max()) << "the tables did not improve the fine bound";
+  // What is left is the albedo dispersion, which the ephemeris does not touch. A
+  // bound far below that floor would mean the substitution had leaked into the
+  // sensor terms: the 10.5 mrad per-axis residual alone has a 3.44 sigma Rayleigh
+  // tail at ~2.1 deg.
+  EXPECT_GT(fine.max(), 1.5) << "projected bound is below the albedo-only floor — did the "
+                                "substitution touch the albedo budget?";
 }
 
 }  // namespace

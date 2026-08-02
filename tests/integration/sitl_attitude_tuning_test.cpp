@@ -305,8 +305,8 @@ TEST(SitlAttitudeTuning, CompiledParametersLetTheEstimatorAcquireAttitude) {
   EXPECT_NE(log.find("PrmFileLoadComplete"), std::string::npos)
       << "prmDb never loaded the compiled parameter file:\n"
       << log;
-  EXPECT_NE(log.find("Records: 30"), std::string::npos)
-      << "prmDb loaded a record count other than the 30 declared parameters:\n"
+  EXPECT_NE(log.find("Records: 32"), std::string::npos)
+      << "prmDb loaded a record count other than the 32 declared parameters:\n"
       << log;
 
   // 2. The estimator accepted the whole tuning set — both gates. ConfigInvalid
@@ -325,6 +325,44 @@ TEST(SitlAttitudeTuning, CompiledParametersLetTheEstimatorAcquireAttitude) {
   // same silent degradation, one budget term down.
   EXPECT_EQ(log.find("running uncorrected"), std::string::npos)
       << "estimator refused the compiled albedo-correction tuning:\n"
+      << log;
+
+  // 2b. The sun *reference* term (Push 48). This deployment loads the DE440
+  //     Chebyshev tables at setup and their coverage spans the scenario epoch,
+  //     so the ephemeris query answers at grade PRECISE and the estimator
+  //     composes the sun systematic with `SigmaSunEphemPreciseRad` — the
+  //     arcsecond-class term — rather than the 7 mrad analytic fallback. What
+  //     pins that here is the *absence* of a degrade on the EPHEMERIS domain:
+  //     the grade is what selects the term, so a run that quietly fell back to
+  //     the analytic ephemeris would say so here and nowhere else.
+  //
+  //     The match is on the format prefix, so it is **domain-agnostic**: an EOP
+  //     degrade would trip it too. That is deliberate and it errs the safe way —
+  //     both domains are served by the same uploaded tables and both are
+  //     expected PRECISE here, so a degrade on either is worth failing on, and
+  //     the worst case is an over-strict test rather than one that passes while
+  //     the ephemeris quietly fell back. Narrowing to the domain would mean
+  //     matching F´'s rendering of an enum argument in the text log, which is a
+  //     formatting detail this test should not be pinned to. The domain
+  //     *argument* is asserted where it can be read structurally: the
+  //     AttitudeEstimator component test `SunSigmaFollowsTheEphemerisGrade`.
+  //
+  //     Asserting on the reported covariance instead would be the more direct
+  //     test and is deliberately not done: the two terms differ by 4% in the
+  //     composed systematic on the acquisition cycle (which is uncorrected —
+  //     there is no attitude yet to place the Earth with), and a threshold
+  //     inside that gap is a flaky test rather than a strong one. The
+  //     tables-versus-fallback covariance difference *is* asserted, on a
+  //     controlled pair of components, by the AttitudeEstimator component test
+  //     `SunSigmaFollowsTheEphemerisGrade`.
+  //
+  //     A scenario that let the tables *expire* mid-run would add the transition
+  //     — ReferenceDegraded, the sigma widening, ReferenceRecovered on re-upload
+  //     — and needs an ephemeris file whose coverage ends inside the run; that
+  //     is a fixture this test does not have and Push 48 did not build.
+  EXPECT_EQ(log.find("Attitude reference degraded"), std::string::npos)
+      << "the onboard ephemeris did not serve PRECISE for the whole run, so the sun "
+         "reference fell back to the analytic ephemeris:\n"
       << log;
 
   // 3. Configured *and* working: a TRIAD was accepted and the attitude left the

@@ -315,8 +315,9 @@ edge-gated `PositionUnavailable` warning.
 
 **Tuning is ParameterDb, with no defaults, behind two flight validity gates and
 one command-time gate.** The
-thirteen coarse values (sun/magnetic white and systematic sigmas — the sun
-systematic in both its corrected and uncorrected forms, see below — gyro ARW,
+fifteen coarse values (the magnetic white and systematic sigmas, the sun white
+sigma and the **four** terms its systematic is composed from — see below — gyro
+ARW,
 `MinSinAngle`, `TriadGain`, `MaxCoastSec`, `MaxDtSec`, `MaxMeasAgeSec`, and the
 `Min`/`MaxPositionRadiusM` band a GNSS fix must fall in) and the seven fine-mode
 values (`MekfRrw`, `MekfNisGate`, `MekfMaxCoastSec`, `MekfBiasSigmaInit`,
@@ -338,10 +339,10 @@ calibration is a commanded activity rather than a flight function.
 The three Earth-albedo values (`SunAlbedoPeakRad`, `SunAlbedoHalfFovRad`,
 `SunAlbedoBoresightBody`) are the fourth set, and their failure is the mildest of
 the four: a missing one emits an edge-gated `AlbedoConfigInvalid` and every cycle
-is then weighted at `SigmaSunSysUncorrRad`, which is how the vehicle flew before
+is then weighted at `SigmaSunAlbedoUncorrRad`, which is how the vehicle flew before
 the correction existed. `SunAlbedoBoresightBody` is the deployment's first
 **array-typed** parameter (`Vec3F64`); the config compiler writes it as a YAML
-list. Thirty parameters in total; the database is sized at 64 by
+list. Thirty-two parameters in total; the database is sized at 64 by
 `flight/config/PrmDbImplCfg.hpp` (see "Parameter delivery").
 The MEKF's angle random walk and largest propagation step are `GyroArw` and
 `MaxDtSec`: same gyro, same rate group, and two parameters for one physical
@@ -367,17 +368,19 @@ otherwise invisible — which is precisely why it needs one channel watched.
 **NaN means the correction did not run**. NaN is normal and frequent: eclipse,
 the night side, no Earth in the sensor's field, no position fix, or (on the
 acquisition cycle only) no attitude yet to place the field with. Its second job
-is telling you which sun sigma the cycle was weighted at — `SigmaSunSysRad` when
-a value is present, `SigmaSunSysUncorrRad` when it is NaN. That per-cycle choice
+is telling you which **albedo** term was in force — `SigmaSunAlbedoRad` when a
+value is present, `SigmaSunAlbedoUncorrRad` when it is NaN. That is half the
+composed systematic; the ephemeris half is shown by `OnboardTables.EphemGrade`
+(next section). The per-cycle choice
 is the point of carrying two parameters: the uncorrected sun measurement is an
 order of magnitude worse, and weighting it as if it had been corrected would make
 the estimator overconfident on exactly the cycles it should be least sure of.
 
-A corrected cycle is **not** simply weighted at `SigmaSunSysRad`, either. The
+A corrected cycle is **not** simply weighted at `SigmaSunAlbedoRad`, either. The
 correction places the Earth using the previous cycle's attitude, and an attitude
 error ε costs about `A·ε` of sun-vector error — set by `SunAlbedoPeakRad`, not by
 the size of the correction applied, because what ε moves is the rotation *axis*.
-So the effective systematic is `SigmaSunSysRad ⊕ SunAlbedoPeakRad·σ_att/2`, with
+So the albedo term is `SigmaSunAlbedoRad ⊕ SunAlbedoPeakRad·σ_att/2`, with
 σ_att taken from the published attitude covariance. Operationally that means the
 sun measurement is trusted less right after acquisition, a slew, or a
 re-acquisition, and progressively more as the solution converges — automatically,
@@ -403,6 +406,40 @@ The correction is deliberately skipped rather than approximated when its inputs
 are missing. Correcting on a guessed position or a stale attitude would inject a
 bias the size of the one being removed, pointed wherever the guess pointed, which
 is strictly worse than not correcting at all.
+
+### Sun reference: the ephemeris grade sets half the budget (§8.1)
+
+The sun systematic is **composed each cycle** from two independent terms:
+
+```
+sigma_sun_sys = hypot(albedo term, ephemeris term)
+```
+
+The albedo term is the sensor's and is described above. The ephemeris term is the
+*reference's* — how well the vehicle knows where the Sun is — and it is chosen by
+the grade the ephemeris query answered at, not by configuration:
+`SigmaSunEphemPreciseRad` while the onboard DE440 Chebyshev tables cover the
+epoch, `SigmaSunEphemRad` (the analytic fallback, ~7 mrad) when they do not. Two
+orders of magnitude separate them on the reference vehicle, and with the tables
+active the ephemeris stops contributing to the sun budget at all.
+
+There is no dedicated channel for which term is in force, because two existing
+ones already say: **`OnboardTables.EphemGrade`** publishes the served grade every
+cycle, and the estimator emits `ReferenceDegraded(EPHEMERIS, …)` /
+`ReferenceRecovered(EPHEMERIS, …)` on each transition. What to watch for:
+
+- **`EphemGrade` dropping to `COARSE`** means the uploaded ephemeris no longer
+  covers the current epoch — the span ran out, or a reload failed. The vehicle
+  keeps flying and keeps acquiring attitude; it is simply working from the
+  analytic Sun and reporting an honestly wider covariance. The action is an
+  ephemeris upload, not a recovery procedure.
+- **A degrade with no corresponding gap in coverage** points at the table load
+  rather than the span — check `OnboardTables`' load events and `RELOAD_TABLES`.
+
+Because the vehicle carries *both* values, an ephemeris upload needs **no
+parameter change**: the estimator starts using the tighter term on the first
+cycle the tables answer at `PRECISE`. That is the reason the two are separate
+parameters rather than one pre-composed sun systematic.
 
 ### Magnetometer calibration: the ops procedure (§8.1)
 

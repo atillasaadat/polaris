@@ -154,6 +154,17 @@ TEST(AttitudeEstimator, AlbedoSkippedForASunSensorOtherThanUnitZero) {
   tester.testAlbedoSkippedForASunSensorOtherThanUnitZero();
 }
 
+TEST(AttitudeEstimator, NegativeSunSigmaIsRefused) {
+  flight::AttitudeEstimatorTester tester;
+  tester.testNegativeSunSigmaIsRefused();
+}
+
+TEST(AttitudeEstimator, SunSigmaFollowsTheEphemerisGrade) {
+  RecordProperty("verifies", "REQ-ADET-006");
+  flight::AttitudeEstimatorTester tester;
+  tester.testSunSigmaFollowsTheEphemerisGrade();
+}
+
 TEST(AttitudeEstimator, MissingAlbedoTuningLeavesTheEstimatorRunning) {
   flight::AttitudeEstimatorTester tester;
   tester.testMissingAlbedoTuningLeavesTheEstimatorRunning();
