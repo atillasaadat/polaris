@@ -59,7 +59,10 @@ namespace polaris::math {
 ///   \alpha = \arccos\frac{d^2 + r_f^2 - r_b^2}{2\,d\,r_f}, \qquad
 ///   \beta  = \arccos\frac{d^2 + r_b^2 - r_f^2}{2\,d\,r_b},
 /// \f]
-/// clamped to \f$[0,1]\f$.
+/// with both ratios clamped to \f$[-1,1]\f$ (the arccosine domain) and the
+/// returned fraction clamped to \f$[0,1]\f$. Both arccosines are evaluated as
+/// \f$\mathrm{atan2}(\sqrt{1-t^2},\,t)\f$ on the clamped ratio \f$t\f$, per the
+/// house convention in \c lib/README.md.
 ///
 /// Returns 0 for a non-positive field of view: a sensor with no field has no
 /// fraction to report, and dividing by its area would put a NaN in a telemetry
@@ -95,8 +98,17 @@ inline double fovCoveredFraction(double half_fov_rad, double separation_rad,
   const double rb2 = r_body * r_body;
   const double cos_fov = std::clamp((d2 + rf2 - rb2) / (2.0 * d * r_fov), -1.0, 1.0);
   const double cos_body = std::clamp((d2 + rb2 - rf2) / (2.0 * d * r_body), -1.0, 1.0);
-  const double alpha = std::acos(cos_fov);
-  const double beta = std::acos(cos_body);
+  // atan2(sin, cos) rather than acos, matching the convention in lib/README.md.
+  // Unlike the angle between two vectors, this is *robustness only*, not
+  // precision: the cosine is a law-of-cosines ratio with no independently
+  // computed sine to pair it with, so any cancellation already happened in the
+  // ratio and the atan2 cannot undo it. What it does buy is a total function —
+  // an out-of-range ratio yields 0 or π instead of a NaN. The clamps above now
+  // guard the sqrt argument; the max(0, ·) guards its round-off.
+  const double alpha =
+      std::atan2(std::sqrt(std::max(0.0, (1.0 - cos_fov) * (1.0 + cos_fov))), cos_fov);
+  const double beta =
+      std::atan2(std::sqrt(std::max(0.0, (1.0 - cos_body) * (1.0 + cos_body))), cos_body);
   // Each circular segment is (r² · angle) minus the triangle it contains.
   const double area =
       rf2 * (alpha - std::sin(2.0 * alpha) * 0.5) + rb2 * (beta - std::sin(2.0 * beta) * 0.5);

@@ -80,10 +80,11 @@ Eigen::Vector3d attitudeError(const pm::Quaternion& est, const pm::Quaternion& t
   return 2.0 * dq.vec();
 }
 
-/// Rotation angle between two attitudes [rad], evaluated through the error
-/// quaternion rather than `angularDistance`. Both are correct, but `acos` of a
-/// dot product near 1 loses half the mantissa (its floor is ~3e-8 rad), which
-/// is coarser than the round-off these exactness checks are pinning.
+/// Rotation angle between two attitudes [rad], formed here rather than via
+/// `angularDistance` so the exactness checks below measure the estimator
+/// against an independently written formula and not against the quaternion
+/// library's own method. Same atan2 convention (lib/README.md), so the two
+/// agree to round-off.
 double errorRad(const pm::Quaternion& est, const pm::Quaternion& truth) {
   const pm::Quaternion dq = (est * truth.inverse()).canonical();
   return 2.0 * std::atan2(dq.vec().norm(), dq.scalar());

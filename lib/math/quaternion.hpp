@@ -137,9 +137,13 @@ class Quaternion {
   Eigen::Vector3d rotate(const Eigen::Vector3d& v) const;
 
   /// Smallest rotation angle [rad] between this and @p other (in [0, π]), from the
-  /// four-vector dot product \f$\theta = 2\arccos\big(\min(|\bar q_1 \cdot \bar q_2|,\,1)\big)\f$.
-  /// The absolute value maps \f$\bar q\f$ and \f$-\bar q\f$ (the same rotation) to
-  /// the same angle; the clamp guards \c acos against round-off past 1.
+  /// error quaternion \f$\delta\bar q = \bar q_1^{-1} \otimes \bar q_2\f$ as
+  /// \f$\theta = 2\,\mathrm{atan2}\big(\|\delta\mathbf q_v\|,\ |\delta q_0|\big)\f$.
+  /// The absolute value maps \f$\delta\bar q\f$ and \f$-\delta\bar q\f$ (the same
+  /// rotation) to the same angle, i.e. the \f$\theta \le \pi\f$ branch. The
+  /// \c atan2 form is used rather than \f$2\arccos(\delta q_0)\f$ because the
+  /// scalar part alone is stationary at \f$\theta = 0\f$ and so loses half its
+  /// significant digits there — see the house rule in \c lib/README.md.
   double angularDistance(const Quaternion& other) const;
 
  private:

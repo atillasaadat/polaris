@@ -275,7 +275,9 @@ struct SunSensorMeasurement {
 /// **Measurement model — digital** (`kSunVector`). The unit reports a direction;
 /// the model perturbs the truth by the datasheet accuracy, and **then applies the
 /// Earthshine pull as a rotation, not as noise**. The incidence angle
-/// \f$\theta = \arccos(\hat{b}\cdot\hat{s})\f$ selects the white regime:
+/// \f$\theta = \arccos(\hat{b}\cdot\hat{s})\f$ — computed as
+/// \f$\mathrm{atan2}(\|\hat b \times \hat s\|,\ \hat b\cdot\hat s)\f$, per the
+/// house convention in \c lib/README.md — selects the white regime:
 /// \f[
 ///   \sigma_\theta = \begin{cases}\sigma_{\mathrm{in}} & \theta \le
 ///   \theta_{\mathrm{in}}\\ \sigma_{\mathrm{out}} & \text{otherwise}\end{cases}.

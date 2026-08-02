@@ -175,8 +175,24 @@ class IgrfField {
   /// At the geographic poles sin θ vanishes and the B_φ sum is evaluated in the
   /// limit: the m = 1 terms tend to a finite value and all m ≥ 2 terms vanish,
   /// so the field stays finite there rather than dividing by zero.
+  ///
+  /// Takes the colatitude as an **angle**, which costs accuracy at the poles: it
+  /// recovers sin θ as \f$\sqrt{1-\cos^2\theta}\f$, and there cos θ rounds to
+  /// ±1, so sin θ cannot be resolved below ~1.5e-8 however exact the angle was.
+  /// A caller holding the position vector should use @ref fieldSphericalTrig.
   bool fieldSpherical(double radius_m, double colatitude_rad, double longitude_rad,
                       double decimal_year, double& b_r, double& b_theta, double& b_phi) const;
+
+  /// As @ref fieldSpherical, but taking sin θ and cos θ directly rather than the
+  /// colatitude — the form the expansion actually consumes.
+  ///
+  /// This is what `field()` uses: from a position vector both are exact ratios
+  /// (`hypot(x,y)/r` and `z/r`) with no round trip through an angle, so the
+  /// conditioning survives all the way to the Legendre evaluation and the pole
+  /// limit is taken only where sin θ is genuinely below the tolerance. @p
+  /// sin_theta is expected non-negative, as a colatitude in [0, π] implies.
+  bool fieldSphericalTrig(double radius_m, double sin_theta, double cos_theta, double longitude_rad,
+                          double decimal_year, double& b_r, double& b_theta, double& b_phi) const;
 
   /// Field as a Cartesian ECEF vector [T] at ECEF position @p r_ecef.
   ///

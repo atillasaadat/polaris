@@ -20,11 +20,16 @@ double safeAsin(double x) {
   return std::asin(std::clamp(x, -1.0, 1.0));
 }
 
-/// acos(num/den) with the ratio clamped to [-1, 1]. Same rounding guard as
-/// `safeAsin`, for the lens-area terms where the ratio is analytically in range
-/// only because the caller already established partial overlap.
+/// Arccosine of `num/den` in the house atan2(sin, cos) form (lib/README.md),
+/// with the ratio clamped to [-1, 1]. Same rounding guard as `safeAsin`, for the
+/// lens-area terms where the ratio is analytically in range only because the
+/// caller already established partial overlap. Both arguments are angles here,
+/// not vectors, so there is no cross product to pair the ratio with: the atan2
+/// makes the function total (out-of-range ratios give 0 or π rather than NaN)
+/// but cannot recover conditioning the ratio itself has already lost.
 double safeAcosRatio(double num, double den) {
-  return std::acos(std::clamp(num / den, -1.0, 1.0));
+  const double c = std::clamp(num / den, -1.0, 1.0);
+  return std::atan2(std::sqrt(std::max(0.0, (1.0 - c) * (1.0 + c))), c);
 }
 
 constexpr double kPi = 3.141'592'653'589'793'238'46;

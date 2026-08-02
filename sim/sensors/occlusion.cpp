@@ -29,7 +29,11 @@ double separation(const Eigen::Vector3d& a, const Eigen::Vector3d& b) {
   if (!(na > 0.0) || !(nb > 0.0)) {
     return std::numeric_limits<double>::infinity();
   }
-  return std::acos(std::clamp(a.dot(b) / (na * nb), -1.0, 1.0));
+  // atan2 of |a×b| against a·b: both scale as |a||b|, so the norms cancel and no
+  // normalisation (or clamp) is needed, and the result stays accurate where the
+  // two directions are nearly parallel or nearly opposed — which is exactly the
+  // limb-grazing geometry this is asked about.
+  return std::atan2(a.cross(b).norm(), a.dot(b));
 }
 
 }  // namespace

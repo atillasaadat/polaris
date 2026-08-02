@@ -18,6 +18,10 @@ and the true attitude,
    \theta_\mathrm{err} = 2 \arccos \left| q_{\mathrm{err},0} \right| ,
    \qquad q_\mathrm{err} = \hat{q} \otimes q_\mathrm{true}^{-1} ,
 
+evaluated in code as :math:`2\,\mathrm{atan2}(\|q_{\mathrm{err},v}\|,
+|q_{\mathrm{err},0}|)` — the same angle, but well conditioned at the small
+errors the requirements are actually met at, where the scalar part alone has
+lost half its significant digits (see ``lib/README.md``) —
 quoted at the **3σ (99.73rd-percentile)** point of a Monte Carlo campaign over
 the sensor error budget. The norm rather than a per-axis split, for two reasons:
 it is rotation-invariant, so it holds whatever body-axis convention the vehicle
