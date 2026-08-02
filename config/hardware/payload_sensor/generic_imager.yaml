@@ -1,0 +1,41 @@
+# Generic framing imager template (design doc §6.3, §19.2).
+#
+# A payload sensor is any instrument with a boresight — imager, laser terminal,
+# rangefinder, radiometer. The model (sim/sensors/payload_sensor.cpp,
+# PayloadSensorSpec::fromParams) is **geometry only**: field of view, detector
+# format, shared §6.1 occlusion, and the boresight's Sun/nadir angles. No
+# radiometry, no detector noise — those come per instrument.
+#
+# NOT a datasheet transcription. These are round numbers for a smallsat-class
+# framing camera, meant to be copied and overwritten from a real datasheet.
+#
+# Boresight is **sensor +Z, always** — it is not configurable. A unit's pointing
+# is expressed once, in the vehicle YAML's `mounting_quaternion_wxyz` (or
+# `mounting_dcm_row_major`), and nowhere else.
+#
+# FOV shape is inferred from which half-angles are set, not named by a key:
+#   half_fov_deg alone                   -> conic (a laser, a circular beam)
+#   half_fov_x_deg + half_fov_y_deg      -> rectangular, or square when equal
+# These are HALF-angles. A full-angle value here is the likeliest way to get
+# this file wrong, so the vehicle builder rejects anything >= 90 deg.
+model_id: PAYLOAD-IMAGER-GENERIC
+kind: payload_sensor
+description: Generic smallsat framing imager template (geometry only)
+params:
+  # --- Field of view (rectangular: across-track x along-track) --------------
+  half_fov_x_deg: 5.0                # half-angle in the sensor X-Z plane [deg]
+  half_fov_y_deg: 4.0                # half-angle in the sensor Y-Z plane [deg]
+  # --- Detector format ------------------------------------------------------
+  # Pixel counts set the instantaneous FOV (2*half_fov / pixels), which is what
+  # turns a pointing error into a smear in pixels. 1 x 1 is correct for a
+  # single-element instrument (laser, rangefinder), not a degenerate entry.
+  pixels_x: 2048
+  pixels_y: 1536
+  # --- Product rate ---------------------------------------------------------
+  update_rate_hz: 1.0                # geometry evaluations per second
+  # --- Bright-body keep-out (§6.1), boresight-to-LIMB angles ---------------
+  # Modelling choices for the template, not vendor numbers: a real instrument's
+  # exclusion angles come from its baffle rating. Zero disables a constraint.
+  sun_exclusion_deg: 30.0
+  earth_exclusion_deg: 0.0           # 0: an Earth-observing payload stares down
+  moon_exclusion_deg: 5.0

@@ -74,7 +74,8 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
   world::BodyPositionFn sun_fn = runner_.sunPositionFn();
   world::BodyPositionFn moon_fn = runner_.moonPositionFn();
   world::EphemerisSet own_ephemeris;
-  const bool needs_sky = !vehicle_.star_trackers.empty() || !vehicle_.sun_sensors.empty();
+  const bool needs_sky = !vehicle_.star_trackers.empty() || !vehicle_.sun_sensors.empty() ||
+                         !vehicle_.payload_sensors.empty();
   if (needs_sky && !sun_fn) {
     if (!world::loadEphemerisFile(paths_.ephemeris, own_ephemeris, error)) {
       return false;
@@ -111,6 +112,7 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
   std::vector<Track> ss_track;
   std::vector<Track> mag_track;
   std::vector<Track> gnss_track;
+  std::vector<Track> payload_track;
   for (const auto& u : vehicle_.imus) {
     imu_track.push_back({sensorPeriod(u.model.spec().sample_rate_hz), 0});
   }
@@ -127,9 +129,12 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
   for (const auto& u : vehicle_.gnss_receivers) {
     gnss_track.push_back({sensorPeriod(u.model.spec().max_rate_hz), 0});
   }
+  for (const auto& u : vehicle_.payload_sensors) {
+    payload_track.push_back({sensorPeriod(u.model.spec().update_rate_hz), 0});
+  }
   // First samples come due one period in (nothing has been measured at t=0);
   // discrete tracks stay aligned to their own grid for the whole run.
-  for (auto* tracks : {&imu_track, &st_track, &ss_track, &mag_track, &gnss_track}) {
+  for (auto* tracks : {&imu_track, &st_track, &ss_track, &mag_track, &gnss_track, &payload_track}) {
     for (Track& track : *tracks) {
       track.next_ns = track.period_ns;
     }
@@ -163,6 +168,13 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
   }
   for (std::size_t i = 0; i < vehicle_.gnss_receivers.size(); ++i) {
     inputs.gnss[i].name = vehicle_.gnss_receivers[i].name;
+  }
+
+  // Payload geometry is a sim-side product, so it lives on the loop rather than
+  // in `inputs` — nothing here crosses to the FSW (§2.3).
+  payload_geometry_.assign(vehicle_.payload_sensors.size(), PayloadGeometry{});
+  for (std::size_t i = 0; i < vehicle_.payload_sensors.size(); ++i) {
+    payload_geometry_[i].name = vehicle_.payload_sensors[i].name;
   }
 
   FswOutputs commands;  // zero until the first boundary: nothing commanded yet
@@ -310,6 +322,17 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
       inputs.gnss[i].measurement = unit.model.sample(t, in);
       inputs.gnss[i].ever_sampled = true;
     }
+    for (std::size_t i = 0; i < payload_track.size(); ++i) {
+      if (payload_track[i].next_ns != t_ns) {
+        continue;
+      }
+      payload_track[i].next_ns += payload_track[i].period_ns;
+      sensors::PayloadSensorInput in;
+      in.attitude = s.attitude;
+      in.sky = skyAt(t);
+      payload_geometry_[i].measurement = vehicle_.payload_sensors[i].model.sample(t, in);
+      payload_geometry_[i].ever_sampled = true;
+    }
     return true;
   };
 
@@ -326,7 +349,8 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
     while (t_ns < boundary_ns) {
       // Next event: the earliest due sensor, capped at the boundary.
       std::int64_t next_ns = boundary_ns;
-      for (const auto* tracks : {&imu_track, &st_track, &ss_track, &mag_track, &gnss_track}) {
+      for (const auto* tracks :
+           {&imu_track, &st_track, &ss_track, &mag_track, &gnss_track, &payload_track}) {
         for (const Track& track : *tracks) {
           next_ns = std::min(next_ns, track.next_ns);
         }

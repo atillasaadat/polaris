@@ -1,5 +1,6 @@
 #include "scenario/vehicle.hpp"
 
+#include <cmath>
 #include <set>
 #include <utility>
 
@@ -100,6 +101,28 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
         out.sun_sensors.push_back(
             {unit.name, unit.model_id, unit.mounting_dcm,
              sensors::SunSensor(spec, unit.mounting_dcm, seed, stream, unit_noise)});
+      } else if (unit.kind == "payload_sensor") {
+        const auto spec = sensors::PayloadSensorSpec::fromParams(unit.params);
+        // Without a field of view the instrument has no aperture: every coverage
+        // fraction is zero and nothing is ever in view, so the payload would sit
+        // on the vehicle producing geometry that answers a different question.
+        if (!(spec.half_fov_x_rad > 0.0) || !(spec.half_fov_y_rad > 0.0)) {
+          return fail(error, "payload sensor '" + unit.name +
+                                 "' needs half_fov_deg (conic) or half_fov_x_deg + "
+                                 "half_fov_y_deg (square/rectangular)");
+        }
+        // A field wider than a hemisphere is not a field of view, it is a sign
+        // that a full angle was written where a half-angle was asked for — the
+        // single most likely way to misconfigure this entry.
+        if (spec.half_fov_x_rad >= M_PI_2 || spec.half_fov_y_rad >= M_PI_2) {
+          return fail(error, "payload sensor '" + unit.name +
+                                 "' has a half field of view of 90 deg or more — these keys "
+                                 "are half-angles, not full angles");
+        }
+        // No noise switch: the model is geometry, which the §6.2 master switch
+        // does not govern (the same reason occlusion stays live for every sensor).
+        out.payload_sensors.push_back({unit.name, unit.model_id, unit.mounting_dcm,
+                                       sensors::PayloadSensor(spec, unit.mounting_dcm)});
       } else if (unit.kind == "magnetometer") {
         const auto model = sensors::magnetometerErrorFromParams(unit.params, seed, stream);
         // A magnetometer with no range still measures, so there is nothing to

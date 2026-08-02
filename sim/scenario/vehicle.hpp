@@ -35,6 +35,7 @@
 #include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
 #include "sensors/magnetometer.hpp"
+#include "sensors/payload_sensor.hpp"
 #include "sensors/star_tracker.hpp"
 #include "sensors/sun_sensor.hpp"
 
@@ -57,6 +58,10 @@ struct Vehicle {
   std::vector<MountedModel<sensors::SunSensor>> sun_sensors;
   std::vector<MountedModel<sensors::Magnetometer>> magnetometers;
   std::vector<MountedModel<sensors::Gnss>> gnss_receivers;
+  /// Payload instruments with a boresight (§6.3). Not an ADCS sensor: their
+  /// products are pointing geometry for the sim side, not measurements for the
+  /// FSW.
+  std::vector<MountedModel<sensors::PayloadSensor>> payload_sensors;
   std::vector<MountedModel<actuators::ReactionWheel>> wheels;
   std::vector<MountedModel<actuators::Magnetorquer>> magnetorquers;
 
@@ -73,7 +78,7 @@ struct Vehicle {
 
   std::size_t modelledCount() const {
     return imus.size() + star_trackers.size() + sun_sensors.size() + magnetometers.size() +
-           gnss_receivers.size() + wheels.size() + magnetorquers.size();
+           gnss_receivers.size() + payload_sensors.size() + wheels.size() + magnetorquers.size();
   }
 };
 

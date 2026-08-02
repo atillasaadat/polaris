@@ -20,7 +20,9 @@
 /// FSW reads, so a 10 Hz consumer receives everything a 250 Hz instrument
 /// measured with no loss; discrete sensors (star tracker, sun sensor,
 /// magnetometer, GNSS) publish their **latest** sample with its validity flag
-/// and time tag.
+/// and time tag. Payload sensors (§6.3) are sampled the same way but their
+/// products stay on the loop, not in `FswInputs` — they are pointing geometry
+/// for the sim side, not measurements for the FSW.
 ///
 /// **The FSW is a callback.** Until the F´ SITL transport lands (Phase 3), the
 /// flight side is anything satisfying `FswCallback` — the default returns zero
@@ -49,6 +51,7 @@
 #include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
 #include "sensors/magnetometer.hpp"
+#include "sensors/payload_sensor.hpp"
 #include "sensors/star_tracker.hpp"
 #include "sensors/sun_sensor.hpp"
 #include "time/timescales.hpp"
@@ -106,6 +109,12 @@ struct FswOutputs {
 /// implements this over TCP; tests script it; the default flies open loop.
 using FswCallback = std::function<FswOutputs(const FswInputs&)>;
 
+/// One payload sensor's latest pointing geometry (§6.3). Deliberately **not** in
+/// `FswInputs`: it is truth-derived, and there is no flight-side payload
+/// component to receive it — the same place the star tracker's FOV coverage
+/// fractions stay. Read it from the loop for analysis and for pointing metrics.
+using PayloadGeometry = Latest<sensors::PayloadSensorSample>;
+
 /// One record of the loop's own trace: the truth state at a macro boundary.
 struct MacroSample {
   double t_s{0.0};
@@ -156,6 +165,11 @@ class ClosedLoop {
   bool run(const FswCallback& fsw, std::vector<MacroSample>* trace = nullptr,
            std::string* error = nullptr);
 
+  /// The payload sensors' latest pointing geometry, in `Vehicle::payload_sensors`
+  /// order, as of the end of the last `run`. Sim-side only (see
+  /// @ref PayloadGeometry).
+  const std::vector<PayloadGeometry>& payloadGeometry() const { return payload_geometry_; }
+
   /// Data products the loop itself loads (EOP for GNSS ECEF output; the
   /// ephemeris when the runner did not load one but optical sensors need sky
   /// geometry). Defaults to the repo layout via `DataPaths::under`.
@@ -166,6 +180,7 @@ class ClosedLoop {
   scenario::Vehicle& vehicle_;
   dynamics::CommandedWrench wrench_;
   scenario::DataPaths paths_;
+  std::vector<PayloadGeometry> payload_geometry_;
 };
 
 }  // namespace polaris::sim::io

@@ -49,6 +49,30 @@ switches beside them — setting `aero_torque_enabled: false` keeps the drag for
 and so the orbit decay, while removing its couple, which is what an MC study
 isolating one disturbance needs.
 
+## Where a unit points
+
+A mounted unit's orientation is a `unit→body` rotation, written **either** as
+`mounting_dcm_row_major` (nine numbers, row-major 3×3) **or** as
+`mounting_quaternion_wxyz` (four numbers, scalar-first `q0,q1,q2,q3` per the
+repo's JPL convention, design doc §3.1). They are two spellings of one field:
+the compiler converts the quaternion to the DCM every downstream consumer
+already reads, and setting both is a validation error rather than a silent
+precedence rule. Prefer the quaternion for anything you write by hand — it
+cannot be made non-orthogonal by a typo, which a hand-edited DCM can.
+
+For a sensor whose boresight is its **+Z** — every payload sensor (design doc
+§6.3), and the star tracker — that rotation is the *entire* pointing
+definition, and the third column of the resulting DCM is the boresight in body
+axes. There is deliberately no separate boresight parameter: two ways to
+express one orientation is two places for it to be wrong, and the failure
+(a payload looking somewhere other than the analysis assumed) is silent.
+
+A payload sensor's field of view is a **half**-angle, and its shape follows from
+which half-angles the catalog entry sets — `half_fov_deg` alone is a cone,
+`half_fov_x_deg` with `half_fov_y_deg` is rectangular or, when equal, square.
+Writing a full angle where a half-angle was asked for is the likeliest way to
+misconfigure one, so anything at or beyond 90° is rejected at vehicle build.
+
 Vehicle configuration also carries **FSW tuning**. `spacecraft.fsw_parameters`
 is a flat map keyed by fully-qualified F´ parameter name; given the FPP topology
 dictionary (`--dictionary`), the compiler resolves each name to its generated
