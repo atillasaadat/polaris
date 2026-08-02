@@ -149,6 +149,32 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! measurements with no window at all.
   void testEstimatorUndisturbedDuringCollection();
 
+  //! The albedo correction runs where the geometry supports it, is telemetered,
+  //! and drags the reported covariance down with it via the per-cycle sigma
+  //! selection — including the cold-start cycle, where there is no attitude yet
+  //! and it must not run.
+  void testAlbedoCorrectionAppliesAndTightensTheCovariance();
+
+  //! Each way the geometry can be missing — no position fix, Earth out of the
+  //! sensor's field — leaves the measurement uncorrected rather than corrected
+  //! on a guess.
+  void testAlbedoCorrectionSkippedWithoutGeometry();
+
+  //! The corrected cycle's sun sigma carries the `A·σ_att/2` term, so it
+  //! inflates while the attitude is poorly known and relaxes as the covariance
+  //! converges — never reaching the uncorrected budget.
+  void testAlbedoSigmaInflatesWithTheAttitudeUncertainty();
+
+  //! A sun sensor selected at a port index other than 0 is never albedo
+  //! corrected: the one parameter set describes unit 0, and applying its
+  //! boresight to another unit fails silently rather than loudly.
+  void testAlbedoSkippedForASunSensorOtherThanUnitZero();
+
+  //! A missing albedo parameter costs the correction and nothing else: one
+  //! edge-gated alert, and a vehicle still acquiring attitude on the wider
+  //! uncorrected budget.
+  void testMissingAlbedoTuningLeavesTheEstimatorRunning();
+
  private:
   // ----------------------------------------------------------------------
   // Stubbed query ports (the component's outputs, this harness's inputs)
@@ -169,13 +195,40 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! Load a valid tuning set into the tester's parameter table. @p withFine adds
   //! the seven fine-mode parameters; without them the component runs coarse-only
   //! (one FineConfigInvalid), which is what the coarse-behaviour tests want.
-  void setValidParameters(bool withFine = false);
+  //! @p withAlbedo adds the three Earth-albedo parameters; without them the
+  //! correction never runs (one AlbedoConfigInvalid) and every cycle is weighted
+  //! at SigmaSunSysUncorrRad — the default, so the pre-existing tests keep
+  //! proving the estimator works with no albedo tuning at all.
+  void setValidParameters(bool withFine = false, bool withAlbedo = false);
 
   //! Add the seven MagCal* parameters to the tester's table and re-load. Kept
   //! out of setValidParameters() so the existing tests keep proving the
   //! estimator runs with no calibration tuning at all — which is the design:
   //! a missing MagCal* costs only the MAG_CAL_START command.
   void setMagCalParameters();
+
+  //! The attitude that puts nadir on the sun sensor's boresight (body +Z) at
+  //! @p taiNs — an Earth-pointing vehicle, the geometry the albedo correction
+  //! exists for and the only one where it has anything to remove.
+  polaris::math::Quat<polaris::math::frames::Body, polaris::math::frames::ECI>
+  earthInTheSunSensorField(I64 taiNs) const;
+
+  //! The Sun's ECI direction the stubbed ephemeris reports at @p taiNs.
+  Eigen::Vector3d sunDirectionEci(I64 taiNs) const;
+
+  //! Port index the sun-sensor measurement is fed on. 0 for every test but the
+  //! multi-unit gate, which needs a unit the albedo parameters do not describe.
+  FwIndexType sun_port_index_{0};
+
+  //! Put the Sun 45 degrees from the radial direction rather than square to the
+  //! field: the geometry the albedo term peaks in (its magnitude goes as
+  //! cos*sin of that angle). Default false, so every test that predates the
+  //! correction sees the Sun exactly where it always did.
+  bool sun_at_45_from_nadir_{false};
+
+  //! Trace of the published attitude-error covariance [rad^2]. Read rather than
+  //! asserted so a test can compare two cycles' confidence against each other.
+  double publishedCovTrace() const;
 
   //! Feed @p count tumbling cycles from @p t at the 10 Hz rate, advancing @p t.
   //! The attitude sweeps two incommensurate axes so the body-frame field

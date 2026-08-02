@@ -128,6 +128,20 @@ struct CoarseAttitudeInput {
   math::Vec3<math::frames::ECI> sun_ref{};
   /// Sun pair is valid this cycle (sensor in FOV, not eclipsed, reference known).
   bool sun_valid{false};
+  /// This cycle's sun-pair **systematic** 1σ [rad], overriding
+  /// @ref CoarseAttitudeConfig::sigma_sun_sys_rad. Non-positive uses the
+  /// configured value, which is what every caller without a per-cycle answer
+  /// should leave it at.
+  ///
+  /// It exists because the Earth-albedo correction of §8.1 is not always
+  /// available: it needs a position fix, a sunlit Earth in the sensor's field
+  /// and an attitude to place that field with, and on a cycle where any of those
+  /// is missing the measurement carries its full uncorrected albedo — an order
+  /// of magnitude more. A single configured systematic would then be wrong on
+  /// one class of cycle or the other, and the covariance this estimator reports
+  /// is the whole reason it exists (it seeds the MEKF), so it has to be told
+  /// which kind of cycle this was rather than assume.
+  double sun_sigma_sys_rad{0.0};
 
   /// Measured magnetic field in Body [T] (direction is what is used).
   math::Vec3<math::frames::Body> mag_body{};

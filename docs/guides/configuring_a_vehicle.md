@@ -83,8 +83,8 @@ parameter fails the compile rather than the mission — there are no flight
 defaults (design doc §19.3). The deployment points `prmDb` at the file with
 `-P`; see `flight/PolarisFsw/README.md` for the bring-up recipe.
 
-The attitude estimator's twenty-six values are worth reading as **three sets**,
-because they fail differently. The twelve coarse-chain values (sun/magnetic
+The attitude estimator's thirty values are worth reading as **four sets**,
+because they fail differently. The thirteen coarse-chain values (sun/magnetic
 white and systematic sigmas, `GyroArw`, `MinSinAngle`, `TriadGain`,
 `MaxCoastSec`, `MaxDtSec`, `MaxMeasAgeSec`, the GNSS radius band) are what the
 §10 Safe-mode floor runs on: one missing and the vehicle has no attitude at all.
@@ -98,11 +98,47 @@ seven magnetometer-calibration values (`MagCalNominalFieldT`,
 `MAG_CAL_START` is commanded, and one missing refuses that *command* with
 `MagCalRejected(CONFIG)` while the vehicle flies on exactly as before —
 calibration is an activity, not a flight function, so it does not get a
-per-cycle alert. The MEKF's angle random walk and largest propagation step are
-the coarse chain's `GyroArw` and `MaxDtSec` — same gyro, same rate group, so
-they are not duplicated. `config/spacecraft/leo_smallsat.yaml` derives every one
-of the twenty-six from the units that vehicle carries, in comments; re-derive
-them whenever a `model_id` changes.
+per-cycle alert. The three Earth-albedo values (`SunAlbedoPeakRad`,
+`SunAlbedoHalfFovRad`, `SunAlbedoBoresightBody`) gate only the sun-vector albedo
+correction: one missing emits `AlbedoConfigInvalid` once and every cycle is then
+weighted at `SigmaSunSysUncorrRad`, which is how the vehicle flew before the
+correction existed. All three describe **one** sun sensor — the unit's datasheet
+albedo peak and field of view, and its mounting quaternion applied to the
+sensor's +Z — so re-derive them if that unit's `model_id` or its mounting
+changes. `SunAlbedoBoresightBody` is written as a YAML **list** of three numbers;
+`fsw_parameters` accepts a list wherever the flight build declares an array-typed
+parameter, and refuses one of the wrong length. The MEKF's angle random walk and
+largest propagation step are the coarse chain's `GyroArw` and `MaxDtSec` — same
+gyro, same rate group, so they are not duplicated.
+`config/spacecraft/leo_smallsat.yaml` derives every one of the thirty from the
+units that vehicle carries, in comments; re-derive them whenever a `model_id`
+changes.
+
+The sun pair carries **two** systematic sigmas rather than one, and that is not
+redundancy. `SigmaSunSysRad` is the budget *with* the albedo correction applied
+and `SigmaSunSysUncorrRad` the budget without it; the estimator picks between
+them per cycle, on whether the correction actually ran (it needs a position fix,
+a sunlit Earth in the sensor's field, and an attitude to place that field with).
+A single value would be wrong on one class of cycle or the other. The component
+refuses a pair with the uncorrected value tighter than the corrected one
+(`ConfigInvalid`, estimator inert) — a correction that made the measurement worse
+is a configuration error, not a flight condition.
+
+`SigmaSunSysRad` is a *floor*, not the whole story on a corrected cycle: the
+component adds `SunAlbedoPeakRad·σ_att/2` in quadrature, the correction's own
+error from placing the Earth with an imperfect attitude. That term is runtime
+state rather than tuning — there is nothing to configure — but it is why the
+value you derive for `SigmaSunSysRad` should be the *converged* budget and not an
+average over acquisition transients, which the component already handles.
+
+The two albedo values are also the first parameter pair the compiler
+**cross-checks against the hardware library**: `SunAlbedoPeakRad` and
+`SunAlbedoHalfFovRad` must equal the first sun sensor's `albedo_error_deg` and
+`half_fov_deg` converted to radians, or the compile fails naming both files. They
+describe one physical quantity in two places, and unlike most such duplication a
+mismatch here does not degrade gracefully — the flight correction subtracts a
+model of the error the sim generates from the catalog value, so a stale
+parameter removes an error the sensor never had, invisibly.
 
 > **A successful calibration invalidates three of the values above.**
 > `SigmaMagWhiteRad` and `SigmaMagSysRad` describe an *uncalibrated*

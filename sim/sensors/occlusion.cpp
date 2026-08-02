@@ -53,47 +53,6 @@ double limbClearance(const Eigen::Vector3d& boresight_eci, const Eigen::Vector3d
   return sep - std::asin(body_radius_m / distance);
 }
 
-double fovCoveredFraction(double half_fov_rad, double separation_rad, double body_radius_rad) {
-  // A sensor with no field of view has no fraction to report; returning 0 keeps
-  // a NaN out of a telemetry channel.
-  if (!(half_fov_rad > 0.0) || !std::isfinite(separation_rad)) {
-    return 0.0;
-  }
-  if (!(body_radius_rad > 0.0)) {
-    return 0.0;
-  }
-
-  const double r_fov = half_fov_rad;
-  const double r_body = body_radius_rad;
-  const double d = std::abs(separation_rad);
-
-  if (d >= r_fov + r_body) {
-    return 0.0;  // disjoint
-  }
-  if (d <= r_body - r_fov) {
-    return 1.0;  // FOV entirely inside the body
-  }
-  if (d <= r_fov - r_body) {
-    // Body entirely inside the FOV: the ratio of the two disk areas.
-    const double ratio = r_body / r_fov;
-    return ratio * ratio;
-  }
-
-  // Partial overlap: the classical circular-lens area, on angular radii (see the
-  // header on why the planar formula is used and what it costs).
-  const double d2 = d * d;
-  const double rf2 = r_fov * r_fov;
-  const double rb2 = r_body * r_body;
-  const double cos_fov = std::clamp((d2 + rf2 - rb2) / (2.0 * d * r_fov), -1.0, 1.0);
-  const double cos_body = std::clamp((d2 + rb2 - rf2) / (2.0 * d * r_body), -1.0, 1.0);
-  const double alpha = std::acos(cos_fov);
-  const double beta = std::acos(cos_body);
-  // Each circular segment is (r² · angle) minus the triangle it contains.
-  const double area =
-      rf2 * (alpha - std::sin(2.0 * alpha) * 0.5) + rb2 * (beta - std::sin(2.0 * beta) * 0.5);
-  return std::clamp(area / (M_PI * rf2), 0.0, 1.0);
-}
-
 OcclusionState evaluateLineOfSight(const Eigen::Vector3d& boresight_eci, double half_fov_rad,
                                    const SkyGeometry& sky, const KeepOutSpec& keep_out) {
   OcclusionState state;

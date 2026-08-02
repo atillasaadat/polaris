@@ -157,6 +157,72 @@ def test_unsupported_type_is_refused():
         build_param_file({"a": 1.0}, {"a": _spec("a", 1, "SomeStructType")})
 
 
+# --- Array-typed parameters (Vec3F64 and friends) -----------------------------
+
+
+def _array_spec(name: str, param_id: int, size: int = 3) -> ParamSpec:
+    return ParamSpec(name=name, param_id=param_id, type_name="F64", array_size=size)
+
+
+def test_array_parameter_encodes_its_elements_back_to_back():
+    # F´ serializes an array as its elements with no length prefix — the length
+    # is part of the type — so a boresight vector is three big-endian doubles.
+    records = dict(
+        _decode(build_param_file({"v": [1.0, 0.0, -2.0]}, {"v": _array_spec("v", 9)}))
+    )
+    assert records[9] == struct.pack(">ddd", 1.0, 0.0, -2.0)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        [1.0, 0.0],  # too short
+        [1.0, 0.0, 0.0, 0.0],  # too long
+        1.0,  # a scalar where a vector belongs
+        "xyz",  # a string is a Sequence, and is not three numbers
+    ],
+)
+def test_array_parameter_refuses_the_wrong_shape(value):
+    # A silently truncated or padded vector would ship a boresight pointing
+    # somewhere the vehicle's sensor does not, which nothing downstream can see.
+    with pytest.raises(PrmDbError):
+        build_param_file({"v": value}, {"v": _array_spec("v", 9)})
+
+
+def test_array_parameter_type_is_read_out_of_the_dictionary(tmp_path):
+    # The element type and length come from the dictionary's typeDefinitions
+    # block, not from the parameter entry, so the two have to be read together.
+    path = tmp_path / "dict.json"
+    path.write_text(
+        json.dumps(
+            {
+                "typeDefinitions": [
+                    {
+                        "kind": "array",
+                        "qualifiedName": "flight.Vec3F64",
+                        "size": 3,
+                        "elementType": {"name": "F64", "kind": "float", "size": 64},
+                    }
+                ],
+                "parameters": [
+                    {
+                        "name": "boresight",
+                        "id": 42,
+                        "type": {
+                            "name": "flight.Vec3F64",
+                            "kind": "qualifiedIdentifier",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    spec = load_dictionary(path)["boresight"]
+    assert spec.array_size == 3
+    assert spec.type_name == "F64"
+
+
 @pytest.mark.parametrize(
     ("value", "type_name"),
     [

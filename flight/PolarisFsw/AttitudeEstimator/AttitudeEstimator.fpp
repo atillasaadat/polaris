@@ -254,10 +254,30 @@ module flight {
     @ systematic part.
     param SigmaSunWhiteRad: F64
 
-    @ Systematic part of the sun-pair 1-sigma transverse uncertainty [rad]:
-    @ ephemeris error (the analytic fallback is ~0.4 deg) and sensor alignment.
-    @ Constant across cycles, so it becomes the covariance floor. May be zero.
+    @ Systematic part of the sun-pair 1-sigma transverse uncertainty [rad]
+    @ **with the Earth-albedo correction applied**: ephemeris error (the analytic
+    @ fallback is ~0.4 deg), sensor alignment, and the albedo residual the
+    @ correction leaves behind. Constant across cycles, so it becomes the
+    @ covariance floor. May be zero.
+    @
+    @ There are deliberately two of these. The albedo correction needs a position
+    @ fix, a sunlit Earth in the sensor's field, and a valid attitude to place
+    @ that field; when any of those is missing the correction is skipped and the
+    @ sun measurement carries its full uncorrected albedo, which is an order of
+    @ magnitude larger. Weighting such a cycle with the corrected sigma would tell
+    @ both estimators to trust a measurement they should not, so the component
+    @ selects between this and SigmaSunSysUncorrRad **per cycle**, on whether the
+    @ correction actually ran, and telemeters the applied angle so the ground can
+    @ see which was in force (SunAlbedoCorrection).
     param SigmaSunSysRad: F64
+
+    @ Systematic part of the sun-pair 1-sigma transverse uncertainty [rad] with
+    @ **no** albedo correction applied — the value SigmaSunSysRad had before the
+    @ correction existed. Used on any cycle the correction refuses (no position
+    @ fix, night side, no Earth in the field, no attitude to place it with).
+    @ Must be at least SigmaSunSysRad: a correction that made the measurement
+    @ worse would be a configuration error, and is refused rather than flown.
+    param SigmaSunSysUncorrRad: F64
 
     @ White part of the magnetic-pair 1-sigma transverse uncertainty [rad].
     param SigmaMagWhiteRad: F64
@@ -410,6 +430,43 @@ module flight {
     param MagCalMinImprovement: F64
 
     # ----------------------------------------------------------------------
+    # Earth-albedo correction parameters — a fourth, independent validity gate
+    # ----------------------------------------------------------------------
+    #
+    # Validated separately again, and for the same reason the fine set is: a
+    # missing albedo parameter costs the *correction*, not the estimator. The
+    # component then behaves exactly as it did before the correction existed —
+    # every cycle weighted at SigmaSunSysUncorrRad — which is a working vehicle
+    # with a wider sun budget, so it emits AlbedoConfigInvalid once and carries
+    # on rather than refusing cycles.
+    #
+    # This is a **model, not a commanded calibration** (§8.1): it needs geometry,
+    # not collected data, so there is no command, no window, and no fitted state
+    # to persist. It runs on every cycle whose geometry supports it.
+    #
+    # All three describe the sun sensor the correction is applied to. The vehicle
+    # carries one today and `selectSunSensor` picks one unit per cycle; when the
+    # §8.2 fusion layer fuses several, these become per-unit and this set is what
+    # generalises.
+
+    @ Peak angular error from Earthshine for the selected sun sensor [rad]:
+    @ the value reached with the Earth filling the field on a fully sunlit day
+    @ side, 90 deg from the Sun. The unit's datasheet figure — `albedo_error_deg`
+    @ in its config/hardware entry, converted to radians. Must be finite, >= 0,
+    @ and below a quarter turn (which catches degrees left unconverted).
+    param SunAlbedoPeakRad: F64
+
+    @ Acceptance half-angle of the selected sun sensor [rad], which sets how much
+    @ Earth can be in its field at all. Must be positive and <= pi/2.
+    param SunAlbedoHalfFovRad: F64
+
+    @ Boresight of the selected sun sensor in **body** axes (unit vector): its
+    @ mounting quaternion applied to the sensor's +Z. Mounting is configuration,
+    @ not measurement, which is why it arrives here rather than on the
+    @ measurement port.
+    param SunAlbedoBoresightBody: Vec3F64
+
+    # ----------------------------------------------------------------------
     # Telemetry (health: mode, solution, margins, source quality)
     # ----------------------------------------------------------------------
 
@@ -540,6 +597,19 @@ module flight {
     @ again after MAG_CAL_CLEAR or RESET_ESTIMATOR.
     telemetry MagCalResidualAngle: F64
 
+    @ Earth-albedo pull removed from this cycle's sun measurement [rad] (§8.1).
+    @ **NaN means the correction did not run**, and that is the channel's second
+    @ job: it is how the ground tells which of SigmaSunSysRad and
+    @ SigmaSunSysUncorrRad the cycle was weighted with. NaN is normal and
+    @ frequent — eclipse, the night side, no Earth in the sensor's field, no
+    @ position fix, or no attitude yet to place the field with.
+    @
+    @ On the day side with the Earth in view this should track the orbit smoothly
+    @ over minutes, peaking well under SunAlbedoPeakRad. A value pinned at the
+    @ peak, or one that jumps cycle to cycle, means the geometry feeding it is
+    @ wrong rather than the sensor.
+    telemetry SunAlbedoCorrection: F64
+
     # ----------------------------------------------------------------------
     # Events
     # ----------------------------------------------------------------------
@@ -607,6 +677,18 @@ module flight {
     event FineConfigInvalid(detail: string size 80) \
       severity warning high \
       format "Fine mode configuration invalid, running coarse-only: {}"
+
+    @ An Earth-albedo-correction parameter is missing from ParameterDb or outside
+    @ its valid range. Not fatal and not even mode-limiting: every cycle is
+    @ simply weighted at SigmaSunSysUncorrRad and the sun measurement carries its
+    @ full albedo, which is how the vehicle flew before the correction existed.
+    @ Edge-gated to the transition into the invalid state.
+    @ Action: uplink the missing/corrected parameter (PRM_SET + PRM_SAVE). Until
+    @ then the attitude solution is degraded but honest — the wider sigma is the
+    @ one being used, so the reported covariance is not overconfident.
+    event AlbedoConfigInvalid(detail: string size 80) \
+      severity warning high \
+      format "Albedo correction configuration invalid, running uncorrected: {}"
 
     @ A **coarse-chain** parameter is missing from ParameterDb or outside its
     @ valid range, so the estimator refuses to run at all: there are no flight

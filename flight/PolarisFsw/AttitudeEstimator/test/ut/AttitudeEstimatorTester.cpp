@@ -57,6 +57,15 @@ constexpr F64 kMaxMeasAgeSec = 0.5;
 constexpr F64 kMinPositionRadiusM = 6.4e6;
 constexpr F64 kMaxPositionRadiusM = 5.0e7;
 
+//! Earth-albedo correction tuning. The peak and field of view are the reference
+//! vehicle's GomSpace FSS; the boresight is body +Z, its mounting there. The
+//! uncorrected sun systematic is deliberately much wider than the corrected one
+//! (a factor of 5, the flight ratio is ~2.8) so a test can tell which of the two
+//! a cycle was weighted with by looking at the reported covariance.
+constexpr F64 kSunAlbedoPeakRad = 0.20944;     // 12 deg
+constexpr F64 kSunAlbedoHalfFovRad = 1.04720;  // 60 deg
+constexpr F64 kSigmaSunSysUncorr = 5.0 * kSigmaSunSys;
+
 //! Fine-mode tuning. The horizons and streaks are far shorter than flight values
 //! so a demotion path is a handful of cycles rather than minutes of them; the
 //! noise terms are the reference vehicle's, since those are what the filter's
@@ -143,8 +152,7 @@ bool AttitudeEstimatorTester ::from_getBodyPosition_handler(FwIndexType portNum,
   EXPECT_EQ(body.e, OnboardBody::SUN);
   // One astronomical unit along a direction square to the modelled field, so the
   // pair geometry is unambiguous (see perpendicularTo).
-  const Eigen::Vector3d dir = perpendicularTo(this->expectedMagRef(taiNs).eigen());
-  const Eigen::Vector3d sun = 1.495978707e11 * dir;
+  const Eigen::Vector3d sun = 1.495978707e11 * this->sunDirectionEci(taiNs);
   posEciM = PosEciMeters(sun.x(), sun.y(), sun.z(), this->stub_grade_);
   return true;
 }
@@ -166,7 +174,7 @@ void AttitudeEstimatorTester ::from_estimateOut_handler(FwIndexType portNum,
 // Helpers
 // ----------------------------------------------------------------------
 
-void AttitudeEstimatorTester ::setValidParameters(bool withFine) {
+void AttitudeEstimatorTester ::setValidParameters(bool withFine, bool withAlbedo) {
   this->paramSet_SigmaSunWhiteRad(kSigmaSunWhite, Fw::ParamValid::VALID);
   this->paramSet_SigmaSunSysRad(kSigmaSunSys, Fw::ParamValid::VALID);
   this->paramSet_SigmaMagWhiteRad(kSigmaMagWhite, Fw::ParamValid::VALID);
@@ -179,6 +187,13 @@ void AttitudeEstimatorTester ::setValidParameters(bool withFine) {
   this->paramSet_MaxMeasAgeSec(kMaxMeasAgeSec, Fw::ParamValid::VALID);
   this->paramSet_MinPositionRadiusM(kMinPositionRadiusM, Fw::ParamValid::VALID);
   this->paramSet_MaxPositionRadiusM(kMaxPositionRadiusM, Fw::ParamValid::VALID);
+  this->paramSet_SigmaSunSysUncorrRad(kSigmaSunSysUncorr, Fw::ParamValid::VALID);
+  if (withAlbedo) {
+    this->paramSet_SunAlbedoPeakRad(kSunAlbedoPeakRad, Fw::ParamValid::VALID);
+    this->paramSet_SunAlbedoHalfFovRad(kSunAlbedoHalfFovRad, Fw::ParamValid::VALID);
+    this->paramSet_SunAlbedoBoresightBody(toVec3F64(Eigen::Vector3d::UnitZ()),
+                                          Fw::ParamValid::VALID);
+  }
   if (withFine) {
     this->paramSet_MekfRrw(kMekfRrw, Fw::ParamValid::VALID);
     this->paramSet_MekfNisGate(kMekfNisGate, Fw::ParamValid::VALID);
@@ -288,9 +303,27 @@ pm::Vec3<ECI> AttitudeEstimatorTester ::expectedMagRef(I64 taiNs) const {
   return rotationAt(taiNs).rotate(b_ecef);
 }
 
+Eigen::Vector3d AttitudeEstimatorTester ::sunDirectionEci(I64 taiNs) const {
+  const Eigen::Vector3d mag_ref = this->expectedMagRef(taiNs).eigen();
+  if (!this->sun_at_45_from_nadir_) {
+    // The default: square to the modelled field, so the pair geometry is
+    // unambiguous and every test that predates the albedo correction sees the
+    // Sun exactly where it always did.
+    return perpendicularTo(mag_ref);
+  }
+  // The albedo correction's working geometry. Its magnitude goes as
+  // cos(theta) * sin(theta) in the spacecraft's angle theta from the sub-solar
+  // point — the dayside factor times the Sun-to-Earth-centre separation — so 45
+  // degrees is where it peaks. The out-of-plane axis keeps the Sun well away
+  // from the field direction, so TRIAD stays far from its observability gate.
+  const Eigen::Vector3d r_hat =
+      rotationAt(taiNs).rotate(pm::Vec3<ECEF>(this->position_ecef_)).eigen().normalized();
+  const Eigen::Vector3d out_of_plane = r_hat.cross(mag_ref).normalized();
+  return (M_SQRT1_2 * (r_hat + out_of_plane)).normalized();
+}
+
 pm::Vec3<ECI> AttitudeEstimatorTester ::expectedSunRef(I64 taiNs) const {
-  const Eigen::Vector3d dir = perpendicularTo(this->expectedMagRef(taiNs).eigen());
-  const pm::Vec3<ECI> sun(1.495978707e11 * dir);
+  const pm::Vec3<ECI> sun(1.495978707e11 * this->sunDirectionEci(taiNs));
   // The component makes the reference spacecraft-centric before normalising.
   const pm::Vec3<ECI> r_eci = rotationAt(taiNs).rotate(pm::Vec3<ECEF>(this->position_ecef_));
   pm::Vec3<ECI> unit;
@@ -334,7 +367,10 @@ void AttitudeEstimatorTester ::feedMeasurements(I64 taiNs, const QuatBI& q_bi,
   sun.set_timeTagNs(tag);
   sun.set_sunPresent(sunInView);
   sun.set_valid(true);
-  this->invoke_to_sunSensorIn(0, sun);
+  // Which port the unit arrives on. Only index 0 is the unit the albedo
+  // parameters describe, so the correction gates on it; feeding the same
+  // measurement on another index is how that gate is tested.
+  this->invoke_to_sunSensorIn(this->sun_port_index_, sun);
 
   MagnetometerMeas mag;
   // The sensor model the ellipsoid fit inverts: m = S·B_body + b. With the
@@ -1122,6 +1158,233 @@ void AttitudeEstimatorTester ::testEstimatorUndisturbedDuringCollection() {
   // And the window really was running, so the comparison meant something.
   ASSERT_TLM_MagCalState(this->tlmHistory_MagCalState->size() - 1, MagCalState::COLLECTING);
   ASSERT_TLM_MagCalSamples(this->tlmHistory_MagCalSamples->size() - 1, 30);
+}
+
+// --- Earth-albedo correction (§8.1) -----------------------------------------
+
+QuatBI AttitudeEstimatorTester ::earthInTheSunSensorField(I64 taiNs) const {
+  // The correction only has work to do when the Earth is actually in the sun
+  // sensor's field, and the reference vehicle's sensor looks along body +Z. So
+  // hand back the attitude that puts nadir there — an Earth-pointing vehicle,
+  // which is the geometry this correction exists for.
+  const pm::Vec3<ECI> r_eci = rotationAt(taiNs).rotate(pm::Vec3<ECEF>(this->position_ecef_));
+  const Eigen::Vector3d nadir_eci = -r_eci.eigen().normalized();
+  const Eigen::Vector3d axis = nadir_eci.cross(Eigen::Vector3d::UnitZ());
+  const double angle = std::atan2(axis.norm(), nadir_eci.dot(Eigen::Vector3d::UnitZ()));
+  if (!(axis.norm() > 0.0)) {
+    return QuatBI(polaris::math::Quaternion::Identity());
+  }
+  // Negative angle: Quaternion is the frame-rotation convention (§ quaternion.hpp
+  // "v_rot = A(q) v_ref"), so rotating the *frame* by -theta about the axis is
+  // what carries the nadir *vector* onto +Z.
+  const QuatBI q(polaris::math::Quaternion::FromAxisAngle(axis.normalized(), -angle));
+  EXPECT_LT((q.rotate(pm::Vec3<ECI>(nadir_eci)).eigen() - Eigen::Vector3d::UnitZ()).norm(), 1.0e-9)
+      << "the Earth-pointing attitude does not put nadir on the boresight";
+  return q;
+}
+
+double AttitudeEstimatorTester ::publishedCovTrace() const {
+  const Vec3F64 diag = this->last_estimate_.get_attCovDiagRad2();
+  return diag[0] + diag[1] + diag[2];
+}
+
+void AttitudeEstimatorTester ::testAlbedoCorrectionAppliesAndTightensTheCovariance() {
+  this->sun_at_45_from_nadir_ = true;
+  this->loadIgrf();
+  this->setValidParameters(false, true);
+
+  I64 t = kStartTaiNs;
+  const QuatBI truth = this->earthInTheSunSensorField(t);
+
+  // Cycle one: the component has no attitude yet, so it cannot place the Earth
+  // in the sensor's field and must **not** correct. Acquisition happens on this
+  // cycle, so this is not an edge case to be tolerated — it is every cold start.
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_AlbedoConfigInvalid_SIZE(0);
+  EXPECT_TRUE(std::isnan(this->tlmHistory_SunAlbedoCorrection->at(0).arg))
+      << "corrected on the acquisition cycle, before there was an attitude to correct with";
+  const double uncorrected_trace = this->publishedCovTrace();
+
+  // Cycle two: an attitude is published, the Earth is on the boresight and the
+  // day side is lit, so the correction runs.
+  t += kNsPerSecond / 10;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  const double applied = this->tlmHistory_SunAlbedoCorrection->at(1).arg;
+  EXPECT_FALSE(std::isnan(applied)) << "the correction did not run on a geometry that supports it";
+  EXPECT_GT(applied, 0.0);
+  EXPECT_LE(applied, kSunAlbedoPeakRad) << "a correction larger than the part's peak error";
+
+  // And the sigma selection followed it: the reported covariance floor is the
+  // *systematic* budget, so a cycle the correction ran on must report a tighter
+  // one than a cycle it did not. That is the whole point of carrying two
+  // parameters, and it is what stops the estimator being overconfident on the
+  // cycles it could not correct.
+  EXPECT_LT(this->publishedCovTrace(), uncorrected_trace)
+      << "the corrected cycle was still weighted at the uncorrected sigma";
+}
+
+void AttitudeEstimatorTester ::testAlbedoCorrectionSkippedWithoutGeometry() {
+  this->sun_at_45_from_nadir_ = true;
+  this->loadIgrf();
+  this->setValidParameters(false, true);
+
+  I64 t = kStartTaiNs;
+  const QuatBI truth = this->earthInTheSunSensorField(t);
+  // Two cycles to acquire and have an attitude in hand, so the only thing
+  // missing below is the geometry itself.
+  for (int i = 0; i < 2; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+  ASSERT_FALSE(std::isnan(this->tlmHistory_SunAlbedoCorrection->at(1).arg));
+
+  // No position fix. The correction refuses rather than assuming a nominal
+  // altitude — a guessed geometry would inject a bias the size of the one it
+  // removes, pointed wherever the guess happened to point.
+  this->gnss_valid_ = false;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  EXPECT_TRUE(std::isnan(this->tlmHistory_SunAlbedoCorrection->at(2).arg))
+      << "corrected without a position fix";
+  this->gnss_valid_ = true;
+
+  // Earth behind the sensor: the vehicle turns until nadir is out of the field.
+  // Normal, frequent, and the correct answer is zero rather than a small number.
+  // Two cycles, because the correction places the Earth with the *published*
+  // attitude: the first cycle is still working from the old one, and it is the
+  // second — once the estimator has followed the vehicle round — that the
+  // geometry is really gone in.
+  const QuatBI away(polaris::math::Quaternion::FromAxisAngle(Eigen::Vector3d::UnitX(), M_PI) *
+                    truth.core());
+  for (int i = 0; i < 2; ++i) {
+    t += kNsPerSecond / 10;
+    this->feedMeasurements(t, away, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+  }
+  EXPECT_TRUE(std::isnan(
+      this->tlmHistory_SunAlbedoCorrection->at(this->tlmHistory_SunAlbedoCorrection->size() - 1)
+          .arg))
+      << "corrected with the Earth out of the sensor's field";
+}
+
+void AttitudeEstimatorTester ::testAlbedoSigmaInflatesWithTheAttitudeUncertainty() {
+  // The correction's own error is dominated by the rotation-**axis** term
+  // `A·ε` — set by the sensor's *peak* albedo scale, not by the applied pull —
+  // so how well the measurement can be trusted after correcting depends on how
+  // well the attitude that placed the Earth was known. Right after acquisition
+  // that is degrees; converged it is a fraction of one.
+  //
+  // Gating on attitude *validity* alone (which this did before review) tells
+  // both estimators the converged number on a cycle whose attitude is 10 deg
+  // out — overconfidence in the unsafe direction on exactly the worst cycles.
+  // What is asserted here is that the effective sigma **relaxes** as the
+  // covariance converges, which is only observable because the coarse chain's
+  // reported covariance floor is built from it.
+  this->sun_at_45_from_nadir_ = true;
+  this->loadIgrf();
+  this->setValidParameters(false, true);
+
+  I64 t = kStartTaiNs;
+  const QuatBI truth = this->earthInTheSunSensorField(t);
+
+  // Acquire, then take the first cycle the correction actually runs on: the
+  // attitude is one TRIAD old and the covariance still carries the acquisition
+  // uncertainty.
+  for (int i = 0; i < 2; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+  ASSERT_FALSE(std::isnan(this->tlmHistory_SunAlbedoCorrection->at(1).arg));
+  const double first_corrected_trace = this->publishedCovTrace();
+
+  // Now let it settle. The inflation feeds off the published covariance and the
+  // published covariance floor is built from the inflation, so this is a fixed
+  // point — it must converge *downward* rather than sit at the acquisition value.
+  for (int i = 0; i < 30; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+  const double settled_trace = this->publishedCovTrace();
+
+  EXPECT_LT(settled_trace, first_corrected_trace)
+      << "the attitude-driven sigma inflation never relaxed — is it reading the covariance?";
+  // Still the corrected budget, not the uncorrected one: the inflation is a
+  // quadrature addition to the corrected sigma, so it can never make a corrected
+  // cycle worse than an uncorrected one would have been.
+  const double kUncorrectedFloor = 3.0 * kSigmaSunSysUncorr * kSigmaSunSysUncorr;
+  EXPECT_LT(settled_trace, kUncorrectedFloor)
+      << "a corrected cycle reported a covariance at or above the uncorrected budget";
+  // And the correction is genuinely running throughout, so the comparison is
+  // between two corrected cycles rather than a corrected and a skipped one.
+  for (U32 i = 1; i < this->tlmHistory_SunAlbedoCorrection->size(); ++i) {
+    EXPECT_FALSE(std::isnan(this->tlmHistory_SunAlbedoCorrection->at(i).arg))
+        << "cycle " << i << " stopped correcting mid-run";
+  }
+}
+
+void AttitudeEstimatorTester ::testAlbedoSkippedForASunSensorOtherThanUnitZero() {
+  // There is **one** set of albedo parameters and it describes the unit at port
+  // index 0 — its boresight, its field of view, its datasheet albedo peak.
+  // `selectSunSensor` will happily take the first valid unit at any index, so a
+  // vehicle flying two sun sensors whose primary drops out would otherwise have
+  // unit 0's boresight silently applied to unit 1. Silently is the operative
+  // word: a wrong boresight *scales* the correction rather than failing it, so
+  // nothing downstream could see the error. Per-unit parameter arrays arrive
+  // with the §8.2 fusion layer.
+  this->sun_at_45_from_nadir_ = true;
+  this->sun_port_index_ = 1;
+  this->loadIgrf();
+  this->setValidParameters(false, true);
+
+  I64 t = kStartTaiNs;
+  const QuatBI truth = this->earthInTheSunSensorField(t);
+  for (int i = 0; i < 3; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+
+  // The estimator is working — the unit at index 1 is a perfectly good sun
+  // sensor and is selected — but it is never corrected.
+  ASSERT_EVENTS_AlbedoConfigInvalid_SIZE(0);
+  ASSERT_EVENTS_AttitudeAcquired_SIZE(1);
+  ASSERT_TLM_SunValid(2, true);
+  for (U32 i = 0; i < this->tlmHistory_SunAlbedoCorrection->size(); ++i) {
+    EXPECT_TRUE(std::isnan(this->tlmHistory_SunAlbedoCorrection->at(i).arg))
+        << "cycle " << i << " corrected a unit the albedo parameters do not describe";
+  }
+}
+
+void AttitudeEstimatorTester ::testMissingAlbedoTuningLeavesTheEstimatorRunning() {
+  this->sun_at_45_from_nadir_ = true;
+  this->loadIgrf();
+  this->setValidParameters();  // no albedo parameters at all
+
+  I64 t = kStartTaiNs;
+  const QuatBI truth = this->earthInTheSunSensorField(t);
+  for (int i = 0; i < 3; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+
+  // Edge-gated: one alert for the condition, not one per cycle in it.
+  ASSERT_EVENTS_AlbedoConfigInvalid_SIZE(1);
+  // And the vehicle is flying, on the uncorrected budget — which is exactly how
+  // it flew before this correction existed. A missing albedo parameter must cost
+  // the correction and nothing else.
+  ASSERT_EVENTS_ConfigInvalid_SIZE(0);
+  ASSERT_EVENTS_AttitudeAcquired_SIZE(1);
+  ASSERT_TLM_EstMode(2, EstimationMode::COARSE);
+  for (U32 i = 0; i < this->tlmHistory_SunAlbedoCorrection->size(); ++i) {
+    EXPECT_TRUE(std::isnan(this->tlmHistory_SunAlbedoCorrection->at(i).arg))
+        << "cycle " << i << " corrected on tuning it does not have";
+  }
 }
 
 }  // namespace flight

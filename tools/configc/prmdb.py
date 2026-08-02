@@ -40,7 +40,7 @@ import re
 import struct
 import zlib
 from pathlib import Path
-from typing import Any, Mapping, NamedTuple
+from typing import Any, Mapping, NamedTuple, Sequence
 
 #: Byte order of the CRC header field: the target CPU's, not F´'s wire order.
 CRC_BYTE_ORDER = "little"
@@ -103,11 +103,19 @@ class PrmDbError(ValueError):
 
 
 class ParamSpec(NamedTuple):
-    """One parameter as the FPP-generated dictionary declares it."""
+    """One parameter as the FPP-generated dictionary declares it.
+
+    ``array_size`` is 0 for a scalar and the element count for an FPP array
+    type (``Vec3F64`` and friends), in which case ``type_name`` is the *element*
+    type. Arrays are supported because some tuning genuinely is a vector — a
+    sensor boresight, say — and splitting one into three scalar parameters is
+    three chances for them to disagree about which vector they describe.
+    """
 
     name: str
     param_id: int
     type_name: str
+    array_size: int = 0
 
 
 def load_dictionary(path: Path) -> dict[str, ParamSpec]:
@@ -126,6 +134,14 @@ def load_dictionary(path: Path) -> dict[str, ParamSpec]:
     if not isinstance(raw, dict) or "parameters" not in raw:
         raise PrmDbError(f"{path}: not an F´ topology dictionary (no 'parameters')")
 
+    # FPP names an array-typed parameter by qualified identifier and puts its
+    # shape in `typeDefinitions`, so the two have to be read together.
+    arrays = {
+        str(t["qualifiedName"]): t
+        for t in raw.get("typeDefinitions", [])
+        if isinstance(t, dict) and t.get("kind") == "array"
+    }
+
     specs: dict[str, ParamSpec] = {}
     for entry in raw["parameters"]:
         try:
@@ -136,12 +152,46 @@ def load_dictionary(path: Path) -> dict[str, ParamSpec]:
             raise PrmDbError(f"{path}: malformed parameter entry {entry!r}") from exc
         if name in specs:
             raise PrmDbError(f"{path}: duplicate parameter name '{name}'")
-        specs[name] = ParamSpec(name=name, param_id=param_id, type_name=type_name)
+        array_size = 0
+        if type_name in arrays:
+            definition = arrays[type_name]
+            try:
+                array_size = int(definition["size"])
+                type_name = str(definition["elementType"]["name"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise PrmDbError(
+                    f"{path}: malformed array type {definition!r}"
+                ) from exc
+        specs[name] = ParamSpec(
+            name=name,
+            param_id=param_id,
+            type_name=type_name,
+            array_size=array_size,
+        )
     return specs
 
 
 def serialize_value(spec: ParamSpec, value: Any) -> bytes:
-    """F´-serialize @p value as @p spec's declared type (big-endian)."""
+    """F´-serialize @p value as @p spec's declared type (big-endian).
+
+    An array parameter takes a sequence of exactly its declared length and is
+    encoded as its elements back to back, which is F´'s own array serialization
+    — no length prefix, because the length is part of the type.
+    """
+    if spec.array_size:
+        if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+            raise PrmDbError(
+                f"parameter '{spec.name}': {spec.type_name}[{spec.array_size}] "
+                f"needs a sequence of {spec.array_size} values, got {value!r}"
+            )
+        if len(value) != spec.array_size:
+            raise PrmDbError(
+                f"parameter '{spec.name}': expected {spec.array_size} values, "
+                f"got {len(value)}"
+            )
+        element = spec._replace(array_size=0)
+        return b"".join(serialize_value(element, item) for item in value)
+
     fmt = _VALUE_FORMATS.get(spec.type_name)
     if fmt is None:
         raise PrmDbError(

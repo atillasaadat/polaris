@@ -158,7 +158,7 @@ class Spacecraft(_Strict):
     )
     # bool first: pydantic's smart union would otherwise coerce `true` to 1.0 and
     # a bool-typed F´ parameter would fail at struct.pack with a confusing error.
-    fsw_parameters: dict[str, bool | float | int] = Field(
+    fsw_parameters: dict[str, bool | float | int | list[float]] = Field(
         default_factory=dict,
         description=(
             "FSW tuning delivered to the F´ ParameterDb (§19.3), keyed by the "

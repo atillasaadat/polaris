@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from configc import (
@@ -740,3 +741,59 @@ def test_reference_vehicle_carries_the_payload_sensor(tmp_path):
         0.0,
         1.0,
     ]
+
+
+# --- Albedo tuning vs the sun sensor's catalog entry ---------------------------
+
+
+def _albedo_config_dict(peak_rad: float, half_fov_rad: float) -> dict:
+    """The reference vehicle's sun sensor with albedo tuning under test control."""
+    config = yaml.safe_load(_TEMPLATE.read_text(encoding="utf-8"))
+    fsw = config["spacecraft"]["fsw_parameters"]
+    fsw["flight.attitudeEstimator.SunAlbedoPeakRad"] = peak_rad
+    fsw["flight.attitudeEstimator.SunAlbedoHalfFovRad"] = half_fov_rad
+    return config
+
+
+def test_albedo_tuning_matching_the_catalog_compiles():
+    # The shipped vehicle: 12 deg and 60 deg in the GomSpace entry, the same two
+    # in radians in fsw_parameters.
+    library = load_hardware_library(_HARDWARE)
+    resolve(load_config(_TEMPLATE), library)  # must not raise
+
+
+@pytest.mark.parametrize(
+    ("peak_rad", "half_fov_rad", "expect_in_message"),
+    [
+        (0.25, 1.04720, "SunAlbedoPeakRad"),  # stale peak
+        (0.20944, 0.87266, "SunAlbedoHalfFovRad"),  # 50 deg, not the catalog's 60
+        (12.0, 1.04720, "SunAlbedoPeakRad"),  # degrees left unconverted
+    ],
+)
+def test_albedo_tuning_contradicting_the_catalog_is_refused(
+    tmp_path, peak_rad, half_fov_rad, expect_in_message
+):
+    # These two numbers exist twice — in the sun sensor's hardware entry (which
+    # the sim reads) and in fsw_parameters (which the flight correction reads) —
+    # and the correction subtracts a model of the error the sim generates. A
+    # mismatch therefore does not degrade gracefully: it removes an error the
+    # sensor never had, invisibly. So it fails the compile.
+    path = tmp_path / "mismatched.yaml"
+    path.write_text(
+        yaml.safe_dump(_albedo_config_dict(peak_rad, half_fov_rad)), encoding="utf-8"
+    )
+    library = load_hardware_library(_HARDWARE)
+    with pytest.raises(ConfigError) as exc:
+        resolve(load_config(path), library)
+    message = str(exc.value)
+    assert expect_in_message in message
+    # The message has to name both sides, or it sends the reader hunting.
+    assert "GS-NANOSENSE-FSS" in message
+    assert "ss_zp" in message
+
+
+def test_albedo_check_is_silent_without_a_sun_sensor(tmp_path):
+    # A vehicle with no sun sensor sets no albedo tuning and must compile
+    # unchanged — the check is a cross-check, not a new requirement.
+    config = Config.model_validate(_minimal_config_dict())
+    resolve(config, load_hardware_library(_HARDWARE))  # must not raise

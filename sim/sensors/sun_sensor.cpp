@@ -11,6 +11,10 @@ namespace {
 
 constexpr double kDeg2Rad = 0.017453292519943295;
 
+/// Split of `albedo_dispersion_fraction` across its two independent axes. The
+/// configured number is the total 1σ, so each axis takes 1/√2 of it.
+constexpr double kDispersionPerAxis = 0.7071067811865476;
+
 double get(const std::map<std::string, double>& p, const std::string& key) {
   const auto it = p.find(key);
   return it == p.end() ? 0.0 : it->second;
@@ -33,6 +37,35 @@ Eigen::Vector3d tilt(const Eigen::Vector3d& v, double sigma, random::SplitMix64&
   const Eigen::Vector3d e1 = v.cross(seed).normalized();
   const Eigen::Vector3d e2 = v.cross(e1).normalized();
   return (v + sigma * (a * e1 + b * e2)).normalized();
+}
+
+/// The deterministic albedo pull angle [rad] the model applies, defined on the
+/// **reported** direction: φ solving `φ = A·sin(ψ_true − φ)`, where ψ_true is the
+/// truth Sun–centroid separation and A the peak scale.
+///
+/// Defining it on the reported direction rather than the true one is what makes
+/// the onboard inverse (`lib/gnc/albedo_correction.hpp`) a closed form: flight
+/// software only ever holds the reported vector, and `φ = A·sin(ψ_meas)` is then
+/// evaluable directly. The difference against the true-direction definition is
+/// second order in A — under 0.1 mrad even at the 12° peak of the reference
+/// part — so nothing physical is traded for it.
+///
+/// Solved by fixed-point iteration, a contraction with factor A ≪ 1 (A ≈ 0.21
+/// at the reference part's 12° peak). The iteration count is bounded and the
+/// early exit is on the update itself, so the answer is converged to double
+/// precision rather than to whatever a fixed pass count happened to reach — the
+/// onboard inverse is exact against this, and a half-converged truth value would
+/// show up as a phantom residual in the §19.2 budget.
+double albedoPullAngle(double peak_rad, double separation_rad) {
+  double phi = 0.0;
+  for (int i = 0; i < 64; ++i) {
+    const double next = peak_rad * std::sin(separation_rad - phi);
+    if (std::abs(next - phi) <= 1.0e-16) {
+      return next;
+    }
+    phi = next;
+  }
+  return phi;
 }
 
 }  // namespace
@@ -74,6 +107,7 @@ SunSensorSpec SunSensorSpec::fromParams(const std::map<std::string, double>& p) 
     s.accuracy_outer_sigma = s.accuracy_inner_sigma;
   }
   s.albedo_error_rad = get(p, "albedo_error_deg") * kDeg2Rad;
+  s.albedo_dispersion_fraction = get(p, "albedo_dispersion_fraction");
   s.sample_period_s = get(p, "sample_period_ms") * 1.0e-3;
 
   s.update_rate_hz = get(p, "update_rate_hz");
@@ -109,6 +143,20 @@ SunSensor::SunSensor(const SunSensorSpec& spec, const Eigen::Matrix3d& mounting_
     normals_body_.push_back(noise_enabled ? tilt(body_normal, spec_.alignment_sigma, rng_)
                                           : body_normal);
     diode_scale_.push_back(noise_enabled ? 1.0 + spec_.scale_factor * rng_.gaussian() : 1.0);
+  }
+
+  // Realise this unit's albedo dispersion: how far the Earthshine it actually
+  // sees departs from the uniform-Lambertian-sphere model, in scale and in
+  // direction. Drawn **once**, because the departure is the surface and cloud
+  // field under the orbit — it changes over minutes, not between 10 Hz samples,
+  // so it is a per-run systematic and no amount of filtering averages it away.
+  // Two draws always, so whether a unit configures dispersion does not move the
+  // stream for anything drawn after it. An ideal sensor keeps neither.
+  const double d0 = rng_.gaussian();
+  const double d1 = rng_.gaussian();
+  if (noise_enabled) {
+    albedo_scale_dispersion_ = d0;
+    albedo_cross_dispersion_ = d1;
   }
 }
 
@@ -197,39 +245,80 @@ SunSensorMeasurement SunSensor::sample(const time::Tai& epoch, const SunSensorIn
                        ? spec_.accuracy_inner_sigma
                        : spec_.accuracy_outer_sigma;
 
-    // Albedo adds on top, scaled by how much sunlit Earth is in the field. This
-    // is the term that dominates in LEO — vendors quote clean-sky accuracy and
-    // then warn that uncorrected albedo costs an order of magnitude more.
-    double albedo_sigma = 0.0;
-    if (spec_.albedo_error_rad > 0.0 && dayside > 0.0 && spec_.half_fov_rad > 0.0 &&
-        earth_angular_radius > 0.0) {
+    // Albedo on top. It is **not** noise: Earthshine pulls the reported direction
+    // toward the sunlit Earth in the field, a deterministic function of the
+    // geometry, and the model reproduces that direction rather than adding a
+    // random tilt of the same size. Only the dispersion about it is random, and
+    // it is drawn per unit, not per sample (see the constructor).
+    double albedo_peak = 0.0;
+    if (noise_enabled_ && spec_.albedo_error_rad > 0.0 && dayside > 0.0 &&
+        spec_.half_fov_rad > 0.0 && earth_angular_radius > 0.0) {
       const double separation = std::acos(std::clamp(boresight_body_.dot(nadir_hat), -1.0, 1.0));
       const double fraction =
           fovCoveredFraction(spec_.half_fov_rad, separation, earth_angular_radius);
-      albedo_sigma = spec_.albedo_error_rad * fraction * dayside;
+      albedo_peak = spec_.albedo_error_rad * fraction * dayside;
+      // The realised scale departs from the modelled one by the unit's fixed
+      // dispersion draw: this is the part no correction can remove. The spec's
+      // fraction is the **total** 1σ over both dispersion axes, so each of the
+      // two independent axes carries 1/√2 of it and their quadrature sum is the
+      // configured number — which is then exactly what the vehicle's
+      // post-correction `SigmaSunSysRad` is derived from, with no hidden √2.
+      albedo_peak *=
+          1.0 + kDispersionPerAxis * spec_.albedo_dispersion_fraction * albedo_scale_dispersion_;
+      albedo_peak = std::max(0.0, albedo_peak);
     }
-    // Independent mechanisms add in quadrature. An ideal sensor reports the exact
-    // truth direction, so the whole error collapses to zero.
-    sigma = noise_enabled_ ? std::sqrt(sigma * sigma + albedo_sigma * albedo_sigma) : 0.0;
-    m.accuracy_sigma_rad = sigma;
+
+    // An ideal sensor reports the exact truth direction, so the whole error
+    // collapses to zero.
+    sigma = noise_enabled_ ? sigma : 0.0;
 
     // Two draws always, so the stream position does not depend on the geometry.
     const double g1 = rng_.gaussian();
     const double g2 = rng_.gaussian();
     if (in_fov && !fault_dropout_) {
+      Eigen::Vector3d reported = sun_hat;
+
+      // Deterministic Earthshine pull, in the plane containing the Sun and the
+      // Earth's centre. The rotation axis is the same whether it is built from
+      // the true or the reported direction (both lie in that plane), which is
+      // what lets the onboard correction undo this exactly.
+      if (albedo_peak > 0.0) {
+        const Eigen::Vector3d axis = sun_hat.cross(nadir_hat);
+        const double axis_norm = axis.norm();
+        if (axis_norm > 0.0) {
+          const double psi = std::acos(std::clamp(sun_hat.dot(nadir_hat), -1.0, 1.0));
+          m.albedo_angle_rad = albedoPullAngle(albedo_peak, psi);
+          reported = Eigen::AngleAxisd(m.albedo_angle_rad, axis / axis_norm) * reported;
+          // Out-of-plane dispersion: the centroid of the sunlit ground is not
+          // exactly under the spacecraft, by an amount the surface field decides.
+          // Scaled by the pull itself, so it vanishes wherever the pull does.
+          reported = (reported + (kDispersionPerAxis * spec_.albedo_dispersion_fraction *
+                                  m.albedo_angle_rad * albedo_cross_dispersion_) *
+                                     (axis / axis_norm))
+                         .normalized();
+        }
+      }
+
       // Perturb the direction in the two axes perpendicular to it: a unit vector
       // error is a small rotation, not an additive vector, so this keeps the
       // result on the sphere instead of quietly changing its length.
       Eigen::Index smallest = 0;
-      sun_hat.cwiseAbs().minCoeff(&smallest);
+      reported.cwiseAbs().minCoeff(&smallest);
       Eigen::Vector3d seed = Eigen::Vector3d::Zero();
       seed[smallest] = 1.0;
-      const Eigen::Vector3d e1 = sun_hat.cross(seed).normalized();
-      const Eigen::Vector3d e2 = sun_hat.cross(e1).normalized();
+      const Eigen::Vector3d e1 = reported.cross(seed).normalized();
+      const Eigen::Vector3d e2 = reported.cross(e1).normalized();
       m.sun_dir_body =
-          math::Vec3<math::frames::Body>((sun_hat + sigma * (g1 * e1 + g2 * e2)).normalized());
+          math::Vec3<math::frames::Body>((reported + sigma * (g1 * e1 + g2 * e2)).normalized());
       any_illuminated = true;
     }
+
+    // What an estimator should weight this reading by. The deterministic pull is
+    // a **bias**, not a σ, so it is deliberately absent: reporting it here would
+    // tell a filter to distrust a reading whose error it can compute and remove
+    // (§8.1), and would double-count once the correction is applied. What is
+    // included is the part that stays after correction — the dispersion.
+    m.accuracy_sigma_rad = std::hypot(sigma, spec_.albedo_dispersion_fraction * m.albedo_angle_rad);
 
     // No photocurrents to report. Left **empty** rather than zero-filled: a
     // vector of zeros is indistinguishable from a set of dark cells, and a

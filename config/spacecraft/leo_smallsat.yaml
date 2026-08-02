@@ -83,18 +83,46 @@ spacecraft:
     # analytic sun ephemeris fallback (§11.3) is good to ~0.4 deg = 7.0 mrad.
     # Earthshine is far larger: GomSpace warn that uncorrected albedo "can
     # generate errors >10 deg", with an ISS-orbit histogram whose bulk sits
-    # under 2 deg and whose tail runs past 10 deg. It is budgeted here as
-    # systematic rather than white because it is a function of the sunlit-Earth
-    # geometry in the field of view, which changes over minutes of orbit, not
-    # cycle to cycle — repeated fixes at 10 Hz do not average it away. 2.0 deg
-    # = 34.9 mrad is the histogram bulk, not the tail: budgeting the 12 deg
-    # peak would make the sun pair worthless as the primary TRIAD vector, and
-    # the tail is a transient the coarse chain rides out on the gyro. RSS with
-    # the ephemeris term: sqrt(7.0^2 + 34.9^2) = 35.6 mrad.
+    # under 2 deg and whose tail runs past 10 deg. It is budgeted as systematic
+    # rather than white because it is a function of the sunlit-Earth geometry in
+    # the field of view, which changes over minutes of orbit, not cycle to cycle
+    # — repeated fixes at 10 Hz do not average it away. 2.0 deg = 34.9 mrad is
+    # the histogram bulk, not the tail: budgeting the 12 deg peak would make the
+    # sun pair worthless as the primary TRIAD vector, and the tail is a
+    # transient the coarse chain rides out on the gyro.
+    #
+    # **Two systematic values, because the albedo correction is not always
+    # available.** Uncorrected, the sun pair is sqrt(7.0^2 + 34.9^2) = 35.6 mrad,
+    # which is SigmaSunSysUncorrRad below and the value this vehicle flew at
+    # before §8.1's correction landed. Corrected, the deterministic part of the
+    # albedo term is removed and what remains is the dispersion — how far the
+    # real Earth departs from the uniform Lambertian sphere the correction
+    # models it as — which the FSS catalog entry puts at 30% of the term
+    # (albedo_dispersion_fraction; read the comment there, it is the number this
+    # whole line turns on). So 0.30 * 34.9 = 10.5 mrad of albedo residual, and
+    # sqrt(7.0^2 + 10.5^2) = 12.6 mrad. Note what the correction does *not*
+    # touch: the ephemeris term is unchanged, and at 7.0 mrad it is now over half
+    # the budget — the next thing worth improving on this pair is the sun
+    # ephemeris, not the albedo model.
+    #
+    # The estimator picks between the two per cycle, on whether the correction
+    # actually ran (it needs a position fix, a sunlit Earth in the field, and an
+    # attitude to place it with), and telemeters SunAlbedoCorrection so the
+    # ground can see which was in force.
+    #
+    # NOT folded into the constant below: the correction's own sensitivity to
+    # the attitude that placed the Earth. That term is A*sigma_att/2 with A the
+    # 12 deg peak (it scales with the peak, not with the applied correction —
+    # the rotation axis is what the attitude error moves), so it depends on how
+    # well the attitude is known *this cycle* and is added in quadrature at
+    # runtime rather than budgeted here. At a converged fine solution (~0.6 deg)
+    # it is ~1 mrad against the 12.6 below; right after acquisition it dominates,
+    # which is the whole reason it is dynamic.
     #
     # The datasheet quotes no installed mounting alignment, so none is added.
     flight.attitudeEstimator.SigmaSunWhiteRad: 0.0116     # [rad]
-    flight.attitudeEstimator.SigmaSunSysRad: 0.0356       # [rad]
+    flight.attitudeEstimator.SigmaSunSysRad: 0.0126       # [rad] albedo-corrected
+    flight.attitudeEstimator.SigmaSunSysUncorrRad: 0.0356 # [rad] correction unavailable
     # Magnetic pair. MAG-GENERIC noise is 0.05 uT rms against a ~30 uT LEO
     # field, so the transverse direction error is 0.05/30 = 1.7 mrad white. The
     # systematic part is dominated by the uncalibrated hard-iron bias (1.0 uT /
@@ -226,6 +254,23 @@ spacecraft:
     # that learned nothing — and refusing there is the point: a calibration that
     # makes the magnetometer worse is the outcome guarded hardest against.
     flight.attitudeEstimator.MagCalMinImprovement: 2.0     # [-]
+    # --- Earth-albedo correction of the sun vector (§8.1) ------------------
+    # Not a commanded calibration: a model, always on wherever the geometry
+    # supports it. All three describe the ss_zp unit above (GS-NANOSENSE-FSS) —
+    # its datasheet albedo peak, its field of view, and where it points — so
+    # re-derive them if that model_id or its mounting changes.
+    #
+    # 12 deg peak albedo error, from the catalog entry's albedo_error_deg:
+    # 12 * pi/180 = 0.2094 rad.
+    flight.attitudeEstimator.SunAlbedoPeakRad: 0.20944     # [rad]
+    # 60 deg acceptance half-angle, from half_fov_deg: 60 * pi/180 = 1.0472.
+    flight.attitudeEstimator.SunAlbedoHalfFovRad: 1.04720  # [rad]
+    # ss_zp declares no mounting_quaternion_wxyz, so its mounting is identity and
+    # its boresight is the sensor's +Z along body +Z — the "zp" in the name. A
+    # unit mounted on another face must have its rotated +Z written here; the
+    # correction places the Earth in *this* field, so a wrong boresight silently
+    # scales the correction rather than failing.
+    flight.attitudeEstimator.SunAlbedoBoresightBody: [0.0, 0.0, 1.0]
   drag_area_m2: 0.06                 # 6U broadside, ~0.2 x 0.3 m
   drag_cd: 2.2
   srp_area_m2: 0.06

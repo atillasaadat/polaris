@@ -39,6 +39,27 @@ params:
   # the typical case lands in the histogram's bulk rather than at the tail.
   albedo_error_deg: 12.0
 
+  # How well that albedo error can be *modelled*, and therefore how much of it
+  # the onboard correction (design doc §8.1) can remove. The truth model directs
+  # the albedo error toward the Earth in the field — a deterministic function of
+  # position, Sun direction and boresight — and disperses it about that direction
+  # by this fraction, 1-sigma, drawn once per unit. The deterministic part is
+  # removable; this fraction is not, and it is what the vehicle's post-correction
+  # SigmaSunSysRad is derived from.
+  #
+  # 0.30 is a mid-range figure for a correction with **no reflectivity data
+  # onboard**, which is what this one is: it treats the Earth as a uniform
+  # Lambertian sphere, while the real surface runs from ~0.1 (ocean) to ~0.6
+  # (cloud, ice) in albedo, and the sunlit centroid does not sit exactly at
+  # nadir. Bhanderi & Bak (AIAA 2005-6465) drive the same correction from TOMS
+  # reflectivity maps and do materially better; a vehicle that carried such a map
+  # would set this lower, and one flying over unusually variable ground should
+  # set it higher. It is deliberately the single most consequential number in
+  # this file — the projection in tests/unit/attitude_accuracy_mc_test.cpp turns
+  # on it, not on the correction algorithm, which removes its modelled term
+  # exactly.
+  albedo_dispersion_fraction: 0.30
+
   # --- Timing (section 8) ----------------------------------------------------
   sample_period_ms: 10.0       # "Sample period: max 10 ms"
   update_rate_hz: 100.0        # the reciprocal of the sample period

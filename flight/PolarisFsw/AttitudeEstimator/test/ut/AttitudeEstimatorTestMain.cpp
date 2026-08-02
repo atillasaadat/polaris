@@ -132,6 +132,33 @@ TEST(AttitudeEstimator, EstimatorUndisturbedDuringCollection) {
   tester.testEstimatorUndisturbedDuringCollection();
 }
 
+TEST(AttitudeEstimator, AlbedoCorrectionAppliesAndTightensTheCovariance) {
+  RecordProperty("verifies", "REQ-ADET-006");
+  flight::AttitudeEstimatorTester tester;
+  tester.testAlbedoCorrectionAppliesAndTightensTheCovariance();
+}
+
+TEST(AttitudeEstimator, AlbedoCorrectionSkippedWithoutGeometry) {
+  flight::AttitudeEstimatorTester tester;
+  tester.testAlbedoCorrectionSkippedWithoutGeometry();
+}
+
+TEST(AttitudeEstimator, AlbedoSigmaInflatesWithTheAttitudeUncertainty) {
+  RecordProperty("verifies", "REQ-ADET-006");
+  flight::AttitudeEstimatorTester tester;
+  tester.testAlbedoSigmaInflatesWithTheAttitudeUncertainty();
+}
+
+TEST(AttitudeEstimator, AlbedoSkippedForASunSensorOtherThanUnitZero) {
+  flight::AttitudeEstimatorTester tester;
+  tester.testAlbedoSkippedForASunSensorOtherThanUnitZero();
+}
+
+TEST(AttitudeEstimator, MissingAlbedoTuningLeavesTheEstimatorRunning) {
+  flight::AttitudeEstimatorTester tester;
+  tester.testMissingAlbedoTuningLeavesTheEstimatorRunning();
+}
+
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
