@@ -9,6 +9,12 @@
 /// third is the **payload cross-boresight** error (REQ-PAY-001), measured on the
 /// same fine-mode runs so the two metrics are directly comparable.
 ///
+/// **One draw feeds both estimators.** Each run generates its geometry, truth
+/// motion, systematic biases and white-noise sequences once and hands the
+/// identical measurement stream to the coarse chain and to the MEKF, so
+/// coarse-vs-fine is a *paired* comparison — any difference is the estimator,
+/// not the sample — and the campaign runs once for all four tests below.
+///
 /// **The method behind these numbers is documented once, in
 /// `docs/requirements/adcs_determination.rst`** — the metric definition
 /// (`adet-knowledge-metric`) and the four choices that decide what the measured
@@ -83,16 +89,19 @@ constexpr double kMaxSeparationDeg = 135.0;
 
 /// Requirement thresholds on the error norm [deg], 3σ — REQ-ADET-005 and
 /// REQ-ADET-006. Both were **set from this campaign**, not the other way round:
-/// the measured bound is 8.9° coarse and 11.4° fine at the fixed seed, and
-/// 8.1–9.7° / 8.2–11.4° across the four other master seeds tried during
-/// development, so 15° leaves 41% and 24% margin and does not sit on a tail
-/// that moves with the seed.
+/// the measured bound is 8.5° coarse and 8.1° fine at the fixed seed, and
+/// 8.5–11.6° / 8.1–11.7° across the three other master seeds tried during
+/// development, so 15° leaves 43% and 46% margin at the shipped seed and never
+/// less than 22% at any seed tried. The sample maximum is a tail statistic and
+/// moves with the seed by design; the thresholds are set to clear the worst of
+/// them, not the prettiest.
 constexpr double kCoarseLimitDeg = 15.0;
 constexpr double kFineLimitDeg = 15.0;
 
 /// REQ-PAY-001, the payload cross-boresight threshold [deg], 3σ. Set the same
-/// way: the measured bound is 10.6° at the fixed seed and 8.7–10.6° across the
-/// three other master seeds tried, so 14° leaves 24.5% margin. Below the 15° of
+/// way: the measured bound is 7.9° at the fixed seed and 7.3–10.9° across the
+/// three other master seeds tried, so 14° leaves 44% margin at the shipped seed
+/// and never less than 21% at any seed tried. Below the 15° of
 /// the two norm requirements because the metric is smaller by construction —
 /// the about-boresight component of the attitude error drops out (see the test
 /// at the bottom of this file).
@@ -269,49 +278,141 @@ gnc::MekfConfig mekfConfig() {
   return cfg;
 }
 
+// ── The shared campaign ─────────────────────────────────────────────────────
+//
+// One draw per run — geometry, truth motion, systematic biases, gyro bias and
+// every white-noise sequence — feeding **both** estimators. That is what makes
+// the coarse-vs-fine comparison below a paired one: the two chains see the
+// identical measurement stream, so any difference between them is the estimator
+// and not the sample. It also halves the work, since the payload requirement
+// reads the same fine-mode results rather than re-running the campaign.
+
+/// One run's outcome: what each estimator ended at, and the truth both should
+/// have matched.
+struct PairedRun {
+  pm::Quaternion coarse{};
+  pm::Quaternion fine{};
+  pm::Quaternion truth{};
+  bool ok{false};  ///< false if either chain failed to seed or ended invalid
+};
+
+/// The campaign, run once on first use and shared by every test in this file.
+const std::vector<PairedRun>& campaignRuns() {
+  static const std::vector<PairedRun> runs = [] {
+    std::vector<PairedRun> result;
+    result.reserve(kRuns);
+
+    for (int run = 0; run < kRuns; ++run) {
+      polaris::random::SplitMix64 rng(polaris::random::streamSeed(0xC0A125Eu, run));
+      const RunSetup s = drawRun(rng);
+      Eigen::Vector3d bias = s.bias;
+
+      PairedRun paired{};
+      paired.truth = truthAttitude(s.rate, kSteps * kDt, s.q0);
+
+      gnc::CoarseAttitudeEstimator coarse(coarseConfig());
+      gnc::Mekf fine(mekfConfig());
+      if (!coarse.isConfigured() || !fine.isConfigured()) {
+        result.push_back(paired);
+        continue;
+      }
+
+      // Fine cold start on the real path: a Davenport seed from one noisy
+      // measurement pair, with the turn-on bias uncertainty and no bias
+      // estimate. This draw belongs to the filter alone — the coarse chain has
+      // no seed step, it acquires on its own first TRIAD — so it is taken
+      // before the loop and the per-cycle draws below stay shared.
+      gnc::DavenportInput seed_in{};
+      seed_in.count = 2;
+      seed_in.min_observability = kSeedMinObservability;
+      seed_in.observations[0].body = pm::Vec3<frames::Body>(measureSun(s, s.q0, rng));
+      seed_in.observations[0].reference = pm::Vec3<frames::ECI>(s.sun_eci);
+      seed_in.observations[0].sigma_rad = kSigmaSunTotal;
+      seed_in.observations[1].body = pm::Vec3<frames::Body>(measureMag(s, s.q0, rng));
+      seed_in.observations[1].reference = pm::Vec3<frames::ECI>(s.mag_eci);
+      seed_in.observations[1].sigma_rad = kSigmaMagTotal;
+
+      gnc::DavenportSolution seed{};
+      if (!gnc::davenport(seed_in, seed) ||
+          !fine.initialize(epochAt(0.0), seed.attitude, seed.covariance,
+                           pm::Vec3<frames::Body>(Eigen::Vector3d::Zero()),
+                           (kBiasSigmaInit * kBiasSigmaInit) * Eigen::Matrix3d::Identity())) {
+        result.push_back(paired);
+        continue;
+      }
+
+      gnc::CoarseAttitudeOutput coarse_out{};
+      bool fine_ok = true;
+      for (int step = 1; step <= kSteps; ++step) {
+        const double t = step * kDt;
+        const pm::Quaternion q_true = truthAttitude(s.rate, t, s.q0);
+
+        // Drawn once, handed to both chains.
+        const Eigen::Vector3d gyro = measureGyro(s.rate, bias, rng);
+        const Eigen::Vector3d sun_body = measureSun(s, q_true, rng);
+        const Eigen::Vector3d mag_body = measureMag(s, q_true, rng);
+
+        gnc::CoarseAttitudeInput in{};
+        in.epoch = epochAt(t);
+        in.gyro = pm::Vec3<frames::Body>(gyro);
+        in.gyro_valid = true;
+        in.sun_body = pm::Vec3<frames::Body>(sun_body);
+        in.sun_ref = pm::Vec3<frames::ECI>(s.sun_eci);
+        in.sun_valid = true;
+        in.mag_body = pm::Vec3<frames::Body>(mag_body);
+        in.mag_ref = pm::Vec3<frames::ECI>(s.mag_eci);
+        in.mag_valid = true;
+        coarse.update(in, coarse_out);
+
+        if (!fine.propagate(epochAt(t), pm::Vec3<frames::Body>(gyro), true)) {
+          fine_ok = false;
+          break;
+        }
+        gnc::MekfUpdate up{};
+        fine.update(pm::Vec3<frames::Body>(sun_body), pm::Vec3<frames::ECI>(s.sun_eci),
+                    kSigmaSunTotal, up);
+        fine.update(pm::Vec3<frames::Body>(mag_body), pm::Vec3<frames::ECI>(s.mag_eci),
+                    kSigmaMagTotal, up);
+      }
+
+      paired.coarse = coarse_out.attitude.core();
+      paired.fine = fine.attitude().core();
+      // Every run's geometry is inside the flight gate by construction, so both
+      // chains must end usable — a run that quietly failed would otherwise drop
+      // out of the statistics and flatter the result.
+      paired.ok = coarse_out.attitude_valid && fine_ok && fine.attitudeValid();
+      result.push_back(paired);
+    }
+    return result;
+  }();
+  return runs;
+}
+
+/// The campaign's coarse (or fine) error norms as a @ref Campaign.
+Campaign errorNorms(bool fine) {
+  Campaign c;
+  c.samples.reserve(kRuns);
+  for (const PairedRun& r : campaignRuns()) {
+    c.samples.push_back(errorNormDeg(fine ? r.fine : r.coarse, r.truth));
+  }
+  return c;
+}
+
+/// Fail the calling test if any run did not produce a usable pair.
+void requireAllRunsValid() {
+  ASSERT_EQ(campaignRuns().size(), static_cast<std::size_t>(kRuns));
+  for (std::size_t i = 0; i < campaignRuns().size(); ++i) {
+    ASSERT_TRUE(campaignRuns()[i].ok) << "run " << i << " left an estimator invalid";
+  }
+}
+
 // ── REQ-ADET-005: coarse-mode knowledge accuracy ────────────────────────────
 
 TEST(AttitudeAccuracyMonteCarlo, CoarseModeKnowledgeErrorNorm) {
   RecordProperty("verifies", "REQ-ADET-005");
-  Campaign campaign;
-  campaign.samples.reserve(kRuns);
+  requireAllRunsValid();
+  const Campaign campaign = errorNorms(false);
 
-  for (int run = 0; run < kRuns; ++run) {
-    polaris::random::SplitMix64 rng(polaris::random::streamSeed(0xC0A125Eu, run));
-    const RunSetup s = drawRun(rng);
-    Eigen::Vector3d bias = s.bias;
-
-    gnc::CoarseAttitudeEstimator estimator(coarseConfig());
-    ASSERT_TRUE(estimator.isConfigured());
-
-    gnc::CoarseAttitudeOutput out{};
-    for (int step = 1; step <= kSteps; ++step) {
-      const double t = step * kDt;
-      const pm::Quaternion q_true = truthAttitude(s.rate, t, s.q0);
-
-      gnc::CoarseAttitudeInput in{};
-      in.epoch = epochAt(t);
-      in.gyro = pm::Vec3<frames::Body>(measureGyro(s.rate, bias, rng));
-      in.gyro_valid = true;
-      in.sun_body = pm::Vec3<frames::Body>(measureSun(s, q_true, rng));
-      in.sun_ref = pm::Vec3<frames::ECI>(s.sun_eci);
-      in.sun_valid = true;
-      in.mag_body = pm::Vec3<frames::Body>(measureMag(s, q_true, rng));
-      in.mag_ref = pm::Vec3<frames::ECI>(s.mag_eci);
-      in.mag_valid = true;
-      estimator.update(in, out);
-    }
-
-    // Every run's geometry is inside the flight gate by construction, so every
-    // run must end with a usable attitude — a run that quietly failed to
-    // produce one would otherwise drop out of the statistics and flatter the
-    // result.
-    ASSERT_TRUE(out.attitude_valid) << "run " << run << " produced no valid attitude";
-    campaign.samples.push_back(
-        errorNormDeg(out.attitude.core(), truthAttitude(s.rate, kSteps * kDt, s.q0)));
-  }
-
-  ASSERT_EQ(campaign.samples.size(), static_cast<std::size_t>(kRuns));
   RecordProperty("margin_pct",
                  static_cast<int>(report(campaign, kCoarseLimitDeg, "REQ-ADET-005 coarse")));
 
@@ -324,90 +425,58 @@ TEST(AttitudeAccuracyMonteCarlo, CoarseModeKnowledgeErrorNorm) {
   EXPECT_GT(campaign.median(), 2.0) << "median error implausibly small — is the noise wired in?";
 }
 
-// ── REQ-ADET-006: fine-mode (SS+MAG+IMU) knowledge accuracy ─────────────────
+// ── REQ-ADET-006: fine-mode knowledge accuracy, same SS+MAG+IMU suite ───────
 
-/// One fine-mode run's outcome: the filter's estimate and the truth it should
-/// have matched. Factored out of the test body because two requirements are
-/// measured on the *same* runs — the total error norm (REQ-ADET-006) and the
-/// cross-boresight error of a mounted payload (REQ-PAY-001). Sharing the runs
-/// rather than re-drawing them is what makes the two numbers directly
-/// comparable: any difference between them is the metric, not the sample.
-struct FineRun {
-  pm::Quaternion estimate{};
-  pm::Quaternion truth{};
-  bool ok{false};  ///< false if the run failed to seed or left the filter invalid
-};
-
-FineRun fineRun(int run) {
-  FineRun result{};
-  polaris::random::SplitMix64 rng(polaris::random::streamSeed(0xF14E5Eu, run));
-  const RunSetup s = drawRun(rng);
-  Eigen::Vector3d bias = s.bias;
-
-  gnc::Mekf filter(mekfConfig());
-  if (!filter.isConfigured()) {
-    return result;
-  }
-
-  // Cold start on the real path: a Davenport seed from the first noisy
-  // measurement pair, with the turn-on bias uncertainty and no bias estimate.
-  gnc::DavenportInput seed_in{};
-  seed_in.count = 2;
-  seed_in.min_observability = kSeedMinObservability;
-  seed_in.observations[0].body = pm::Vec3<frames::Body>(measureSun(s, s.q0, rng));
-  seed_in.observations[0].reference = pm::Vec3<frames::ECI>(s.sun_eci);
-  seed_in.observations[0].sigma_rad = kSigmaSunTotal;
-  seed_in.observations[1].body = pm::Vec3<frames::Body>(measureMag(s, s.q0, rng));
-  seed_in.observations[1].reference = pm::Vec3<frames::ECI>(s.mag_eci);
-  seed_in.observations[1].sigma_rad = kSigmaMagTotal;
-
-  gnc::DavenportSolution seed{};
-  if (!gnc::davenport(seed_in, seed) ||
-      !filter.initialize(epochAt(0.0), seed.attitude, seed.covariance,
-                         pm::Vec3<frames::Body>(Eigen::Vector3d::Zero()),
-                         (kBiasSigmaInit * kBiasSigmaInit) * Eigen::Matrix3d::Identity())) {
-    return result;
-  }
-
-  for (int step = 1; step <= kSteps; ++step) {
-    const double t = step * kDt;
-    const pm::Quaternion q_true = truthAttitude(s.rate, t, s.q0);
-    if (!filter.propagate(epochAt(t), pm::Vec3<frames::Body>(measureGyro(s.rate, bias, rng)),
-                          true)) {
-      return result;
-    }
-
-    gnc::MekfUpdate up{};
-    filter.update(pm::Vec3<frames::Body>(measureSun(s, q_true, rng)),
-                  pm::Vec3<frames::ECI>(s.sun_eci), kSigmaSunTotal, up);
-    filter.update(pm::Vec3<frames::Body>(measureMag(s, q_true, rng)),
-                  pm::Vec3<frames::ECI>(s.mag_eci), kSigmaMagTotal, up);
-  }
-
-  result.estimate = filter.attitude().core();
-  result.truth = truthAttitude(s.rate, kSteps * kDt, s.q0);
-  result.ok = filter.attitudeValid();
-  return result;
-}
-
-TEST(AttitudeAccuracyMonteCarlo, FineModeSunMagKnowledgeErrorNorm) {
+TEST(AttitudeAccuracyMonteCarlo, FineModeKnowledgeErrorNorm) {
   RecordProperty("verifies", "REQ-ADET-006");
-  Campaign campaign;
-  campaign.samples.reserve(kRuns);
+  requireAllRunsValid();
+  const Campaign campaign = errorNorms(true);
 
-  for (int run = 0; run < kRuns; ++run) {
-    const FineRun r = fineRun(run);
-    ASSERT_TRUE(r.ok) << "run " << run << " failed to seed or left the filter invalid";
-    campaign.samples.push_back(errorNormDeg(r.estimate, r.truth));
-  }
-
-  ASSERT_EQ(campaign.samples.size(), static_cast<std::size_t>(kRuns));
   RecordProperty("margin_pct",
-                 static_cast<int>(report(campaign, kFineLimitDeg, "REQ-ADET-006 fine SS+MAG")));
+                 static_cast<int>(report(campaign, kFineLimitDeg, "REQ-ADET-006 fine MEKF")));
 
   EXPECT_LE(campaign.max(), kFineLimitDeg) << "3σ knowledge-error bound over " << kRuns << " runs";
   // Same sensitivity floor as the coarse campaign; measured median is 2.9°.
   EXPECT_GT(campaign.median(), 2.0) << "median error implausibly small — is the noise wired in?";
+}
+
+// ── Head to head: does the filter actually earn its keep? ───────────────────
+
+TEST(AttitudeAccuracyMonteCarlo, FineModeBeatsCoarseRunForRun) {
+  RecordProperty("verifies", "REQ-ADET-006");
+  requireAllRunsValid();
+
+  // Both chains ran on the identical measurement stream, so this is a *paired*
+  // comparison and the right statistic is the **sign test** on the per-run
+  // winner: distribution-free, and it uses the pairing, which comparing two
+  // medians throws away. Under "the two are equally good" the win count is
+  // Binomial(N, 0.5) with σ = √(N/4) = 14 runs, i.e. 1.8% of N — so a win
+  // fraction above 0.55 is roughly 28σ from a coin flip and cannot be sampling
+  // noise. The threshold is deliberately far above 0.5 for that reason and not
+  // because the measured value is marginal (it is not: see below).
+  int fine_wins = 0;
+  std::vector<double> gaps;
+  gaps.reserve(kRuns);
+  for (const PairedRun& r : campaignRuns()) {
+    const double coarse_deg = errorNormDeg(r.coarse, r.truth);
+    const double fine_deg = errorNormDeg(r.fine, r.truth);
+    gaps.push_back(coarse_deg - fine_deg);
+    if (fine_deg < coarse_deg) {
+      ++fine_wins;
+    }
+  }
+  std::sort(gaps.begin(), gaps.end());
+
+  const double win_fraction = static_cast<double>(fine_wins) / static_cast<double>(kRuns);
+  const double median_gap = gaps[gaps.size() / 2];
+  std::printf(
+      "[head-to-head] fine wins %d/%d runs (%.1f%%)  median gap=%.3f deg"
+      "  worst case for fine=%.3f deg\n",
+      fine_wins, kRuns, 100.0 * win_fraction, median_gap, -gaps.front());
+  RecordProperty("fine_win_pct", static_cast<int>(100.0 * win_fraction));
+
+  EXPECT_GT(win_fraction, 0.55) << "the MEKF does not beat the fixed-gain blend run for run";
+  EXPECT_GT(median_gap, 0.0) << "median per-run improvement is not positive";
 }
 
 // ── REQ-PAY-001: payload cross-boresight knowledge accuracy ─────────────────
@@ -459,12 +528,11 @@ TEST(AttitudeAccuracyMonteCarlo, PayloadCrossBoresightKnowledgeError) {
   canted.samples.reserve(kRuns);
   norms.samples.reserve(kRuns);
 
-  for (int run = 0; run < kRuns; ++run) {
-    const FineRun r = fineRun(run);
-    ASSERT_TRUE(r.ok) << "run " << run << " failed to seed or left the filter invalid";
-    campaign.samples.push_back(boresightErrorDeg(nadir_mount, r.estimate, r.truth));
-    canted.samples.push_back(boresightErrorDeg(canted_mount, r.estimate, r.truth));
-    norms.samples.push_back(errorNormDeg(r.estimate, r.truth));
+  requireAllRunsValid();
+  for (const PairedRun& r : campaignRuns()) {
+    campaign.samples.push_back(boresightErrorDeg(nadir_mount, r.fine, r.truth));
+    canted.samples.push_back(boresightErrorDeg(canted_mount, r.fine, r.truth));
+    norms.samples.push_back(errorNormDeg(r.fine, r.truth));
   }
 
   ASSERT_EQ(campaign.samples.size(), static_cast<std::size_t>(kRuns));

@@ -58,8 +58,8 @@ separately from :ref:`the vehicle-level error norm <adet-knowledge-metric>`:
    :margin_required: 20 %
    :refs: wertz2011
 
-   For a payload sensor mounted on the vehicle, in fine mode with the
-   sun/magnetometer/gyro suite and no star tracker, under the conditions of
+   For a payload sensor mounted on the vehicle, in fine mode on the same
+   SS+MAG+IMU suite and with no star tracker, under the conditions of
    REQ-ADET-006, the attitude-knowledge error projected onto the sensor's X–Y
    plane — the cross-boresight error norm (:ref:`metric
    <pay-cross-boresight-metric>`) — **shall** be ≤ **14°** (3σ).
@@ -70,14 +70,15 @@ separately from :ref:`the vehicle-level error norm <adet-knowledge-metric>`:
       two vehicle-level thresholds
       (``tests/unit/attitude_accuracy_mc_test.cpp``), evaluated on the *same*
       runs so the metrics are directly comparable rather than separately
-      sampled. It measures a median of **2.2°** and a 3σ bound of **10.6°**,
-      against **2.9°** and **11.4°** for the total error norm on those runs.
-      The ratio of the medians, 0.77, is the expected one: for an isotropically
+      sampled. It measures a median of **2.2°** and a 3σ bound of **7.9°**,
+      against **2.9°** and **8.1°** for the total error norm on those runs.
+      The ratio of the medians, 0.74, is the expected one: for an isotropically
       directed error the mean of :math:`\sin\psi` is :math:`\pi/4 = 0.785`, so a
       payload sees about three quarters of the vehicle's knowledge error and the
-      rest is roll it does not pay for. 14° therefore carries 24.5% margin, and
-      the bound moves between 8.7° and 10.6° across the four master seeds tried
-      while setting it — the threshold does not sit on a seed-specific tail.
+      rest is roll it does not pay for. 14° therefore carries 44% margin at the
+      shipped seed, and the bound moves between 7.3° and 10.9° across the four
+      master seeds tried while setting it — never less than 21% margin, so the
+      threshold does not sit on a seed-specific tail.
 
       **This is a knowledge requirement, not a pointing one.** It bounds how
       well the vehicle *knows* where the boresight is, not how well it holds it

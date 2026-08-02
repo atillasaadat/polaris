@@ -164,10 +164,11 @@ catches that instead.
       every cycle — 10 Hz of fixes does not average it down. Two offsets of that
       size put the median error norm at ~3.3°, and the 3σ point is set by the
       **Rayleigh tail** of the offset magnitudes (3.44σ = 7.0° for the sun pair
-      alone). The verifying campaign measures a 3σ bound of **8.9°** over 800
-      runs — 8.1–9.7° across the other master seeds tried while setting the
-      threshold — so 15° carries 41% margin and does not sit on a tail that
-      moves with the seed.
+      alone). The verifying campaign measures a 3σ bound of **8.5°** over 800
+      runs — 8.5–11.6° across the other master seeds tried while setting the
+      threshold — so 15° carries 43% margin at the shipped seed and never less
+      than 23% at any seed tried. The sample maximum is a tail statistic and
+      moves with the seed by design; the threshold clears the worst of them.
 
       **Why the geometry condition.** The solution's component about the sun is
       fixed by the magnetic pair alone and its error grows as
@@ -189,26 +190,37 @@ catches that instead.
    :margin_required: 20 %
    :refs: markley2014
 
-   In fine mode with the sun/magnetometer/gyro suite and no star tracker, under
-   the same conditions as REQ-ADET-005, the attitude-knowledge error norm
-   **shall** be ≤ **15°** (3σ).
+   In fine mode on the same SS+MAG+IMU suite as REQ-ADET-005 and with no star
+   tracker, under the same conditions, the attitude-knowledge error norm
+   **shall** be ≤ **15°** (3σ). Both modes use all three sensor types; what
+   differs is the estimator — a fixed-gain complementary blend against optimal
+   gains with gyro-bias states.
 
    .. note::
 
-      **The threshold equals the coarse one, and that is the finding.** With only
-      two vector sources neither a fixed-gain complementary blend nor an optimal
-      filter can separate a constant offset from the truth, so both settle on the
-      same systematic floor — the design doc §8.1 caveat, quantified. The MEKF
-      does buy the bulk of the distribution (a median of 2.9° against the
-      coarse chain's 3.3° — a comparison of the two campaigns' distributions,
-      not run-for-run: they draw from different master seeds, so the two medians
-      are separate samples of the same budget rather than paired outcomes),
-      gyro-bias observability, and a covariance that means something; it does
-      not buy accuracy. The verifying campaign measures a 3σ bound of
-      **11.4°**, giving 24% margin. Tightening this is a **sensor-budget** action
-      — magnetometer hard-iron calibration and sun-sensor albedo correction are
-      the two levers, worth ~2° each — or a star tracker (REQ-ADET-007). It is
-      not an estimator-tuning action.
+      **The threshold equals the coarse one, and that is the finding.** With
+      only two vector sources neither a fixed-gain complementary blend nor an
+      optimal filter can separate a constant offset from the truth, so both
+      settle on the same systematic floor — the design doc §8.1 caveat,
+      quantified. The verifying campaign measures a 3σ bound of **8.1°** against
+      the coarse chain's 8.5°, giving 46% margin: better, but by 0.4° on a floor
+      of 8°, which is why one threshold covers both.
+
+      **The MEKF does win, run for run.** Both chains are driven by the *same*
+      draw — geometry, truth motion, systematic biases and every noise sequence —
+      so the comparison is paired rather than two samples of the same budget.
+      The filter is the more accurate of the two on **65% of the 800 runs**, with
+      a median per-run improvement of 0.20° and a better bound at both the median
+      (2.9° against 3.3°) and the tail. Under "the two are equally good" the win
+      count would be Binomial(800, ½), i.e. 50 ± 1.8%, so 65% is not sampling
+      noise; the win fraction sits between 64.2% and 65.4% across every master
+      seed tried. The filter also buys gyro-bias observability and a covariance
+      that means something, neither of which this metric can see.
+
+      What it cannot buy is a different floor. Tightening this is a
+      **sensor-budget** action — magnetometer hard-iron calibration and
+      sun-sensor albedo correction are the two levers, worth ~2° each — or a
+      star tracker (REQ-ADET-007), not an estimator-tuning action.
 
 .. req:: Fine-mode attitude-knowledge accuracy with star tracker
    :id: REQ-ADET-007
@@ -222,7 +234,9 @@ catches that instead.
    :margin_required: 20 %
    :refs: markley2014
 
-   In fine mode with one or more star trackers fused (§8.2), the
+   In fine mode with one or more star trackers fused (§8.2) — the star tracker
+   joining the SS+MAG+IMU suite as a further vector source, not replacing it,
+   with the IMU still propagating the solution between updates — the
    attitude-knowledge error norm **shall** be ≤ **0.05°** (180 arcsec, 3σ).
 
    .. note::
