@@ -172,7 +172,7 @@ TEST(AlbedoCorrection, LeavesOnlyTheDispersionWhenTheEarthIsNotPerfectlyModelled
   // derived from: with the truth model dispersed by a fraction f, what survives
   // the correction is that fraction of the pull — and nothing more. This is what
   // makes `albedo_dispersion_fraction`, not `albedo_error_deg`, the driver of
-  // the post-correction `SigmaSunSysRad`.
+  // the post-correction `SigmaSunAlbedoRad`.
   constexpr double kDispersion = 0.30;
   const gnc::AlbedoCorrectionConfig cfg = fssConfig();
   const auto truth_in = truthInput(20.0, Eigen::Vector3d(0.0, 0.0, 1.0));
@@ -215,7 +215,7 @@ TEST(AlbedoCorrection, LeavesOnlyTheDispersionWhenTheEarthIsNotPerfectlyModelled
   // fraction is the **total**, split 1/√2 to each axis, so the quadrature sum
   // comes back to f itself: ≈ 0.30 here, with no hidden √2 (sun_sensor.hpp says
   // the same from the truth side). That ratio, measured rather than assumed, is
-  // what the vehicle's post-correction SigmaSunSysRad is derived from (§19.2).
+  // what the vehicle's post-correction SigmaSunAlbedoRad is derived from (§19.2).
   const double ratio = rms_residual / rms_uncorrected;
   EXPECT_GT(ratio, 0.5 * kDispersion) << "no residual at all — is the truth dispersion wired in?";
   EXPECT_LT(ratio, 2.0 * kDispersion) << "residual far above the configured dispersion";

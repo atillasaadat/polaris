@@ -45,7 +45,7 @@ params:
   # position, Sun direction and boresight — and disperses it about that direction
   # by this fraction, 1-sigma, drawn once per unit. The deterministic part is
   # removable; this fraction is not, and it is what the vehicle's post-correction
-  # SigmaSunSysRad is derived from.
+  # SigmaSunAlbedoRad is derived from.
   #
   # 0.30 is a mid-range figure for a correction with **no reflectivity data
   # onboard**, which is what this one is: it treats the Earth as a uniform

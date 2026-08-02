@@ -254,30 +254,70 @@ module flight {
     @ systematic part.
     param SigmaSunWhiteRad: F64
 
-    @ Systematic part of the sun-pair 1-sigma transverse uncertainty [rad]
-    @ **with the Earth-albedo correction applied**: ephemeris error (the analytic
-    @ fallback is ~0.4 deg), sensor alignment, and the albedo residual the
-    @ correction leaves behind. Constant across cycles, so it becomes the
-    @ covariance floor. May be zero.
+    @ The sun pair's systematic uncertainty is composed **per cycle** from two
+    @ independent terms, each of which the vehicle may or may not have working
+    @ on any given cycle, so each is a parameter rather than a constant folded
+    @ into one number:
     @
-    @ There are deliberately two of these. The albedo correction needs a position
-    @ fix, a sunlit Earth in the sensor's field, and a valid attitude to place
-    @ that field; when any of those is missing the correction is skipped and the
-    @ sun measurement carries its full uncorrected albedo, which is an order of
-    @ magnitude larger. Weighting such a cycle with the corrected sigma would tell
-    @ both estimators to trust a measurement they should not, so the component
-    @ selects between this and SigmaSunSysUncorrRad **per cycle**, on whether the
-    @ correction actually ran, and telemeters the applied angle so the ground can
-    @ see which was in force (SunAlbedoCorrection).
-    param SigmaSunSysRad: F64
+    @   sigma_sun_sys = hypot(albedo term, ephemeris term)
+    @
+    @ The **albedo** term is the sun sensor's: how much Earthshine error is left
+    @ in the measured direction. It takes SigmaSunAlbedoRad when the §8.1
+    @ correction ran this cycle and SigmaSunAlbedoUncorrRad when it did not (no
+    @ position fix, night side, no Earth in the field, no attitude to place it
+    @ with). A further attitude-quality term is added to the corrected case at
+    @ runtime — see SunAlbedoPeakRad.
+    @
+    @ The **ephemeris** term is the *reference's*: how well the Sun's inertial
+    @ direction is known. It takes SigmaSunEphemPreciseRad while the onboard
+    @ DE440 Chebyshev tables answer the query (grade PRECISE) and SigmaSunEphemRad
+    @ when the analytic fallback does. Two orders of magnitude separate them, and
+    @ which one is in force is not a configuration choice — it depends on whether
+    @ the uploaded tables cover the current epoch.
+    @
+    @ Keeping the four apart is what lets each be re-derived on its own: a better
+    @ sun sensor moves the albedo pair and nothing else, and an ephemeris upload
+    @ moves nothing at all because the vehicle already carries both grades.
 
-    @ Systematic part of the sun-pair 1-sigma transverse uncertainty [rad] with
-    @ **no** albedo correction applied — the value SigmaSunSysRad had before the
-    @ correction existed. Used on any cycle the correction refuses (no position
-    @ fix, night side, no Earth in the field, no attitude to place it with).
-    @ Must be at least SigmaSunSysRad: a correction that made the measurement
-    @ worse would be a configuration error, and is refused rather than flown.
-    param SigmaSunSysUncorrRad: F64
+    @ Albedo residual left in the sun direction **with** the Earth-albedo
+    @ correction applied [rad]: the dispersion of the real Earth about the
+    @ uniform Lambertian sphere the correction models it as. Contains no
+    @ ephemeris error. May be zero (a perfectly modelled Earth, which no vehicle
+    @ flies over).
+    param SigmaSunAlbedoRad: F64
+
+    @ Albedo error in the sun direction with **no** correction applied [rad] —
+    @ the full Earthshine term, an order of magnitude larger. Used on any cycle
+    @ the correction refuses. Must be at least SigmaSunAlbedoRad: a correction
+    @ that made the measurement worse would be a configuration error, and is
+    @ refused rather than flown.
+    param SigmaSunAlbedoUncorrRad: F64
+
+    @ Sun-direction error of the **analytic** ephemeris fallback [rad] (§11.3),
+    @ used on any cycle the onboard tables cannot answer at grade PRECISE. This
+    @ is the degraded floor the vehicle flies on with no ephemeris upload, or
+    @ past the end of the uploaded span.
+    param SigmaSunEphemRad: F64
+
+    @ Sun-direction error while the onboard DE440 Chebyshev tables answer at
+    @ grade PRECISE [rad]. Arcsecond-class, and dominated by geometry rather than
+    @ by the fit: at r = 6878 km the geocentric-to-spacecraft-centric parallax is
+    @ at most asin(r / 1 AU) = 4.598e-5 rad, against a Chebyshev residual of
+    @ ~3.5e-12 rad — seven orders below, so it rounds away. 5e-5 rad covers the
+    @ parallax with 9% margin. **Re-derive if the orbit changes**: the parallax
+    @ scales with r, so a higher orbit needs a larger value.
+    @
+    @ The component subtracts that parallax itself when it has both a position
+    @ fix **and** the ECEF->ECI rotation; this must cover the case where either
+    @ is missing, which is why it is budgeted at the full unremoved value rather
+    @ than at the residual after removal.
+    @
+    @ Deliberately a parameter rather than a hardcoded zero — the ground states
+    @ what its uploaded tables are worth, and "we assumed zero" is not a thing to
+    @ discover in flight. Must be non-negative and must not exceed
+    @ SigmaSunEphemRad: a precise source worse than the fallback is a
+    @ configuration error.
+    param SigmaSunEphemPreciseRad: F64
 
     @ White part of the magnetic-pair 1-sigma transverse uncertainty [rad].
     param SigmaMagWhiteRad: F64
@@ -436,7 +476,7 @@ module flight {
     # Validated separately again, and for the same reason the fine set is: a
     # missing albedo parameter costs the *correction*, not the estimator. The
     # component then behaves exactly as it did before the correction existed —
-    # every cycle weighted at SigmaSunSysUncorrRad — which is a working vehicle
+    # every cycle weighted at SigmaSunAlbedoUncorrRad — which is a working vehicle
     # with a wider sun budget, so it emits AlbedoConfigInvalid once and carries
     # on rather than refusing cycles.
     #
@@ -599,8 +639,11 @@ module flight {
 
     @ Earth-albedo pull removed from this cycle's sun measurement [rad] (§8.1).
     @ **NaN means the correction did not run**, and that is the channel's second
-    @ job: it is how the ground tells which of SigmaSunSysRad and
-    @ SigmaSunSysUncorrRad the cycle was weighted with. NaN is normal and
+    @ job: it is how the ground tells which of SigmaSunAlbedoRad and
+    @ SigmaSunAlbedoUncorrRad was in force this cycle. Note that is the *albedo*
+    @ term alone, not the whole composed systematic — the ephemeris term is
+    @ chosen separately by the served TableGrade, and OnboardTables.EphemGrade is
+    @ what shows that half. NaN is normal and
     @ frequent — eclipse, the night side, no Earth in the sensor's field, no
     @ position fix, or no attitude yet to place the field with.
     @
@@ -680,7 +723,7 @@ module flight {
 
     @ An Earth-albedo-correction parameter is missing from ParameterDb or outside
     @ its valid range. Not fatal and not even mode-limiting: every cycle is
-    @ simply weighted at SigmaSunSysUncorrRad and the sun measurement carries its
+    @ simply weighted at SigmaSunAlbedoUncorrRad and the sun measurement carries its
     @ full albedo, which is how the vehicle flew before the correction existed.
     @ Edge-gated to the transition into the invalid state.
     @ Action: uplink the missing/corrected parameter (PRM_SET + PRM_SAVE). Until

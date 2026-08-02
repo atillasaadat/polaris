@@ -45,7 +45,7 @@ constexpr double kOrbitRadiusM = 7.0e6;
 //! snaps to the TRIAD solution, so an acquisition is exact and a wrong frame
 //! cannot hide behind a partial blend.
 constexpr F64 kSigmaSunWhite = 0.01;
-constexpr F64 kSigmaSunSys = 0.005;
+constexpr F64 kSigmaSunAlbedoCorr = 0.005;
 constexpr F64 kSigmaMagWhite = 0.02;
 constexpr F64 kSigmaMagSys = 0.01;
 constexpr F64 kGyroArw = 1.0e-4;
@@ -64,7 +64,14 @@ constexpr F64 kMaxPositionRadiusM = 5.0e7;
 //! a cycle was weighted with by looking at the reported covariance.
 constexpr F64 kSunAlbedoPeakRad = 0.20944;     // 12 deg
 constexpr F64 kSunAlbedoHalfFovRad = 1.04720;  // 60 deg
-constexpr F64 kSigmaSunSysUncorr = 5.0 * kSigmaSunSys;
+constexpr F64 kSigmaSunAlbedoUncorr = 5.0 * kSigmaSunAlbedoCorr;
+
+//! Ephemeris terms. The harness's stubbed getBodyPosition answers at
+//! `stub_grade_`, so a test can put the reference on either side of the split;
+//! the two are two orders of magnitude apart, as they are in flight, so a test
+//! can tell which was used from the reported covariance alone.
+constexpr F64 kSigmaSunEphem = 7.0e-3;
+constexpr F64 kSigmaSunEphemPrecise = 5.0e-5;
 
 //! Fine-mode tuning. The horizons and streaks are far shorter than flight values
 //! so a demotion path is a handful of cycles rather than minutes of them; the
@@ -176,7 +183,7 @@ void AttitudeEstimatorTester ::from_estimateOut_handler(FwIndexType portNum,
 
 void AttitudeEstimatorTester ::setValidParameters(bool withFine, bool withAlbedo) {
   this->paramSet_SigmaSunWhiteRad(kSigmaSunWhite, Fw::ParamValid::VALID);
-  this->paramSet_SigmaSunSysRad(kSigmaSunSys, Fw::ParamValid::VALID);
+  this->paramSet_SigmaSunAlbedoRad(kSigmaSunAlbedoCorr, Fw::ParamValid::VALID);
   this->paramSet_SigmaMagWhiteRad(kSigmaMagWhite, Fw::ParamValid::VALID);
   this->paramSet_SigmaMagSysRad(kSigmaMagSys, Fw::ParamValid::VALID);
   this->paramSet_GyroArw(kGyroArw, Fw::ParamValid::VALID);
@@ -187,7 +194,9 @@ void AttitudeEstimatorTester ::setValidParameters(bool withFine, bool withAlbedo
   this->paramSet_MaxMeasAgeSec(kMaxMeasAgeSec, Fw::ParamValid::VALID);
   this->paramSet_MinPositionRadiusM(kMinPositionRadiusM, Fw::ParamValid::VALID);
   this->paramSet_MaxPositionRadiusM(kMaxPositionRadiusM, Fw::ParamValid::VALID);
-  this->paramSet_SigmaSunSysUncorrRad(kSigmaSunSysUncorr, Fw::ParamValid::VALID);
+  this->paramSet_SigmaSunAlbedoUncorrRad(kSigmaSunAlbedoUncorr, Fw::ParamValid::VALID);
+  this->paramSet_SigmaSunEphemRad(kSigmaSunEphem, Fw::ParamValid::VALID);
+  this->paramSet_SigmaSunEphemPreciseRad(kSigmaSunEphemPrecise, Fw::ParamValid::VALID);
   if (withAlbedo) {
     this->paramSet_SunAlbedoPeakRad(kSunAlbedoPeakRad, Fw::ParamValid::VALID);
     this->paramSet_SunAlbedoHalfFovRad(kSunAlbedoHalfFovRad, Fw::ParamValid::VALID);
@@ -1316,7 +1325,7 @@ void AttitudeEstimatorTester ::testAlbedoSigmaInflatesWithTheAttitudeUncertainty
   // Still the corrected budget, not the uncorrected one: the inflation is a
   // quadrature addition to the corrected sigma, so it can never make a corrected
   // cycle worse than an uncorrected one would have been.
-  const double kUncorrectedFloor = 3.0 * kSigmaSunSysUncorr * kSigmaSunSysUncorr;
+  const double kUncorrectedFloor = 3.0 * kSigmaSunAlbedoUncorr * kSigmaSunAlbedoUncorr;
   EXPECT_LT(settled_trace, kUncorrectedFloor)
       << "a corrected cycle reported a covariance at or above the uncorrected budget";
   // And the correction is genuinely running throughout, so the comparison is
@@ -1358,6 +1367,108 @@ void AttitudeEstimatorTester ::testAlbedoSkippedForASunSensorOtherThanUnitZero()
     EXPECT_TRUE(std::isnan(this->tlmHistory_SunAlbedoCorrection->at(i).arg))
         << "cycle " << i << " corrected a unit the albedo parameters do not describe";
   }
+}
+
+void AttitudeEstimatorTester ::testNegativeSunSigmaIsRefused() {
+  // The sun systematic is composed with a hypot, which squares its arguments —
+  // so a sign typo on either good-side term would be absorbed silently, passing
+  // both the ordering gate above it and every runtime finiteness check while
+  // quietly meaning its own absolute value. There is nowhere downstream that
+  // could catch it, so it is caught here.
+  this->loadIgrf();
+  this->setValidParameters();
+  this->paramSet_SigmaSunAlbedoRad(-kSigmaSunAlbedoCorr, Fw::ParamValid::VALID);
+  this->component.loadParameters();
+
+  const QuatBI q(polaris::math::Quaternion::Identity());
+  this->feedMeasurements(kStartTaiNs, q, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(kStartTaiNs);
+  ASSERT_EVENTS_ConfigInvalid_SIZE(1);
+  ASSERT_TLM_EstMode(0, EstimationMode::INVALID);
+
+  // Same for the ephemeris side, on a second component so the first one's
+  // edge-gated alert cannot mask it.
+  AttitudeEstimatorTester ephem;
+  ephem.loadIgrf();
+  ephem.setValidParameters();
+  ephem.paramSet_SigmaSunEphemPreciseRad(-kSigmaSunEphemPrecise, Fw::ParamValid::VALID);
+  ephem.component.loadParameters();
+  ephem.feedMeasurements(kStartTaiNs, q, Eigen::Vector3d::Zero(), true);
+  ephem.runCycleAt(kStartTaiNs);
+  EXPECT_EQ(ephem.eventHistory_ConfigInvalid->size(), 1u)
+      << "a negative SigmaSunEphemPreciseRad was accepted";
+}
+
+void AttitudeEstimatorTester ::testSunSigmaFollowsTheEphemerisGrade() {
+  // The sun *reference* term is the ephemeris', and which value is in force is
+  // decided by the grade the query answered at — a fact about the current epoch
+  // and the current upload, not a configuration choice. With the DE440 tables
+  // covering the epoch the sun direction is arcsecond-class and the term all but
+  // vanishes; on the analytic fallback it is 7 mrad and, now that the albedo
+  // correction has removed most of the sensor term, more than half the budget.
+  //
+  // The estimator's covariance floor is built from the composed systematic, so a
+  // PRECISE-graded cycle must report a tighter one than a COARSE-graded cycle on
+  // otherwise identical measurements. Two components rather than one run, so the
+  // comparison is between two vehicles that differ *only* in the served grade.
+  // Both components get the albedo tuning and the working albedo geometry, so
+  // the *only* difference between them is the served grade.
+  this->sun_at_45_from_nadir_ = true;
+  this->stub_grade_ = TableGrade::PRECISE;
+  this->loadIgrf();
+  this->setValidParameters(false, true);
+
+  // **Two** cycles each, not one. The first is the acquisition cycle, where the
+  // albedo correction cannot run (no attitude yet to place the Earth with), so
+  // the albedo term is the wide uncorrected one and it swamps the ephemeris
+  // difference — the two grades would differ by under 4%. On the second cycle
+  // the correction runs, the albedo term drops to its corrected value, and the
+  // ephemeris term is a comparable share of what is left. That is the case the
+  // vehicle actually flies in, and the one worth measuring.
+  I64 t = kStartTaiNs;
+  const QuatBI truth = this->earthInTheSunSensorField(kStartTaiNs);
+  AttitudeEstimatorTester degraded;
+  degraded.sun_at_45_from_nadir_ = true;
+  degraded.stub_grade_ = TableGrade::COARSE;
+  degraded.loadIgrf();
+  degraded.setValidParameters(false, true);
+  I64 t_degraded = kStartTaiNs;
+  for (int i = 0; i < 2; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+    degraded.feedMeasurements(t_degraded, truth, Eigen::Vector3d::Zero(), true);
+    degraded.runCycleAt(t_degraded);
+    t_degraded += kNsPerSecond / 10;
+  }
+  ASSERT_TRUE(this->last_estimate_.get_attitudeValid());
+  ASSERT_TRUE(degraded.last_estimate_.get_attitudeValid());
+  const double precise_trace = this->publishedCovTrace();
+  const double coarse_trace = degraded.publishedCovTrace();
+
+  EXPECT_LT(precise_trace, coarse_trace)
+      << "the sun sigma did not follow the ephemeris grade — tables-active and "
+         "analytic-fallback cycles reported the same confidence";
+  std::printf("[ephemeris grade] cov trace: tables %.6f vs analytic %.6f rad^2 (%.0f%% wider)\n",
+              precise_trace, coarse_trace, 100.0 * (coarse_trace / precise_trace - 1.0));
+
+  // And the grade really was the only difference. Asserted on the **domain
+  // argument** of the degrade event rather than on RefGrade: the stubbed query
+  // drives the EOP and ephemeris domains from one knob, and RefGrade is the
+  // worse of the two, so it could not tell which domain moved — which is the
+  // whole thing under test.
+  ASSERT_EVENTS_ReferenceDegraded_SIZE(0);
+  ASSERT_EQ(degraded.eventHistory_ReferenceDegraded->size(), 2u)
+      << "the degraded component did not alert on both reference domains";
+  bool saw_ephemeris = false;
+  for (U32 i = 0; i < degraded.eventHistory_ReferenceDegraded->size(); ++i) {
+    if (degraded.eventHistory_ReferenceDegraded->at(i).domain == TableDomain::EPHEMERIS) {
+      saw_ephemeris = true;
+      EXPECT_EQ(degraded.eventHistory_ReferenceDegraded->at(i).grade, TableGrade::COARSE);
+    }
+  }
+  EXPECT_TRUE(saw_ephemeris) << "no EPHEMERIS-domain degrade — the sun reference term was "
+                                "selected from something other than the ephemeris grade";
 }
 
 void AttitudeEstimatorTester ::testMissingAlbedoTuningLeavesTheEstimatorRunning() {

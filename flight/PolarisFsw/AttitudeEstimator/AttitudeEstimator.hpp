@@ -182,12 +182,21 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! @return the pull angle removed [rad], or NaN when the correction did not
   //!         run — which is a normal, frequent condition and leaves the cycle on
   //!         the uncorrected sigma.
+  //! Compose this cycle's sun systematic and its MEKF-inflated total from the
+  //! sensor-side albedo term and the reference-side ephemeris term, which are
+  //! independent and therefore add in quadrature.
+  void setSunSigmaForCycle(double albedoSigmaRad, double ephemSigmaRad);
+
+  //! TODO: eight parameters is one past comfortable. Fold the geometry into a
+  //! small input struct **when a third reference term arrives** (a second sun
+  //! sensor's boresight under §8.2 fusion is the likely trigger) — not before,
+  //! since a struct for one call site is indirection without a payer.
   double applyAlbedoCorrection(
       const SunSensorMeas* sun, const polaris::math::Vec3<polaris::math::frames::ECEF>& r_ecef,
       const polaris::math::Quat<polaris::math::frames::ECI, polaris::math::frames::ECEF>&
           q_eci_ecef,
       const polaris::math::Vec3<polaris::math::frames::ECI>& sun_geocentric,
-      bool havePositionAndRotation, bool haveSunGeocentric,
+      bool havePositionAndRotation, bool haveSunGeocentric, double ephemSigmaRad,
       polaris::math::Vec3<polaris::math::frames::Body>& sunBody);
 
   //! Read the seven MagCal* parameters and rebuild the calibration accumulator.
@@ -346,21 +355,25 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! side has no equivalent constant — it is per-cycle, below.
   F64 sigma_mag_total_rad_{0.0};
 
-  //! The sun-pair white σ and the systematic σ [rad] with and without the
-  //! Earth-albedo correction applied, plus the MEKF's inflated total for the
-  //! uncorrected case. Cached from the parameter set so the per-cycle choice
-  //! below is two comparisons and a hypot rather than a parameter read.
+  //! The four terms this cycle's sun systematic is composed from, cached from
+  //! the parameter set so the per-cycle choice is two comparisons and a hypot
+  //! rather than a parameter read. Two are the **sensor's** (albedo, with and
+  //! without the correction) and two the **reference's** (ephemeris, tables and
+  //! analytic fallback); which of each is in force is decided per cycle by
+  //! whether the correction ran and by the served ephemeris grade.
   F64 sigma_sun_white_rad_{0.0};
-  F64 sigma_sun_sys_corr_rad_{0.0};
-  F64 sigma_sun_sys_uncorr_rad_{0.0};
-  F64 sigma_sun_total_uncorr_rad_{0.0};
+  F64 sigma_sun_albedo_corr_rad_{0.0};
+  F64 sigma_sun_albedo_uncorr_rad_{0.0};
+  F64 sigma_sun_ephem_rad_{0.0};
+  F64 sigma_sun_ephem_precise_rad_{0.0};
 
   //! **This cycle's** sun-pair systematic σ and its MEKF-inflated total [rad],
-  //! written by applyAlbedoCorrection() before any consumer reads them. Not a
-  //! choice between two constants: on a corrected cycle the systematic carries
-  //! the attitude-error-driven term `A·σ_att/2`, which depends on how well the
+  //! written by setSunSigmaForCycle() before any consumer reads them. Not a
+  //! choice between two constants: on a corrected cycle the albedo term carries
+  //! the attitude-error-driven `A·σ_att/2`, which depends on how well the
   //! attitude is known *now*, so a freshly acquired 10° solution is weighted
-  //! honestly instead of at the converged number.
+  //! honestly instead of at the converged number; and the ephemeris term follows
+  //! the grade the tables served this cycle.
   F64 sigma_sun_sys_cycle_{0.0};
   F64 sigma_sun_total_cycle_{0.0};
 
