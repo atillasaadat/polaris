@@ -100,14 +100,16 @@ add_library(polaris::onboard ALIAS polaris_onboard)
 # Phase 4 starts here with the coarse attitude chain: the TRIAD single-frame
 # initializer and the SS+MAG+IMU coarse estimator behind the Safe-mode floor
 # (§8.1, §10), joined by the fine mode: Davenport's q-method (N-vector
-# cold-start/re-init) and the 6-state attitude/gyro-bias MEKF. Pure math on the
-# canonical state — no F´ types, no I/O; the F´ AttitudeEstimator component
-# wraps it.
+# cold-start/re-init) and the 6-state attitude/gyro-bias MEKF, plus the
+# attitude-free magnetometer hard/soft-iron calibration the on-orbit MAG_CAL
+# flow runs. Pure math on the canonical state — no F´ types, no I/O; the F´
+# AttitudeEstimator component wraps it.
 add_library(polaris_gnc
   gnc/triad.cpp
   gnc/davenport.cpp
   gnc/coarse_attitude.cpp
-  gnc/mekf.cpp)
+  gnc/mekf.cpp
+  gnc/mag_calibration.cpp)
 target_include_directories(polaris_gnc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_gnc
   PUBLIC Eigen3::Eigen polaris_math polaris_time polaris_state

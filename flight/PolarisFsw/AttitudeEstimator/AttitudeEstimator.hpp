@@ -25,6 +25,7 @@
 #include "flight/PolarisFsw/AttitudeEstimator/AttitudeEstimatorComponentAc.hpp"
 #include "gnc/coarse_attitude.hpp"
 #include "gnc/davenport.hpp"
+#include "gnc/mag_calibration.hpp"
 #include "gnc/mekf.hpp"
 #include "math/frames.hpp"
 #include "math/typed_vector.hpp"
@@ -38,6 +39,19 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
  public:
   //! Longest configurable IGRF coefficient path held (fixed, no heap).
   static constexpr FwSizeType kMaxPathLength = 256;
+
+  //! Ceiling on MAG_CAL_START's sampleCount. The accumulator is O(1) in the
+  //! window length so this costs nothing to raise; it is here so a corrupted or
+  //! fat-fingered uplink cannot open a window the ground would never see close
+  //! (100000 samples is ~2.8 hours at the 10 Hz GNC rate). MAG_CAL_ABORT closes
+  //! a window early regardless.
+  static constexpr U32 kMaxCalSamples = 100000;
+
+  //! Cycles a collection window is allowed per sample it asked for, before it
+  //! closes itself and reports. Ten means a window collecting at a tenth of the
+  //! cycle rate still completes; anything slower is an outage, not a
+  //! collection. See @ref mag_cal_deadline_cycles_.
+  static constexpr U32 kMaxCalStallFactor = 10;
 
   //! Construct AttitudeEstimator object
   explicit AttitudeEstimator(const char* const compName);
@@ -64,6 +78,15 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! needs it) but can never form the magnetic pair, so it cannot acquire
   //! attitude.
   bool configureIgrf(const char* igrfPath, double decimalYear);
+
+  //! Dispatch MAG_CAL_START for @p sampleCount samples through this component's
+  //! own command port (no-op when zero). Called at topology setup, *after*
+  //! loadParameters(), for the SITL demonstration of the §8.1 commanded flow and
+  //! for bench runs — cases where the calibration has to be commanded with no
+  //! ground link attached. It is the real opcode through the real command
+  //! handler; the only thing skipped is the uplink. A flight vehicle commands
+  //! this from the ground and leaves the topology hook at zero.
+  void commandMagCalAtStartup(U32 sampleCount);
 
  private:
   // ----------------------------------------------------------------------
@@ -98,6 +121,19 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! TRIAD for coarse, a fresh Davenport seed for fine.
   void RESET_ESTIMATOR_cmdHandler(FwOpcodeType opCode, U32 cmdSeq) override;
 
+  //! MAG_CAL_START: open a calibration collection window of @p sampleCount
+  //! accepted samples. Refuses (EXECUTION_ERROR + MagCalRejected) on missing
+  //! tuning or an out-of-range count; the estimator is unaffected either way.
+  void MAG_CAL_START_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, U32 sampleCount) override;
+
+  //! MAG_CAL_ABORT: close a window without fitting, keeping any applied
+  //! calibration. Idempotent.
+  void MAG_CAL_ABORT_cmdHandler(FwOpcodeType opCode, U32 cmdSeq) override;
+
+  //! MAG_CAL_CLEAR: drop the applied calibration; consumers revert to raw. Does
+  //! not touch a window in progress. Idempotent.
+  void MAG_CAL_CLEAR_cmdHandler(FwOpcodeType opCode, U32 cmdSeq) override;
+
   //! A parameter changed: re-read the whole set on the next cycle.
   void parameterUpdated(FwPrmIdType id) override;
 
@@ -120,6 +156,29 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! Emit ConfigInvalid(@p detail) if not already flagged, and leave the
   //! estimator inert. Never substitutes a value (§19.3).
   void failConfig(const char* detail);
+
+  //! Read the seven MagCal* parameters and rebuild the calibration accumulator.
+  //! Called from MAG_CAL_START rather than per cycle: a missing calibration
+  //! parameter costs only the ability to *start* a calibration, so it is a
+  //! command-time refusal (MagCalRejected(CONFIG)) and never a flight event.
+  //! Returns true when the accumulator is configured.
+  bool refreshMagCalConfig();
+
+  //! Feed one raw magnetometer reading and its modelled field magnitude to an
+  //! open collection window, and fit when the target is reached. No-op unless a
+  //! window is open. @p m_raw is the **uncorrected** reading — the fit must
+  //! never see its own correction — and @p igrf_magnitude_t the onboard IGRF
+  //! magnitude at this cycle's position and epoch.
+  void collectMagSample(const polaris::math::Vec3<polaris::math::frames::Body>& m_raw,
+                        double igrf_magnitude_t);
+
+  //! Close the open window and try the fit: MagCalComplete + apply on success,
+  //! MagCalRejected + nothing applied on refusal. No-op unless a window is open.
+  void finishMagCal();
+
+  //! Drop the applied calibration and emit MagCalCleared, if one is applied.
+  //! Shared by MAG_CAL_CLEAR and the full RESET_ESTIMATOR semantics.
+  void clearMagCal();
 
   //! Emit FineConfigInvalid(@p detail) if not already flagged, demote fine mode
   //! if it was engaged, and leave the MEKF inert. The coarse chain is untouched.
@@ -199,6 +258,17 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! The fine estimator. Starts inert on the same rule, and is rebuilt by
   //! refreshFineConfig(); an inert filter simply means coarse-only operation.
   polaris::gnc::Mekf mekf_;
+
+  //! Streaming ellipsoid accumulator for the commanded calibration (§8.1).
+  //! Fixed storage — a 10x10 normal matrix and a handful of moments, O(1) in the
+  //! window length — so a collection window allocates nothing. Starts inert on
+  //! the same rule as the estimators; refreshMagCalConfig() builds it.
+  polaris::gnc::MagCalibrationAccumulator mag_cal_accumulator_;
+
+  //! The applied calibration. Default-constructed means `valid == false`, and
+  //! applyMagCalibration() then passes the raw reading through unchanged — which
+  //! is why the magnetometer path calls it unconditionally.
+  polaris::gnc::MagCalibrationResult mag_cal_{};
 
   //! Onboard IGRF-14 snapshot. Inert until configureIgrf() succeeds.
   polaris::environment::IgrfField igrf_;
@@ -290,6 +360,23 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! Solution age [s] of the last cycle, so the AttitudeLost edge can report it
   //! from paths that have no estimator output in hand (config failure).
   double last_age_s_{0.0};
+
+  //! A collection window is open, and how many accepted samples close it. The
+  //! two together are the whole of the calibration state machine: COLLECTING
+  //! while open, APPLIED while `mag_cal_.valid`, IDLE otherwise.
+  bool mag_cal_collecting_{false};
+  U32 mag_cal_target_samples_{0};
+
+  //! Cycles the open window has been given, and the deadline it is closed at.
+  //! A window is defined in *accepted* samples, so a magnetometer or GNSS
+  //! outage stalls it rather than ending it — without a deadline a loss of
+  //! signal leaves the vehicle telemetering COLLECTING forever and the ground
+  //! waiting on a completion that cannot arrive. The deadline is
+  //! kMaxCalStallFactor x the target, i.e. the window may lose 90% of its
+  //! cycles and still finish; past that the fit is attempted anyway, and the
+  //! usual gates refuse it with SAMPLES if too little was collected.
+  U32 mag_cal_cycles_{0};
+  U32 mag_cal_deadline_cycles_{0};
 
   //! Fine mode is engaged: the MEKF is seeded and its solution is what
   //! estimateOut carries. False means the coarse chain is the published product.

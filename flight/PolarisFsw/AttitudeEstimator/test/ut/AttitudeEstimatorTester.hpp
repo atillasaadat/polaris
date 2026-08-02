@@ -29,7 +29,11 @@ namespace flight {
 
 class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
  public:
-  static const U32 MAX_HISTORY_SIZE = 100;
+  //! The calibration tests run a full 100-sample collection window plus its
+  //! before/after cycles, so the bounded history has to hold a few hundred
+  //! entries per channel. Long runs (the fine-mode convergence tests) still call
+  //! clearHistory() rather than sizing this to them.
+  static const U32 MAX_HISTORY_SIZE = 1000;
   static const FwEnumStoreType TEST_INSTANCE_ID = 0;
 
   AttitudeEstimatorTester();
@@ -106,6 +110,45 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! component re-promotes through a fresh seed rather than a resumed filter.
   void testResetDropsFineMode();
 
+  //! The whole commanded flow on a magnetometer carrying a known hard/soft iron:
+  //! MAG_CAL_START, a tumbling collection window, an accepted fit, and — the
+  //! assertion that matters — the *estimator's* attitude error collapses, which
+  //! it can only do if the correction is applied to the vector the estimator
+  //! consumes rather than merely stored.
+  void testMagCalCollectsFitsAndAppliesTheCorrection();
+
+  //! MAG_CAL_ABORT closes a window without fitting: no calibration is applied,
+  //! the sample count goes back to zero, and the estimator is untouched.
+  void testMagCalAbortDiscardsTheWindow();
+
+  //! MAG_CAL_CLEAR drops an applied calibration and every consumer goes back to
+  //! the raw field — the attitude error returns to its uncalibrated value.
+  void testMagCalClearRevertsToRaw();
+
+  //! A window collected over a nearly-fixed attitude spans too narrow a cone of
+  //! field directions: the fit is refused with COVERAGE, nothing is applied, and
+  //! the live coverage channel showed it coming.
+  void testMagCalRejectsNarrowCoverage();
+
+  //! RESET_ESTIMATOR is a *full* reset: it abandons a window in progress and
+  //! clears an applied calibration, putting the magnetometer back on raw.
+  void testMagCalResetAbortsAndClears();
+
+  //! MAG_CAL_START with no MagCal* tuning in ParameterDb refuses the command and
+  //! says CONFIG — the first thing a real vehicle hits, since the calibration
+  //! set is delivered separately from the flight tuning — while leaving the
+  //! estimator running exactly as before.
+  void testMagCalStartRefusedWithoutParameters();
+
+  //! A sample count below MagCalMinSamples or above kMaxCalSamples is refused at
+  //! the command rather than after a whole wasted window.
+  void testMagCalStartRejectsOutOfRangeCounts();
+
+  //! Collection is a tap, not a mode: an estimator running with a window open
+  //! produces bit-identical mode and attitude telemetry to one running the same
+  //! measurements with no window at all.
+  void testEstimatorUndisturbedDuringCollection();
+
  private:
   // ----------------------------------------------------------------------
   // Stubbed query ports (the component's outputs, this harness's inputs)
@@ -127,6 +170,34 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! the seven fine-mode parameters; without them the component runs coarse-only
   //! (one FineConfigInvalid), which is what the coarse-behaviour tests want.
   void setValidParameters(bool withFine = false);
+
+  //! Add the seven MagCal* parameters to the tester's table and re-load. Kept
+  //! out of setValidParameters() so the existing tests keep proving the
+  //! estimator runs with no calibration tuning at all — which is the design:
+  //! a missing MagCal* costs only the MAG_CAL_START command.
+  void setMagCalParameters();
+
+  //! Feed @p count tumbling cycles from @p t at the 10 Hz rate, advancing @p t.
+  //! The attitude sweeps two incommensurate axes so the body-frame field
+  //! direction covers the sphere — a single-axis tumble traces a cone and would
+  //! be refused on coverage, which is what testMagCalRejectsNarrowCoverage uses.
+  void runTumbleCycles(int count, I64& t);
+
+  //! Run @p count tumble cycles and return the **largest** published attitude
+  //! error over them [rad]. The maximum, not the last: an uncorrected hard iron
+  //! tilts the field by an amount that depends on where the field points in body
+  //! axes, so a single cycle can land on a geometry where the iron happens not
+  //! to matter, and comparing two single cycles compares two geometries rather
+  //! than two calibrations.
+  double maxPublishedErrorOverCycles(int count, I64& t);
+
+  //! Angle [rad] between the last published attitude and @p truth.
+  double publishedErrorRad(const polaris::math::Quat<polaris::math::frames::Body,
+                                                     polaris::math::frames::ECI>& truth) const;
+
+  //! Truth attitude of tumble step @p k — the sequence runTumbleCycles walks.
+  static polaris::math::Quat<polaris::math::frames::Body, polaris::math::frames::ECI> tumbleAt(
+      int k);
 
   //! Load the onboard IGRF snapshot from the committed IAGA file, taken at
   //! @p decimalYear (default: the era the other tests run in).
@@ -163,7 +234,15 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! Whether the GNSS fix fed by feedMeasurements() is valid.
   bool gnss_valid_{true};
 
-  //! Position fed instead of the nominal one, for the range-gate test.
+  //! Where the vehicle is [m, ECEF]: what the GNSS fix reports *and* what both
+  //! inertial references are built at, so the two cannot disagree. Fixed by
+  //! default (the geometry only has to be a real place); runTumbleCycles walks it
+  //! along a polar orbit, which the calibration needs — see that function.
+  Eigen::Vector3d position_ecef_{7.0e6, 0.0, 0.0};
+
+  //! Position fed on the GNSS port *instead of* position_ecef_, for the
+  //! range-gate test: the references stay where they were, so the test sees the
+  //! gate reject the fix rather than the field model quietly following it.
   std::optional<Eigen::Vector3d> position_override_{};
 
   //! Time tag offset applied to the fed measurements [ns] — negative values age
@@ -184,6 +263,19 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! finiteness gate and is then refused by the filter as unnormalisable, which
   //! is a *refusal* rather than a gate rejection.
   bool sun_body_degenerate_{false};
+
+  //! Magnetometer error injected into the fed field measurement:
+  //! `m = S·B_body + b`, the model the ellipsoid fit inverts. Zero offset and
+  //! identity S (the defaults) feed a perfect magnetometer. `S` is kept
+  //! **symmetric** in the tests because magnitude data constrains the soft iron
+  //! only up to a left rotation — an antisymmetric part is a mounting error, not
+  //! an iron error, and belongs to the alignment calibration (§8.1).
+  Eigen::Vector3d mag_hard_iron_t_{Eigen::Vector3d::Zero()};
+  Eigen::Matrix3d mag_soft_iron_{Eigen::Matrix3d::Identity()};
+
+  //! Tumble step counter, so a test can pause and resume a tumble across
+  //! commands without the attitude jumping back to the start.
+  int tumble_step_{0};
 
   //! Last estimate seen on estimateOut.
   AttitudeEstimate last_estimate_{};

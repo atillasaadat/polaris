@@ -36,7 +36,9 @@ void print_usage(const char* app) {
       "-B\tonboard Chebyshev ephemeris fixture (default tests/golden/de440_bodies.cheb)\n"
       "-I\tonboard IAGA IGRF-14 coefficients (default tests/golden/igrf14coeffs.txt)\n"
       "-Y\tmission epoch for the IGRF snapshot, decimal year (default: system clock)\n"
-      "-P\tParameterDb file from the config compiler (default ./PrmDb.dat)\n",
+      "-P\tParameterDb file from the config compiler (default ./PrmDb.dat)\n"
+      "-M\tcommand MAG_CAL_START for N samples at startup (SITL/bench only; "
+      "0/absent = no calibration)\n",
       app);
 }
 
@@ -74,11 +76,12 @@ int main(int argc, char* argv[]) {
   const char* onboard_igrf_path = nullptr;
   const char* prm_db_path = nullptr;
   double igrf_epoch_year = 0.0;  // 0 = derive from the system clock at setup
+  U32 mag_cal_samples = 0;       // 0 = do not command a calibration at startup
 
   Os::init();
 
   // Loop while reading the getopt supplied options
-  while ((option = getopt(argc, argv, "hp:a:s:cE:B:I:Y:P:")) != -1) {
+  while ((option = getopt(argc, argv, "hp:a:s:cE:B:I:Y:P:M:")) != -1) {
     switch (option) {
       // Handle the -a argument for address/hostname
       case 'a':
@@ -139,6 +142,20 @@ int main(int argc, char* argv[]) {
         }
         prm_db_path = optarg;
         break;
+      // Startup magnetometer calibration (design doc §8.1), for the SITL
+      // demonstration and bench runs where no ground link is attached. The
+      // component still range-checks the count against its own tuning; this only
+      // rejects what cannot be a count at all.
+      case 'M': {
+        char* end = nullptr;
+        const long parsed = strtol(optarg, &end, 10);
+        if (end == optarg || *end != '\0' || parsed < 0 || parsed > 1000000) {
+          (void)printf("Invalid MAG_CAL_START sample count '%s' (expected 0-1000000)\n", optarg);
+          return 1;
+        }
+        mag_cal_samples = static_cast<U32>(parsed);
+        break;
+      }
       // Cascade intended: help output
       case 'h':
       // Cascade intended: help output
@@ -159,6 +176,7 @@ int main(int argc, char* argv[]) {
   inputs.onboardEphemPath = onboard_ephem_path;
   inputs.onboardIgrfPath = onboard_igrf_path;
   inputs.igrfEpochYear = igrf_epoch_year;
+  inputs.magCalSamples = mag_cal_samples;
   inputs.prmDbPath = prm_db_path;
 
   // Setup program shutdown via Ctrl-C

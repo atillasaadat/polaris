@@ -12,6 +12,29 @@ module flight {
     FILTER_FAULT = 4 @< a non-finite internal result dropped the filter itself
   }
 
+  @ Where the commanded magnetometer calibration is in its lifecycle (design doc
+  @ §8.1). Derived state, not a stored one: COLLECTING while a window is open,
+  @ else APPLIED while a solved calibration is correcting the field measurement,
+  @ else IDLE. COLLECTING wins because a window opened over an already-applied
+  @ calibration is the interesting condition, and the fit itself always runs on
+  @ **raw** samples regardless — the applied correction never feeds its own refit.
+  enum MagCalState : U8 {
+    IDLE = 0 @< no window open, no calibration applied: the magnetometer runs raw
+    COLLECTING = 1 @< a MAG_CAL_START window is accumulating samples
+    APPLIED = 2 @< a solved calibration is correcting every magnetometer consumer
+  }
+
+  @ Which gate refused a magnetometer calibration fit (design doc §8.1). Carried
+  @ on MagCalRejected so the ground knows whether to re-fly the window and how.
+  enum MagCalRejectReason : U8 {
+    SAMPLES = 0 @< fewer samples were accepted than MagCalMinSamples — collect longer, or the window ran out of cycles waiting for a stalled sensor
+    COVERAGE = 1 @< the sampled field directions span too narrow a cone — tumble further
+    CONDITION = 2 @< the normal matrix is worse conditioned than MagCalMaxCondition
+    NO_IMPROVEMENT = 3 @< the fit does not beat the raw data by MagCalMinImprovement
+    NUMERICAL = 4 @< a decomposition failed or the fitted ellipsoid was unusable
+    CONFIG = 5 @< the calibration parameters are missing or out of range in ParameterDb
+  }
+
   @ Attitude estimator — coarse chain plus MEKF fine mode with arbitration
   @ (design doc §8.1, §10; REQ-ADET-002, REQ-ADET-003, REQ-ADET-004).
   @
@@ -48,6 +71,18 @@ module flight {
   @ so an oscillating condition is visible in the event stream rather than hidden
   @ inside one cycle.
   @
+  @ **Magnetometer calibration is commanded here (§8.1).** The component owns one
+  @ streaming ellipsoid accumulator (`polaris::gnc::MagCalibrationAccumulator`)
+  @ and one applied calibration. MAG_CAL_START opens a bounded window; each cycle
+  @ that has both a selected magnetometer reading and a modelled IGRF field feeds
+  @ the **raw** reading and that field's magnitude to the accumulator; at the
+  @ target the fit runs, and on acceptance the correction is applied at a single
+  @ point in the magnetometer path — between unit selection and every consumer,
+  @ so the coarse chain, the MEKF and the future B-dot cannot disagree about what
+  @ the field was. Collection never disturbs the running estimator: it is a tap,
+  @ the fit is on raw data, and the published attitude changes only when a
+  @ calibration is applied or cleared.
+  @
   @ **Multiple units are the design point.** The measurement inputs are port
   @ arrays sized `GncMaxUnits` because the vehicle will fly several sun sensors,
   @ magnetometers and IMUs and one or more star trackers. This push consumes the
@@ -66,6 +101,25 @@ module flight {
   @ 10 Hz GNC cycle under SITL, §2.4), calls only synchronous query ports, and
   @ holds no queue. A flight component — it ships to hardware and has no
   @ lib/sitl dependency; only the *source* of its measurements is SITL today.
+  @
+  @ **`run` and every command are `guarded`, not `sync`, and both halves are
+  @ required.** A passive component borrows its caller's thread, and the callers
+  @ are two different threads: the rate group drives `run`, while the command
+  @ dispatcher drives the command handlers. Those handlers write exactly the
+  @ state `run` reads — RESET_ESTIMATOR rebuilds the estimators, MAG_CAL_CLEAR
+  @ assigns the ~100-byte applied calibration, MAG_CAL_START resets the
+  @ accumulator mid rank-1 update. A torn read there is the worst kind of fault
+  @ this component can have, because the halves are individually *finite*: an
+  @ identity soft-iron matrix against a stale hard-iron offset passes every
+  @ finiteness gate and flows into both estimator chains as a measurement. F´
+  @ serialises guarded ports on one component mutex, which costs one uncontended
+  @ lock per 10 Hz cycle. Guarding the commands alone would be worse than
+  @ guarding neither, since it would look like the problem was handled.
+  @ The measurement input ports stay `sync`, as they were before this push: the
+  @ SITL bridge publishes them from the same thread that then cycles the rate
+  @ group. A hardware deployment that services sensors on a driver thread would
+  @ have to guard those too, which is a topology-time decision for the push that
+  @ brings the `Drv` layer up.
   passive component AttitudeEstimator {
 
     # ----------------------------------------------------------------------
@@ -75,7 +129,7 @@ module flight {
     @ Estimation cycle entry: one `CoarseAttitudeEstimator::update` per call, at
     @ the GNC rate (10 Hz, §2.4). Measurements must already be latched for this
     @ epoch — under SITL the bridge publishes them before cycling the group.
-    sync input port run: Svc.Sched
+    guarded input port run: Svc.Sched
 
     # ----------------------------------------------------------------------
     # Sensor measurement inputs (arrays: multi-unit is the design point, §8.2)
@@ -130,7 +184,65 @@ module flight {
     @ Every edge-gated alert is re-armed and the tuning re-read. Configuration
     @ and parameters are retained. Use after a sensor calibration change, or to
     @ force re-acquisition when the solution is suspect.
-    sync command RESET_ESTIMATOR
+    @
+    @ **Full reset semantics include the magnetometer calibration**: a collection
+    @ window in progress is aborted and an applied calibration is cleared, so the
+    @ magnetometer goes back to raw. That is deliberate — the command exists for
+    @ "the solution is suspect, start over", and a calibration derived from data
+    @ the operator no longer trusts is part of what is suspect. Re-calibrating is
+    @ MAG_CAL_START; clearing a calibration alone (keeping the solutions) is
+    @ MAG_CAL_CLEAR.
+    guarded command RESET_ESTIMATOR
+
+    @ Open a magnetometer hard/soft-iron calibration window of @p sampleCount
+    @ **accepted** samples (design doc §8.1). The estimator keeps running
+    @ normally throughout: collection is a tap on the magnetometer path, not a
+    @ mode, and the published attitude is unaffected until the fit is applied.
+    @
+    @ **Samples, not seconds, on purpose.** Every gate the fit applies is in
+    @ samples, and a sample only enters when that cycle had a valid magnetometer
+    @ reading *and* a modelled IGRF field to compare it against — so a GNSS
+    @ outage, a sensor dropout, or (once the §7 MTQ/MAG interlock lands) a
+    @ magnetorquer-on window all cost samples without costing wall-clock. A
+    @ duration would let the ground command a window that quietly collected a
+    @ tenth of the data it asked for; a sample count says what the fit will
+    @ actually be fitted on. Wall-clock is then bounded by the operator, who can
+    @ MAG_CAL_ABORT at any time.
+    @
+    @ The window also closes itself after ten cycles per sample asked for, so a
+    @ loss of magnetometer or GNSS signal mid-collection cannot leave the vehicle
+    @ telemetering COLLECTING forever waiting on a completion that can no longer
+    @ arrive. The fit is attempted on whatever was collected: enough and it
+    @ succeeds, too little and MagCalRejected(SAMPLES) is the honest report.
+    @
+    @ Rejected (EXECUTION_ERROR, no window opened) when the calibration
+    @ parameters are missing or out of range — MagCalRejected(CONFIG) — or when
+    @ @p sampleCount is below MagCalMinSamples or above the component's fixed
+    @ sample-count ceiling (AttitudeEstimator::kMaxCalSamples).
+    @ Starting a window while one is open restarts it: the accumulator is reset
+    @ and the new target takes effect.
+    guarded command MAG_CAL_START(
+                                sampleCount: U32 @< accepted samples to collect before fitting
+                              )
+
+    @ Close a collection window without fitting: the accumulator is discarded and
+    @ any previously applied calibration is left exactly as it was. A no-op (with
+    @ OK) when no window is open, so an abort is always safe to send.
+    guarded command MAG_CAL_ABORT
+
+    @ Drop the applied magnetometer calibration; every consumer reverts to the
+    @ raw field measurement. Leaves a collection window in progress alone —
+    @ clearing the applied correction and re-fitting are separate decisions, and
+    @ the fit runs on raw samples either way. A no-op (with OK) when no
+    @ calibration is applied.
+    @
+    @ **The applied calibration does not survive a reboot.** It lives in
+    @ component state only; nothing is written to ParameterDb. That is the
+    @ deliberate deferral recorded in §8.1 — persistence rides on the §23.6
+    @ non-volatile-state work — so an operator sees MagCalCleared on command and
+    @ simply no MagCalComplete after a reset, and the vehicle flies uncalibrated
+    @ until the window is re-flown.
+    guarded command MAG_CAL_CLEAR
 
     # ----------------------------------------------------------------------
     # Parameters (mission configuration, §19.3 — no defaults on purpose)
@@ -246,6 +358,58 @@ module flight {
     param SeedMinObservability: F64
 
     # ----------------------------------------------------------------------
+    # Magnetometer-calibration parameters — a third, independent validity gate
+    # ----------------------------------------------------------------------
+    #
+    # Validated separately again, and on the *command* rather than per cycle. A
+    # missing calibration parameter costs neither the coarse chain nor the fine
+    # mode — it costs only the ability to *start* a calibration, which is a
+    # commanded activity, not a flight function. So there is no per-cycle event
+    # for this set: MAG_CAL_START answers MagCalRejected(CONFIG) and the vehicle
+    # is otherwise completely unaffected. These map one-for-one onto
+    # polaris::gnc::MagCalibrationConfig.
+
+    @ Field magnitude the fit is non-dimensionalised by [T], e.g. 30e-6 in LEO.
+    @ Numerics only — the solution is invariant to it up to round-off; without it
+    @ the ten unknowns span 18 orders of dynamic range. Must be positive.
+    param MagCalNominalFieldT: F64
+
+    @ Smallest accepted |m_raw| and IGRF magnitude for a calibration sample [T].
+    @ Rejects a dead or unpowered sensor and a nonsensical reference.
+    param MagCalMinFieldT: F64
+
+    @ Largest accepted |m_raw| and IGRF magnitude for a calibration sample [T].
+    @ Rejects a saturated reading and — until the §7 MTQ/MAG interlock supplies
+    @ the actuation state — the grossest magnetorquer-contaminated samples.
+    @ Must exceed MagCalMinFieldT.
+    param MagCalMaxFieldT: F64
+
+    @ Fewest samples that may be fitted. The algebraic minimum is 10 (ten
+    @ unknowns), which fits exactly and reports zero residual regardless of
+    @ truth, so the residual and condition gates are meaningless below a
+    @ well-overdetermined problem. Also the floor on MAG_CAL_START's sampleCount.
+    param MagCalMinSamples: U32
+
+    @ Smallest accepted orientation coverage 3*lambda_min(D) of the sampled field
+    @ directions [dimensionless], in (0, 1]. A calibration fitted inside a narrow
+    @ cone extrapolates the ellipsoid over directions it never saw, which is
+    @ worse than no calibration — so this is a gate, not a diagnostic.
+    param MagCalMinCoverage: F64
+
+    @ Largest accepted condition number lambda_max/lambda_min of the
+    @ preconditioned normal matrix [dimensionless], > 1. The rigorous
+    @ observability gate: it sees every way the ten parameters can fail to
+    @ separate, where MagCalMinCoverage only sees the direction spread.
+    param MagCalMaxCondition: F64
+
+    @ Factor by which the calibrated magnitude residual must beat the
+    @ uncalibrated one [dimensionless], >= 1. A "calibration" that does not
+    @ improve the scalar check is refused rather than applied — a calibration
+    @ that makes the magnetometer worse is the outcome worth guarding hardest
+    @ against.
+    param MagCalMinImprovement: F64
+
+    # ----------------------------------------------------------------------
     # Telemetry (health: mode, solution, margins, source quality)
     # ----------------------------------------------------------------------
 
@@ -349,6 +513,32 @@ module flight {
     @ eclipse with no magnetic reference will do it — but a rising count is a
     @ filter that cannot hold onto a solution.
     telemetry FineDemotions: U32
+
+    @ Magnetometer-calibration lifecycle state (design doc §8.1). Written every
+    @ cycle so the ground can watch a window run without polling an event stream.
+    telemetry MagCalState: MagCalState
+
+    @ Samples accepted into the open collection window. Zero when none is open.
+    @ Read against the commanded sampleCount, this is the progress bar.
+    telemetry MagCalSamples: U32
+
+    @ Live orientation coverage 3*lambda_min(D) of the samples collected so far
+    @ [dimensionless]. **This is the "has it tumbled enough" signal** and it is
+    @ the reason to watch a window rather than wait for it: coverage climbing
+    @ toward MagCalMinCoverage says the window will succeed, coverage flat says
+    @ it will be refused however long it runs, and the ground can abort and
+    @ re-fly with a larger tumble instead of spending the whole window. NaN when
+    @ no window is open.
+    telemetry MagCalCoverage: F64
+
+    @ Angle-equivalent RMS residual of the last **accepted** calibration [rad]:
+    @ residual_rms / mean_field. Indicative rather than a bound — the scalar
+    @ magnitude check is blind to the error component transverse to the field,
+    @ which is the one that rotates the vector — but it is the only accuracy
+    @ figure available without an attitude reference, and it is the number the
+    @ ground grades a fit on. NaN until a calibration has been accepted, and
+    @ again after MAG_CAL_CLEAR or RESET_ESTIMATOR.
+    telemetry MagCalResidualAngle: F64
 
     # ----------------------------------------------------------------------
     # Events
@@ -488,6 +678,60 @@ module flight {
     event EstimatorReset \
       severity activity high \
       format "Attitude estimator reset: solutions dropped, awaiting re-acquisition"
+
+    @ A magnetometer calibration window opened (design doc §8.1). The estimator
+    @ keeps running unchanged; only the sampling tap is new.
+    @ Action: watch MagCalCoverage climb. If it plateaus well below
+    @ MagCalMinCoverage the window cannot succeed — MAG_CAL_ABORT and re-fly it
+    @ over a larger tumble rather than waiting it out.
+    event MagCalStarted(targetSamples: U32) \
+      severity activity high \
+      format "Magnetometer calibration started: collecting {} samples"
+
+    @ A calibration window closed and the fit was accepted; the correction is now
+    @ applied to every magnetometer consumer. The reported residual is the
+    @ angle-equivalent magnitude residual — see MagCalResidualAngle for what it
+    @ does and does not bound.
+    @ Action: grade the fit. A residual in the few-milliradian class is the
+    @ expected result on the reference budget. Then consider the **re-derivation
+    @ the calibration forces**: SigmaMagWhiteRad/SigmaMagSysRad describe an
+    @ uncalibrated magnetometer, and SeedMinObservability was derived from the
+    @ *ratio* of the sun and magnetic sigmas — a ~16x tighter magnetic pair makes
+    @ the shipped 0.0076 refuse every geometry in the band (~1.1e-4 preserves its
+    @ 10 deg meaning). Uplink all three before relying on fine mode. §8.1 and
+    @ flight/PolarisFsw/README.md carry the procedure.
+    event MagCalComplete(residualAngleRad: F64, coverage: F64, samples: U32) \
+      severity activity high \
+      format "Magnetometer calibration applied: residual={} rad, coverage={}, samples={}"
+
+    @ A calibration fit was refused; **nothing was applied** and any previously
+    @ applied calibration is retained untouched. The reason names the gate.
+    @ Action: SAMPLES — collect longer. COVERAGE — re-fly over a larger tumble.
+    @ CONDITION or NUMERICAL — the window is unobservable or the data is
+    @ pathological; check magnetometer health and the IGRF reference before
+    @ re-flying. NO_IMPROVEMENT — the sensor is already as good as this fit can
+    @ make it, which is a *result*, not a fault. CONFIG — uplink the missing
+    @ MagCal* parameters (PRM_SET + PRM_SAVE), then re-command.
+    event MagCalRejected(reason: MagCalRejectReason, samples: U32, coverage: F64) \
+      severity warning high \
+      format "Magnetometer calibration refused: reason={}, samples={}, coverage={}"
+
+    @ A collection window was closed by command without fitting.
+    @ Action: none; the operator asked for it.
+    event MagCalAborted(samples: U32) \
+      severity activity high \
+      format "Magnetometer calibration aborted: {} samples discarded"
+
+    @ The applied magnetometer calibration was dropped and every consumer is back
+    @ on the raw field measurement — by MAG_CAL_CLEAR, or as part of the full
+    @ RESET_ESTIMATOR semantics. Also the event whose *absence* after a reboot
+    @ tells the story: a calibration is not persisted (§23.6 deferral), so a
+    @ vehicle that comes up with no MagCalComplete in its log is running raw.
+    @ Action: re-fly MAG_CAL_START if the correction is still wanted, and revert
+    @ any re-derived SigmaMag*/SeedMinObservability values with it.
+    event MagCalCleared \
+      severity activity high \
+      format "Magnetometer calibration cleared: magnetometer reverted to raw"
 
     # ----------------------------------------------------------------------
     # Standard AC ports

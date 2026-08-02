@@ -9,4 +9,9 @@
 # double-precision nav/control) live in flight/CLAUDE.md and apply to everything
 # under here.
 
+# Project overrides of the F´ default configuration (currently the parameter
+# database size, §19.3). Registered before the deployment so the override is in
+# place when the deployment's components are configured.
+add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/config")
+
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/PolarisFsw")
