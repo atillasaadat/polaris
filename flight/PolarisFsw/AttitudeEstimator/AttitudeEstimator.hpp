@@ -23,6 +23,7 @@
 
 #include "environment/igrf.hpp"
 #include "flight/PolarisFsw/AttitudeEstimator/AttitudeEstimatorComponentAc.hpp"
+#include "gnc/albedo_correction.hpp"
 #include "gnc/coarse_attitude.hpp"
 #include "gnc/davenport.hpp"
 #include "gnc/mag_calibration.hpp"
@@ -153,9 +154,41 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! Returns true when the filter is configured.
   bool refreshFineConfig();
 
+  //! Read the three Earth-albedo-correction parameters and rebuild the
+  //! correction config. Independent of the other two refreshes again: a missing
+  //! albedo parameter costs the *correction* (AlbedoConfigInvalid, every cycle
+  //! weighted at the uncorrected sigma), not a mode. Returns true when the
+  //! correction is configured.
+  bool refreshAlbedoConfig();
+
   //! Emit ConfigInvalid(@p detail) if not already flagged, and leave the
   //! estimator inert. Never substitutes a value (§19.3).
   void failConfig(const char* detail);
+
+  //! Emit AlbedoConfigInvalid(@p detail) if not already flagged and leave the
+  //! correction inert. Neither estimator is touched — they run uncorrected.
+  void failAlbedoConfig(const char* detail);
+
+  //! Apply the Earth-albedo correction to @p sunBody in place, and set this
+  //! cycle's sun sigmas (@ref sigma_sun_sys_cycle_, @ref sigma_sun_total_cycle_)
+  //! to match what actually happened. The one application point: called between
+  //! unit selection and every consumer.
+  //!
+  //! @param sun the selected sun-sensor measurement; only the unit at index 0 is
+  //!        corrected, because there is one set of albedo parameters and it
+  //!        describes that unit.
+  //! @param sunBody [in,out] the measured sun direction, replaced by the
+  //!        corrected one on success and left untouched otherwise.
+  //! @return the pull angle removed [rad], or NaN when the correction did not
+  //!         run — which is a normal, frequent condition and leaves the cycle on
+  //!         the uncorrected sigma.
+  double applyAlbedoCorrection(
+      const SunSensorMeas* sun, const polaris::math::Vec3<polaris::math::frames::ECEF>& r_ecef,
+      const polaris::math::Quat<polaris::math::frames::ECI, polaris::math::frames::ECEF>&
+          q_eci_ecef,
+      const polaris::math::Vec3<polaris::math::frames::ECI>& sun_geocentric,
+      bool havePositionAndRotation, bool haveSunGeocentric,
+      polaris::math::Vec3<polaris::math::frames::Body>& sunBody);
 
   //! Read the seven MagCal* parameters and rebuild the calibration accumulator.
   //! Called from MAG_CAL_START rather than per cycle: a missing calibration
@@ -306,12 +339,36 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   F64 min_position_radius_m_{0.0};
   F64 max_position_radius_m_{0.0};
 
-  //! Per-source 1-sigma handed to the MEKF and the Davenport seed [rad]: the
-  //! white and systematic parts of the same budget, root-sum-squared. The filter
-  //! treats R as white, so the systematic part has to be inflated into sigma or
-  //! the covariance it reports converges below the true error (gnc/mekf.hpp).
-  F64 sigma_sun_total_rad_{0.0};
+  //! Magnetic 1-sigma handed to the MEKF and the Davenport seed [rad]: the white
+  //! and systematic parts of the same budget, root-sum-squared. The filter treats
+  //! R as white, so the systematic part has to be inflated into sigma or the
+  //! covariance it reports converges below the true error (gnc/mekf.hpp). The sun
+  //! side has no equivalent constant — it is per-cycle, below.
   F64 sigma_mag_total_rad_{0.0};
+
+  //! The sun-pair white σ and the systematic σ [rad] with and without the
+  //! Earth-albedo correction applied, plus the MEKF's inflated total for the
+  //! uncorrected case. Cached from the parameter set so the per-cycle choice
+  //! below is two comparisons and a hypot rather than a parameter read.
+  F64 sigma_sun_white_rad_{0.0};
+  F64 sigma_sun_sys_corr_rad_{0.0};
+  F64 sigma_sun_sys_uncorr_rad_{0.0};
+  F64 sigma_sun_total_uncorr_rad_{0.0};
+
+  //! **This cycle's** sun-pair systematic σ and its MEKF-inflated total [rad],
+  //! written by applyAlbedoCorrection() before any consumer reads them. Not a
+  //! choice between two constants: on a corrected cycle the systematic carries
+  //! the attitude-error-driven term `A·σ_att/2`, which depends on how well the
+  //! attitude is known *now*, so a freshly acquired 10° solution is weighted
+  //! honestly instead of at the converged number.
+  F64 sigma_sun_sys_cycle_{0.0};
+  F64 sigma_sun_total_cycle_{0.0};
+
+  //! The Earth-albedo correction's per-unit constants (§8.1). Inert until
+  //! refreshAlbedoConfig() succeeds; while inert every cycle is weighted at the
+  //! uncorrected sigma, which is how the vehicle flew before it existed.
+  polaris::gnc::AlbedoCorrectionConfig albedo_config_{};
+  bool albedo_configured_{false};
 
   //! Fine-mode tuning cached from the parameter set alongside the MekfConfig.
   F64 seed_min_observability_{0.0};
@@ -349,6 +406,7 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   bool attitude_valid_{false};
   bool config_invalid_flagged_{false};
   bool fine_config_invalid_flagged_{false};
+  bool albedo_config_invalid_flagged_{false};
   bool fine_init_failed_flagged_{false};
   bool position_unavailable_flagged_{false};
   bool igrf_stale_flagged_{false};

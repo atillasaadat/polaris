@@ -77,6 +77,8 @@
 
 #include <Eigen/Core>
 
+#include "math/fov_overlap.hpp"
+
 namespace polaris::sim::sensors {
 
 /// Which body, if any, violates a keep-out. Reported rather than reduced to a
@@ -170,35 +172,16 @@ struct OcclusionState {
 double limbClearance(const Eigen::Vector3d& boresight_eci, const Eigen::Vector3d& to_body,
                      double body_radius_m);
 
-/// Fraction of a circular field of view of half-angle @p half_fov_rad covered by
-/// a disk of angular radius @p body_radius_rad whose centre is @p separation_rad
-/// from the boresight.
+/// Fraction of a circular field of view covered by a body's disk — the shared
+/// implementation in `lib/math/fov_overlap.hpp`, re-exported here so the sim
+/// spelling is unchanged.
 ///
-/// With FOV radius \f$r_f\f$, body radius \f$r_b\f$, and separation
-/// \f$d = |\text{separation\_rad}|\f$, the three degenerate cases are
-/// \f[
-///   f = \begin{cases}
-///     0 & d \ge r_f + r_b \quad(\text{disjoint})
-///     \\ 1 & d \le r_b - r_f \quad(\text{FOV inside body})
-///     \\ (r_b/r_f)^2 & d \le r_f - r_b \quad(\text{body inside FOV})
-///   \end{cases}
-/// \f]
-/// and the partial overlap is the planar two-circle lens area over the FOV disk:
-/// \f[
-///   f = \frac{r_f^2\big(\alpha - \tfrac12\sin 2\alpha\big) + r_b^2\big(\beta - \tfrac12\sin
-///   2\beta\big)}{\pi\, r_f^2},
-/// \f]
-/// \f[
-///   \alpha = \arccos\frac{d^2 + r_f^2 - r_b^2}{2\,d\,r_f}, \qquad
-///   \beta  = \arccos\frac{d^2 + r_b^2 - r_f^2}{2\,d\,r_b},
-/// \f]
-/// clamped to \f$[0,1]\f$. Exact in the small-angle limit (see the file header for
-/// the error against a spherical quadrature).
-///
-/// Returns 0 for a non-positive FOV: a sensor with no field of view has no
-/// fraction to report, and dividing by its area would be a NaN in a telemetry
-/// channel.
-double fovCoveredFraction(double half_fov_rad, double separation_rad, double body_radius_rad);
+/// It moved out of this file when the flight albedo correction (§8.1) needed the
+/// same weighting: a correction computed from a *different* overlap formula than
+/// the one the sensor error was generated with removes an error the sensor never
+/// had. Same rule as the rest of this header — one geometry, one answer — now
+/// applied across the sim/flight seam rather than only between optical sensors.
+using polaris::math::fovCoveredFraction;
 
 /// Evaluate one line of sight: keep-out violations, per-body FOV coverage, and
 /// the boresight's Sun and nadir angles.

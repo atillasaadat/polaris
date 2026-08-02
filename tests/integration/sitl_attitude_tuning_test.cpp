@@ -305,8 +305,8 @@ TEST(SitlAttitudeTuning, CompiledParametersLetTheEstimatorAcquireAttitude) {
   EXPECT_NE(log.find("PrmFileLoadComplete"), std::string::npos)
       << "prmDb never loaded the compiled parameter file:\n"
       << log;
-  EXPECT_NE(log.find("Records: 26"), std::string::npos)
-      << "prmDb loaded a record count other than the 26 declared parameters:\n"
+  EXPECT_NE(log.find("Records: 30"), std::string::npos)
+      << "prmDb loaded a record count other than the 30 declared parameters:\n"
       << log;
 
   // 2. The estimator accepted the whole tuning set — both gates. ConfigInvalid
@@ -319,6 +319,12 @@ TEST(SitlAttitudeTuning, CompiledParametersLetTheEstimatorAcquireAttitude) {
       << log;
   EXPECT_EQ(log.find("running coarse-only"), std::string::npos)
       << "estimator refused the compiled fine-mode tuning:\n"
+      << log;
+  // The third gate (Push 47): a vehicle whose sun measurements silently carry
+  // their full Earth albedo because the correction's tuning never arrived is the
+  // same silent degradation, one budget term down.
+  EXPECT_EQ(log.find("running uncorrected"), std::string::npos)
+      << "estimator refused the compiled albedo-correction tuning:\n"
       << log;
 
   // 3. Configured *and* working: a TRIAD was accepted and the attitude left the

@@ -96,6 +96,39 @@ constexpr double kSeedMinObservability = 0.0076;
 /// here is conservative by √2 — the projection is meant to under-promise.
 constexpr double kSigmaMagSysPostCal = 0.087 * kDeg;
 
+/// The sun systematic **after** the onboard Earth-albedo correction of §8.1
+/// [rad], for the informative projection at the bottom of this file.
+///
+/// Derived exactly as the uncalibrated 0.0356 in
+/// `config/spacecraft/leo_smallsat.yaml` is, with one term replaced. The albedo
+/// contribution was the 2.0° (34.9 mrad) histogram bulk; `lib/gnc/albedo_correction`
+/// removes the deterministic part of it and leaves the truth model's dispersion,
+/// whose *total* 1σ is `f = albedo_dispersion_fraction = 0.30` of the pull (the
+/// catalog value; see `config/hardware/sun_sensor/gomspace_nanosense_fss.yaml`
+/// for why 0.30, and `albedo_correction_test.cpp`, which measures the ratio
+/// rather than assuming it). The analytic-ephemeris term (0.4° = 7.0 mrad) is
+/// untouched — the correction does not know where the Sun is any better than the
+/// ephemeris does: `sqrt((0.30·34.9)² + 7.0²) = 12.6 mrad`.
+///
+/// **Not** included: the correction's own sensitivity to the attitude that
+/// placed the Earth in the sensor's field, `A·σ_att/2` with `A` the 12° peak
+/// scale. That term is a function of how well the attitude is known each cycle,
+/// so `AttitudeEstimator` carries it dynamically (in quadrature with this
+/// constant) rather than budgeting it here. At the converged fine-mode error
+/// this projection measures (~0.6° median) it is ~1 mrad, which moves 12.6 to
+/// 12.64 — below the rounding of the constant itself, so folding it in would be
+/// false precision. It is *not* negligible right after acquisition, and that is
+/// exactly the regime the dynamic term exists for and this steady-state campaign
+/// does not sample.
+///
+/// **This constant, not the algorithm, is what the projection turns on.** The
+/// deterministic part of the albedo is removed exactly; everything the vehicle
+/// gains or fails to gain is decided by how well the real Earth is modelled by a
+/// uniform Lambertian sphere. Read the projection below as a statement about
+/// `f`, and treat 0.30 as the honest mid-range figure it is rather than a
+/// measured property of any orbit.
+constexpr double kSigmaSunSysPostAlbedo = 0.0126;
+
 /// The Davenport seed's observability gate for the post-calibration projection
 /// [dimensionless].
 ///
@@ -130,12 +163,6 @@ constexpr double kMaxSeparationDeg = 135.0;
 /// them, not the prettiest.
 constexpr double kCoarseLimitDeg = 15.0;
 constexpr double kFineLimitDeg = 15.0;
-
-/// The 1σ handed to the MEKF and the Davenport seed per source: white ⊕
-/// systematic, exactly as `AttitudeEstimator::refreshCoarseConfig` inflates it. The
-/// filter has no way to model a systematic term, so the caller pays for it in
-/// R (mekf.hpp, "Measurement noise is the caller's, and white").
-const double kSigmaSunTotal = std::hypot(kSigmaSunWhite, kSigmaSunSys);
 
 ptime::Tai epochAt(double t_s) {
   return ptime::Tai::fromNanosecondsSinceEpoch(static_cast<std::int64_t>(t_s * 1.0e9));
@@ -181,11 +208,18 @@ struct Systematics {
   double mag1{0.0};
   double mag2{0.0};
 
-  /// @param mag_sys the magnetic systematic 1σ [rad] this campaign runs at —
+  /// @param sun_sys the sun systematic 1σ [rad] this campaign runs at —
+  ///        `kSigmaSunSys` uncalibrated, the post-albedo-correction residual for
+  ///        the informative projection.
+  /// @param mag_sys the magnetic systematic 1σ [rad], likewise —
   ///        `kSigmaMagSys` for the requirement campaigns, the post-calibration
-  ///        residual for the informative projection.
-  static Systematics draw(polaris::random::SplitMix64& rng, double mag_sys) {
-    return {kSigmaSunSys * rng.gaussian(), kSigmaSunSys * rng.gaussian(), mag_sys * rng.gaussian(),
+  ///        residual for the projections.
+  ///
+  /// Four draws always, in the same order, so two levels give the same
+  /// realisations rescaled rather than a different sample: the projections below
+  /// are paired against the baseline run for run.
+  static Systematics draw(polaris::random::SplitMix64& rng, double sun_sys, double mag_sys) {
+    return {sun_sys * rng.gaussian(), sun_sys * rng.gaussian(), mag_sys * rng.gaussian(),
             mag_sys * rng.gaussian()};
   }
 };
@@ -200,7 +234,7 @@ struct RunSetup {
   Systematics sys{};
 };
 
-RunSetup drawRun(polaris::random::SplitMix64& rng, double mag_sys) {
+RunSetup drawRun(polaris::random::SplitMix64& rng, double sun_sys, double mag_sys) {
   RunSetup s{};
   const Eigen::Vector3d axis =
       Eigen::Vector3d(rng.gaussian(), rng.gaussian(), rng.gaussian()).normalized();
@@ -219,7 +253,7 @@ RunSetup drawRun(polaris::random::SplitMix64& rng, double mag_sys) {
                   .normalized();
 
   s.bias = kBiasSigmaInit * Eigen::Vector3d(rng.gaussian(), rng.gaussian(), rng.gaussian());
-  s.sys = Systematics::draw(rng, mag_sys);
+  s.sys = Systematics::draw(rng, sun_sys, mag_sys);
   return s;
 }
 
@@ -280,10 +314,10 @@ double report(const Campaign& c, double threshold_deg, const char* label) {
   return margin_pct;
 }
 
-gnc::CoarseAttitudeConfig coarseConfig(double mag_sys) {
+gnc::CoarseAttitudeConfig coarseConfig(double sun_sys, double mag_sys) {
   gnc::CoarseAttitudeConfig cfg{};
   cfg.sigma_sun_white_rad = kSigmaSunWhite;
-  cfg.sigma_sun_sys_rad = kSigmaSunSys;
+  cfg.sigma_sun_sys_rad = sun_sys;
   cfg.sigma_mag_white_rad = kSigmaMagWhite;
   cfg.sigma_mag_sys_rad = mag_sys;
   cfg.gyro_arw = kGyroArw;
@@ -326,7 +360,12 @@ struct PairedRun {
 /// depend on it, so two levels give the same geometry and the same noise
 /// sequences with only the magnetic bias rescaled — the projection below is
 /// therefore paired against the baseline as well.
-std::vector<PairedRun> runCampaign(double mag_sys, double seed_min_observability) {
+std::vector<PairedRun> runCampaign(double sun_sys, double mag_sys, double seed_min_observability) {
+  // The 1σ handed to the MEKF and the Davenport seed per source: white ⊕
+  // systematic, exactly as `AttitudeEstimator::refreshCoarseConfig` inflates it.
+  // The filter has no way to model a systematic term, so the caller pays for it
+  // in R (mekf.hpp, "Measurement noise is the caller's, and white").
+  const double sigma_sun_total = std::hypot(kSigmaSunWhite, sun_sys);
   const double sigma_mag_total = std::hypot(kSigmaMagWhite, mag_sys);
   {
     std::vector<PairedRun> result;
@@ -334,13 +373,13 @@ std::vector<PairedRun> runCampaign(double mag_sys, double seed_min_observability
 
     for (int run = 0; run < kRuns; ++run) {
       polaris::random::SplitMix64 rng(polaris::random::streamSeed(0xC0A125Eu, run));
-      const RunSetup s = drawRun(rng, mag_sys);
+      const RunSetup s = drawRun(rng, sun_sys, mag_sys);
       Eigen::Vector3d bias = s.bias;
 
       PairedRun paired{};
       paired.truth = truthAttitude(s.rate, kSteps * kDt, s.q0);
 
-      gnc::CoarseAttitudeEstimator coarse(coarseConfig(mag_sys));
+      gnc::CoarseAttitudeEstimator coarse(coarseConfig(sun_sys, mag_sys));
       gnc::Mekf fine(mekfConfig());
       if (!coarse.isConfigured() || !fine.isConfigured()) {
         result.push_back(paired);
@@ -357,7 +396,7 @@ std::vector<PairedRun> runCampaign(double mag_sys, double seed_min_observability
       seed_in.min_observability = seed_min_observability;
       seed_in.observations[0].body = pm::Vec3<frames::Body>(measureSun(s, s.q0, rng));
       seed_in.observations[0].reference = pm::Vec3<frames::ECI>(s.sun_eci);
-      seed_in.observations[0].sigma_rad = kSigmaSunTotal;
+      seed_in.observations[0].sigma_rad = sigma_sun_total;
       seed_in.observations[1].body = pm::Vec3<frames::Body>(measureMag(s, s.q0, rng));
       seed_in.observations[1].reference = pm::Vec3<frames::ECI>(s.mag_eci);
       seed_in.observations[1].sigma_rad = sigma_mag_total;
@@ -400,7 +439,7 @@ std::vector<PairedRun> runCampaign(double mag_sys, double seed_min_observability
         }
         gnc::MekfUpdate up{};
         fine.update(pm::Vec3<frames::Body>(sun_body), pm::Vec3<frames::ECI>(s.sun_eci),
-                    kSigmaSunTotal, up);
+                    sigma_sun_total, up);
         fine.update(pm::Vec3<frames::Body>(mag_body), pm::Vec3<frames::ECI>(s.mag_eci),
                     sigma_mag_total, up);
       }
@@ -420,7 +459,8 @@ std::vector<PairedRun> runCampaign(double mag_sys, double seed_min_observability
 /// The requirement campaign — the reference vehicle's **uncalibrated** budget —
 /// run once on first use and shared by every requirement test in this file.
 const std::vector<PairedRun>& campaignRuns() {
-  static const std::vector<PairedRun> runs = runCampaign(kSigmaMagSys, kSeedMinObservability);
+  static const std::vector<PairedRun> runs =
+      runCampaign(kSigmaSunSys, kSigmaMagSys, kSeedMinObservability);
   return runs;
 }
 
@@ -628,7 +668,7 @@ TEST(AttitudeAccuracyMonteCarlo, CrossBoresightProjectionOfFineModeError) {
 
 TEST(AttitudeAccuracyMonteCarlo, PostMagCalibrationProjection) {
   const std::vector<PairedRun> runs =
-      runCampaign(kSigmaMagSysPostCal, kSeedMinObservabilityPostCal);
+      runCampaign(kSigmaSunSys, kSigmaMagSysPostCal, kSeedMinObservabilityPostCal);
   ASSERT_EQ(runs.size(), static_cast<std::size_t>(kRuns));
   for (std::size_t i = 0; i < runs.size(); ++i) {
     ASSERT_TRUE(runs[i].ok) << "run " << i << " left an estimator invalid";
@@ -662,6 +702,61 @@ TEST(AttitudeAccuracyMonteCarlo, PostMagCalibrationProjection) {
   // the substitution had leaked into the sun terms.
   EXPECT_GT(coarse.max(), 4.0) << "projected bound is below the sun-only floor — did the "
                                   "substitution touch the sun budget?";
+}
+
+// ── Both-corrections projection — informative ───────────────────────────────
+//
+// **This verifies nothing either**, for the same reason: REQ-ADET-005/006 move
+// when the flight chain runs both corrections end to end, not when the libraries
+// exist. What it answers is the question §8.1 left open — *the committed 5°/3°
+// tightening names items (1) and (2) together; do the two together actually
+// reach it?* — and it is the evidence the threshold decision is taken on.
+//
+// The same 800 runs with **both** systematics replaced: the magnetic term by the
+// post-calibration residual of `lib/gnc/mag_calibration`, and the sun term by
+// the post-correction residual of `lib/gnc/albedo_correction`. Paired against
+// the baseline draw for draw, as the single-item projection above is.
+
+TEST(AttitudeAccuracyMonteCarlo, PostBothCorrectionsProjection) {
+  const std::vector<PairedRun> runs =
+      runCampaign(kSigmaSunSysPostAlbedo, kSigmaMagSysPostCal, kSeedMinObservabilityPostCal);
+  ASSERT_EQ(runs.size(), static_cast<std::size_t>(kRuns));
+  for (std::size_t i = 0; i < runs.size(); ++i) {
+    ASSERT_TRUE(runs[i].ok) << "run " << i << " left an estimator invalid";
+  }
+
+  const Campaign coarse = errorNorms(runs, false);
+  const Campaign fine = errorNorms(runs, true);
+  const Campaign coarse_now = errorNorms(campaignRuns(), false);
+  const Campaign fine_now = errorNorms(campaignRuns(), true);
+
+  constexpr double kCommittedCoarseDeg = 5.0;
+  constexpr double kCommittedFineDeg = 3.0;
+  std::printf(
+      "[post-both-corrections, informative] sun systematic %.3f -> %.3f deg, "
+      "mag %.3f -> %.3f deg\n"
+      "  coarse: median %.3f -> %.3f deg   3sigma-bound %.3f -> %.3f deg  (committed %.1f deg)\n"
+      "  fine:   median %.3f -> %.3f deg   3sigma-bound %.3f -> %.3f deg  (committed %.1f deg)\n",
+      kSigmaSunSys / kDeg, kSigmaSunSysPostAlbedo / kDeg, kSigmaMagSys / kDeg,
+      kSigmaMagSysPostCal / kDeg, coarse_now.median(), coarse.median(), coarse_now.max(),
+      coarse.max(), kCommittedCoarseDeg, fine_now.median(), fine.median(), fine_now.max(),
+      fine.max(), kCommittedFineDeg);
+  RecordProperty("coarse_bound_millideg", static_cast<int>(1000.0 * coarse.max()));
+  RecordProperty("fine_bound_millideg", static_cast<int>(1000.0 * fine.max()));
+
+  // As above, the assertions are about the projection being real rather than
+  // about where it lands — the thresholds move by a design decision on this
+  // evidence, not by a test asserting the answer it wants.
+  EXPECT_LT(coarse.max(), coarse_now.max()) << "the corrections did not improve the coarse bound";
+  EXPECT_LT(fine.max(), fine_now.max()) << "the corrections did not improve the fine bound";
+  // With the magnetic term calibrated *and* the sun term corrected, the tail must
+  // fall below the sun-only floor the single-item projection is pinned above —
+  // that floor was the whole argument for sequencing this item, so a projection
+  // that did not clear it would mean the sun substitution never took.
+  EXPECT_LT(coarse.max(), 4.0) << "the sun systematic was not actually reduced";
+  // Neither chain can do better than the white noise it is left with: a bound
+  // near zero would mean the systematics were zeroed rather than reduced.
+  EXPECT_GT(fine.max(), 0.2) << "bound implausibly small — is the noise wired in?";
 }
 
 }  // namespace

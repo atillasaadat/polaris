@@ -17,6 +17,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <Eigen/Core>
 #include <vector>
@@ -370,21 +371,112 @@ TEST(SunSensor, VectorOutputIsInvalidBeyondTheFieldOfView) {
   EXPECT_FALSE(outside.sun_present);
 }
 
-TEST(SunSensor, AlbedoDegradesTheVectorAccuracy) {
-  // GomSpace are explicit that uncorrected albedo can cost more than 10° against
-  // a 0.5° clean-sky figure. With the Earth filling the field on the day side the
-  // reported σ must rise by orders of magnitude — the whole reason the datasheet
-  // carries that warning.
-  sensors::SunSensor ss(nanoSenseSpec(), Eigen::Matrix3d::Identity(), 1, 1);
-  const auto clean = ss.sample(epochPlus(0.0), cleanSky(sunAtIncidence(20.0)));
+namespace {
 
-  // Sensor looking straight down at a fully sunlit Earth, Sun still in the field.
-  auto earth_filled = leoDayside(sunAtIncidence(20.0));
-  earth_filled.nadir_dir_body = Vec3B(Eigen::Vector3d(0.0, 0.0, 1.0));  // Earth on boresight
-  const auto degraded = ss.sample(epochPlus(1.0), earth_filled);
+/// The nanoSense part with albedo dispersion configured, as the reference
+/// vehicle flies it (config/hardware/sun_sensor/gomspace_nanosense_fss.yaml).
+sensors::SunSensorSpec nanoSenseDispersedSpec() {
+  sensors::SunSensorSpec spec = nanoSenseSpec();
+  spec.albedo_dispersion_fraction = 0.30;
+  return spec;
+}
 
-  EXPECT_GT(degraded.accuracy_sigma_rad, 10.0 * clean.accuracy_sigma_rad);
-  EXPECT_TRUE(degraded.valid) << "albedo corrupts the reading, it does not remove it";
+/// The Earth on the boresight and the Sun in the field: the geometry the albedo
+/// term is largest in.
+sensors::SunSensorInput earthFilledDayside(double sun_incidence_deg) {
+  auto in = leoDayside(sunAtIncidence(sun_incidence_deg));
+  in.nadir_dir_body = Vec3B(Eigen::Vector3d(0.0, 0.0, 1.0));  // Earth on boresight
+  return in;
+}
+
+}  // namespace
+
+TEST(SunSensor, AlbedoPullsTheReportedVectorTowardTheEarth) {
+  // The property that decides whether the error is correctable at all. Earthshine
+  // arrives from the sunlit ground in the field, so it drags the reported vector
+  // *toward the Earth* — a deterministic direction, not a random tilt of the same
+  // size. Modelling it as noise would make it provably uncorrectable, which is a
+  // claim about the physics that is false, and would have hidden the §8.1 sun
+  // budget's largest term behind a σ.
+  sensors::SunSensorSpec spec = nanoSenseSpec();
+  spec.accuracy_inner_sigma = 0.0;  // isolate the albedo from the white draw
+  spec.accuracy_outer_sigma = 0.0;
+  sensors::SunSensor ss(spec, Eigen::Matrix3d::Identity(), 1, 1);
+
+  const Eigen::Vector3d truth = sunAtIncidence(20.0).normalized();
+  const auto in = earthFilledDayside(20.0);
+  const Eigen::Vector3d nadir = in.nadir_dir_body.eigen();
+  const auto m = ss.sample(kEpoch, in);
+  ASSERT_TRUE(m.valid);
+
+  const Eigen::Vector3d reported = m.sun_dir_body.eigen();
+  EXPECT_GT(m.albedo_angle_rad, 1.0 * kDeg2Rad) << "the Earth fills the field on the day side";
+  // Closer to the Earth than the truth is, and by the reported amount.
+  EXPECT_GT(reported.dot(nadir), truth.dot(nadir));
+  const double moved = std::acos(std::clamp(reported.dot(truth), -1.0, 1.0));
+  EXPECT_NEAR(moved, m.albedo_angle_rad, 1e-12);
+  // In the Sun-Earth plane: no component out of it without dispersion.
+  EXPECT_NEAR(reported.dot(truth.cross(nadir).normalized()), 0.0, 1e-12);
+}
+
+TEST(SunSensor, AlbedoVanishesWithoutSunlitEarthInTheField) {
+  // Three ways there is no Earthshine, all of which must give exactly zero rather
+  // than a small number or a NaN: no Earth in the field, the night side, and
+  // eclipse. The onboard correction refuses in each of them (§8.1), so a truth
+  // model that leaked a pull here would leave a bias no correction could see.
+  sensors::SunSensorSpec spec = nanoSenseDispersedSpec();
+  spec.accuracy_inner_sigma = 0.0;
+  spec.accuracy_outer_sigma = 0.0;
+  sensors::SunSensor ss(spec, Eigen::Matrix3d::Identity(), 7, 3);
+
+  const auto deep_space = ss.sample(epochPlus(0.0), cleanSky(sunAtIncidence(20.0)));
+  EXPECT_DOUBLE_EQ(deep_space.albedo_angle_rad, 0.0) << "no Earth anywhere near";
+
+  // Night side: the sub-satellite point is on the far side of the Earth from the
+  // Sun, so the ground below reflects nothing.
+  auto night = earthFilledDayside(20.0);
+  night.sky.sun = -night.sky.sun;
+  const auto dark = ss.sample(epochPlus(1.0), night);
+  EXPECT_DOUBLE_EQ(dark.albedo_angle_rad, 0.0);
+
+  // Eclipse: no Sun to reflect, and no measurement either.
+  auto eclipsed = earthFilledDayside(20.0);
+  eclipsed.shadow_factor = 0.0;
+  const auto umbra = ss.sample(epochPlus(2.0), eclipsed);
+  EXPECT_DOUBLE_EQ(umbra.albedo_angle_rad, 0.0);
+  EXPECT_FALSE(umbra.valid);
+}
+
+TEST(SunSensor, AlbedoDispersionIsPerUnitAndScalesTheReportedSigma) {
+  // The dispersion is what survives the onboard correction, so two things about
+  // it are load-bearing for the §19.2 post-correction sun budget: it is drawn
+  // **once per unit** (the surface and cloud field under the orbit changes over
+  // minutes, not between 10 Hz samples, so no filter averages it away), and it —
+  // not the deterministic pull — is what the reported σ carries.
+  const auto spec = nanoSenseDispersedSpec();
+  const auto in = earthFilledDayside(20.0);
+
+  sensors::SunSensor a(spec, Eigen::Matrix3d::Identity(), 0xA1BED0, 1);
+  sensors::SunSensor b(spec, Eigen::Matrix3d::Identity(), 0xA1BED0, 2);  // different stream = unit
+
+  const auto first = a.sample(epochPlus(0.0), in);
+  const auto second = a.sample(epochPlus(1.0), in);
+  const auto other_unit = b.sample(epochPlus(0.0), in);
+
+  ASSERT_GT(first.albedo_angle_rad, 0.0);
+  EXPECT_DOUBLE_EQ(first.albedo_angle_rad, second.albedo_angle_rad)
+      << "the same unit's dispersion must not resample between readings";
+  EXPECT_NE(first.albedo_angle_rad, other_unit.albedo_angle_rad)
+      << "two units over the same ground must draw different dispersions";
+
+  // The reported σ is the white part plus the dispersion, and excludes the pull:
+  // the pull is a bias the correction removes, and reporting it would tell a
+  // filter to distrust a reading whose error it can compute.
+  const double expected = std::hypot(spec.accuracy_inner_sigma,
+                                     spec.albedo_dispersion_fraction * first.albedo_angle_rad);
+  EXPECT_NEAR(first.accuracy_sigma_rad, expected, 1e-15);
+  EXPECT_LT(first.accuracy_sigma_rad, first.albedo_angle_rad)
+      << "the deterministic pull must not be reported as noise";
 }
 
 TEST(SunSensor, SamplingFasterThanThePeriodRepeatsTheReading) {

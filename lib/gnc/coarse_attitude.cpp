@@ -153,9 +153,17 @@ bool CoarseAttitudeEstimator::update(const CoarseAttitudeInput& in, CoarseAttitu
     ti.secondary.sigma_rad = cfg_.sigma_mag_white_rad;
     ti.min_sin_angle = cfg_.min_sin_angle;
 
+    // The caller may know this cycle's sun systematic better than the config
+    // does — the §8.1 albedo correction runs only when the geometry supports it,
+    // and a cycle it skipped carries the full uncorrected term. Non-positive
+    // means "no per-cycle answer", the case every other caller is in.
+    const double sigma_sun_sys = (in.sun_sigma_sys_rad > 0.0 && std::isfinite(in.sun_sigma_sys_rad))
+                                     ? in.sun_sigma_sys_rad
+                                     : cfg_.sigma_sun_sys_rad;
+
     TriadSolution ts{};
     Eigen::Matrix3d cov_sys;
-    if (triad(ti, ts) && triadCovariance(in.sun_body, in.mag_body, cfg_.sigma_sun_sys_rad,
+    if (triad(ti, ts) && triadCovariance(in.sun_body, in.mag_body, sigma_sun_sys,
                                          cfg_.sigma_mag_sys_rad, cfg_.min_sin_angle, cov_sys)) {
       bool applied = true;
       if (!initialised_) {

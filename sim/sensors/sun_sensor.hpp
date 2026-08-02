@@ -29,16 +29,17 @@
 ///    pyramid arrangement of a fine sun sensor, where the *differences* between
 ///    opposing diodes give a well-conditioned two-axis angle near boresight.
 ///
-/// **Albedo is the dominant error, not the noise.** Earthshine reaching a diode
-/// is a first-order effect for a coarse sensor in LEO — the Earth can fill a
-/// wide-FOV diode's view and reflect ~30% of the incident sunlight, which is why
-/// coarse sun sensors are routinely quoted at several degrees of accuracy despite
-/// millivolt-clean electronics. It is modelled here from the §6.1 occlusion
-/// fractions: how much of the diode's field of view the Earth fills, scaled by
-/// how sunlit the sub-satellite region is. This is a **first-order model** — a
-/// rigorous treatment needs a surface-reflectance map (ocean, cloud, ice differ
-/// by more than 5×) and a view-factor integral over the visible cap. It captures
-/// the magnitude and the orbital phasing, not the terrain.
+/// **Albedo is the dominant error, and it is a bias, not noise.** Earthshine
+/// reaching a diode is a first-order effect for a coarse sensor in LEO — the
+/// Earth can fill a wide-FOV diode's view and reflect ~30% of the incident
+/// sunlight, which is why coarse sun sensors are routinely quoted at several
+/// degrees of accuracy despite millivolt-clean electronics. It is modelled here
+/// from the §6.1 occlusion fractions: how much of the diode's field of view the
+/// Earth fills, scaled by how sunlit the sub-satellite region is. On the
+/// vector-output path it enters as a **directed pull toward the Earth** plus a
+/// per-unit dispersion, because that is what it physically is and it is
+/// therefore correctable onboard (§8.1); see the class docstring for the model
+/// and its limits.
 ///
 /// **Eclipse comes in through the caller** (`SunSensorInput::shadow_factor`),
 /// the same injected-resolver pattern the rest of the sim uses: the sensor layer
@@ -137,11 +138,25 @@ struct SunSensorSpec {
   double accuracy_inner_sigma = 0.0;
   /// 1σ pointing accuracy from there to the edge of the field of view [rad].
   double accuracy_outer_sigma = 0.0;
-  /// Peak *additional* angular error from Earthshine [rad], reached when the
-  /// Earth fills the field of view on the day side. Vendors are explicit that
-  /// this dominates: GomSpace quote errors above 10° uncorrected, against a
-  /// 0.5° clean-sky figure.
+  /// Peak angular error from Earthshine [rad], reached when the Earth fills the
+  /// field of view on the day side **and** stands 90° from the Sun. Vendors are
+  /// explicit that this dominates: GomSpace quote errors above 10° uncorrected,
+  /// against a 0.5° clean-sky figure. The error is *directed* (toward the Earth),
+  /// not random — see the class docstring.
   double albedo_error_rad = 0.0;
+  /// **Total** 1σ dispersion of the realised Earthshine about the modelled
+  /// value, as a **fraction** of it. Drawn once per unit (§6.2): the departure
+  /// from a uniform Lambertian sphere is the surface and cloud field under the
+  /// orbit, which changes over minutes rather than between samples. It acts on
+  /// two independent axes — a scale error along the pull and an out-of-plane
+  /// centroid offset — and this figure is their quadrature sum, so it can be
+  /// used as the post-correction budget directly with no hidden √2.
+  ///
+  /// This is the part of the albedo error that survives the onboard correction
+  /// of §8.1, so it — not @ref albedo_error_rad — is what the post-correction
+  /// sun budget is derived from. Zero means a perfectly modelled Earth, which no
+  /// vehicle flies over.
+  double albedo_dispersion_fraction = 0.0;
 
   /// Minimum interval between genuinely new readings [s] — the part's sample
   /// period. Reading faster returns the previous value again rather than fresh
@@ -192,10 +207,20 @@ struct SunSensorMeasurement {
   /// diagnostics and because it is what selects the accuracy regime — a study of
   /// where the sensor is being operated needs it alongside the error.
   double incidence_angle_rad = 0.0;
-  /// The 1σ accuracy this reading was drawn with [rad], albedo included. Exposed
-  /// so an estimator can be fed the measurement noise the sensor actually had
-  /// rather than a datasheet headline, and so a study can see the degradation.
+  /// The 1σ accuracy this reading was drawn with [rad]: the datasheet figure for
+  /// this incidence regime, plus the albedo **dispersion**. Exposed so an
+  /// estimator can be fed the measurement noise the sensor actually had rather
+  /// than a datasheet headline. The deterministic albedo pull is deliberately
+  /// **not** in here — it is a bias, reported separately as
+  /// @ref albedo_angle_rad, and the §8.1 onboard correction removes it.
   double accuracy_sigma_rad = 0.0;
+  /// **Truth diagnostic** (does not cross the §2.3 SITL boundary): the
+  /// deterministic Earthshine pull applied to this reading [rad], toward the
+  /// Earth's centre in the sensor's field. Zero in eclipse, on the night side,
+  /// with no Earth in view, or for an ideal sensor. Carried so a study can
+  /// separate the correctable bias from the residual dispersion rather than
+  /// infer it.
+  double albedo_angle_rad = 0.0;
   /// False when the sample period had not elapsed: this reading is the previous
   /// one repeated, carrying no new information. An estimator that treats
   /// repeated values as independent will grow overconfident, so it is flagged.
@@ -248,24 +273,62 @@ struct SunSensorMeasurement {
 /// \f$0\f$.
 ///
 /// **Measurement model — digital** (`kSunVector`). The unit reports a direction;
-/// the model perturbs the truth by the datasheet accuracy. The incidence angle
-/// \f$\theta = \arccos(\hat{b}\cdot\hat{s})\f$ selects the regime, and albedo adds
-/// in quadrature:
+/// the model perturbs the truth by the datasheet accuracy, and **then applies the
+/// Earthshine pull as a rotation, not as noise**. The incidence angle
+/// \f$\theta = \arccos(\hat{b}\cdot\hat{s})\f$ selects the white regime:
 /// \f[
-///   \sigma = \sqrt{\sigma_\theta^2 + \sigma_a^2}, \quad
 ///   \sigma_\theta = \begin{cases}\sigma_{\mathrm{in}} & \theta \le
-///   \theta_{\mathrm{in}}\\ \sigma_{\mathrm{out}} & \text{otherwise}\end{cases}, \quad \sigma_a =
-///   \sigma_a^{\max}\,\Phi\,\eta,
+///   \theta_{\mathrm{in}}\\ \sigma_{\mathrm{out}} & \text{otherwise}\end{cases}.
 /// \f]
+/// The albedo peak scale is the field-fill fraction times the dayside factor,
+/// dispersed by this unit's fixed draw \f$d_0\f$:
 /// \f[
-///   \hat{s}_{\mathrm{meas}} = \operatorname{normalize}\!\big(\hat{s} + \sigma\,(g_1\hat{e}_1 +
-///   g_2\hat{e}_2)\big),
+///   A = \sigma_a^{\max}\,\Phi\,\eta\,(1 + \tfrac{f}{\sqrt2}\,d_0), \qquad
+///   \Phi = \mathrm{fovCoveredFraction}(\text{FOV}, \angle(\hat{b},\hat{d}),
+///   \rho_\oplus),
 /// \f]
-/// where \f$\hat{e}_1,\hat{e}_2 \perp \hat{s}\f$, \f$\Phi\f$ is the boresight–nadir
-/// view factor, and \f$\sigma_a^{\max}\f$ = `albedo_error_rad`. An **ideal** sensor
-/// (`noise_enabled = false`) forces \f$\sigma = 0\f$ / drops \f$A_i\f$, dark, and
-/// noise while still drawing to keep the stream aligned; the FOV cut and eclipse
-/// threshold \f$\gamma_{\min}\f$ still apply, being geometry not noise.
+/// with \f$f\f$ = `albedo_dispersion_fraction`. The pull angle \f$\varphi\f$ is
+/// defined on the **reported** separation from the Earth's centre \f$\hat{d}\f$,
+/// \f$\varphi = A\sin\!\big(\angle(\hat{s}_{\mathrm{meas}},\hat{d})\big)\f$ —
+/// solved by fixed point, and the definition that makes the onboard inverse of
+/// §8.1 a closed form — and the reading is
+/// \f[
+///   \hat{s}_{\mathrm{meas}} = \operatorname{normalize}\!\Big(
+///   R(\hat{a},\varphi)\,\hat{s} + \tfrac{f}{\sqrt2}\,\varphi\,d_1\,\hat{a}
+///   + \sigma_\theta\,(g_1\hat{e}_1 + g_2\hat{e}_2)\Big), \qquad
+///   \hat{a} = \frac{\hat{s}\times\hat{d}}{\|\hat{s}\times\hat{d}\|},
+/// \f]
+/// i.e. a rotation of \f$\varphi\f$ *toward the Earth* in the Sun–Earth plane, an
+/// out-of-plane dispersion, and the white draw last. \f$f\f$ is the **total** 1σ
+/// dispersion, split \f$1/\sqrt2\f$ to each of the two independent axes. The
+/// reported \f$\sigma\f$ is \f$\sqrt{\sigma_\theta^2 + (f\varphi)^2}\f$: the pull
+/// itself is a bias a correction removes, so it does not belong in a σ.
+///
+/// **Why directed and not random.** Reflected Earthshine arrives from the sunlit
+/// ground in the sensor's field, so it drags the reported vector toward the
+/// Earth — a deterministic function of position, Sun direction and boresight.
+/// Modelling it as a random tilt of the same magnitude would make it *provably
+/// uncorrectable*, which is a claim about the physics that is simply false, and
+/// would have hidden the fact that the largest term in the §8.1 sun budget is
+/// one the flight software can compute and subtract. What genuinely cannot be
+/// removed is the departure of the real Earth from a uniform Lambertian sphere —
+/// ocean, cloud and ice differ by more than 5× in reflectance — and that is what
+/// \f$f\f$ carries.
+///
+/// **Model class and its limits.** This is a *centroid* model, not an Earthshine
+/// radiance integral: the reflected light is treated as arriving from the centre
+/// of the visible Earth disk, weighted by how much of the field that disk fills
+/// and by how sunlit the sub-satellite region is. It captures the magnitude, the
+/// direction and the orbital phasing. It does not model the offset of the
+/// *sunlit* centroid toward the sub-solar limb, the terrain, or the wavelength
+/// dependence of the detector's filter. Those are model error, and in flight
+/// they are exactly what the dispersion fraction stands in for — which is why
+/// that fraction, not the peak, sets the post-correction budget.
+///
+/// An **ideal** sensor (`noise_enabled = false`) forces \f$\sigma_\theta = 0\f$,
+/// \f$A = 0\f$, and drops \f$A_i\f$, dark and noise on the analogue path, while
+/// still drawing to keep the stream aligned; the FOV cut and eclipse threshold
+/// \f$\gamma_{\min}\f$ still apply, being geometry not noise.
 ///
 /// Markley & Crassidis Ch. 4 (Sensors and Actuators), sun-sensor model [markley2014].
 class SunSensor {
@@ -315,6 +378,14 @@ class SunSensor {
   bool noise_enabled_ = true;
   std::vector<Eigen::Vector3d> normals_body_;
   std::vector<double> diode_scale_;  ///< realised per-diode scale factor (1 + ε)
+
+  /// This unit's realised albedo dispersion, drawn once at construction: a
+  /// standard normal on the Earthshine *scale* and one on its out-of-plane
+  /// centroid offset, both multiplied by
+  /// @ref SunSensorSpec::albedo_dispersion_fraction when applied. Zero for an
+  /// ideal sensor.
+  double albedo_scale_dispersion_ = 0.0;
+  double albedo_cross_dispersion_ = 0.0;
   std::vector<bool> diode_failed_;
   bool fault_dropout_ = false;
 

@@ -13,7 +13,7 @@ faults), because availability drives the estimator design as much as noise does.
 | `imu.{hpp,cpp}` | Gyro + accelerometer triads: ARW/VRW, Gauss-Markov bias drift, turn-on bias, scale/misalignment, g-sensitivity | Δθ/Δv + rate/specific force |
 | `magnetometer.{hpp,cpp}` | Hard-iron, soft-iron/misalignment, noise, quantization | body-frame field [T] |
 | `star_tracker.{hpp,cpp}` | Anisotropic bias/LF/HF-spatial/temporal/thermo-elastic errors; acquisition↔tracking state machine with separate rate *and* accel envelopes | attitude quaternion + validity |
-| `sun_sensor.{hpp,cpp}` | **Two contracts:** analogue → per-diode cosine-law counts; digital → sun vector with incidence-dependent accuracy; albedo from occlusion fractions | counts *or* unit vector |
+| `sun_sensor.{hpp,cpp}` | **Two contracts:** analogue → per-diode cosine-law counts; digital → sun vector with incidence-dependent accuracy; albedo as a **directed pull toward the sunlit Earth** (not noise — it is correctable onboard, §8.1) with a per-unit dispersion about it | counts *or* unit vector |
 | `gnss.{hpp,cpp}` | PVT fix: H/V-split position σ, velocity σ, clock bias; sample-rate gating, cold-start/reacquisition; outage/spoof/clock-jump + geographic jamming | ECEF position/velocity @ **GPS time** |
 | `gnss_jamming.{hpp,cpp}` | KML polygon regions → "is the sub-satellite point jammed" | region name / none |
 

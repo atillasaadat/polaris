@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -143,6 +144,59 @@ def _resolve_units(
     return resolved
 
 
+#: FSW parameter name -> (sun-sensor catalog key, degrees-to-radians).
+#:
+#: The Earth-albedo correction (design doc §8.1) is configured with two numbers
+#: that are *already* in the sun sensor's hardware-library entry, because the
+#: flight side needs them in radians through the §19.3 parameter path and the sim
+#: side reads the catalog directly. That makes it the first parameter pair where
+#: sim/flight agreement is exactness-critical: the correction subtracts a model
+#: of the error the sim generates, so a mismatch does not degrade gracefully — it
+#: removes an error the sensor never had, and nothing downstream can see it.
+#: Hence the cross-check below rather than a comment asking for care.
+_ALBEDO_PARAM_TO_CATALOG_KEY = {
+    "flight.attitudeEstimator.SunAlbedoPeakRad": "albedo_error_deg",
+    "flight.attitudeEstimator.SunAlbedoHalfFovRad": "half_fov_deg",
+}
+
+
+def _check_albedo_parameters(body: dict[str, Any]) -> None:
+    """Refuse a vehicle whose albedo tuning contradicts its sun sensor's catalog entry.
+
+    Checked against the **first** sun sensor, which is the unit the correction
+    applies to: `AttitudeEstimator` gates on port index 0 because there is one
+    parameter set. Silent on a vehicle that sets neither side, so a config with
+    no sun sensor or no albedo tuning compiles unchanged.
+    """
+    sc = body["spacecraft"]
+    fsw = sc.get("fsw_parameters", {})
+    sun_sensors = [u for u in sc.get("sensors", []) if u.get("kind") == "sun_sensor"]
+    if not sun_sensors:
+        return
+    unit = sun_sensors[0]
+    params = unit.get("params", {})
+
+    for name, catalog_key in _ALBEDO_PARAM_TO_CATALOG_KEY.items():
+        if name not in fsw or catalog_key not in params:
+            continue
+        expected = math.radians(float(params[catalog_key]))
+        actual = float(fsw[name])
+        # Tolerance is a rounding allowance, not a physical one: the YAML carries
+        # the radian value to five decimals, so 1e-5 admits an honest transcription
+        # and refuses a stale one.
+        if abs(actual - expected) > 1.0e-5:
+            raise ConfigError(
+                f"{name} = {actual!r} rad contradicts the sun sensor's catalog entry: "
+                f"unit '{unit['name']}' ({unit['model_id']}) declares "
+                f"{catalog_key} = {params[catalog_key]!r} deg = {expected:.5f} rad.\n"
+                f"These describe the same physical quantity — the flight albedo "
+                f"correction subtracts a model of the error the sim generates from "
+                f"the catalog value, so a mismatch removes an error the sensor never "
+                f"had. Fix the vehicle config's fsw_parameters or the hardware entry, "
+                f"whichever is stale."
+            )
+
+
 def _config_hash(resolved_body: dict[str, Any]) -> str:
     """SHA-256 over the canonical resolved config — everything that determines output."""
     canonical = json.dumps(resolved_body, sort_keys=True, separators=(",", ":"))
@@ -173,6 +227,9 @@ def resolve(
         },
         "scenario": config.scenario.model_dump(),
     }
+    # Cross-checks between the two halves of the resolved object, which only
+    # become checkable once the hardware library has been inlined.
+    _check_albedo_parameters(body)
     resolved = {
         "provenance": {
             "config_hash": _config_hash(body),
