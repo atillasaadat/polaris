@@ -439,3 +439,12 @@
   url          = {https://mathworld.wolfram.com/Circle-CircleIntersection.html},
   note         = {The two-circle lens area behind the field-of-view overlap fraction}
 }
+
+@misc{kahan2016cross,
+  author       = {Kahan, William},
+  title        = {Computing Cross-Products and Rotations in 2- and 3-Dimensional Euclidean Spaces},
+  year         = {2016},
+  howpublished = {Lecture notes, University of California, Berkeley},
+  url          = {https://people.eecs.berkeley.edu/~wkahan/MathH110/Cross.pdf},
+  note         = {\S``Mangled Angles'': the angle between two vectors must be formed as atan2 of the cross-product norm against the dot product; acos of the dot product alone loses half its significant digits near 0 and pi. The source of the repo-wide convention in lib/README.md}
+}

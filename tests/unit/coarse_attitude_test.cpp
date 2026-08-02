@@ -129,10 +129,11 @@ gnc::CoarseAttitudeInput makeInput(double t_s, const pm::Quaternion& q_true,
   return in;
 }
 
-/// Rotation angle between two attitudes [deg], evaluated through the error
-/// quaternion rather than `angularDistance`: `acos` of a dot product near 1
-/// loses half the mantissa (floor ~3e-8 rad), which is coarser than the
-/// round-off these propagation checks are pinning.
+/// Rotation angle between two attitudes [deg], formed here rather than via
+/// `angularDistance` so the propagation checks below measure the estimator
+/// against an independently written formula and not against the quaternion
+/// library's own method. Same atan2 convention (lib/README.md), so the two
+/// agree to round-off.
 double errorDeg(const pm::Quaternion& est, const pm::Quaternion& q_true) {
   const pm::Quaternion dq = (est * q_true.inverse()).canonical();
   return 2.0 * std::atan2(dq.vec().norm(), dq.scalar()) / kDeg;

@@ -3,7 +3,10 @@
 ///
 /// The two **vehicle-level** requirements are stated on the **error norm** — the
 /// total eigenaxis rotation angle between the estimated and the true attitude,
-/// `θ_err = 2·acos(|q_err scalar|)` — at the 3σ (99.73rd-percentile) point, on
+/// `θ_err = 2·atan2(‖q_err vec‖, |q_err scalar|)` (`errorNormDeg` below; the
+/// atan2 form per lib/README.md, since the errors being measured are small
+/// enough that the scalar part alone would have lost half its digits) — at the
+/// 3σ (99.73rd-percentile) point, on
 /// the reference vehicle's own sensor budget
 /// (`config/spacecraft/leo_smallsat.yaml`, `flight.attitudeEstimator.*`). The
 /// Alongside them, and **informative rather than verifying**, the campaign

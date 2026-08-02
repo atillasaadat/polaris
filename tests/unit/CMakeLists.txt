@@ -4,6 +4,7 @@ add_executable(polaris_unit_tests
   rng_test.cpp
   typed_vector_test.cpp
   quaternion_test.cpp
+  angle_conditioning_test.cpp
   frame_geometry_test.cpp
   eop_test.cpp
   eci_ecef_test.cpp

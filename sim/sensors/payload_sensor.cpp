@@ -46,7 +46,13 @@ double PayloadSensorSpec::equivalentHalfFovRad() const {
   // not here — a spec built directly in a test may hold anything.
   const double omega =
       4.0 * std::asin(std::clamp(std::sin(half_fov_x_rad) * std::sin(half_fov_y_rad), -1.0, 1.0));
-  return std::acos(std::clamp(1.0 - omega / (2.0 * M_PI), -1.0, 1.0));
+  // The equal-solid-angle cone has cos θ = 1 - Ω/2π. Keeping u = Ω/2π as the
+  // variable and going through atan2(sin θ, cos θ) rather than acos(1 - u)
+  // preserves the small-field precision: for a degrees-wide payload u is ~1e-3,
+  // where 1 - u is stationary in θ and acos would surrender half its digits.
+  // sin θ = √(u(2 - u)) is computed from u itself, so it never sees that loss.
+  const double u = omega / (2.0 * M_PI);
+  return std::atan2(std::sqrt(std::max(0.0, u * (2.0 - u))), 1.0 - u);
 }
 
 double PayloadSensorSpec::ifovXRad() const {
@@ -135,7 +141,10 @@ bool PayloadSensor::inFieldOfView(const Eigen::Vector3d& direction_sensor) const
   }
   const Eigen::Vector3d d = direction_sensor / norm;
   if (spec_.shape == FovShape::kConic) {
-    return std::acos(std::clamp(d.z(), -1.0, 1.0)) <= spec_.half_fov_x_rad;
+    // Angle off the sensor +Z axis, in the same atan2 form used everywhere else:
+    // the in-plane norm against the axial component. Exact on the boresight,
+    // where acos(d.z()) would be accurate only to ~1e-8 rad.
+    return std::atan2(std::hypot(d.x(), d.y()), d.z()) <= spec_.half_fov_x_rad;
   }
   // Rectangular/square: the two field angles are measured independently in the
   // X–Z and Y–Z planes, which is what a detector's rows and columns subtend.

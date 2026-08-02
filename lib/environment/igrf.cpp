@@ -90,19 +90,32 @@ IgrfField::IgrfField(const IgrfCoefficients& coefficients)
 bool IgrfField::fieldSpherical(double radius_m, double colatitude_rad, double longitude_rad,
                                double decimal_year, double& b_r, double& b_theta,
                                double& b_phi) const {
+  if (!std::isfinite(colatitude_rad)) {
+    return false;
+  }
+  const double cos_theta = std::cos(colatitude_rad);
+  // From cos rather than sin(colatitude) directly so that |sin| is guaranteed
+  // non-negative even for a colatitude wrapped outside [0, π]. A caller that
+  // holds the position vector should use `fieldSphericalTrig` instead: recovering
+  // sin θ this way cannot resolve it below ~1.5e-8, because near the pole cos θ
+  // rounds to exactly ±1.
+  const double sin_theta = std::sqrt(std::max(0.0, 1.0 - cos_theta * cos_theta));
+  return fieldSphericalTrig(radius_m, sin_theta, cos_theta, longitude_rad, decimal_year, b_r,
+                            b_theta, b_phi);
+}
+
+bool IgrfField::fieldSphericalTrig(double radius_m, double sin_theta, double cos_theta,
+                                   double longitude_rad, double decimal_year, double& b_r,
+                                   double& b_theta, double& b_phi) const {
   if (!good_) {
     return false;
   }
-  if (!std::isfinite(radius_m) || !std::isfinite(colatitude_rad) || !std::isfinite(longitude_rad) ||
-      !std::isfinite(decimal_year) || radius_m <= 0.0) {
+  if (!std::isfinite(radius_m) || !std::isfinite(sin_theta) || !std::isfinite(cos_theta) ||
+      !std::isfinite(longitude_rad) || !std::isfinite(decimal_year) || radius_m <= 0.0) {
     return false;
   }
 
   const int nmax = coefficients_.degree;
-  const double cos_theta = std::cos(colatitude_rad);
-  // From cos rather than sin(colatitude) directly so that |sin| is guaranteed
-  // non-negative even for a colatitude wrapped outside [0, π].
-  const double sin_theta = std::sqrt(std::max(0.0, 1.0 - cos_theta * cos_theta));
 
   LegendreTable lp;
   legendre(nmax, cos_theta, sin_theta, lp);
@@ -155,19 +168,29 @@ bool IgrfField::field(const math::Vec3<math::frames::ECEF>& r_ecef, double decim
   if (!(radius > 0.0)) {
     return false;
   }
-  const double colatitude = std::acos(std::max(-1.0, std::min(1.0, r.z() / radius)));
+  // Distance from the polar axis: the sine of the geocentric colatitude, up to
+  // the radius. Non-negative by construction, which is what keeps the colatitude
+  // this implies in [0, π] measured from +z.
+  const double in_plane = std::hypot(r.x(), r.y());
   const double longitude = std::atan2(r.y(), r.x());
+
+  // Both the expansion and the basis rotation below want sin θ and cos θ, not θ
+  // — and here they come straight from the position, with no round trip through
+  // the angle. Going via the colatitude and taking cos θ back out would throw
+  // away exactly the pole accuracy the atan2 form is chosen for: near the pole
+  // cos θ rounds to ±1 and the recovered sin θ cannot resolve below ~1.5e-8.
+  const double sin_theta = in_plane / radius;
+  const double cos_theta = r.z() / radius;
 
   double b_r = 0.0;
   double b_theta = 0.0;
   double b_phi = 0.0;
-  if (!fieldSpherical(radius, colatitude, longitude, decimal_year, b_r, b_theta, b_phi)) {
+  if (!fieldSphericalTrig(radius, sin_theta, cos_theta, longitude, decimal_year, b_r, b_theta,
+                          b_phi)) {
     return false;
   }
 
   // Spherical (r̂, θ̂, φ̂) -> Cartesian ECEF. θ̂ points south, φ̂ east.
-  const double sin_theta = std::sin(colatitude);
-  const double cos_theta = std::cos(colatitude);
   const double sin_phi = std::sin(longitude);
   const double cos_phi = std::cos(longitude);
 

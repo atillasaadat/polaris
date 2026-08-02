@@ -228,8 +228,9 @@ SunSensorMeasurement SunSensor::sample(const time::Tai& epoch, const SunSensorIn
 
   // Truth incidence angle from the boresight — what selects the accuracy regime
   // for a vector-output part, and a useful diagnostic for an analogue one.
-  m.incidence_angle_rad =
-      sun_norm > 0.0 ? std::acos(std::clamp(boresight_body_.dot(sun_hat), -1.0, 1.0)) : M_PI;
+  m.incidence_angle_rad = sun_norm > 0.0 ? std::atan2(boresight_body_.cross(sun_hat).norm(),
+                                                      boresight_body_.dot(sun_hat))
+                                         : M_PI;
 
   if (spec_.output == SunSensorOutput::kSunVector) {
     // The unit's own processing produces the vector; the datasheet specifies its
@@ -253,7 +254,8 @@ SunSensorMeasurement SunSensor::sample(const time::Tai& epoch, const SunSensorIn
     double albedo_peak = 0.0;
     if (noise_enabled_ && spec_.albedo_error_rad > 0.0 && dayside > 0.0 &&
         spec_.half_fov_rad > 0.0 && earth_angular_radius > 0.0) {
-      const double separation = std::acos(std::clamp(boresight_body_.dot(nadir_hat), -1.0, 1.0));
+      const double separation =
+          std::atan2(boresight_body_.cross(nadir_hat).norm(), boresight_body_.dot(nadir_hat));
       const double fraction =
           fovCoveredFraction(spec_.half_fov_rad, separation, earth_angular_radius);
       albedo_peak = spec_.albedo_error_rad * fraction * dayside;
@@ -286,7 +288,9 @@ SunSensorMeasurement SunSensor::sample(const time::Tai& epoch, const SunSensorIn
         const Eigen::Vector3d axis = sun_hat.cross(nadir_hat);
         const double axis_norm = axis.norm();
         if (axis_norm > 0.0) {
-          const double psi = std::acos(std::clamp(sun_hat.dot(nadir_hat), -1.0, 1.0));
+          // |sun × nadir| is already in hand as the axis norm, so the atan2 form
+          // of the separation costs nothing over the acos of the dot product.
+          const double psi = std::atan2(axis_norm, sun_hat.dot(nadir_hat));
           m.albedo_angle_rad = albedoPullAngle(albedo_peak, psi);
           reported = Eigen::AngleAxisd(m.albedo_angle_rad, axis / axis_norm) * reported;
           // Out-of-plane dispersion: the centroid of the sunlit ground is not
@@ -358,7 +362,7 @@ SunSensorMeasurement SunSensor::sample(const time::Tai& epoch, const SunSensorIn
       // between them, so no frame change is needed. The shared §6.1 helper does
       // the overlap, which is what keeps a diode and a star tracker from
       // disagreeing about how much Earth is in view.
-      const double separation = std::acos(std::clamp(normal.dot(nadir_hat), -1.0, 1.0));
+      const double separation = std::atan2(normal.cross(nadir_hat).norm(), normal.dot(nadir_hat));
       const double fraction =
           fovCoveredFraction(spec_.half_fov_rad, separation, earth_angular_radius);
       albedo = spec_.albedo_coefficient * spec_.full_scale_counts * fraction * dayside;

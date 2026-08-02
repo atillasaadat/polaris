@@ -103,8 +103,9 @@ TEST(Quaternion, RoundTripThroughDcm) {
       const Quaternion q = AxisAngle(ax[0], ax[1], ax[2], angle).canonical();
       const Eigen::Matrix3d dcm = q.toRotationMatrix();
       const Quaternion r = Quaternion::FromRotationMatrix(dcm);
-      // Compare via DCM (robust); acos-based angularDistance is ill-conditioned
-      // near identity and would amplify ~1e-16 component error to ~1e-8 rad.
+      // DCM comparison retained as an independent check: it exercises the
+      // round trip through a different representation than the one under test,
+      // rather than measuring the library against its own angle function.
       EXPECT_TRUE(MatNear(dcm, r.toRotationMatrix(), 1e-12)) << "angle=" << angle;
     }
   }

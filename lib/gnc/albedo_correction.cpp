@@ -78,7 +78,7 @@ bool albedoCorrection(const AlbedoCorrectionConfig& cfg, const AlbedoCorrectionI
   // error was generated with (lib/math/fov_overlap.hpp) — one geometry, one
   // answer across the sim/flight seam.
   const double earth_angular_radius = std::asin(constants::wgs84::kSemiMajorAxis / in.radius_m);
-  const double boresight_to_nadir = std::acos(std::clamp(b.dot(d), -1.0, 1.0));
+  const double boresight_to_nadir = std::atan2(b.cross(d).norm(), b.dot(d));
   const double fraction =
       math::fovCoveredFraction(cfg.half_fov_rad, boresight_to_nadir, earth_angular_radius);
   if (!(fraction > 0.0)) {
@@ -95,11 +95,13 @@ bool albedoCorrection(const AlbedoCorrectionConfig& cfg, const AlbedoCorrectionI
   }
 
   const double peak = cfg.albedo_error_rad * fraction * std::min(1.0, in.dayside);
-  // φ is defined on the *measured* separation (albedo_correction.hpp), so this
+  // φ = A·sin(ψ) on the *measured* separation ψ (albedo_correction.hpp), so this
   // is the whole inverse — no iteration, and exact against the truth model when
-  // its dispersion is zero.
-  const double separation = std::acos(std::clamp(s.dot(d), -1.0, 1.0));
-  const double phi = peak * std::sin(separation);
+  // its dispersion is zero. Only sin ψ is ever needed, and for unit s and d that
+  // is identically ‖s × d‖, already in hand as the axis norm: taking the angle
+  // out with atan2 only to put it back through sin would be a round trip that
+  // costs two transcendentals and can only lose digits.
+  const double phi = peak * axis_norm;
   if (!std::isfinite(phi) || phi <= 0.0) {
     return false;
   }

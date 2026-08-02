@@ -69,11 +69,15 @@ Eigen::Vector3d Quaternion::rotate(const Eigen::Vector3d& v) const {
 }
 
 double Quaternion::angularDistance(const Quaternion& other) const {
-  double d = std::abs(q_.dot(other.q_));
-  if (d > 1.0) {
-    d = 1.0;
-  }
-  return 2.0 * std::acos(d);
+  // Error quaternion δq = q⁻¹ ⊗ other, whose scalar part is the four-vector dot
+  // product and whose vector part has norm sin(θ/2). Taking the angle from the
+  // atan2 of the two parts — rather than acos of the scalar alone — keeps the
+  // small-angle result accurate: near identity the scalar is 1 - θ²/8 and loses
+  // half its significant digits to cancellation, while the vector part is O(θ)
+  // and loses none. The absolute value on the scalar maps δq and -δq (the same
+  // rotation) to the same angle, keeping the result on the θ ≤ π branch.
+  const Quaternion e = inverse() * other;
+  return 2.0 * std::atan2(e.vec().norm(), std::abs(e.scalar()));
 }
 
 Quaternion Quaternion::FromRotationMatrix(const Eigen::Matrix3d& dcm) {

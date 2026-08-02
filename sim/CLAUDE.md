@@ -14,6 +14,7 @@ The simulation is the **plant** the FSW runs against. It is **not flight code** 
 - **Truth must differ from onboard models, deliberately.** Truth gravity degree, ephemeris fidelity, sensor biases/noise/latency are set to exercise the estimators. Don't accidentally hand the FSW a truth-fidelity quantity.
 - **`TruthState`** is the canonical truth product (`lib/state/`). Keep it on the sim side of the boundary; the FSW never receives it.
 - SI units, frame-tagged vectors, and reference provenance (textbook/paper in `refs.bib`) apply here too.
+- **Angles come from `atan2`, never a bare `acos` of a dot product** — `atan2(a.cross(b).norm(), a.dot(b))` for a vector pair, `2·atan2(‖dq_v‖, |dq₀|)` for a quaternion, `atan2(hypot(x,y), z)` for a colatitude. `acos` near 0 or π returns an angle wrong by ~1e-8 rad however exact its argument, and clamping hides that rather than fixing it. Full rule and rationale in `lib/README.md`; the conditioning claim is pinned by `tests/unit/angle_conditioning_test.cpp`.
 
 ## Core content
 

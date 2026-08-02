@@ -63,6 +63,11 @@ namespace polaris::sim::world {
 ///   \quad A = a^2\arccos\frac{x}{a} + b^2\arccos\frac{c-x}{b} - c\,y,
 ///   \quad \nu = 1 - \frac{A}{\pi a^2}.
 /// \f]
+/// The two arccosines are evaluated as \f$\mathrm{atan2}(\sqrt{1-t^2},\,t)\f$ on
+/// the clamped ratio \f$t\f$ (\c lib/README.md), which makes them total rather
+/// than more accurate — the ratio is the conditioning limit. The apparent
+/// separation \f$c\f$, being an angle between two vectors, genuinely does gain
+/// from the \c atan2 form and uses it.
 ///
 /// @param r_sat Geocentric ECI position of the spacecraft [m].
 /// @param r_sun Geocentric ECI position of the Sun [m].
