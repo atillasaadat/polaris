@@ -1,13 +1,17 @@
 /// @file Monte Carlo attitude-knowledge accuracy campaign
-/// (REQ-ADET-005, REQ-ADET-006, REQ-PAY-001; design doc §8.1, §22.3).
+/// (REQ-ADET-005, REQ-ADET-006; design doc §8.1, §22.3).
 ///
 /// The two **vehicle-level** requirements are stated on the **error norm** — the
 /// total eigenaxis rotation angle between the estimated and the true attitude,
 /// `θ_err = 2·acos(|q_err scalar|)` — at the 3σ (99.73rd-percentile) point, on
 /// the reference vehicle's own sensor budget
 /// (`config/spacecraft/leo_smallsat.yaml`, `flight.attitudeEstimator.*`). The
-/// third is the **payload cross-boresight** error (REQ-PAY-001), measured on the
-/// same fine-mode runs so the two metrics are directly comparable.
+/// Alongside them, and **informative rather than verifying**, the campaign
+/// projects the same fine-mode error onto a payload boresight: REQ-PAY-001 is
+/// stated in fine+star-tracker mode, which this campaign cannot reach until the
+/// §8.2 fusion layer exists, so the projection here is evidence about the metric
+/// (and about this campaign having no preferred body axis), not a verification
+/// of the requirement.
 ///
 /// **One draw feeds both estimators.** Each run generates its geometry, truth
 /// motion, systematic biases and white-noise sequences once and hands the
@@ -97,15 +101,6 @@ constexpr double kMaxSeparationDeg = 135.0;
 /// them, not the prettiest.
 constexpr double kCoarseLimitDeg = 15.0;
 constexpr double kFineLimitDeg = 15.0;
-
-/// REQ-PAY-001, the payload cross-boresight threshold [deg], 3σ. Set the same
-/// way: the measured bound is 7.9° at the fixed seed and 7.3–10.9° across the
-/// three other master seeds tried, so 14° leaves 44% margin at the shipped seed
-/// and never less than 21% at any seed tried. Below the 15° of
-/// the two norm requirements because the metric is smaller by construction —
-/// the about-boresight component of the attitude error drops out (see the test
-/// at the bottom of this file).
-constexpr double kCrossBoresightLimitDeg = 14.0;
 
 /// The 1σ handed to the MEKF and the Davenport seed per source: white ⊕
 /// systematic, exactly as `AttitudeEstimator::refreshCoarseConfig` inflates it. The
@@ -479,20 +474,28 @@ TEST(AttitudeAccuracyMonteCarlo, FineModeBeatsCoarseRunForRun) {
   EXPECT_GT(median_gap, 0.0) << "median per-run improvement is not positive";
 }
 
-// ── REQ-PAY-001: payload cross-boresight knowledge accuracy ─────────────────
+// ── Cross-boresight projection of the fine-mode error — informative ─────────
 //
-// The metric — the angle between where the payload's boresight actually points
-// and where the solution says it points, equal to |θ| sin ψ for an attitude
-// error θ at angle ψ to the boresight — is defined in
-// docs/requirements/payload.rst (`pay-cross-boresight-metric`), along with why
-// the about-boresight component drops out and why the answer is independent of
-// where the payload is mounted. The test measures the last of those rather than
-// assuming it: a mounting-dependent answer would mean the campaign had a
-// preferred body axis, which would invalidate the vehicle-level numbers too.
+// **This does not verify REQ-PAY-001.** That requirement is stated in fine mode
+// with star trackers fused (the mode a payload is actually operated in) and at
+// 10% of the sensor's own field of view; it is verified per sensor by the §8.2
+// fusion push, alongside REQ-ADET-007. What this test does is measure the same
+// projection on the SS+MAG+IMU mode this campaign *can* reach, which is worth
+// keeping for two reasons that have nothing to do with the threshold:
+//
+//  - it pins the projection maths against the analytic expectation (the ratio
+//    of medians should be the π/4 an isotropically directed error gives), and
+//  - it asserts the campaign has **no preferred body axis**, by measuring a
+//    canted mounting alongside the reference one. A mounting-dependent answer
+//    would invalidate the vehicle-level numbers too, so this is a check on the
+//    campaign itself as much as on the metric.
+//
+// The metric is defined in docs/requirements/payload.rst
+// (`pay-cross-boresight-metric`).
 
 /// The mounted boresight in body axes, taken from the payload model itself
-/// rather than hand-written, so the requirement is measured on the same +Z
-/// convention the sim flies (`sim/sensors/payload_sensor.hpp`).
+/// rather than hand-written, so the projection uses the same +Z convention the
+/// sim flies (`sim/sensors/payload_sensor.hpp`).
 Eigen::Vector3d payloadBoresightBody(const Eigen::Matrix3d& mounting_dcm) {
   polaris::sim::sensors::PayloadSensorSpec spec{};
   spec.half_fov_x_rad = 5.0 * kDeg;
@@ -501,7 +504,8 @@ Eigen::Vector3d payloadBoresightBody(const Eigen::Matrix3d& mounting_dcm) {
 }
 
 /// Angle [deg] between the boresight as the estimate places it and as the truth
-/// places it, both in ECI. This is the metric REQ-PAY-001 is written on.
+/// places it, both in ECI — the metric REQ-PAY-001 is written on, measured here
+/// on a mode that requirement is not stated in.
 double boresightErrorDeg(const Eigen::Vector3d& boresight_body, const pm::Quaternion& est,
                          const pm::Quaternion& q_true) {
   const Eigen::Vector3d estimated = est.inverse().rotate(boresight_body).normalized();
@@ -509,13 +513,10 @@ double boresightErrorDeg(const Eigen::Vector3d& boresight_body, const pm::Quater
   return std::atan2(estimated.cross(actual).norm(), estimated.dot(actual)) / kDeg;
 }
 
-TEST(AttitudeAccuracyMonteCarlo, PayloadCrossBoresightKnowledgeError) {
-  RecordProperty("verifies", "REQ-PAY-001");
-
+TEST(AttitudeAccuracyMonteCarlo, CrossBoresightProjectionOfFineModeError) {
   // Two mountings: the reference vehicle's (identity — boresight along body +Z,
   // nadir in the nominal Earth-pointing attitude) and a deliberately canted one.
-  // The requirement is judged on the first; the second is the mount-independence
-  // check described above.
+  // The second is the mount-independence check described above.
   const Eigen::Vector3d nadir_mount = payloadBoresightBody(Eigen::Matrix3d::Identity());
   const Eigen::Vector3d canted_mount = payloadBoresightBody(
       pm::Quaternion::FromAxisAngle(Eigen::Vector3d(0.577, 0.577, 0.577).normalized(), 35.0 * kDeg)
@@ -536,12 +537,15 @@ TEST(AttitudeAccuracyMonteCarlo, PayloadCrossBoresightKnowledgeError) {
   }
 
   ASSERT_EQ(campaign.samples.size(), static_cast<std::size_t>(kRuns));
-  RecordProperty("margin_pct", static_cast<int>(report(campaign, kCrossBoresightLimitDeg,
-                                                       "REQ-PAY-001 payload")));
-  report(canted, kCrossBoresightLimitDeg, "REQ-PAY-001 payload (canted mount)");
-
-  EXPECT_LE(campaign.max(), kCrossBoresightLimitDeg)
-      << "3σ cross-boresight bound over " << kRuns << " runs";
+  // No threshold: reported for the record, not judged. The absolute bound this
+  // used to assert belonged to the withdrawn SS+MAG-anchored form of
+  // REQ-PAY-001.
+  std::printf(
+      "[cross-boresight, informative] N=%d  median=%.3f deg  p95=%.3f deg  max=%.3f deg"
+      "  (total norm median=%.3f deg)\n",
+      kRuns, campaign.median(), campaign.quantile(0.95), campaign.max(), norms.median());
+  std::printf("[cross-boresight, canted mount] median=%.3f deg  p95=%.3f deg  max=%.3f deg\n",
+              canted.median(), canted.quantile(0.95), canted.max());
 
   // The cross-boresight error is a component of the total, so it can never
   // exceed it — run by run, not just in the aggregate. A metric that came out
@@ -561,7 +565,7 @@ TEST(AttitudeAccuracyMonteCarlo, PayloadCrossBoresightKnowledgeError) {
          "preferred body axis";
 
   // Sensitivity floor, as in the two vehicle-level campaigns: this budget cannot
-  // point a payload to a fraction of a degree.
+  // place a boresight to a fraction of a degree.
   EXPECT_GT(campaign.median(), 1.5) << "median error implausibly small — is the noise wired in?";
 }
 
