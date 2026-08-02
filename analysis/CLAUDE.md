@@ -1,5 +1,9 @@
 # CLAUDE.md — `analysis/` (Python Analysis Tools)
 
+> **Status: planned, not yet implemented** — the subdirectories are placeholders
+> and there is no Python here yet; everything below is the design intent
+> (§13/§21.4, Phase 11), built once `bindings/` exposes the C++ it must reuse.
+
 Python tools for mission analysis: RW/CMG momentum budgeting & sizing, detumble-time MC, ground-station contact scheduling, link budget, pointing budgets, post-processing. Read the root `CLAUDE.md` first.
 
 ## The one rule that matters most

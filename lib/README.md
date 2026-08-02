@@ -8,10 +8,12 @@ see root `CLAUDE.md` Golden Rule 6.
 Subdirectories (design doc §22.3):
 `math/` (Eigen, quaternions, typed vectors) · `frames/` (transforms + EOP) ·
 `time/` (TAI/UTC/GPS) · `state/` (`EstimatedState`/`TruthState`) ·
-`constants/` (registry incl. WGS84) · `environment/` (gravity, drag, SRP, IGRF, 3-body) ·
-`ephemeris/` (Chebyshev onboard evaluator) · `random/` (seeded per-source RNG streams, §3.5) ·
+`constants/` (registry incl. WGS84) · `environment/` (IGRF geomagnetic field + its
+IAGA coefficient loader — gravity, drag, SRP and third-body are truth-side only
+and live in `sim/world/`) · `ephemeris/` (Chebyshev onboard evaluator) ·
+`random/` (seeded per-source RNG streams, §3.5) ·
 `gnc/` (estimation/guidance/control algorithms, §8) · `onboard/` (table store, §11.3) ·
-`sitl/` (plant↔FSW wire format, §2.2) · `models/`.
+`sitl/` (plant↔FSW wire format, §2.2).
 
 Each subdirectory carries its own `README.md` with a contents table.
 

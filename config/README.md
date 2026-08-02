@@ -17,7 +17,8 @@ analysis inputs — don't hand-edit derived params.
   ├── magnetometer/     # generic three-axis
   ├── gnss/             # NovAtel OEM7600, generic
   ├── reaction_wheel/   # RW-0.4, RW-X generic
-  └── magnetorquer/     # NSS Taurus, MTQ800, generic
+  ├── magnetorquer/     # NSS Taurus, MTQ800, generic
+  └── payload_sensor/   # generic imager
   ```
 
   These entries are the **only** place a unit's parameters are written down: the

@@ -1,13 +1,18 @@
 name: ci
 
-# Polaris CI pipeline (design doc §23.2). The lint gate is active now; the build
-# and test stages are stubbed and activate as code lands in later Phase-0 pushes.
+# Polaris CI pipeline (design doc §23.2). Active per-PR lanes: lint (pre-commit),
+# the F´ build + the C++ suites (unit under ASan/UBSan, component, integration,
+# golden), and the Python tooling suite. The GMAT fixture drift check lives out of
+# this path in golden.yml (weekly); the docs `-W` gate lives in docs.yml.
 
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   lint:
@@ -48,9 +53,25 @@ jobs:
           uv run fprime-util build --ut
           uv run fprime-util check
 
-  # ── Remaining §23.2 stages — each activates when its code exists ─────────────
-  #   static-analysis:  clang-tidy, cppcheck, ASan/UBSan test builds   (Push 2)
-  #   integration-sitl: two-process closed-loop SITL scenarios         (Push 4+)
-  #   mc-smoke:         Monte Carlo smoke subset                       (Push 11)
-  #   golden:           GMAT golden-fixture regression → golden.yml    (Push 5, nightly)
-  #   coverage:         line + branch thresholds                       (Push 6)
+  # The Python tooling suite: config compiler + PrmDb emitter, GMAT harness, space
+  # weather, orbit. `tools/` is pure Python, so this lane needs no compile step and no
+  # submodules — `uv run` provisions the default groups (fprime + dev + config) from
+  # uv.lock and runs. GMAT-dependent cases skip themselves when GMAT is absent (it is
+  # a ~300 MB desktop install, deliberately confined to golden.yml).
+  python-tests:
+    name: python tests (tools/)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up uv (provisions Python from .python-version)
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Run pytest
+        run: uv run --frozen pytest   # fail if uv.lock is stale rather than silently re-resolving
+
+  # ── Remaining §23.2 stages — not yet wired ───────────────────────────────────
+  #   static-analysis:  clang-tidy + cppcheck as their own lane (.clang-tidy exists;
+  #                     ASan/UBSan already run via the `build` job's unit suite)
+  #   mc-smoke:         Monte Carlo smoke subset — waits on the §13 framework (Phase 11)
+  #   coverage:         line + branch thresholds (§22.2)

@@ -35,9 +35,11 @@ requirement. "shall" = binding; "should" = goal; "will" = fact/context. State
 **Status workflow:** ``draft`` → ``reviewed`` → ``approved`` → ``verified`` →
 (``deprecated``). The CI gate (``needs_warnings`` + ``sphinx-build -W``) fails the
 build if an **approved** or **verified** requirement has no incoming ``verifies``
-link, or — for quantitative requirements — if ``margin_achieved`` is below
-``margin_required``. Phase-0 seed requirements are kept at ``reviewed`` until a
-verifying test exists, so the gate is meaningful without blocking early work.
+link. That coverage check is currently the *only* gate: ``margin_achieved`` is
+collected and reported in the RVTM, but no build-time check compares it against
+``margin_required`` yet — a shortfall shows up in the matrix, it does not fail
+the build. Phase-0 seed requirements are kept at ``reviewed`` until a verifying
+test exists, so the gate is meaningful without blocking early work.
 
 Attributes
 ----------
@@ -60,7 +62,7 @@ Template
       :tags: adcs, control, momentum
       :method: Test
       :derived_from: REQ-SYS-012
-      :allocation: flight/components/MomentumManager
+      :allocation: flight/PolarisFsw/MomentumManager
       :value_required: 0.8 * h_max
       :margin_required: 20 %
       :refs: markley2014

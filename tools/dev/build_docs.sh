@@ -20,7 +20,7 @@ for f in verif_pytest verif_gtest; do
   fi
 done
 
-# C++ API XML for Breathe (no-op until lib/ has sources).
+# C++ API XML for Breathe (lib/ and sim/; see docs/Doxyfile).
 if command -v doxygen >/dev/null 2>&1; then
   ( cd "$DOCS" && doxygen Doxyfile >/dev/null )
 else

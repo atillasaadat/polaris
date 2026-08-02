@@ -10,6 +10,13 @@ this project, so the same setup can be reproduced on another machine:
 | `rules/` | Layered coding rules (common + per-language) |
 | `agents/` | Global reviewer/builder subagent definitions |
 | `commands/` | Global slash commands |
+
+The snapshot is **pruned to what this repo uses**, not a verbatim mirror of the live
+`~/.claude`: `rules/` keeps `common`, `cpp` and `python` only, and `agents/`/`commands/`
+drop the assets for languages Polaris does not contain (Go, Rust, Java, Kotlin,
+TypeScript, Flutter and their slash commands). Anything dropped is still available
+upstream from the marketplaces listed in `settings.json`; re-add a set here only if the
+repo grows a component in that language.
 | `hooks/` | Shell hooks (`rtk-rewrite.sh` Bash rewriter) |
 
 Install on a new machine with `./install.sh` (backs up any existing

@@ -23,7 +23,8 @@ Shared library — ``lib/``
 -------------------------
 
 The flight/sim-shared foundations: math, frames, time, canonical state,
-constants, the onboard environment/ephemeris/RNG, and the GNC algorithms.
+constants, the onboard environment/ephemeris/RNG, the GNC algorithms, the
+onboard table store, and the SITL wire protocol both processes speak.
 
 .. toctree::
    :maxdepth: 1
@@ -37,6 +38,8 @@ constants, the onboard environment/ephemeris/RNG, and the GNC algorithms.
    environment
    gnc
    random
+   onboard
+   sitl
 
 Truth simulation — ``sim/``
 ---------------------------

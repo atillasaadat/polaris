@@ -8,7 +8,27 @@
 /// enough that the scalar part alone would have lost half its digits) — at the
 /// 3σ (99.73rd-percentile) point, on
 /// the reference vehicle's own sensor budget
-/// (`config/spacecraft/leo_smallsat.yaml`, `flight.attitudeEstimator.*`). The
+/// (`config/spacecraft/leo_smallsat.yaml`, `flight.attitudeEstimator.*`).
+///
+/// **Two budgets, and only one of them verifies.** `requirementRuns()` is the
+/// **post-calibration** configuration — the magnetometer fit applied and its
+/// tightened `SigmaMagSysRad`/`SeedMinObservability` uplinked, the albedo
+/// correction applied, DE440 sun tables at grade `kPrecise` — and it is what
+/// REQ-ADET-005 (≤ 5°) and REQ-ADET-006 (≤ 3°) are measured against.
+///
+/// It is deliberately **not** what `config/spacecraft/leo_smallsat.yaml` ships:
+/// that file carries the uncalibrated `SigmaMagSysRad = 0.0337` and
+/// `SeedMinObservability = 0.0076`, and they change only by ground-commanded
+/// parameter uplink after a successful `MAG_CAL_START` fit. Both requirements
+/// name that parameter set as a stated condition, so this campaign verifies the
+/// configuration the requirements are written against rather than quietly
+/// assuming the vehicle boots into it.
+///
+/// `campaignRuns()` is the **uncalibrated** budget those thresholds used to be
+/// stated on; it is kept as the baseline the informative projections measure
+/// their improvement from, and because the coarse-vs-fine estimator comparison
+/// is cleanest where the systematic floor dominates.
+///
 /// Alongside them, and **informative rather than verifying**, the campaign
 /// projects the same fine-mode error onto a payload boresight: REQ-PAY-001 is
 /// stated in fine+star-tracker mode, which this campaign cannot reach until the
@@ -20,7 +40,8 @@
 /// motion, systematic biases and white-noise sequences once and hands the
 /// identical measurement stream to the coarse chain and to the MEKF, so
 /// coarse-vs-fine is a *paired* comparison — any difference is the estimator,
-/// not the sample — and the campaign runs once for all four tests below.
+/// not the sample. Each budget's campaign is built once on first use and shared
+/// by every case that reads it.
 ///
 /// **The method behind these numbers is documented once, in
 /// `docs/requirements/adcs_determination.rst`** — the metric definition
@@ -90,7 +111,13 @@ constexpr double kNisGate = 13.82;
 constexpr double kSeedMinObservability = 0.0076;
 
 /// The magnetic systematic **after** the on-orbit hard/soft-iron calibration of
-/// §8.1 [rad], for the informative projection at the bottom of this file.
+/// §8.1 [rad]. This is a **verifying** constant: it is part of the
+/// post-calibration budget REQ-ADET-005/006 are stated against.
+///
+/// It is *not* what `config/spacecraft/leo_smallsat.yaml` ships. The vehicle
+/// flies `SigmaMagSysRad = 0.0337` until a `MAG_CAL_START` window fits and the
+/// ground uplinks the tightened value — which is exactly why both requirements
+/// are conditioned on the post-calibration parameter set being in force.
 ///
 /// Measured by `mag_calibration_test.cpp`
 /// (`PostCalibrationSystematicMeetsTheHalfDegreeTarget`) on the same budget the
@@ -100,7 +127,9 @@ constexpr double kSeedMinObservability = 0.0076;
 constexpr double kSigmaMagSysPostCal = 0.087 * kDeg;
 
 /// The sun systematic **after** the onboard Earth-albedo correction of §8.1
-/// [rad], for the informative projection at the bottom of this file.
+/// [rad], on the analytic sun ephemeris. This is the **degraded floor** of
+/// REQ-ADET-006 — what the vehicle falls back to with no ephemeris upload in
+/// place or past the end of the uploaded span.
 ///
 /// Derived exactly as the uncalibrated 0.0356 in
 /// `config/spacecraft/leo_smallsat.yaml` is, with one term replaced. The albedo
@@ -142,15 +171,16 @@ constexpr double kSunSysPostAlbedo = 0.0126;
 /// arcsecond-class sun direction from *time alone*, and the ~10 arcsec LEO
 /// parallax the component already subtracts when it has a position fix.
 ///
-/// This is the budget the vehicle actually flies with an ephemeris upload in
-/// place, so it — not the analytic-fallback figure above — is what the eventual
-/// REQ-ADET-006 tightening should be conditioned on. `kSunSysPostAlbedo` is
-/// then the *degraded* floor: what the vehicle falls back to with no upload or
-/// past the end of the uploaded span.
+/// This is the budget the vehicle flies with an ephemeris upload in place, and
+/// it — not the analytic-fallback figure above — is what REQ-ADET-006's 3° is
+/// conditioned on. Unlike the two calibration constants, this one needs **no
+/// parameter uplink**: the vehicle already carries both grades and the
+/// estimator selects per cycle on the served `TableGrade`.
 constexpr double kSunSysPostAlbedoTables = 0.0105;
 
-/// The Davenport seed's observability gate for the post-calibration projection
-/// [dimensionless].
+/// The Davenport seed's observability gate under the post-calibration budget
+/// [dimensionless] — part of the verifying parameter set, and the second value
+/// the ground must uplink alongside the tightened magnetometer sigma.
 ///
 /// It has to be re-derived rather than reused, and the reason is worth stating
 /// because it is a **flight-parameter finding, not a test detail**. The gated
@@ -174,15 +204,34 @@ constexpr double kMinSeparationDeg = 45.0;
 constexpr double kMaxSeparationDeg = 135.0;
 
 /// Requirement thresholds on the error norm [deg], 3σ — REQ-ADET-005 and
-/// REQ-ADET-006. Both were **set from this campaign**, not the other way round:
-/// the measured bound is 8.5° coarse and 8.1° fine at the fixed seed, and
-/// 8.5–11.6° / 8.1–11.7° across the three other master seeds tried during
-/// development, so 15° leaves 43% and 46% margin at the shipped seed and never
-/// less than 22% at any seed tried. The sample maximum is a tail statistic and
-/// moves with the seed by design; the thresholds are set to clear the worst of
-/// them, not the prettiest.
-constexpr double kCoarseLimitDeg = 15.0;
-constexpr double kFineLimitDeg = 15.0;
+/// REQ-ADET-006, **enacted** at 5°/3° once both calibration items and the DE440
+/// ephemeris grading landed (Pushes 46, 47, 48).
+///
+/// These are requirement values, not measurements: the campaign below is run
+/// against them, never fitted to them. The verifying budget is the
+/// **post-calibration** configuration — magnetometer calibration applied *and
+/// its tightened parameters uplinked*, albedo correction applied, DE440 tables
+/// answering the sun query at grade PRECISE — which is what
+/// @ref requirementRuns exercises. Both requirements state that parameter set
+/// as a condition; as delivered the vehicle boots uncalibrated and sits on the
+/// 8.49°/8.07° floor the requirement bodies record.
+///
+/// The fine threshold is **conditioned on the tables being active**, and the
+/// reason is margin rather than threshold: on the analytic-ephemeris fallback
+/// the fine bound is 2.69°, which clears 3° but leaves only ~10% margin against
+/// the 20% REQ-ADET-006 asks for. Stating one unconditioned number would force a
+/// choice between a threshold the vehicle misses whenever an upload lapses and
+/// one that gives away the margin an upload buys. The fallback is recorded as
+/// the degraded floor by @ref PostBothCorrectionsFallbackIsTheDegradedFloor.
+constexpr double kCoarseLimitDeg = 5.0;
+constexpr double kFineLimitDeg = 3.0;
+
+/// Both requirements declare `margin_required: 20 %`, so a passing bound must
+/// sit at or below 80% of its threshold. The docs build has no gate for this
+/// field (`conf.py` filters on verification coverage only), so the campaign is
+/// where it is enforced — otherwise "20% margin" is a number the RVTM prints
+/// and nothing checks.
+constexpr double kMarginFraction = 0.8;
 
 ptime::Tai epochAt(double t_s) {
   return ptime::Tai::fromNanosecondsSinceEpoch(static_cast<std::int64_t>(t_s * 1.0e9));
@@ -229,11 +278,12 @@ struct Systematics {
   double mag2{0.0};
 
   /// @param sun_sys the sun systematic 1σ [rad] this campaign runs at —
-  ///        `kSunSysUncal` uncalibrated, the post-albedo-correction residual for
-  ///        the informative projection.
+  ///        `kSunSysPostAlbedoTables` for the requirement campaigns,
+  ///        `kSunSysPostAlbedo` for the degraded floor, `kSunSysUncal` for the
+  ///        uncalibrated baseline the projections measure from.
   /// @param mag_sys the magnetic systematic 1σ [rad], likewise —
-  ///        `kSigmaMagSys` for the requirement campaigns, the post-calibration
-  ///        residual for the projections.
+  ///        `kSigmaMagSysPostCal` for the requirement campaigns and the degraded
+  ///        floor, `kSigmaMagSys` for the uncalibrated baseline.
   ///
   /// Four draws always, in the same order, so two levels give the same
   /// realisations rescaled rather than a different sample: the projections below
@@ -486,11 +536,29 @@ const std::vector<PairedRun>& postCorrectionsFallbackRuns() {
   return runs;
 }
 
-/// The requirement campaign — the reference vehicle's **uncalibrated** budget —
-/// run once on first use and shared by every requirement test in this file.
+/// The reference vehicle's **uncalibrated** budget — the baseline the three
+/// projections below measure their improvement against, and the budget the
+/// head-to-head and cross-boresight cases characterise. Run once on first use.
+///
+/// This stopped being the requirement campaign when REQ-ADET-005/006 were
+/// enacted at 5°/3° against the post-calibration budget; it is kept because a
+/// projection needs something to project *from*, and because the estimator
+/// comparison is a cleaner measurement on the budget where the systematic floor
+/// dominates.
 const std::vector<PairedRun>& campaignRuns() {
   static const std::vector<PairedRun> runs =
       runCampaign(kSunSysUncal, kSigmaMagSys, kSeedMinObservability);
+  return runs;
+}
+
+/// The **verifying** campaign for REQ-ADET-005/006: the **post-calibration**
+/// budget — both calibration items applied, the magnetometer fit's tightened
+/// parameters uplinked, and the DE440 tables answering the sun query at grade
+/// PRECISE. Run once on first use and shared by the two requirement cases and
+/// the degraded-floor case below.
+const std::vector<PairedRun>& requirementRuns() {
+  static const std::vector<PairedRun> runs =
+      runCampaign(kSunSysPostAlbedoTables, kSigmaMagSysPostCal, kSeedMinObservabilityPostCal);
   return runs;
 }
 
@@ -505,10 +573,10 @@ Campaign errorNorms(const std::vector<PairedRun>& runs, bool fine) {
 }
 
 /// Fail the calling test if any run did not produce a usable pair.
-void requireAllRunsValid() {
-  ASSERT_EQ(campaignRuns().size(), static_cast<std::size_t>(kRuns));
-  for (std::size_t i = 0; i < campaignRuns().size(); ++i) {
-    ASSERT_TRUE(campaignRuns()[i].ok) << "run " << i << " left an estimator invalid";
+void requireAllRunsValid(const std::vector<PairedRun>& runs) {
+  ASSERT_EQ(runs.size(), static_cast<std::size_t>(kRuns));
+  for (std::size_t i = 0; i < runs.size(); ++i) {
+    ASSERT_TRUE(runs[i].ok) << "run " << i << " left an estimator invalid";
   }
 }
 
@@ -516,41 +584,54 @@ void requireAllRunsValid() {
 
 TEST(AttitudeAccuracyMonteCarlo, CoarseModeKnowledgeErrorNorm) {
   RecordProperty("verifies", "REQ-ADET-005");
-  requireAllRunsValid();
-  const Campaign campaign = errorNorms(campaignRuns(), false);
+  requireAllRunsValid(requirementRuns());
+  const Campaign campaign = errorNorms(requirementRuns(), false);
 
   RecordProperty("margin_pct",
                  static_cast<int>(report(campaign, kCoarseLimitDeg, "REQ-ADET-005 coarse")));
 
   EXPECT_LE(campaign.max(), kCoarseLimitDeg)
       << "3σ knowledge-error bound over " << kRuns << " runs";
-  // Sensitivity floor: this budget cannot produce a sub-degree coarse solution.
-  // The measured median is 3.3° and moves by under 0.1° across seeds, so a test
-  // bug that zeroed the systematic draws — which would sail through the bound
-  // above — is caught here instead.
-  EXPECT_GT(campaign.median(), 2.0) << "median error implausibly small — is the noise wired in?";
+  // REQ-ADET-005 carries `margin_required: 20 %`, which was a printed number and
+  // nothing more until this gate. Enforcing it here is what makes the margin a
+  // property CI defends rather than a claim the RVTM repeats.
+  EXPECT_LE(campaign.max(), kMarginFraction * kCoarseLimitDeg)
+      << "bound " << campaign.max() << " deg leaves "
+      << 100.0 * (kCoarseLimitDeg - campaign.max()) / kCoarseLimitDeg << "% margin against the "
+      << kCoarseLimitDeg << " deg threshold; REQ-ADET-005 requires 20%";
+  // Sensitivity floor. Calibrated, the remaining floor is the albedo dispersion
+  // and the magnetometer's post-fit residual, which put the coarse median near
+  // 0.85° — a test bug that zeroed the systematic draws would sail through the
+  // bound above and is caught here instead. Set well below the measurement so it
+  // guards against a collapse to zero, not against a legitimate improvement.
+  EXPECT_GT(campaign.median(), 0.2) << "median error implausibly small — is the noise wired in?";
 }
 
 // ── REQ-ADET-006: fine-mode knowledge accuracy, same SS+MAG+IMU suite ───────
 
 TEST(AttitudeAccuracyMonteCarlo, FineModeKnowledgeErrorNorm) {
   RecordProperty("verifies", "REQ-ADET-006");
-  requireAllRunsValid();
-  const Campaign campaign = errorNorms(campaignRuns(), true);
+  requireAllRunsValid(requirementRuns());
+  const Campaign campaign = errorNorms(requirementRuns(), true);
 
   RecordProperty("margin_pct",
                  static_cast<int>(report(campaign, kFineLimitDeg, "REQ-ADET-006 fine MEKF")));
 
   EXPECT_LE(campaign.max(), kFineLimitDeg) << "3σ knowledge-error bound over " << kRuns << " runs";
-  // Same sensitivity floor as the coarse campaign; measured median is 2.9°.
-  EXPECT_GT(campaign.median(), 2.0) << "median error implausibly small — is the noise wired in?";
+  // As REQ-ADET-005: the 20% `margin_required` is enforced, not just reported.
+  EXPECT_LE(campaign.max(), kMarginFraction * kFineLimitDeg)
+      << "bound " << campaign.max() << " deg leaves "
+      << 100.0 * (kFineLimitDeg - campaign.max()) / kFineLimitDeg << "% margin against the "
+      << kFineLimitDeg << " deg threshold; REQ-ADET-006 requires 20%";
+  // Same sensitivity floor as the coarse campaign; measured median is 0.51°.
+  EXPECT_GT(campaign.median(), 0.1) << "median error implausibly small — is the noise wired in?";
 }
 
 // ── Head to head: does the filter actually earn its keep? ───────────────────
 
 TEST(AttitudeAccuracyMonteCarlo, FineModeBeatsCoarseRunForRun) {
   RecordProperty("verifies", "REQ-ADET-006");
-  requireAllRunsValid();
+  requireAllRunsValid(campaignRuns());
 
   // Both chains ran on the identical measurement stream, so this is a *paired*
   // comparison and the right statistic is the **sign test** on the per-run
@@ -640,7 +721,7 @@ TEST(AttitudeAccuracyMonteCarlo, CrossBoresightProjectionOfFineModeError) {
   canted.samples.reserve(kRuns);
   norms.samples.reserve(kRuns);
 
-  requireAllRunsValid();
+  requireAllRunsValid(campaignRuns());
   for (const PairedRun& r : campaignRuns()) {
     campaign.samples.push_back(boresightErrorDeg(nadir_mount, r.fine, r.truth));
     canted.samples.push_back(boresightErrorDeg(canted_mount, r.fine, r.truth));
@@ -682,13 +763,13 @@ TEST(AttitudeAccuracyMonteCarlo, CrossBoresightProjectionOfFineModeError) {
 
 // ── Post-magnetometer-calibration projection — informative ──────────────────
 //
-// **This verifies nothing.** REQ-ADET-005 and REQ-ADET-006 stand at 15° on the
-// uncalibrated budget above, and they move only when the flight chain actually
-// runs the calibration end to end (§8.1, "Calibration is commanded, executed and
-// assessed on orbit") — not when a library can fit an ellipsoid. What this case
-// answers is the question that decides whether the rest of that work is worth
-// doing: *how far toward the committed 5°/3° does the magnetometer calibration
-// alone get us?*
+// **This verifies nothing**, and it is kept for what it explains rather than for
+// what it guards. REQ-ADET-005/006 are enacted at 5°/3° and verified above, on
+// the post-calibration budget. What this case answers is why the tightening needed
+// *both* calibration items rather than one: *how far toward 5°/3° does the
+// magnetometer calibration alone get us?* The answer — the medians move a long
+// way and the tails barely at all — is the systematic-floor argument, and it is
+// the evidence that sequenced the albedo correction next.
 //
 // The same 800 runs with one substitution — the magnetic systematic replaced by
 // the residual `lib/gnc/mag_calibration` measures on the reference budget
@@ -788,54 +869,56 @@ TEST(AttitudeAccuracyMonteCarlo, PostBothCorrectionsProjection) {
   EXPECT_GT(fine.max(), 0.2) << "bound implausibly small — is the noise wired in?";
 }
 
-// ── Both corrections **and** the onboard ephemeris tables — informative ──────
+// ── The analytic-ephemeris fallback: the degraded floor ─────────────────────
 //
-// **Verifies nothing**, like the two above. What it answers is which budget the
-// eventual REQ-ADET-006 tightening should be *conditioned* on. The analytic
-// ephemeris fallback is 7.0 mrad of the 12.6 mrad post-albedo sun systematic —
-// over half of it, and the largest single term left once the albedo correction
-// has run. But the vehicle does not have to fly on the fallback: the Push 37
-// onboard DE440 Chebyshev tables give an arcsecond-class sun direction from time
-// alone, and the estimator now follows the served grade per cycle.
+// REQ-ADET-006's 3° is conditioned on the DE440 tables being active, which is
+// the configuration the vehicle nominally flies and the one the two requirement
+// cases above verify. This case records what it falls back to when no upload is
+// in place or the epoch runs past the uploaded span — the same budget with the
+// analytic sun ephemeris, which is 7.0 mrad of the 12.6 mrad post-albedo sun
+// systematic, over half of it and the largest single term the albedo correction
+// leaves behind.
 //
-// So there are two honest numbers, not one: what the vehicle achieves with an
-// ephemeris upload in place, and what it falls back to without one.
+// **This is the degraded floor, not a requirement.** The fallback still clears
+// both thresholds, and that is worth guarding — a regression that pushed it past
+// 3° would change the conditioning story rather than merely cost margin. What it
+// does *not* clear is REQ-ADET-006's 20% margin requirement (measured ~10%),
+// which is precisely why the requirement is conditioned rather than stated flat.
 
-TEST(AttitudeAccuracyMonteCarlo, PostBothCorrectionsWithEphemerisTablesProjection) {
-  const std::vector<PairedRun> runs =
-      runCampaign(kSunSysPostAlbedoTables, kSigmaMagSysPostCal, kSeedMinObservabilityPostCal);
-  ASSERT_EQ(runs.size(), static_cast<std::size_t>(kRuns));
-  for (std::size_t i = 0; i < runs.size(); ++i) {
-    ASSERT_TRUE(runs[i].ok) << "run " << i << " left an estimator invalid";
-  }
+TEST(AttitudeAccuracyMonteCarlo, PostBothCorrectionsFallbackIsTheDegradedFloor) {
+  requireAllRunsValid(postCorrectionsFallbackRuns());
 
-  const Campaign coarse = errorNorms(runs, false);
-  const Campaign fine = errorNorms(runs, true);
   const Campaign coarse_fallback = errorNorms(postCorrectionsFallbackRuns(), false);
   const Campaign fine_fallback = errorNorms(postCorrectionsFallbackRuns(), true);
+  const Campaign coarse = errorNorms(requirementRuns(), false);
+  const Campaign fine = errorNorms(requirementRuns(), true);
 
-  constexpr double kCommittedCoarseDeg = 5.0;
-  constexpr double kCommittedFineDeg = 3.0;
   std::printf(
-      "[post-both + DE440 tables, informative] sun systematic %.3f deg (analytic) "
-      "-> %.3f deg (tables)\n"
-      "  coarse: median %.3f -> %.3f deg   3sigma-bound %.3f -> %.3f deg  (committed %.1f deg)\n"
-      "  fine:   median %.3f -> %.3f deg   3sigma-bound %.3f -> %.3f deg  (committed %.1f deg)\n",
-      kSunSysPostAlbedo / kDeg, kSunSysPostAlbedoTables / kDeg, coarse_fallback.median(),
-      coarse.median(), coarse_fallback.max(), coarse.max(), kCommittedCoarseDeg,
-      fine_fallback.median(), fine.median(), fine_fallback.max(), fine.max(), kCommittedFineDeg);
-  RecordProperty("coarse_bound_millideg", static_cast<int>(1000.0 * coarse.max()));
-  RecordProperty("fine_bound_millideg", static_cast<int>(1000.0 * fine.max()));
+      "[degraded floor: analytic ephemeris] sun systematic %.3f deg (tables) "
+      "-> %.3f deg (analytic)\n"
+      "  coarse: median %.3f -> %.3f deg   3sigma-bound %.3f -> %.3f deg  (limit %.1f deg)\n"
+      "  fine:   median %.3f -> %.3f deg   3sigma-bound %.3f -> %.3f deg  (limit %.1f deg)\n",
+      kSunSysPostAlbedoTables / kDeg, kSunSysPostAlbedo / kDeg, coarse.median(),
+      coarse_fallback.median(), coarse.max(), coarse_fallback.max(), kCoarseLimitDeg, fine.median(),
+      fine_fallback.median(), fine.max(), fine_fallback.max(), kFineLimitDeg);
+  RecordProperty("coarse_fallback_bound_millideg",
+                 static_cast<int>(1000.0 * coarse_fallback.max()));
+  RecordProperty("fine_fallback_bound_millideg", static_cast<int>(1000.0 * fine_fallback.max()));
 
-  // Removing a term cannot make either chain worse.
-  EXPECT_LE(coarse.max(), coarse_fallback.max()) << "the tables did not improve the coarse bound";
-  EXPECT_LE(fine.max(), fine_fallback.max()) << "the tables did not improve the fine bound";
+  // Losing the tables cannot make either chain better.
+  EXPECT_GE(coarse_fallback.max(), coarse.max()) << "the fallback beat the DE440 tables";
+  EXPECT_GE(fine_fallback.max(), fine.max()) << "the fallback beat the DE440 tables";
+  // The degraded configuration still clears both thresholds — on margin alone,
+  // not on the requirement's 20%.
+  EXPECT_LE(coarse_fallback.max(), kCoarseLimitDeg) << "degraded floor no longer clears 5 deg";
+  EXPECT_LE(fine_fallback.max(), kFineLimitDeg) << "degraded floor no longer clears 3 deg";
   // What is left is the albedo dispersion, which the ephemeris does not touch. A
   // bound far below that floor would mean the substitution had leaked into the
   // sensor terms: the 10.5 mrad per-axis residual alone has a 3.44 sigma Rayleigh
   // tail at ~2.1 deg.
-  EXPECT_GT(fine.max(), 1.5) << "projected bound is below the albedo-only floor — did the "
-                                "substitution touch the albedo budget?";
+  EXPECT_GT(fine_fallback.max(), 1.5)
+      << "fallback bound is below the albedo-only floor — did the substitution touch the albedo "
+         "budget?";
 }
 
 }  // namespace

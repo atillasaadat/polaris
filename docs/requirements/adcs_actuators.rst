@@ -11,7 +11,7 @@ Firm seeds below.
    :tags: adcs, actuators, architecture
    :method: Inspection
    :derived_from: REQ-SYS-008
-   :allocation: flight/components/ActuatorAllocation
+   :allocation: flight/PolarisFsw/ActuatorAllocation
 
    A vehicle configuration **shall** use either reaction wheels (pyramidal) **or**
    CMGs as its primary momentum actuator, never both; the choice is a modular,
@@ -24,7 +24,7 @@ Firm seeds below.
    :tags: adcs, actuators, allocation
    :method: Test
    :derived_from: REQ-ACTL-003
-   :allocation: flight/components/ActuatorAllocation
+   :allocation: flight/PolarisFsw/ActuatorAllocation
    :refs: markley2014
 
    For RW-equipped vehicles the FSW **shall** distribute commanded body torque
@@ -38,7 +38,7 @@ Firm seeds below.
    :tags: adcs, actuators, momentum
    :method: Test
    :derived_from: REQ-ACTL-003
-   :allocation: flight/components/MomentumManager
+   :allocation: flight/PolarisFsw/MomentumManager
 
    The FSW **shall** monitor stored RW momentum and desaturate using magnetorquers
    (and/or thrusters), retaining control authority with margin to wheel saturation.
@@ -50,7 +50,7 @@ Firm seeds below.
    :tags: adcs, actuators, cmg
    :method: Test
    :derived_from: REQ-ACT-001
-   :allocation: flight/components/ActuatorAllocation
+   :allocation: flight/PolarisFsw/ActuatorAllocation
    :refs: markley2014
 
    For CMG-equipped vehicles the FSW **shall** provide a singularity-robust

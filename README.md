@@ -17,12 +17,15 @@ to size, validate, and verify the design.
 |---|---|---|---|
 | **Flight software (FSW)** | `flight/` | F´ (F Prime) / C++ | The deliverable that "flies": sensing → estimation → guidance → control → actuation → FDIR. **No heap, no exceptions** after init. |
 | **Truth / environment sim** | `sim/` | C++ | High-fidelity 6DOF plant (RK89, gravity/drag/SRP/eclipse/IGRF/3-body), sensor & actuator truth models, fault injection. |
-| **Shared library** | `lib/` | C++ | Math, frames, time, canonical state, constants, environment, ephemeris — used by both FSW and sim. |
-| **Analysis** | `analysis/` | Python (via `bindings/` pybind11) | Momentum/sizing, detumble MC, contacts, link budget, post-processing — exercising the *same* C++ that flies. |
+| **Shared library** | `lib/` | C++ | Math, frames, time, canonical state, constants, environment, ephemeris, onboard tables, GNC algorithms, the SITL wire format — used by both FSW and sim. |
+| **Analysis** | `analysis/` | Python (via `bindings/` pybind11) | *Planned (Phase 11).* Momentum/sizing, detumble MC, contacts, link budget, post-processing — exercising the *same* C++ that flies. |
 
-Plus `mc/` (Monte Carlo), `config/` (spacecraft/scenario/hardware config + the committed Claude Code dev-environment snapshot), `tests/`
-(unit → component → integration → golden), and `tools/` (config compiler, GMAT
-golden-data harness).
+Plus `mc/` (Monte Carlo campaign configs — planned, Phase 11), `config/`
+(spacecraft/scenario/hardware config + the committed Claude Code dev-environment
+snapshot), `tests/` (`unit/` → `integration/` → `golden/`, plus the Python `tools/`
+suite; F´ component unit tests live beside their component under
+`flight/PolarisFsw/`), and `tools/` (config compiler, GMAT golden-data harness, and
+the fetch/derive tools for EOP, DE440 ephemeris, EGM2008, IGRF and space weather).
 
 ## Source of truth
 
@@ -41,9 +44,11 @@ golden-data harness).
 ## Getting started — build, run & test the baseline
 
 The flight software is an **F´ (F Prime) v4.2.2** project (vendored as the `fprime/`
-git submodule). The current baseline is a buildable, runnable **barebones deployment**
-(`flight/PolarisFsw`) — F´ core command/telemetry/event/file/data-product services with
-three rate groups — that the GNC components land into in later phases.
+git submodule). The `flight/PolarisFsw` deployment builds and runs: F´ core
+command/telemetry/event/file/data-product services with three rate groups, plus the
+Polaris components landed so far — `OnboardTables` (leap seconds / EOP / Chebyshev
+ephemeris), `AttitudeEstimator` (coarse SS+MAG+IMU chain and the fine MEKF), and the
+`PolarisSitl` subtopology that binds the deployment to the truth sim over TCP.
 
 ### Prerequisites
 
@@ -107,11 +112,16 @@ cd flight/PolarisFsw && uv run fprime-gds --no-app    # ground system only (TCP 
 uv run cmake --build build-fprime-automatic-native-ut \
     --target polaris_unit_tests polaris_integration_tests polaris_golden_tests -j4
 
-./build-fprime-automatic-native-ut/bin/Linux/polaris_unit_tests          # 378 tests
-./build-fprime-automatic-native-ut/bin/Linux/polaris_integration_tests   # full-stack sim
-./build-fprime-automatic-native-ut/bin/Linux/polaris_golden_tests        # GMAT cross-validation
+./build-fprime-automatic-native-ut/bin/Linux/polaris_unit_tests          # 541 tests
+./build-fprime-automatic-native-ut/bin/Linux/polaris_integration_tests   # 29, full-stack sim + SITL
+./build-fprime-automatic-native-ut/bin/Linux/polaris_golden_tests        # 4, GMAT cross-validation
 
-uv run pytest tests/tools              # config compiler, GMAT harness, space weather
+# F´ component unit tests (30) build with the deployment; `fprime-util check` is
+# what CI runs, and it drives every suite above through ctest.
+./build-fprime-automatic-native-ut/bin/Linux/flight_PolarisFsw_AttitudeEstimator_ut_exe
+
+uv run pytest              # 126 Python: config compiler, PrmDb emitter, GMAT harness,
+                           # space weather, orbit (2 skip without a GMAT install)
 ```
 
 ### 6. Docs (optional)
@@ -127,15 +137,24 @@ uv run --group docs bash tools/dev/build_docs.sh   # -> docs/_build/html/index.h
 
 ## Status
 
-**Phase 2 — Sensor & actuator models** (complete except CMGs/thrusters), on top of a
-finished Phase 0 (foundations, F´ baseline, config pipeline, requirements ICD) and
-Phase 1 (6DOF + RK8(9) truth dynamics with the full environment suite, GMAT
-cross-validated). The truth sim flies a config-defined vehicle: IMU, star tracker,
-sun sensor, magnetometer, and GNSS truth models with full error stacks, shared
-occlusion, and scriptable fault injection; reaction-wheel (W-matrix assembly) and
-magnetorquer actuators. Next: **Phase 3** — the F´ FSW skeleton and the two-process
-SITL loop that binds them together. Detail: [`PROGRESS.md`](PROGRESS.md); phase plan:
-design doc §24.
+**Phase 4 — Attitude determination**, on top of a finished Phase 0 (foundations, F´
+baseline, config pipeline, requirements ICD), Phase 1 (6DOF + RK8(9) truth dynamics
+with the full environment suite and the §5.3 disturbance torques, GMAT cross-validated),
+Phase 2 (sensor and actuator truth models — IMU, star tracker, sun sensor,
+magnetometer, GNSS and a generic payload sensor with full error stacks, shared
+occlusion and scriptable fault injection; reaction wheels with W-matrix assembly, and
+magnetorquers — complete except CMGs/thrusters), and Phase 3 (the two-process SITL
+loop: `lib/sitl` wire format, the `SitlBridge` component, sim-time lockstep, and the
+onboard leap-second/EOP/Chebyshev tables).
+
+Attitude determination now runs on the vehicle: the coarse SS+MAG+IMU chain and the
+fine 6-state MEKF with fine↔coarse arbitration, tuned through the config compiler's
+`Svc::PrmDb` parameter file, with onboard magnetometer hard/soft-iron calibration and
+sun-vector albedo correction. Accuracy is a measured, CI-guarded number rather than a
+claim (800-run Monte Carlo). Remaining in Phase 4: multi-unit sensor fusion (§8.2 —
+which is what brings the star tracker into the filter) and an onboard position source
+independent of a live GNSS fix (§8.3). Detail: [`PROGRESS.md`](PROGRESS.md); phase
+plan: design doc §24.
 
 ## License
 

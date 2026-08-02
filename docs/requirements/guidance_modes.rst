@@ -10,7 +10,7 @@ Source: design doc §8.4, §10. Fully populated in Phase 7; firm seeds below.
    :tags: guidance, pointing
    :method: Test
    :derived_from: REQ-MIS-001
-   :allocation: flight/components/Guidance
+   :allocation: flight/PolarisFsw/Guidance
 
    Guidance **shall** generate reference attitude and rate for sun-point, nadir,
    LVLH, inertial-hold, star-track, and ground-track pointing modes.
@@ -22,7 +22,7 @@ Source: design doc §8.4, §10. Fully populated in Phase 7; firm seeds below.
    :tags: guidance, slew, constraints
    :method: Test
    :derived_from: REQ-GDM-001
-   :allocation: flight/components/Guidance
+   :allocation: flight/PolarisFsw/Guidance
    :refs: markley2014
 
    Guidance **shall** plan eigenaxis slews with rate/acceleration limits and honor
@@ -36,7 +36,7 @@ Source: design doc §8.4, §10. Fully populated in Phase 7; firm seeds below.
    :tags: guidance, maneuver
    :method: Analysis
    :derived_from: REQ-MIS-001
-   :allocation: flight/components/Guidance
+   :allocation: flight/PolarisFsw/Guidance
 
    Guidance **shall** compute burns to reach target Keplerian elements / altitude,
    generating impulsive and finite-burn references.
@@ -48,7 +48,7 @@ Source: design doc §8.4, §10. Fully populated in Phase 7; firm seeds below.
    :tags: modes, fdir
    :method: Test
    :derived_from: REQ-MIS-004
-   :allocation: flight/components/ModeManager
+   :allocation: flight/PolarisFsw/ModeManager
 
    The mode manager **shall** implement a documented state machine (Safe, Detumble,
    Sun Point, Nadir Track, Star Track, LVLH, Inertial Hold, Ground-Station Tracking,
