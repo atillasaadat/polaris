@@ -97,6 +97,7 @@ AttitudeEstimator ::AttitudeEstimator(const char* const compName)
       // on invented values before configuration arrives.
       estimator_(polaris::gnc::CoarseAttitudeConfig{}),
       mekf_(polaris::gnc::MekfConfig{}),
+      mag_cal_accumulator_(polaris::gnc::MagCalibrationConfig{}),
       igrf_(polaris::environment::IgrfCoefficients{}),
       leap_(polaris::time::LeapSecondTable::historical()) {}
 
@@ -615,6 +616,20 @@ const GnssMeas* AttitudeEstimator ::selectGnss(I64 nowTaiNs) const {
 void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
   const I64 nowNs = this->currentTaiNs();
 
+  // A collection window is counted in *accepted* samples, so an outage stalls it
+  // rather than ending it. Age it here, at the top and before any of the cycle's
+  // early returns, so a window cannot outlive its deadline just because the
+  // estimator spent the outage refusing cycles — which is exactly the case that
+  // would otherwise leave the vehicle telemetering COLLECTING forever.
+  if (this->mag_cal_collecting_) {
+    ++this->mag_cal_cycles_;
+    if (this->mag_cal_cycles_ >= this->mag_cal_deadline_cycles_) {
+      // Fit what it has. Enough samples and it succeeds; too few and the usual
+      // gates refuse it with SAMPLES, which is the honest report of an outage.
+      this->finishMagCal();
+    }
+  }
+
   if (this->params_dirty_) {
     this->params_dirty_ = false;
     // Two independent gates. The coarse set failing leaves the vehicle with no
@@ -754,7 +769,33 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
   }
   const MagnetometerMeas* const magnetometer = this->selectMagnetometer(nowNs);
   if (magnetometer != nullptr && have_mag_ref) {
-    in.mag_body = pm::Vec3<Body>(toEigen(magnetometer->get_fieldTesla()));
+    const pm::Vec3<Body> m_raw(toEigen(magnetometer->get_fieldTesla()));
+
+    // §7 MTQ/MAG duty-cycle interlock gate point. An energised torque rod puts a
+    // field on the sensor orders of magnitude above the ~30 uT ambient, and the
+    // core's hysteresis outlives the drive, so such a sample is not a
+    // measurement of the geomagnetic field and must never reach the calibration
+    // fit. No magnetorquer actuation state reaches this component today — the
+    // interlock lands with the §8.5 control push that first drives MTQs and this
+    // magnetometer in the same loop — so every selected sample is clean by
+    // construction. When that state arrives it is anded in here, and nothing
+    // else on this path changes.
+    const bool mag_sample_clean = true;
+    if (mag_sample_clean) {
+      // The fit is fed the **raw** reading against the modelled field magnitude:
+      // an accumulator fed its own correction would refit the identity. A cycle
+      // with no position has no modelled field and so contributes no sample
+      // rather than a fabricated one — which is what have_mag_ref above gates.
+      this->collectMagSample(m_raw, mag_ref.eigen().norm());
+    }
+
+    // **The one application point.** Everything downstream of unit selection —
+    // the coarse chain, the MEKF update, and the future B-dot law — reads
+    // `in.mag_body`, so the correction is applied exactly here and no consumer
+    // can disagree with another about what the field was. Called
+    // unconditionally: applyMagCalibration passes the raw vector through while
+    // no calibration is applied, so an uncalibrated vehicle takes the same path.
+    in.mag_body = polaris::gnc::applyMagCalibration(this->mag_cal_, m_raw);
     in.mag_ref = mag_ref;
     in.mag_valid = in.mag_body.isFinite();
   }
@@ -834,6 +875,21 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
   // The running total survives the demotions that clear the filter's own count.
   this->tlmWrite_MekfRejectedTotal(this->fine_rejected_total_ + this->mekf_.rejectedCount());
   this->tlmWrite_FineDemotions(this->fine_demotions_);
+
+  // Calibration health. The state is derived rather than stored — COLLECTING
+  // outranks APPLIED because a window opened over an applied calibration is the
+  // condition worth seeing — and coverage is written *live* so the ground can
+  // tell a window that will succeed from one that will be refused, while there
+  // is still time to abort and re-fly it over a larger tumble.
+  this->tlmWrite_MagCalState(this->mag_cal_collecting_ ? MagCalState::COLLECTING
+                             : this->mag_cal_.valid    ? MagCalState::APPLIED
+                                                       : MagCalState::IDLE);
+  this->tlmWrite_MagCalSamples(
+      this->mag_cal_collecting_ ? static_cast<U32>(this->mag_cal_accumulator_.sampleCount()) : 0u);
+  this->tlmWrite_MagCalCoverage(this->mag_cal_collecting_ ? this->mag_cal_accumulator_.coverage()
+                                                          : kNoValue);
+  this->tlmWrite_MagCalResidualAngle(this->mag_cal_.valid ? this->mag_cal_.residual_angle_rad
+                                                          : kNoValue);
   // Zero bias while coarse-only: the coarse chain does not estimate a bias, and
   // the MEKF's is zero when it holds no solution.
   this->tlmWrite_GyroBias(toVec3F64(this->mekf_.gyroBias().eigen()));
@@ -952,6 +1008,16 @@ void AttitudeEstimator ::RESET_ESTIMATOR_cmdHandler(FwOpcodeType opCode, U32 cmd
   this->have_eop_grade_ = false;
   // Re-read the tuning too: a reset is also the recovery path after a config fix.
   this->params_dirty_ = true;
+  // Full reset semantics reach the calibration too: a window in progress is
+  // abandoned and an applied calibration is dropped. RESET_ESTIMATOR means "the
+  // solution is suspect, start over", and a correction derived from data the
+  // operator no longer trusts is part of what is suspect. MAG_CAL_CLEAR is the
+  // narrower command for dropping the calibration alone.
+  this->mag_cal_collecting_ = false;
+  this->mag_cal_target_samples_ = 0;
+  this->mag_cal_deadline_cycles_ = 0;
+  this->mag_cal_accumulator_.reset();
+  this->clearMagCal();
   this->log_ACTIVITY_HI_EstimatorReset();
   this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
 }

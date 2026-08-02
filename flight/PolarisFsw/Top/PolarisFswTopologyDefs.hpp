@@ -84,6 +84,12 @@ struct TopologyState {
   const char* onboardIgrfPath;        //!< Onboard IAGA IGRF-14 coefficients (§6.2, §8.1)
   double igrfEpochYear;               //!< Mission epoch [decimal yr] the IGRF snapshot is taken
                                       //!< at; <= 0 = derive from the system clock at startup
+  U32 magCalSamples;                  //!< SITL/bench only: sample count to command MAG_CAL_START
+                                      //!< with at startup (0 = do not command a calibration).
+                                      //!< The SITL demonstration of the §8.1 commanded flow needs
+                                      //!< a command to arrive with no ground link attached; this
+                                      //!< is that hook, and it dispatches the real opcode through
+                                      //!< the component's own command port.
   const char* prmDbPath;              //!< ParameterDb file emitted by the config compiler
                                       //!< (§19.3); nullptr = the FileHandling default "PrmDb.dat"
   CdhCore::SubtopologyState cdhCore;  //!< Subtopology state for CdhCore

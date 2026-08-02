@@ -89,6 +89,49 @@ TEST(AttitudeEstimator, ResetDropsFineMode) {
   tester.testResetDropsFineMode();
 }
 
+TEST(AttitudeEstimator, MagCalCollectsFitsAndAppliesTheCorrection) {
+  RecordProperty("verifies", "REQ-ADET-005");
+  flight::AttitudeEstimatorTester tester;
+  tester.testMagCalCollectsFitsAndAppliesTheCorrection();
+}
+
+TEST(AttitudeEstimator, MagCalAbortDiscardsTheWindow) {
+  flight::AttitudeEstimatorTester tester;
+  tester.testMagCalAbortDiscardsTheWindow();
+}
+
+TEST(AttitudeEstimator, MagCalClearRevertsToRaw) {
+  flight::AttitudeEstimatorTester tester;
+  tester.testMagCalClearRevertsToRaw();
+}
+
+TEST(AttitudeEstimator, MagCalRejectsNarrowCoverage) {
+  RecordProperty("verifies", "REQ-ADET-005");
+  flight::AttitudeEstimatorTester tester;
+  tester.testMagCalRejectsNarrowCoverage();
+}
+
+TEST(AttitudeEstimator, MagCalResetAbortsAndClears) {
+  flight::AttitudeEstimatorTester tester;
+  tester.testMagCalResetAbortsAndClears();
+}
+
+TEST(AttitudeEstimator, MagCalStartRefusedWithoutParameters) {
+  flight::AttitudeEstimatorTester tester;
+  tester.testMagCalStartRefusedWithoutParameters();
+}
+
+TEST(AttitudeEstimator, MagCalStartRejectsOutOfRangeCounts) {
+  flight::AttitudeEstimatorTester tester;
+  tester.testMagCalStartRejectsOutOfRangeCounts();
+}
+
+TEST(AttitudeEstimator, EstimatorUndisturbedDuringCollection) {
+  RecordProperty("verifies", "REQ-ADET-002");
+  flight::AttitudeEstimatorTester tester;
+  tester.testEstimatorUndisturbedDuringCollection();
+}
+
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

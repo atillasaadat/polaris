@@ -177,6 +177,55 @@ spacecraft:
     # seed. (sin^2(theta)/2 is the easy mistake here — it agrees at 90 deg and
     # is nearly double at small separations, which would gate at ~14 deg.)
     flight.attitudeEstimator.SeedMinObservability: 0.0076 # [-]
+    # --- Commanded magnetometer calibration (§8.1) ------------------------
+    # Gates on the onboard hard/soft-iron ellipsoid fit MAG_CAL_START runs.
+    # Read at MAG_CAL_START only: a missing value here refuses the *command*
+    # (MagCalRejected CONFIG) and costs the vehicle nothing else.
+    #
+    # NOTE (ops): the values below tune the *fit*. A successful calibration
+    # invalidates two other entries in this file — SigmaMagWhiteRad and
+    # SigmaMagSysRad describe an uncalibrated magnetometer (the 33.7 mrad
+    # systematic above is almost entirely the hard iron this fit removes), and
+    # SeedMinObservability was derived from the *ratio* of the sun and magnetic
+    # sigmas, so a ~16x tighter magnetic pair makes 0.0076 refuse every geometry
+    # in the band (~1.1e-4 preserves its 10 deg meaning). Re-derive and uplink
+    # all three after a good fit; see flight/PolarisFsw/README.md.
+    #
+    # Preconditioner for the ten-parameter fit: the IGRF magnitude at this 500 km
+    # SSO runs ~22-52 uT over an orbit, so 30 uT is the mid-scale value. Numerics
+    # only — the solution is invariant to it up to round-off.
+    flight.attitudeEstimator.MagCalNominalFieldT: 30.0e-6  # [T]
+    # Acceptance band on both |m_raw| and the IGRF magnitude. 10 uT is below any
+    # field this orbit sees, so it catches a dead or unpowered sensor; 80 uT is
+    # above any field it sees and below the MAG-GENERIC 100 uT range, so it
+    # catches a saturated reading and (until the §7 MTQ/MAG interlock supplies
+    # the actuation state) the grossest magnetorquer-contaminated samples.
+    flight.attitudeEstimator.MagCalMinFieldT: 10.0e-6      # [T]
+    flight.attitudeEstimator.MagCalMaxFieldT: 80.0e-6      # [T]
+    # Ten unknowns fit exactly at ten samples and report zero residual whatever
+    # the truth, so the residual and condition gates only mean something on a
+    # well-overdetermined problem. 100 is ten-times overdetermined and 10 s of a
+    # 10 Hz window; the measured 0.087 deg residual was taken at 200.
+    flight.attitudeEstimator.MagCalMinSamples: 100         # [samples]
+    # Orientation coverage 3*lambda_min(D) of the sampled field directions. For
+    # directions spread over a cone of half-angle alpha the metric is
+    # (3/2)*<sin^2 theta>: 0.09 at 20 deg, 0.32 at 40 deg, 0.40 at 45 deg. 0.35
+    # sits between 40 and 45 deg — wide enough that the fitted ellipsoid is not
+    # extrapolated far past the data, narrow enough to be reachable in a
+    # detumble-rate tumble rather than requiring a commanded full-sky scan.
+    flight.attitudeEstimator.MagCalMinCoverage: 0.35       # [-]
+    # Condition ceiling on the *normal* matrix. Streaming forces the normal
+    # equations (the design matrix is never held), so the conditioning is squared
+    # relative to a QR of the rows: 1e6 here is a well-covered 1e3 in the rows,
+    # which still leaves ~10 digits of the double mantissa. The stage-1 unit
+    # tests measure ~1e3-1e4 on accepted windows and blow past 1e6 on the
+    # narrow-cone windows this is meant to refuse.
+    flight.attitudeEstimator.MagCalMaxCondition: 1.0e6     # [-]
+    # The fitted residual must beat the uncalibrated one by 2x. On the reference
+    # budget the real improvement is ~22x, so this only ever fires on a window
+    # that learned nothing — and refusing there is the point: a calibration that
+    # makes the magnetometer worse is the outcome guarded hardest against.
+    flight.attitudeEstimator.MagCalMinImprovement: 2.0     # [-]
   drag_area_m2: 0.06                 # 6U broadside, ~0.2 x 0.3 m
   drag_cd: 2.2
   srp_area_m2: 0.06

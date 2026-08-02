@@ -43,6 +43,7 @@ add_executable(polaris_unit_tests
   davenport_test.cpp
   coarse_attitude_test.cpp
   mekf_test.cpp
+  mag_calibration_test.cpp
   attitude_accuracy_mc_test.cpp
   sim_vehicle_test.cpp)
 

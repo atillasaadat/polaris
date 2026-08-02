@@ -37,10 +37,12 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <Eigen/Geometry>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
 
@@ -216,15 +218,19 @@ int compileConfig(const std::string& out_dir, const std::string& err_path) {
 
 /// Fork + exec the deployment against the SITL port, with the compiled
 /// parameter file, logging its event stream to @p log_path.
+/// @p magCalSamples > 0 additionally commands MAG_CAL_START for that many
+/// samples at startup (`-M`), which is how the calibration test gets a command
+/// into a deployment with no ground link attached.
 pid_t spawnFsw(const std::string& bin, std::uint16_t port, const std::string& prm_path,
-               const std::string& log_path) {
+               const std::string& log_path, unsigned magCalSamples = 0) {
   const pid_t pid = ::fork();
   if (pid == 0) {
     ::freopen(log_path.c_str(), "w", stdout);
     ::freopen("/dev/null", "w", stderr);
     const std::string port_str = std::to_string(port);
+    const std::string cal_str = std::to_string(magCalSamples);
     ::execl(bin.c_str(), bin.c_str(), "-s", port_str.c_str(), "-P", prm_path.c_str(), "-Y",
-            kEpochDecimalYear, static_cast<char*>(nullptr));
+            kEpochDecimalYear, "-M", cal_str.c_str(), static_cast<char*>(nullptr));
     _exit(127);  // exec failed
   }
   return pid;
@@ -299,8 +305,8 @@ TEST(SitlAttitudeTuning, CompiledParametersLetTheEstimatorAcquireAttitude) {
   EXPECT_NE(log.find("PrmFileLoadComplete"), std::string::npos)
       << "prmDb never loaded the compiled parameter file:\n"
       << log;
-  EXPECT_NE(log.find("Records: 19"), std::string::npos)
-      << "prmDb loaded a record count other than the 19 declared parameters:\n"
+  EXPECT_NE(log.find("Records: 26"), std::string::npos)
+      << "prmDb loaded a record count other than the 26 declared parameters:\n"
       << log;
 
   // 2. The estimator accepted the whole tuning set — both gates. ConfigInvalid
@@ -333,6 +339,139 @@ TEST(SitlAttitudeTuning, CompiledParametersLetTheEstimatorAcquireAttitude) {
       << log;
   EXPECT_EQ(log.find("Fine mode demoted"), std::string::npos)
       << "estimator could not hold the fine solution it acquired:\n"
+      << log;
+}
+
+// ----------------------------------------------------------------------
+// Commanded magnetometer calibration (design doc §8.1)
+// ----------------------------------------------------------------------
+
+/// Long enough for a 4500-sample window at 10 Hz plus the cycles that prove the
+/// estimator survived applying the result. The orbital arc matters as much as
+/// the duration: the ellipsoid fit needs the IGRF *magnitude* to vary across the
+/// window, and a vehicle parked at one point sees it constant, which leaves the
+/// quadric's diagonal terms degenerate with its constant term and the fit
+/// refused on CONDITION. 500 s covers ~31 deg of arc, enough to separate them —
+/// a first attempt at 300 s (~19 deg) with the tuning test's axisymmetric
+/// inertia was refused on COVERAGE at 0.25.
+constexpr double kCalDurationS = 500.0;
+
+/// Samples commanded, i.e. 450 s of the 500 s run. The remainder is the vehicle
+/// flying with the correction applied.
+constexpr unsigned kCalSamples = 4500;
+
+/// Tumble driving the collection window, ~3.7 deg/s: a plausible post-separation
+/// rate, and about all three axes. A torque-free body spins about a nearly fixed
+/// inertial axis, so the body-frame field direction sweeps a *band* rather than
+/// the sphere; the orbital motion turning the field in inertial space over 500 s
+/// is what widens that band past the coverage gate. Both are needed.
+const Eigen::Vector3d kCalBodyRate(0.050, 0.040, 0.030);
+
+/// Same plant as the tuning test, tumbling, and long enough to fly the window.
+scenario::SimConfig calibrationOrbit() {
+  scenario::SimConfig c = estimationOrbit();
+  c.scenario_name = "sitl-mag-calibration";
+  // Fully asymmetric inertia, unlike the tuning test's axisymmetric pair: with
+  // two equal moments the free motion is pure coning about the symmetry axis and
+  // the swept band is narrow. Distinct moments make the polhode precess, which
+  // widens it. Still a 6U-class 12 kg vehicle.
+  c.spacecraft.inertia_kgm2 = Eigen::Vector3d(0.12, 0.09, 0.06).asDiagonal();
+  c.initial_state.body_rate = pm::Vec3<pm::frames::Body>(kCalBodyRate);
+  c.propagation.duration_s = kCalDurationS;
+  c.propagation.output_step_s = kCalDurationS;
+  return c;
+}
+
+/// First floating-point number following @p key in @p text, or NaN.
+double valueAfter(const std::string& text, const std::string& key) {
+  const std::size_t at = text.find(key);
+  if (at == std::string::npos) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return std::strtod(text.c_str() + at + key.size(), nullptr);
+}
+
+TEST(SitlMagCalibration, CommandedCalibrationCollectsFitsAndApplies) {
+  const std::string bin = fswBinaryPath();
+  if (::access(bin.c_str(), X_OK) != 0) {
+    GTEST_SKIP() << "flight binary not built at " << bin
+                 << " (run `uv run fprime-util build`, or set POLARIS_FSW_BIN)";
+  }
+  if (::access(pythonPath().c_str(), X_OK) != 0) {
+    GTEST_SKIP() << "no Python interpreter at " << pythonPath()
+                 << " (run `uv sync`, or set POLARIS_PYTHON)";
+  }
+
+  const std::string work_dir = "build-artifacts/test-mag-calibration-" + std::to_string(::getpid());
+  const std::string err_path = work_dir + "/configc.err";
+  const std::string prm_path = work_dir + "/PrmDb.dat";
+  const std::string log_path = work_dir + "/fsw.log";
+  ASSERT_EQ(compileConfig(work_dir, err_path), 0) << "config compiler failed:\n"
+                                                  << readFile(err_path);
+
+  io::SitlServer server(estimationCounts(), 100'000'000LL);
+  ASSERT_TRUE(server.start(0)) << server.lastError();
+
+  // -M commands MAG_CAL_START at setup. On a flight vehicle this command comes
+  // from the ground; the deployment here has no uplink, and the point of the
+  // test is the collect-fit-apply chain, not the radio.
+  const pid_t pid = spawnFsw(bin, server.port(), prm_path, log_path, kCalSamples);
+  ASSERT_GE(pid, 0);
+
+  scenario::Vehicle vehicle;
+  std::string error;
+  ASSERT_TRUE(scenario::buildVehicle(estimationSuite(), 1, vehicle, &error)) << error;
+  scenario::SimRunner runner;
+  io::ClosedLoop loop(runner, vehicle);
+  ASSERT_TRUE(runner.build(calibrationOrbit(), scenario::DataPaths::under(POLARIS_GOLDEN_DIR),
+                           &error, loop.wrench()))
+      << error;
+  std::vector<io::MacroSample> trace;
+  ASSERT_TRUE(loop.run(server.callback(), &trace, &error)) << error;
+  EXPECT_TRUE(server.healthy()) << server.lastError();
+  server.stop();
+  reapFsw(pid);
+
+  const std::string log = readFile(log_path);
+  ASSERT_FALSE(log.empty()) << "no event stream captured at " << log_path;
+
+  // 1. The command was accepted and a window opened for what was asked.
+  EXPECT_NE(log.find("Magnetometer calibration started"), std::string::npos)
+      << "MAG_CAL_START never reached the estimator:\n"
+      << log;
+
+  // 2. The fit was accepted. A refusal here names its own gate, so the message
+  //    is the diagnosis — print the log rather than guessing at one.
+  EXPECT_EQ(log.find("Magnetometer calibration refused"), std::string::npos)
+      << "the flight tuning refused a fit over a full tumbling window:\n"
+      << log;
+  ASSERT_NE(log.find("Magnetometer calibration applied"), std::string::npos)
+      << "no calibration was applied over " << kCalDurationS << " s:\n"
+      << log;
+
+  // 3. And it is a *good* fit. The uncalibrated magnetic systematic on this
+  //    suite is 1.9 deg (34 mrad); 5 mrad is an order of magnitude better and
+  //    inside the 0.2-0.5 deg class §8.1 commits the calibration at. The floor
+  //    is the magnetometer's own noise, 0.05 uT on a ~30 uT field = 1.7 mrad.
+  const double residual = valueAfter(log, "residual=");
+  const double coverage = valueAfter(log, "coverage=");
+  EXPECT_TRUE(std::isfinite(residual)) << "no residual in the completion event:\n" << log;
+  EXPECT_LT(residual, 5.0e-3) << "calibration residual " << residual << " rad is too large:\n"
+                              << log;
+  EXPECT_GE(coverage, 0.35) << "the tumble did not span enough field directions:\n" << log;
+
+  // 4. The estimator is still healthy with the correction applied: it acquired,
+  //    it promoted, and nothing about the calibration knocked either over. Note
+  //    the seed-observability caveat in §8.1 does not bite here — the *sigma*
+  //    parameters still describe an uncalibrated magnetometer, which is exactly
+  //    the state a vehicle is in between a good fit and the ground uplinking
+  //    re-derived values, and the vehicle has to fly through it.
+  EXPECT_EQ(log.find("configuration invalid"), std::string::npos) << log;
+  EXPECT_NE(log.find("Attitude acquired"), std::string::npos)
+      << "estimator never acquired an attitude:\n"
+      << log;
+  EXPECT_NE(log.find("Fine mode engaged"), std::string::npos)
+      << "estimator never promoted to fine mode:\n"
       << log;
 }
 

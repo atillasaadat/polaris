@@ -83,7 +83,7 @@ parameter fails the compile rather than the mission — there are no flight
 defaults (design doc §19.3). The deployment points `prmDb` at the file with
 `-P`; see `flight/PolarisFsw/README.md` for the bring-up recipe.
 
-The attitude estimator's nineteen values are worth reading as **two sets**,
+The attitude estimator's twenty-six values are worth reading as **three sets**,
 because they fail differently. The twelve coarse-chain values (sun/magnetic
 white and systematic sigmas, `GyroArw`, `MinSinAngle`, `TriadGain`,
 `MaxCoastSec`, `MaxDtSec`, `MaxMeasAgeSec`, the GNSS radius band) are what the
@@ -92,11 +92,34 @@ The seven fine-mode values (`MekfRrw`, `MekfNisGate`, `MekfMaxCoastSec`,
 `MekfBiasSigmaInit`, `MekfRefusalStreak`, `MekfNisStreak`,
 `SeedMinObservability`) gate the MEKF only: one missing costs the fine mode and
 emits `FineConfigInvalid`, leaving a flyable vehicle on the coarse solution. The
-MEKF's angle random walk and largest propagation step are the coarse chain's
-`GyroArw` and `MaxDtSec` — same gyro, same rate group, so they are not
-duplicated. `config/spacecraft/leo_smallsat.yaml` derives every one of the
-nineteen from the units that vehicle carries, in comments; re-derive them
-whenever a `model_id` changes.
+seven magnetometer-calibration values (`MagCalNominalFieldT`,
+`MagCalMinFieldT`, `MagCalMaxFieldT`, `MagCalMinSamples`, `MagCalMinCoverage`,
+`MagCalMaxCondition`, `MagCalMinImprovement`) gate neither: they are read when
+`MAG_CAL_START` is commanded, and one missing refuses that *command* with
+`MagCalRejected(CONFIG)` while the vehicle flies on exactly as before —
+calibration is an activity, not a flight function, so it does not get a
+per-cycle alert. The MEKF's angle random walk and largest propagation step are
+the coarse chain's `GyroArw` and `MaxDtSec` — same gyro, same rate group, so
+they are not duplicated. `config/spacecraft/leo_smallsat.yaml` derives every one
+of the twenty-six from the units that vehicle carries, in comments; re-derive
+them whenever a `model_id` changes.
+
+> **A successful calibration invalidates three of the values above.**
+> `SigmaMagWhiteRad` and `SigmaMagSysRad` describe an *uncalibrated*
+> magnetometer — on the reference vehicle the 33.7 mrad systematic is almost
+> entirely the hard iron the fit removes — and `SeedMinObservability` was
+> derived from the *ratio* of the sun and magnetic sigmas, so a ~16× tighter
+> magnetic pair makes the shipped `0.0076` refuse every geometry in the band
+> (≈`1.1e-4` preserves its 10°-separation meaning). Re-derive and uplink all
+> three after a good fit; the ops procedure is in
+> `flight/PolarisFsw/README.md`.
+
+The parameter database holds at most `PRMDB_NUM_DB_ENTRIES` records and a longer
+file loads *partially*, so `configc` refuses to emit one — a build error rather
+than a vehicle with silently-invalid parameters. Polaris raises that limit from
+the F´ default of 25 to **64** in `flight/config/PrmDbImplCfg.hpp`, a
+`CONFIGURATION_OVERRIDES` module rather than a vendored copy of the F´ config
+directory. `tools/configc/prmdb.py`'s `MAX_ENTRIES` must stay equal to it.
 
 The hardware-library authoring contract — file layout, required keys and their
 units, the datasheet-comment standard, and the step-by-step *add a catalog

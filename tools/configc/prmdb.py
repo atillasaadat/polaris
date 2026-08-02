@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import struct
 import zlib
 from pathlib import Path
@@ -51,9 +52,35 @@ ENTRY_DELIMITER = 0xA5
 #: (``fprime/default/config/FpConfig.fpp``). Counted into each record's size.
 _PRM_ID_BYTES = 4
 
-#: ``PRMDB_NUM_DB_ENTRIES``: the database holds no more records than this, so a
-#: longer file would load partially and leave later parameters invalid.
-MAX_ENTRIES = 25
+#: Polaris's override of the F´ default configuration, where the flight value of
+#: ``PRMDB_NUM_DB_ENTRIES`` lives.
+PRMDB_CONFIG_HEADER = (
+    Path(__file__).parents[2] / "flight" / "config" / "PrmDbImplCfg.hpp"
+)
+
+
+def _read_max_entries(header: Path = PRMDB_CONFIG_HEADER) -> int:
+    """``PRMDB_NUM_DB_ENTRIES`` as the flight build sees it.
+
+    Read out of the header rather than duplicated here. The database holds no
+    more records than this and a longer file loads *partially*, leaving later
+    parameters invalid — so a copy of the number that drifted low would refuse
+    valid configs, and one that drifted high would ship exactly the silently
+    broken file this limit exists to prevent. Neither is a failure a comment
+    saying "keep these in step" reliably catches.
+    """
+    match = re.search(
+        r"PRMDB_NUM_DB_ENTRIES\s*=\s*(\d+)", header.read_text(encoding="utf-8")
+    )
+    if match is None:
+        # Plain ValueError, not PrmDbError: this runs at import time, before
+        # that subclass is defined. PrmDbError is a ValueError anyway.
+        raise ValueError(f"{header}: no PRMDB_NUM_DB_ENTRIES definition found")
+    return int(match.group(1))
+
+
+#: The database holds no more records than this (see :func:`_read_max_entries`).
+MAX_ENTRIES = _read_max_entries()
 
 #: F´ scalar type name -> ``struct`` format, big-endian (F´ serialization order).
 _VALUE_FORMATS: Mapping[str, str] = {

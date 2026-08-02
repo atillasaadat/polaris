@@ -194,6 +194,15 @@ void setupTopology(const TopologyState& state) {
   readParameters();
   // Autocoded parameter loading. Function provided by autocoder.
   loadParameters();
+  // Optional startup magnetometer calibration (design doc §8.1). This exists for
+  // the SITL demonstration of the commanded flow and for bench runs: a real
+  // calibration is commanded from the ground, and the deployment has no ground
+  // link in those runs. It dispatches the component's own MAG_CAL_START opcode
+  // through its command port, so what runs is the flight command handler — the
+  // only thing skipped is the uplink. Must follow loadParameters(): the command
+  // reads the MagCal* tuning out of ParameterDb and would otherwise refuse with
+  // MagCalRejected(CONFIG).
+  attitudeEstimator.commandMagCalAtStartup(state.magCalSamples);
   // Autocoded task kick-off (active components). Function provided by autocoder.
   startTasks(state);
   // Initialize socket communication if and only if there is a valid specification

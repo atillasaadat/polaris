@@ -28,7 +28,12 @@ from configc import (
     encode_records,
     load_dictionary,
 )
-from configc.prmdb import ENTRY_DELIMITER, MAX_ENTRIES
+from configc.prmdb import (
+    ENTRY_DELIMITER,
+    MAX_ENTRIES,
+    PRMDB_CONFIG_HEADER,
+    _read_max_entries,
+)
 
 _REPO = Path(__file__).resolve().parents[2]
 _HARDWARE = _REPO / "config" / "hardware"
@@ -106,6 +111,23 @@ def test_encoding_is_deterministic():
     assert build_param_file(values, dictionary) == build_param_file(
         dict(reversed(list(values.items()))), dictionary
     )
+
+
+def test_max_entries_is_read_from_the_flight_header():
+    # The limit is the flight build's PRMDB_NUM_DB_ENTRIES, parsed rather than
+    # copied: a stale copy that drifted low would refuse valid configs, and one
+    # that drifted high would ship the silently-truncated file the limit exists
+    # to prevent. If this fails, the header moved or its shape changed.
+    assert PRMDB_CONFIG_HEADER.is_file()
+    assert MAX_ENTRIES == _read_max_entries()
+    assert MAX_ENTRIES > 0
+
+
+def test_missing_entry_limit_in_header_is_refused(tmp_path):
+    header = tmp_path / "PrmDbImplCfg.hpp"
+    header.write_text("enum { SOMETHING_ELSE = 3 };\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="PRMDB_NUM_DB_ENTRIES"):
+        _read_max_entries(header)
 
 
 def test_too_many_records_is_refused():
