@@ -59,6 +59,7 @@ add_library(polaris_sensors
   sensors/gnss_jamming.cpp
   sensors/imu.cpp
   sensors/occlusion.cpp
+  sensors/payload_sensor.cpp
   sensors/star_tracker.cpp
   sensors/sun_sensor.cpp)
 target_include_directories(polaris_sensors PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

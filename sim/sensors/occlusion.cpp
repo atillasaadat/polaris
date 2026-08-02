@@ -107,6 +107,9 @@ OcclusionState evaluateLineOfSight(const Eigen::Vector3d& boresight_eci, double 
   const double earth_sep = separation(boresight_eci, to_earth);
 
   if (std::isfinite(earth_sep)) {
+    // Nadir is the direction to the Earth *centre*, which is what `earth_sep`
+    // already is — the limb enters the keep-out below, not this angle.
+    state.nadir_angle_rad = earth_sep;
     state.earth_fraction =
         fovCoveredFraction(half_fov_rad, earth_sep, apparentRadius(kEarthRadius, earth_distance));
     state.earth_atmosphere_fraction = fovCoveredFraction(
@@ -116,6 +119,14 @@ OcclusionState evaluateLineOfSight(const Eigen::Vector3d& boresight_eci, double 
   const Eigen::Vector3d to_sun = sky.sun - sky.sat;
   const double sun_sep = separation(boresight_eci, to_sun);
   if (std::isfinite(sun_sep)) {
+    // Only when a Sun position was actually supplied. With `sky.sun` left at the
+    // origin `to_sun` is -sat, a finite direction that would make the Sun angle
+    // silently equal the nadir angle — a fabricated pointing quantity that reads
+    // like a real one. The fractions below are harmless in that case (the Sun's
+    // apparent radius from the geocentre is tiny), so the guard is on the angle.
+    if (sky.sun.norm() > 0.0) {
+      state.sun_angle_rad = sun_sep;
+    }
     state.sun_fraction =
         fovCoveredFraction(half_fov_rad, sun_sep, apparentRadius(kSunRadius, to_sun.norm()));
   }

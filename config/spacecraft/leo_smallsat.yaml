@@ -29,6 +29,14 @@ spacecraft:
       model_id: MAG-GENERIC
     - name: gps_a                     # GNSS PVT fix -> onboard OD (§8.3)
       model_id: NOVATEL-OEM7600
+    - name: imager_a                  # payload: boresight geometry only (§6.3)
+      model_id: PAYLOAD-IMAGER-GENERIC
+      # Boresight is sensor +Z, always; this quaternion is the whole pointing
+      # definition. Identity mounts it along body +Z, so the payload looks where
+      # the vehicle's +Z axis does — nadir in the nominal Earth-pointing attitude.
+      # The cross-boresight knowledge requirement REQ-PAY-001 is stated about
+      # this axis.
+      mounting_quaternion_wxyz: [1.0, 0.0, 0.0, 0.0]
   actuators:                        # pyramidal 4-wheel set: spin axes = body
     - name: rw_1                    # diagonals [±1,±1,1]/√3, so any 3 wheels give
       model_id: RW-X                # 3-axis control (§7 W-matrix assembly)

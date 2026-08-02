@@ -13,7 +13,7 @@
 /// way, which is exactly the kind of inconsistency that produces an estimator
 /// that works in simulation and not in flight.
 ///
-/// The model answers two different questions, because sensors need both:
+/// The model answers three different questions, because sensors need all of them:
 ///
 ///  - **Is a keep-out violated?** A hard constraint — the unit's baffle rejection
 ///    and the vendor's exclusion angles. Drives a validity flag.
@@ -22,6 +22,14 @@
 ///    field, a sun sensor's albedo contribution) rather than a cliff at the
 ///    keep-out edge. Also what makes an outage's *onset* smooth, which matters
 ///    for anything that differentiates a measurement stream.
+///  - **Where is the boresight pointing, relative to the Sun and to nadir?** Two
+///    plain angles, reported for every line of sight. They are neither of the
+///    above: outside the keep-out and outside the field of view both other
+///    answers saturate, while an observation plan, a thermal check, or a payload
+///    duty-cycle rule needs the actual separation. Computed here rather than by
+///    each sensor for the same reason the rest is — one geometry, one answer
+///    (§6.1), so a star tracker and a payload imager cannot disagree about where
+///    the Sun is.
 ///
 /// **The atmosphere is part of the Earth here.** A line of sight grazing the
 /// limb passes through airglow, scattered light, and refraction long before it
@@ -118,6 +126,24 @@ struct OcclusionState {
   double sun_fraction = 0.0;
   double moon_fraction = 0.0;
 
+  /// Angle [rad] from the boresight to the **Sun centre**. Not a keep-out
+  /// verdict and not a fraction: the continuous pointing quantity an operator
+  /// plans against ("how close does this observation come to the Sun?"), which
+  /// neither of the other two answers — a boresight 3° outside a 35° exclusion
+  /// cone and one 90° away both report `kNone` and a zero fraction.
+  double sun_angle_rad = M_PI;
+  /// Angle [rad] from the boresight to **nadir** (the Earth centre, not the
+  /// limb). The companion pointing quantity: 0 is straight down, π is zenith.
+  double nadir_angle_rad = M_PI;
+  // Both default to π — the "pointed as far away as possible" value — and stay
+  // there unless the geometry they need was actually supplied: the nadir angle
+  // needs a spacecraft position, the Sun angle needs a Sun position. That is
+  // `limbClearance`'s +∞ convention (a geometry that cannot be evaluated must
+  // not silently look like a pointing violation), and the Sun check is on
+  // `sky.sun` specifically — with it left at the origin the vector to it is a
+  // perfectly finite `-sat`, which would report a Sun angle equal to the nadir
+  // angle: a fabricated pointing quantity that reads exactly like a real one.
+
   /// Fraction of the FOV covered by any body — the union, approximated as the
   /// largest single contributor,
   /// \f$\max(\text{earth\_atmosphere\_fraction},\ \text{sun\_fraction},\ \text{moon\_fraction})\f$.
@@ -174,7 +200,8 @@ double limbClearance(const Eigen::Vector3d& boresight_eci, const Eigen::Vector3d
 /// channel.
 double fovCoveredFraction(double half_fov_rad, double separation_rad, double body_radius_rad);
 
-/// Evaluate one line of sight: keep-out violations and per-body FOV coverage.
+/// Evaluate one line of sight: keep-out violations, per-body FOV coverage, and
+/// the boresight's Sun and nadir angles.
 ///
 /// Earth is checked first for the keep-out verdict: at LEO it is the constraint
 /// that usually decides, and reporting it in preference to a Sun cone that

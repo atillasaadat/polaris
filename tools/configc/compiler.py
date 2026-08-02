@@ -91,6 +91,32 @@ def load_config(config_path: Path) -> Config:
         raise ConfigError(f"{config_path}: invalid config\n{exc}") from exc
 
 
+def _mounting_dcm(unit: MountedUnit) -> tuple[float, ...] | None:
+    """This unit's unit→body rotation as a row-major 3x3, or None for identity.
+
+    A mounting may be written either way round (schema ``MountedUnit``); the
+    quaternion form is converted here so every downstream consumer sees one
+    representation. The matrix is the **JPL passive attitude matrix** of
+    ``lib/math/quaternion.hpp`` (Trawny & Roumeliotis Eq. 78),
+
+    ``A(q) = (2*q0^2 - 1) I - 2*q0 [q_v x] + 2 q_v q_v^T``,
+
+    with ``v_body = A(q) v_unit`` — the same formula the C++ side applies, since
+    a mounting that rotated one way in the compiler and the other in the sim
+    would place every payload's boresight at its mirror image.
+    """
+    if unit.mounting_quaternion_wxyz is None:
+        return unit.mounting_dcm_row_major
+    q0, q1, q2, q3 = unit.mounting_quaternion_wxyz
+    d = 2.0 * q0 * q0 - 1.0
+    rows = (
+        (d + 2.0 * q1 * q1, 2.0 * (q1 * q2 + q0 * q3), 2.0 * (q1 * q3 - q0 * q2)),
+        (2.0 * (q1 * q2 - q0 * q3), d + 2.0 * q2 * q2, 2.0 * (q2 * q3 + q0 * q1)),
+        (2.0 * (q1 * q3 + q0 * q2), 2.0 * (q2 * q3 - q0 * q1), d + 2.0 * q3 * q3),
+    )
+    return tuple(value for row in rows for value in row)
+
+
 def _resolve_units(
     units: list[MountedUnit], library: dict[str, HardwareModel], role: str
 ) -> list[dict[str, Any]]:
@@ -109,7 +135,7 @@ def _resolve_units(
                 "model_id": unit.model_id,
                 "kind": model.kind,
                 "params": model.params,
-                "mounting_dcm_row_major": unit.mounting_dcm_row_major,
+                "mounting_dcm_row_major": _mounting_dcm(unit),
                 "spin_axis": unit.spin_axis,
                 "noise_enabled": unit.noise_enabled,
             }

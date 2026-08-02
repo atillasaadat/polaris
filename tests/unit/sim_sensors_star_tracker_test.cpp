@@ -495,6 +495,30 @@ TEST(StarTracker, ReportsHowMuchOfTheFieldOfViewEachBodyCovers) {
   EXPECT_DOUBLE_EQ(blocked.occlusion.blockedFraction(), 1.0);
 }
 
+TEST(StarTracker, ReportsTheBoresightSunAndNadirAngles) {
+  // The two pointing angles ride on the same OcclusionState the fractions do, so
+  // the tracker gets them from the shared §6.1 evaluator rather than computing
+  // its own — the property that keeps a tracker and a payload from disagreeing
+  // about where the Sun is.
+  sensors::StarTracker up(aurigaSpec(), zenithMount(), 1, 1);
+  const auto in = restingInput();
+  bringUp(up, in);
+  const auto zenith = up.sample(kEpoch, 1.0, in);
+  EXPECT_NEAR(zenith.occlusion.nadir_angle_rad, M_PI, 1e-9)
+      << "a zenith stare is 180 deg off nadir";
+
+  Eigen::Matrix3d nadir;
+  nadir << 0, 0, -1, 0, 1, 0, 1, 0, 0;
+  sensors::StarTracker down(aurigaSpec(), nadir, 1, 1);
+  const auto below = down.sample(kEpoch, 1.0, in);
+  EXPECT_NEAR(below.occlusion.nadir_angle_rad, 0.0, 1e-9);
+  // Both angles are reported whether or not the sample is valid: the tracker is
+  // blinded here, and knowing where it was looking is exactly what diagnoses it.
+  EXPECT_FALSE(below.valid);
+  EXPECT_GE(below.occlusion.sun_angle_rad, 0.0);
+  EXPECT_LE(below.occlusion.sun_angle_rad, M_PI);
+}
+
 // --- Contract ----------------------------------------------------------------
 
 TEST(StarTracker, MountingRotatesTheBoresightIntoBodyAxes) {

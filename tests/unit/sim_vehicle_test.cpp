@@ -377,6 +377,65 @@ TEST(Vehicle, AStarTrackerNeedsOnlyOneOfFovOrExclusionAngle) {
   EXPECT_TRUE(scenario::buildVehicle(sc, 1, v, &error)) << error;
 }
 
+scenario::UnitConfig payloadUnit(const std::string& name) {
+  scenario::UnitConfig u;
+  u.name = name;
+  u.model_id = "TEST-PAYLOAD";
+  u.kind = "payload_sensor";
+  u.params = {{"half_fov_x_deg", 5.0}, {"half_fov_y_deg", 4.0}, {"pixels_x", 2048.0},
+              {"pixels_y", 1536.0},    {"update_rate_hz", 1.0}, {"sun_exclusion_deg", 30.0}};
+  return u;
+}
+
+TEST(Vehicle, BuildsPayloadSensorsAndTakesTheBoresightFromTheMounting) {
+  // A payload's whole pointing definition is its mounting, because the boresight
+  // is sensor +Z by convention (§6.3). The third column is therefore the
+  // boresight in body axes, and nothing else in the config may move it.
+  scenario::UnitConfig payload = payloadUnit("imager_a");
+  const double tilt = 25.0 * M_PI / 180.0;
+  payload.mounting_dcm << 1.0, 0.0, 0.0, 0.0, std::cos(tilt), std::sin(tilt), 0.0, -std::sin(tilt),
+      std::cos(tilt);
+
+  scenario::SpacecraftConfig sc;
+  sc.sensors = {payload};
+  scenario::Vehicle v;
+  std::string error;
+  ASSERT_TRUE(scenario::buildVehicle(sc, 1, v, &error)) << error;
+  ASSERT_EQ(v.payload_sensors.size(), 1u);
+  EXPECT_EQ(v.payload_sensors[0].model.spec().shape, polaris::sim::sensors::FovShape::kRectangular);
+  EXPECT_TRUE(v.payload_sensors[0].model.boresightBody().isApprox(payload.mounting_dcm.col(2)));
+  EXPECT_EQ(v.modelledCount(), 1u) << "a payload sensor is modelled, not 'unmodelled'";
+}
+
+TEST(Vehicle, RejectsAPayloadSensorWithNoFieldOfView) {
+  // No aperture means every coverage fraction is zero and nothing is ever in
+  // view — the instrument would sit on the vehicle answering a different
+  // question rather than failing.
+  scenario::UnitConfig payload = payloadUnit("imager_a");
+  payload.params.erase("half_fov_y_deg");
+
+  scenario::SpacecraftConfig sc;
+  sc.sensors = {payload};
+  scenario::Vehicle v;
+  std::string error;
+  EXPECT_FALSE(scenario::buildVehicle(sc, 1, v, &error));
+  EXPECT_NE(error.find("half_fov"), std::string::npos) << error;
+}
+
+TEST(Vehicle, RejectsAPayloadFieldOfViewWiderThanAHemisphere) {
+  // The likeliest way to misconfigure this entry is writing a full angle where a
+  // half-angle was asked for, and a 100° "half"-FOV is how that shows up.
+  scenario::UnitConfig payload = payloadUnit("imager_a");
+  payload.params["half_fov_x_deg"] = 100.0;
+
+  scenario::SpacecraftConfig sc;
+  sc.sensors = {payload};
+  scenario::Vehicle v;
+  std::string error;
+  EXPECT_FALSE(scenario::buildVehicle(sc, 1, v, &error));
+  EXPECT_NE(error.find("half-angles"), std::string::npos) << error;
+}
+
 TEST(Vehicle, RejectsDuplicateUnitNames) {
   // Two units sharing a name share a noise stream, which would make nominally
   // independent sensors perfectly correlated.

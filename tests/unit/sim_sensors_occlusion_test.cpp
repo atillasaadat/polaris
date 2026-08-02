@@ -9,7 +9,10 @@
 /// than an assumption. (3) The **atmosphere**: the optical limb sits above the
 /// solid one, so the atmospheric fraction leads the solid fraction, and a
 /// grazing line of sight is blocked by air before it ever touches ground.
-/// (4) Robustness: zero keep-out means unconstrained, and degenerate geometry
+/// (4) The **boresight's Sun and nadir angles**, which every line of sight
+/// reports: hand-computable against an orthogonal fixture geometry, and pinned
+/// as angles to body *centres* rather than to limbs.
+/// (5) Robustness: zero keep-out means unconstrained, and degenerate geometry
 /// fails open rather than blinding a sensor with a NaN.
 
 #include <gtest/gtest.h>
@@ -312,4 +315,54 @@ TEST(Occlusion, ZeroFieldOfViewReportsNoFractionRatherThanNaN) {
   EXPECT_DOUBLE_EQ(state.earth_fraction, 0.0);
   EXPECT_DOUBLE_EQ(state.earth_atmosphere_fraction, 0.0);
   EXPECT_DOUBLE_EQ(state.blockedFraction(), 0.0);
+}
+
+TEST(Occlusion, SunAndNadirAnglesAreReportedForEveryLineOfSight) {
+  // The fixture's geometry is deliberately orthogonal: the spacecraft is on +x,
+  // so nadir is -x, and the Sun is on +y. Each angle is then hand-computable for
+  // any boresight, which is the point of pinning them here rather than trusting
+  // the same separation the fractions use.
+  const auto nadir =
+      sensors::evaluateLineOfSight(Eigen::Vector3d(-1.0, 0.0, 0.0), 10.0 * kDeg2Rad, sky(), {});
+  EXPECT_NEAR(nadir.nadir_angle_rad, 0.0, 1e-9);
+  // 5e-5 rad, not machine epsilon: the Sun is 1 AU out on +y but the spacecraft
+  // sits 6900 km off the origin on +x, and that parallax is a real 9.5 arcsec.
+  EXPECT_NEAR(nadir.sun_angle_rad, M_PI_2, 1e-4);
+
+  const auto zenith =
+      sensors::evaluateLineOfSight(Eigen::Vector3d(1.0, 0.0, 0.0), 10.0 * kDeg2Rad, sky(), {});
+  EXPECT_NEAR(zenith.nadir_angle_rad, M_PI, 1e-9);
+
+  // Nadir is the angle to the Earth **centre**, not to the limb: a boresight
+  // 40° off nadir is 40° off nadir even though it is still inside the ~68° disk.
+  const Eigen::Vector3d tilted(-std::cos(40.0 * kDeg2Rad), 0.0, std::sin(40.0 * kDeg2Rad));
+  const auto off = sensors::evaluateLineOfSight(tilted, 10.0 * kDeg2Rad, sky(), {});
+  EXPECT_NEAR(off.nadir_angle_rad, 40.0 * kDeg2Rad, 1e-9);
+  EXPECT_GT(off.earth_fraction, 0.99) << "still inside the disk, so the fraction must not agree "
+                                         "with the angle about being 'clear'";
+}
+
+TEST(Occlusion, PartiallyFilledGeometryDoesNotFabricateASunAngle) {
+  // A spacecraft position but no Sun: the vector "to the Sun" is then a
+  // perfectly finite -sat, and reporting its separation would give a Sun angle
+  // numerically equal to the nadir angle — a made-up pointing quantity that
+  // looks exactly like a measured one. It must stay at the π default while the
+  // nadir angle, which has everything it needs, is still reported.
+  sensors::SkyGeometry partial;
+  partial.sat = Eigen::Vector3d(kRe + 500e3, 0.0, 0.0);  // Sun and Moon left at the origin
+
+  const auto state =
+      sensors::evaluateLineOfSight(Eigen::Vector3d(-1.0, 0.0, 0.0), 10.0 * kDeg2Rad, partial, {});
+  EXPECT_DOUBLE_EQ(state.sun_angle_rad, M_PI);
+  EXPECT_NEAR(state.nadir_angle_rad, 0.0, 1e-9);
+}
+
+TEST(Occlusion, AngleReportingFailsOpenOnDegenerateGeometry) {
+  // No Sun and no spacecraft position: both angles must read π ("as far away as
+  // possible") rather than 0, which would look like a boresight staring at the
+  // Sun and could gate an observation that is actually fine.
+  const auto state =
+      sensors::evaluateLineOfSight(Eigen::Vector3d(0.0, 0.0, 1.0), 10.0 * kDeg2Rad, {}, {});
+  EXPECT_DOUBLE_EQ(state.sun_angle_rad, M_PI);
+  EXPECT_DOUBLE_EQ(state.nadir_angle_rad, M_PI);
 }

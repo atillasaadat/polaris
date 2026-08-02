@@ -22,7 +22,7 @@ import math
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Vec3 = tuple[float, float, float]
 
@@ -33,6 +33,7 @@ HardwareKind = Literal[
     "sun_sensor",
     "magnetometer",
     "gnss",
+    "payload_sensor",
     "reaction_wheel",
     "magnetorquer",
     "thruster",
@@ -72,6 +73,19 @@ class MountedUnit(_Strict):
         default=None,
         description="unit→body rotation, row-major 3x3; identity if omitted",
     )
+    mounting_quaternion_wxyz: tuple[float, float, float, float] | None = Field(
+        default=None,
+        description=(
+            "unit→body rotation as a scalar-first quaternion (q0,q1,q2,q3) per "
+            "the repo's JPL convention (design doc §3.1) — the readable way to "
+            "write a mounting, four numbers instead of nine, and impossible to "
+            "make non-orthogonal by hand. The compiler converts it to the "
+            "row-major DCM the sim consumes, so the two keys are alternative "
+            "spellings of one field and setting both is an error. For a sensor "
+            "whose boresight is its +Z (every payload sensor, design doc §6.3) "
+            "this rotation is the entire pointing definition"
+        ),
+    )
     spin_axis: Vec3 | None = Field(
         default=None,
         description=(
@@ -89,6 +103,29 @@ class MountedUnit(_Strict):
             "global switch; omit (null) to inherit it. Ignored for actuators"
         ),
     )
+
+    @model_validator(mode="after")
+    def _one_mounting_form(self) -> MountedUnit:
+        # Two spellings of one orientation, so two chances to disagree — and the
+        # disagreement would be silent (a unit quietly pointed somewhere other
+        # than the analysis assumed). Reject it at the boundary instead.
+        if (
+            self.mounting_dcm_row_major is not None
+            and self.mounting_quaternion_wxyz is not None
+        ):
+            raise ValueError(
+                f"unit '{self.name}' sets both mounting_dcm_row_major and "
+                "mounting_quaternion_wxyz — they are two spellings of the same "
+                "rotation; keep one"
+            )
+        if self.mounting_quaternion_wxyz is not None:
+            norm = math.sqrt(sum(c * c for c in self.mounting_quaternion_wxyz))
+            if abs(norm - 1.0) > 1e-9:
+                raise ValueError(
+                    f"unit '{self.name}': mounting_quaternion_wxyz must be "
+                    f"normalised to within 1e-9, got norm {norm!r}"
+                )
+        return self
 
 
 class InertiaTensor(_Strict):

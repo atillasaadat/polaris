@@ -305,3 +305,58 @@ TEST(ClosedLoop, DiscreteSensorsPublishOnTheirOwnGrid) {
   // …and at 0.4 s the 0.4 s sample has landed.
   EXPECT_GT(tags[3].nanosecondsSinceEpoch(), tags[2].nanosecondsSinceEpoch());
 }
+
+TEST(ClosedLoop, PayloadGeometryIsSampledAndStaysSimSide) {
+  // A payload sensor is sampled on its own grid like any other discrete unit,
+  // but its products never enter FswInputs: they are truth-derived geometry, and
+  // the §2.3 boundary is what this asserts. If a payload ever needs to reach the
+  // flight side it goes through a flight-side component and a wire record, not
+  // through here.
+  scenario::SimConfig config = freeSpace(0.4);
+  scenario::UnitConfig payload;
+  payload.name = "imager_a";
+  payload.model_id = "TEST-PAYLOAD";
+  payload.kind = "payload_sensor";
+  payload.params = {{"half_fov_x_deg", 5.0},
+                    {"half_fov_y_deg", 4.0},
+                    {"pixels_x", 2048.0},
+                    {"pixels_y", 1536.0},
+                    {"update_rate_hz", 5.0}};
+
+  scenario::Vehicle vehicle;
+  std::string error;
+  ASSERT_TRUE(scenario::buildVehicle(suite({payload}, {}), 3, vehicle, &error)) << error;
+
+  scenario::SimRunner runner;
+  io::ClosedLoop loop(runner, vehicle);
+  loop.setDataPaths(goldenPaths());
+  ASSERT_TRUE(runner.build(config, goldenPaths(), &error, loop.wrench())) << error;
+
+  // Capture what the FSW is actually handed: the boundary is enforced by the
+  // type system (FswInputs has no payload member), but a future refactor could
+  // add one, and this is the assertion that would fail if it did.
+  int boundaries = 0;
+  auto fsw = [&](const io::FswInputs& in) {
+    ++boundaries;
+    EXPECT_TRUE(in.imus.empty());
+    EXPECT_TRUE(in.star_trackers.empty());
+    EXPECT_TRUE(in.sun_sensors.empty());
+    EXPECT_TRUE(in.magnetometers.empty());
+    EXPECT_TRUE(in.gnss.empty()) << "the vehicle's only unit is a payload — nothing may reach "
+                                    "the FSW through a sensor vector";
+    return io::FswOutputs{};
+  };
+  ASSERT_TRUE(loop.run(fsw, nullptr, &error)) << error;
+  EXPECT_EQ(boundaries, 4) << "0.4 s at 10 Hz";
+
+  ASSERT_EQ(loop.payloadGeometry().size(), 1u);
+  const auto& geometry = loop.payloadGeometry()[0];
+  EXPECT_EQ(geometry.name, "imager_a");
+  EXPECT_TRUE(geometry.ever_sampled) << "a 5 Hz payload must have sampled over 0.4 s";
+  // The boresight is a real direction, and the shared occlusion model filled in
+  // the pointing angles — the vehicle starts at identity attitude on the +x axis,
+  // so body +Z is at right angles to nadir.
+  EXPECT_NEAR(geometry.measurement.boresight_eci.eigen().norm(), 1.0, 1e-12);
+  EXPECT_NEAR(geometry.measurement.occlusion.nadir_angle_rad, M_PI_2, 1e-9);
+  EXPECT_LE(geometry.measurement.occlusion.sun_angle_rad, M_PI);
+}

@@ -18,7 +18,7 @@ renumbered or reused** (deprecate instead). ``<SUBSYS>`` codes:
 actuators/allocation · ``ODP`` orbit determination & propagation · ``GDM``
 guidance & modes · ``FDIR`` fault management · ``COMM`` comms/link · ``PWR``
 power · ``THRM`` thermal · ``CDH`` C&DH / FSW infra · ``SIM`` simulation/env ·
-``CFG`` config/data-products · ``VV`` verification process.
+``PAY`` payload · ``CFG`` config/data-products · ``VV`` verification process.
 
 **Levels.** ``L0`` mission objective/constraint · ``L1`` system/program
 (allocated to FSW/sim/ground) · ``L2`` subsystem. Every L2 requirement either
@@ -98,6 +98,7 @@ the verifying tests appear as ``verified by`` back-links and flow into the RVTM.
    power
    thermal
    cdh_fsw_infra
+   payload
    simulation_env
    config_dataproducts
    vv_process

@@ -624,3 +624,119 @@ def test_load_config_wraps_validation_errors(tmp_path):
     bad.write_text("spacecraft: {name: x}\nscenario: {name: s, epoch_utc: t}\n")
     with pytest.raises(ConfigError, match="invalid config"):
         load_config(bad)
+
+
+# --- Payload sensors and the quaternion mounting form ------------------------
+
+_PAYLOAD_SENSOR_KEYS = {
+    "half_fov_x_deg",
+    "half_fov_y_deg",
+    "pixels_x",
+    "pixels_y",
+    "update_rate_hz",
+    "sun_exclusion_deg",
+    "earth_exclusion_deg",
+    "moon_exclusion_deg",
+}
+
+
+def test_payload_sensor_catalog_entry_carries_the_full_spec():
+    # Every key the C++ PayloadSensorSpec reads (sim/sensors/payload_sensor.cpp).
+    # A missing half-angle is not a silent zero here — the vehicle builder
+    # rejects it — but a missing pixel count or keep-out is, so the template has
+    # to carry all of them for a copy to be a complete starting point.
+    entry = load_hardware_library(_HARDWARE)["PAYLOAD-IMAGER-GENERIC"]
+    assert entry.kind == "payload_sensor"
+    missing = _PAYLOAD_SENSOR_KEYS - set(entry.params)
+    assert not missing, f"PAYLOAD-IMAGER-GENERIC missing {sorted(missing)}"
+    # Half-angles, not full angles: both well under 90°, which is the check the
+    # C++ side also makes.
+    assert 0.0 < entry.params["half_fov_x_deg"] < 90.0
+    assert 0.0 < entry.params["half_fov_y_deg"] < 90.0
+
+
+def test_mounting_quaternion_becomes_the_row_major_dcm():
+    # The quaternion form is a spelling of the DCM the sim consumes, converted
+    # here so nothing downstream sees two representations. The matrix is the JPL
+    # passive attitude matrix of lib/math/quaternion.hpp, and the value pinned
+    # below is the one the C++ side produces for the same quaternion — a mounting
+    # that rotated one way in the compiler and the other in the sim would place
+    # every payload's boresight at its mirror image.
+    import math
+
+    angle = math.radians(30.0)
+    cfg = _minimal_config_dict()
+    cfg["spacecraft"]["sensors"][0]["mounting_quaternion_wxyz"] = [
+        math.cos(angle / 2.0),
+        math.sin(angle / 2.0),
+        0.0,
+        0.0,
+    ]
+    resolved = resolve(Config.model_validate(cfg), load_hardware_library(_HARDWARE))
+    dcm = resolved["spacecraft"]["sensors"][0]["mounting_dcm_row_major"]
+
+    expected = (
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        math.cos(angle),
+        math.sin(angle),
+        0.0,
+        -math.sin(angle),
+        math.cos(angle),
+    )
+    assert all(abs(a - b) < 1e-12 for a, b in zip(dcm, expected)), dcm
+    # The third *column* is the boresight in body axes (sensor +Z, design doc
+    # §6.3): 30° about X tilts it off body +Z toward +Y by 30°.
+    boresight = (dcm[2], dcm[5], dcm[8])
+    assert abs(boresight[0]) < 1e-12
+    assert abs(boresight[1] - math.sin(angle)) < 1e-12
+    assert abs(boresight[2] - math.cos(angle)) < 1e-12
+
+
+def test_mounting_quaternion_and_dcm_are_mutually_exclusive():
+    cfg = _minimal_config_dict()
+    cfg["spacecraft"]["sensors"][0]["mounting_quaternion_wxyz"] = [1.0, 0.0, 0.0, 0.0]
+    cfg["spacecraft"]["sensors"][0]["mounting_dcm_row_major"] = [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+    with pytest.raises(ValidationError, match="two spellings"):
+        Config.model_validate(cfg)
+
+
+def test_mounting_quaternion_must_be_normalised():
+    cfg = _minimal_config_dict()
+    cfg["spacecraft"]["sensors"][0]["mounting_quaternion_wxyz"] = [1.0, 1.0, 0.0, 0.0]
+    with pytest.raises(ValidationError, match="normalised"):
+        Config.model_validate(cfg)
+
+
+def test_reference_vehicle_carries_the_payload_sensor(tmp_path):
+    # The template vehicle flies a payload, so the §6.3 path is exercised end to
+    # end by the same artifact every other test reads.
+    compile_config(_TEMPLATE, _HARDWARE, tmp_path)
+    setup = json.loads((tmp_path / "sim_setup.json").read_text())
+    imager = next(u for u in setup["spacecraft"]["sensors"] if u["name"] == "imager_a")
+    assert imager["kind"] == "payload_sensor"
+    assert imager["params"]["half_fov_x_deg"] == 5.0
+    # Written as an identity quaternion in the YAML, emitted as the identity DCM.
+    assert imager["mounting_dcm_row_major"] == [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]

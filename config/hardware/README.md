@@ -14,6 +14,7 @@ hardware/
 ├── sun_sensor/     GS-NANOSENSE-FSS (GomSpace) · CSS-GENERIC · FSS-GENERIC
 ├── magnetometer/   MAG-GENERIC
 ├── gnss/           NOVATEL-OEM7600 · GNSS-GENERIC
+├── payload_sensor/ PAYLOAD-IMAGER-GENERIC (any instrument with a boresight)
 ├── reaction_wheel/ RW-0.4 (Rocket Lab) · RW-X (generic)
 └── magnetorquer/   NSS Taurus · MTQ800 (AAC Clyde) · MTQ-GENERIC
 ```
