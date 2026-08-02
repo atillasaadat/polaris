@@ -79,8 +79,10 @@ bibtex_default_style = "plain"
 bibtex_reference_style = "label"
 
 # -- Breathe (C++ API via Doxygen XML) ----------------------------------------
-# Doxygen writes XML to docs/doxygen/xml (see docs/Doxyfile). Breathe directives
-# are not used until lib/ has C++ code (Push 2), so an absent XML dir is fine.
+# Doxygen writes XML to docs/doxygen/xml (see docs/Doxyfile). The docs/api/*.rst
+# pages render lib/ and sim/ through `doxygennamespace`, so the XML dir must
+# exist for a complete build — tools/dev/build_docs.sh runs doxygen first, and
+# warns (Breathe then errors under -W) if the doxygen binary is absent.
 breathe_projects = {
     "polaris": os.path.join(os.path.dirname(__file__), "doxygen", "xml")
 }

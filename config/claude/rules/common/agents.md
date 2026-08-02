@@ -11,11 +11,16 @@ Located in `~/.claude/agents/`:
 | tdd-guide | Test-driven development | New features, bug fixes |
 | code-reviewer | Code review | After writing code |
 | security-reviewer | Security analysis | Before commits |
-| build-error-resolver | Fix build errors | When build fails |
-| e2e-runner | E2E testing | Critical user flows |
 | refactor-cleaner | Dead code cleanup | Code maintenance |
 | doc-updater | Documentation | Updating docs |
-| rust-reviewer | Rust code review | Rust projects |
+| docs-lookup | Library/API documentation | Unfamiliar library or API |
+| cpp-reviewer | C++ code review | Any C++ change |
+| cpp-build-resolver | Fix C++/CMake build errors | When the build fails |
+| python-reviewer | Python code review | Any Python change |
+
+Project-level subagents live in the repo's own `.claude/agents/` and take precedence
+where they apply — in Polaris those are `gnc-algorithms`, `sim-environment`,
+`fsw-fprime`, `test-vv`, `fsw-code-reviewer` and `docs-scribe`.
 
 ## Immediate Agent Usage
 

@@ -10,7 +10,7 @@ Source: design doc §4, §11.3, §23.5, §23.6. Firm seeds below.
    :tags: cdh, realtime
    :method: Test
    :derived_from: REQ-SYS-012
-   :allocation: flight/topology
+   :allocation: flight/PolarisFsw/Top
    :value_required: 10 Hz frame closes within WCET budget
 
    The FSW **shall** execute on F´ rate groups with deterministic, bounded timing;
@@ -37,7 +37,7 @@ Source: design doc §4, §11.3, §23.5, §23.6. Firm seeds below.
    :tags: cdh, persistence
    :method: Test
    :derived_from: REQ-SYS-014
-   :allocation: flight/components/Persistence
+   :allocation: flight/PolarisFsw/Persistence
 
    The FSW **shall** persist time/epoch, OD state + covariance, ephemeris/EOP
    tables, mode, calibration, and the secondary-object catalog across resets, with
@@ -50,7 +50,7 @@ Source: design doc §4, §11.3, §23.5, §23.6. Firm seeds below.
    :tags: cdh, architecture
    :method: Inspection
    :derived_from: REQ-MIS-001
-   :allocation: flight/topology
+   :allocation: flight/PolarisFsw/Top
 
    FSW components **shall** communicate only through typed F´ ports — no
    back-channels, globals, or shared mutable state outside ports.

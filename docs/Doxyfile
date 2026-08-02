@@ -6,9 +6,12 @@ PROJECT_NAME           = "Polaris"
 PROJECT_BRIEF          = "Spacecraft GNC flight software & simulation"
 OUTPUT_DIRECTORY       = doxygen
 
-# Scoped to lib/ for now — the shared Polaris C++ library is what the API page
-# documents. flight/ and sim/ are added here once they carry documented,
-# non-F´-generated code; parsing the F´ topology now only adds framework noise.
+# lib/ (shared library) and sim/ (truth simulation) are documented here.
+# flight/ is deliberately excluded: Doxygen would pull in the F´-autocoded
+# *Ac.hpp/*Ac.cpp next to the hand-written components and bury them in framework
+# noise. Adding it would also need EXCLUDE_PATTERNS fixed first — the `*/build/*`
+# pattern below does not match this repo's build directories, which fprime-util
+# names build-fprime-automatic-native* (see .gitignore).
 INPUT                  = ../lib ../sim
 FILE_PATTERNS          = *.h *.hpp *.hh *.hxx *.cpp *.cc *.cxx
 RECURSIVE              = YES
@@ -26,7 +29,8 @@ JAVADOC_AUTOBRIEF      = YES
 QT_AUTOBRIEF           = YES
 MARKDOWN_SUPPORT       = YES
 
-# Keep the docs build quiet and non-fatal on the (currently empty) input.
+# Keep the docs build quiet: the Sphinx `-W` gate is what enforces documentation
+# quality, so Doxygen itself only needs to produce the XML, not police it.
 QUIET                  = YES
 WARNINGS               = NO
 WARN_IF_UNDOCUMENTED   = NO

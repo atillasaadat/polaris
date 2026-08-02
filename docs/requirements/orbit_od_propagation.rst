@@ -10,7 +10,7 @@ Source: design doc §8.3, §11. Fully populated in Phase 6; firm seeds below.
    :tags: od, estimation
    :method: Test
    :derived_from: REQ-MIS-001
-   :allocation: flight/components/OrbitEstimation
+   :allocation: flight/PolarisFsw/OrbitEstimation
    :refs: montenbruck2000
 
    The FSW **shall** estimate its own orbit with an onboard MEKF from GNSS-sim
@@ -24,7 +24,7 @@ Source: design doc §8.3, §11. Fully populated in Phase 6; firm seeds below.
    :tags: od, multiobject
    :method: Test
    :derived_from: REQ-ODP-001
-   :allocation: flight/components/OrbitEstimation
+   :allocation: flight/PolarisFsw/OrbitEstimation
    :value_required: N ~ 5 secondaries
 
    The FSW **shall** propagate up to N (~5) secondary objects from an uploaded
@@ -38,7 +38,7 @@ Source: design doc §8.3, §11. Fully populated in Phase 6; firm seeds below.
    :tags: od, interop
    :method: Analysis
    :derived_from: REQ-SYS-010
-   :allocation: lib/models
+   :allocation: lib/gnc
    :refs: vallado2013
 
    The suite **shall** provide SGP4 TLE propagation and generate CCSDS OEM
@@ -51,7 +51,7 @@ Source: design doc §8.3, §11. Fully populated in Phase 6; firm seeds below.
    :tags: od, ground
    :method: Analysis
    :derived_from: REQ-MIS-003
-   :allocation: analysis, lib/models
+   :allocation: analysis, lib/gnc
    :refs: vallado2013
 
    The ground/analysis tooling **shall** provide a batch least-squares orbit

@@ -93,6 +93,12 @@ separately from :ref:`the vehicle-level error norm <adet-knowledge-metric>`:
       — the requirement is a guard against a mis-specified suite or a
       mis-mounted instrument, not a stretch target.
 
+      **The threshold form is settled.** "10% of the sensor's smallest full
+      field-of-view angle", taken on the narrow axis, is the final form of this
+      requirement — the conservative choice of the ones considered, and confirmed
+      as such rather than left open. What remains outstanding is verification,
+      not the rule.
+
       Not yet verifiable: the §8.2 fusion layer that makes fine+ST reachable is
       unbuilt, so this requirement is held at ``reviewed`` and carries no
       verifying artifact, exactly as REQ-ADET-007 is. The push that lands the

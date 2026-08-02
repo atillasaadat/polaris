@@ -135,23 +135,36 @@ npx @claude-flow/cli@latest hooks worker dispatch --trigger audit
 
 ## Agents
 
-**Core**: `coder`, `reviewer`, `tester`, `planner`, `researcher`
-**Architecture**: `system-architect`, `backend-dev`, `mobile-dev`
-**Security**: `security-architect`, `security-auditor`
-**Performance**: `performance-engineer`, `perf-analyzer`
-**Coordination**: `hierarchical-coordinator`, `mesh-coordinator`, `adaptive-coordinator`
-**GitHub**: `pr-manager`, `code-review-swarm`, `issue-tracker`, `release-manager`
+**Polaris-specific** (`.claude/agents/`, prefer these — they carry the conventions):
+`gnc-algorithms` (estimation/guidance/control math), `sim-environment` (truth plant,
+environment, sensor/actuator models), `fsw-fprime` (F´ components, ports, topology),
+`test-vv` (tests, golden fixtures, MC/traceability evidence), `fsw-code-reviewer`
+(read-only audit of `flight/`+`lib/` against the flight standard), `docs-scribe`
+(Doxygen/numpydoc, `refs.bib`, the Sphinx build).
 
-Any string works as a custom agent type.
+**Generic fallbacks**: `coder`, `reviewer`, `tester`, `planner`, `researcher`,
+`system-architect`, `security-auditor`, `performance-engineer`, and the
+`hierarchical-`/`mesh-`/`adaptive-coordinator` roles. Any string works as a custom type.
 
 ## Build & Test
 
 - ALWAYS run tests after code changes
 - ALWAYS verify build succeeds before committing
 
+This is a C++/CMake/F´ + Python repo — there is no `npm`. Dependencies come from `uv`.
+
 ```bash
-npm run build && npm test
+uv run fprime-util build                      # F´ core + PolarisFsw deployment
+uv run cmake --build build-fprime-automatic-native-ut \
+    --target polaris_unit_tests polaris_integration_tests polaris_golden_tests -j4
+./build-fprime-automatic-native-ut/bin/Linux/polaris_unit_tests          # and the other two
+uv run pytest                                 # Python tooling suite
+uv run --only-group docs bash tools/dev/build_docs.sh    # docs gate (warnings are errors)
+uv run --only-group dev pre-commit run --all-files       # lint (git-add first)
 ```
+
+`PROGRESS.md` § "Build & verify locally" carries the full recipe, including the
+`configc` → `PrmDb.dat` → `-P` tuning path a SITL run needs.
 
 ## CLI Quick Reference
 

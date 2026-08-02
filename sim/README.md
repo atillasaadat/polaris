@@ -12,8 +12,8 @@ the orientation map.
 | Directory | What it holds |
 |---|---|
 | [`dynamics/`](dynamics/README.md) | 6DOF rigid-body equations of motion + the RK8(9) adaptive integrator |
-| [`world/`](world/README.md) | Environment models: EGM2008 gravity, third-body, drag (exponential/NRLMSIS + space weather), SRP + eclipse, IGRF, and the loaders for their committed reference data |
-| [`sensors/`](sensors/README.md) | Sensor truth models (IMU, star tracker, sun sensor, magnetometer, GNSS) + shared error stack and occlusion — **start here to add a sensor** |
+| [`world/`](world/README.md) | Environment models: EGM2008 gravity, third-body, drag (exponential/NRLMSIS + space weather), SRP + eclipse, IGRF, the §5.3 disturbance torques (gravity-gradient, residual dipole), and the loaders for their committed reference data |
+| [`sensors/`](sensors/README.md) | Sensor truth models (IMU, star tracker, sun sensor, magnetometer, GNSS + jamming regions, generic payload sensor) + shared error stack and occlusion — **start here to add a sensor** |
 | [`actuators/`](actuators/README.md) | Actuator truth models (reaction wheel, magnetorquer) + the W-matrix wheel assembly — **start here to add an actuator** |
 | [`scenario/`](scenario/README.md) | The config→models bridge: `sim_setup.json` loader, vehicle builder, GNSS fault schedule, and the sim runner |
 | [`io/`](io/README.md) | The §2.4 closed loop: plant → sensors → FSW callback → actuators, sim-time-driven and bit-reproducible. The F´ SITL transport (Phase 3) drives the same callback over TCP |

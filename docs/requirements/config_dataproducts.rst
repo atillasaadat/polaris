@@ -50,7 +50,7 @@ Source: design doc §19, §20. Fully populated in Phases 0–8; firm seeds below
    :tags: dataproducts, interop
    :method: Analysis
    :derived_from: REQ-MIS-003
-   :allocation: lib/models, analysis/postproc
+   :allocation: lib/state, analysis/postproc
 
    The suite **shall** export CCSDS OEM and OMM/TLE (pre- and post-burn) and STK
    (.e) and FreeFlyer ephemeris for visualization, as standardized, frame-tagged,
@@ -63,7 +63,7 @@ Source: design doc §19, §20. Fully populated in Phases 0–8; firm seeds below
    :tags: config, ops
    :method: Test
    :derived_from: REQ-SYS-008
-   :allocation: flight/components/ParameterManager
+   :allocation: flight/PolarisFsw/ParameterManager
 
    On-orbit parameter uplinks **shall** be captured as a versioned overlay on the
    authoritative ground baseline (never silent divergence); the effective onboard

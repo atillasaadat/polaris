@@ -16,6 +16,7 @@ faults), because availability drives the estimator design as much as noise does.
 | `sun_sensor.{hpp,cpp}` | **Two contracts:** analogue → per-diode cosine-law counts; digital → sun vector with incidence-dependent accuracy; albedo as a **directed pull toward the sunlit Earth** (not noise — it is correctable onboard, §8.1) with a per-unit dispersion about it | counts *or* unit vector |
 | `gnss.{hpp,cpp}` | PVT fix: H/V-split position σ, velocity σ, clock bias; sample-rate gating, cold-start/reacquisition; outage/spoof/clock-jump + geographic jamming | ECEF position/velocity @ **GPS time** |
 | `gnss_jamming.{hpp,cpp}` | KML polygon regions → "is the sub-satellite point jammed" | region name / none |
+| `payload_sensor.{hpp,cpp}` | Generic payload geometry: **+Z sensor frame is always the boresight**; conic/square/rectangular FOV, bright-body exclusion and boresight misalignment through the shared §6.1 occlusion | boresight (ECI) + FOV coverage/keep-out verdict |
 
 Implements **REQ-SIM-003** (truth models with full error stacks + shared
 occlusion) and **REQ-SIM-005** (scriptable fault injection).

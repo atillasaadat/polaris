@@ -5,7 +5,7 @@ The simulation is the **plant** the FSW runs against. It is **not flight code** 
 ## What's different from `flight/`
 
 - **Heap and standard containers are fine.** Use Eigen freely (dynamic sizes OK). Prioritize fidelity and clarity over flight constraints.
-- The sim may use **SPICE/NAIF kernels** (DE440/DE441) directly — these live on the ground/sim side only, never onboard.
+- The sim may use **SPICE/NAIF kernels** (DE440/DE441) directly — these live on the ground/sim side only, never onboard. As built it does not need to: `tools/ephem` reads the DE440 `.bsp` on the ground to produce the committed Chebyshev fit, and both sim and FSW evaluate that fit, so there is no runtime SPICE dependency on either side.
 
 ## What's still strict
 
@@ -19,7 +19,7 @@ The simulation is the **plant** the FSW runs against. It is **not flight code** 
 ## Core content
 
 - **6DOF dynamics + RK89** (configurable tolerance/step). Energy/momentum conservation checks available as diagnostics.
-- **Environment:** EGM2008 (settable degree/order) + tides, third-body via SPICE, **NRLMSIS 2.1** drag, SRP + conical eclipse, **IGRF-14** (WMM backup), disturbance torques.
+- **Environment:** EGM2008 (settable degree/order), third-body point masses fed by the committed DE440 Chebyshev fit (`world/ephemeris_file`), **NRLMSIS 2.1** drag, SRP + conical eclipse, **IGRF-14**, disturbance torques (gravity-gradient, residual dipole).
 - **Sensor/actuator truth models** with full error stacks; IMU emits delta-angle/delta-velocity at native rate.
 - **One occlusion model for every optical sensor** (`sensors/occlusion`). Any new sensor with a line of sight — sun sensor, camera, horizon sensor — goes through `evaluateLineOfSight`, never its own geometry: two optical sensors disagreeing about whether the Earth is in the way is the kind of inconsistency that produces an estimator that works in sim and not in flight. Bodies are checked from their **limb**, not their centre, and the result carries both a keep-out verdict and the **fraction of the FOV** each body covers — prefer the fraction for anything graded, so degradation has no cliff. The **atmosphere counts as part of the Earth** (`occultation_atmosphere_km`, default 100 km, per scenario); solid and atmospheric fractions are reported separately.
 - **Model a unit at the interface it actually presents.** An analogue part hands over photocurrents, so its model produces counts and the FSW reconstructs the vector; a digital part (GomSpace FSS, any star tracker) runs proprietary calibration inside and reports a processed vector or quaternion, so its model reproduces the *specified output accuracy*. Inventing the internal signal chain for a digital part means inventing the one thing the vendor does not publish, then undoing it with an algorithm that is not theirs.

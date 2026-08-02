@@ -10,7 +10,7 @@ Source: design doc §9, §23.1.1. Fully populated in Phase 10; firm seeds below.
    :tags: fdir, safety
    :method: Test
    :derived_from: REQ-MIS-004
-   :allocation: flight/components/FDIR
+   :allocation: flight/PolarisFsw/FDIR
 
    The FSW **shall** implement monitors → isolation → response → safing escalation;
    faults are F´ events with severity, and every alert maps to an autonomous action
@@ -24,7 +24,7 @@ Source: design doc §9, §23.1.1. Fully populated in Phase 10; firm seeds below.
    :tags: fdir, sensors
    :method: Test
    :derived_from: REQ-SYS-005
-   :allocation: flight/components/SensorProcessing
+   :allocation: flight/PolarisFsw/SensorProcessing
 
    Each measurement **shall** carry a validity flag (range, rate-of-change,
    staleness/timeout, cross-sensor consistency, solution-quality), and downstream
@@ -37,7 +37,7 @@ Source: design doc §9, §23.1.1. Fully populated in Phase 10; firm seeds below.
    :tags: fdir, gnss, estimation
    :method: Test
    :derived_from: REQ-FDIR-001
-   :allocation: flight/components/FDIR
+   :allocation: flight/PolarisFsw/FDIR
 
    The FSW **shall** trigger fine→coarse attitude fallback on star-tracker
    loss/occlusion, and detect GNSS outage (coasting on propagation) and

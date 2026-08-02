@@ -41,6 +41,10 @@ tools/gmat/GMAT/
 tools/gmat/*.tar.gz
 *.log
 
+# F´ data-product catalog: written at runtime by the deployment's DpCatalog
+# component into the working directory.
+/DpCat/
+
 # ── Editor / OS ────────────────────────────────────────────────────────
 .idea/
 .vscode/
@@ -52,9 +56,10 @@ tools/gmat/*.tar.gz
 !docs/_generated/.gitkeep
 
 # ── Claude Code / ruflo tooling ────────────────────────────────────────
-# Tracked (the glue that enables ruflo for the repo): .mcp.json, CLAUDE.md,
-# .claude/settings.json. The vendored agent/command/skill assets under .claude/
-# are regenerable via `npx ruflo init`, so they are intentionally NOT tracked.
+# Tracked: .mcp.json, CLAUDE.md, .claude/settings.json, and the Polaris-specific
+# subagents/slash commands under .claude/agents/ and .claude/commands/ — those are
+# force-added (`git add -f`) and override the directory patterns below, which exist
+# to keep the *vendored* ruflo assets out; those regenerate via `npx ruflo init`.
 # Runtime state and local overrides are never tracked.
 .claude-flow/
 .claude/agents/
