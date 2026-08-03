@@ -236,8 +236,25 @@ constexpr double kMaxSeparationDeg = 135.0;
 /// the degraded floor by @ref PostBothCorrectionsFallbackIsTheDegradedFloor.
 constexpr double kCoarseLimitDeg = 5.0;
 constexpr double kFineLimitDeg = 3.0;
-/// REQ-ADET-007: fine mode with star tracker(s) fused.
-constexpr double kStarLimitDeg = 0.05;
+/// REQ-ADET-007: fine mode with **two** star trackers fused and the inter-tracker
+/// alignment calibration valid, which is what the dual-ST campaign below
+/// measures. Enacted at 0.03° in Push 52, down from the 0.05° the requirement was
+/// written at before the mode was reachable.
+///
+/// Not the 0.02° §8.1 committed to: the measured bound is 0.021°, which sits
+/// *above* that figure, so enacting it would make the requirement fail outright.
+/// 0.03° is the smallest threshold this evidence carries the declared 20% margin
+/// at (0.021 / 0.8 = 0.0264).
+constexpr double kStarLimitDeg = 0.03;
+
+/// The **degraded floor**: king-only, i.e. before the alignment calibration has
+/// run or after it is cleared. Reported by @ref
+/// SecondStarTrackerCoversTheFirstsWeakAxis rather than asserted as a
+/// requirement, the same way the analytic-ephemeris fallback is for
+/// REQ-ADET-006 — it clears the old 0.05° comfortably but not the enacted 0.03°
+/// with margin, which is exactly why the requirement is conditioned on the
+/// calibration being valid.
+constexpr double kStarSingleFloorDeg = 0.024;
 
 /// Both requirements declare `margin_required: 20 %`, so a passing bound must
 /// sit at or below 80% of its threshold. The docs build has no gate for this
@@ -1368,8 +1385,19 @@ TEST(AttitudeAccuracyMonteCarlo, SecondStarTrackerCoversTheFirstsWeakAxis) {
 
   const Campaign single_norms = starErrorNorms(single);
   const Campaign dual_norms = starErrorNorms(dual);
-  (void)report(single_norms, kStarLimitDeg, "single ST (informative)");
+  (void)report(single_norms, kStarLimitDeg, "single ST (degraded floor)");
   (void)report(dual_norms, kStarLimitDeg, "dual ST (REQ-ADET-007)");
+
+  // **The king-only degraded floor**, which is what REQ-ADET-007's conditioning
+  // on a valid alignment calibration buys. It is recorded rather than required —
+  // the same treatment REQ-ADET-006 gives the analytic-ephemeris fallback — and
+  // the guard is that it must not silently *improve* past the dual case, which
+  // would mean the second tracker is hurting and the conditioning is backwards.
+  EXPECT_LT(single_norms.max(), 1.2 * kStarSingleFloorDeg)
+      << "the king-only floor has regressed past its recorded value";
+  EXPECT_GT(single_norms.max(), dual_norms.max())
+      << "king-only beat the calibrated pair — the conditioning on REQ-ADET-007 "
+         "is then backwards";
 
   int wins = 0;
   std::vector<double> improvement;

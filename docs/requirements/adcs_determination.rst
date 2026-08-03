@@ -309,17 +309,30 @@ catches that instead.
    :method: Test
    :derived_from: REQ-ADET-001
    :allocation: lib/gnc, flight/PolarisFsw/AttitudeEstimator
-   :value_required: <= 0.05 deg error norm (3-sigma)
+   :value_required: <= 0.03 deg error norm (3-sigma), post-calibration parameter set and inter-tracker alignment in force
    :margin_required: 20 %
    :refs: markley2014
 
-   In fine mode with one or more star trackers fused (§8.2) — the IMU still
-   propagating the solution between updates — the attitude-knowledge error norm
-   **shall** be ≤ **0.05°** (180 arcsec, 3σ).
+   In fine mode with **two star trackers fused** (§8.2) — the IMU still
+   propagating the solution between updates — with the
+   :ref:`post-calibration parameter set <adet-postcal-condition>` in force **and
+   a valid inter-tracker alignment calibration (REQ-ADET-013)**, the
+   attitude-knowledge error norm **shall** be ≤ **0.03°** (108 arcsec, 3σ).
+
+   .. _adet-007-degraded-floor:
+
+   **King-only is the degraded floor**, recorded rather than required, exactly as
+   the analytic-ephemeris fallback is for REQ-ADET-006: before the alignment
+   calibration has run, after ``ST_ALIGN_CAL_CLEAR``, or with the second unit
+   latched out, the vehicle fuses the king alone and measures **0.024°**. That
+   clears the 0.05° this requirement was written at but not 0.03° with the
+   declared margin, which is precisely why the condition is carried rather than
+   the threshold being loosened to cover both.
 
    .. note::
 
-      **Verified (Push 52): 0.021° 3σ against 0.05°, 58% margin.** Measured by
+      **Enacted at 0.03° in Push 52, down from 0.05°.** Measured **0.021° 3σ,
+      30% margin**. Measured by
       ``StarTrackerFineModeKnowledgeErrorNorm`` in
       ``tests/unit/attitude_accuracy_mc_test.cpp``, an 800-run campaign on the
       reference vehicle's two-AURIGA suite (boresights 90° apart, both 135° from
@@ -348,10 +361,12 @@ catches that instead.
       alone. That added two 3σ figures as if they were the same kind of quantity.
       The bias is quoted as a **bound** on an isotropic offset, so its per-axis
       1σ is ``B/3`` = 20.4 arcsec, and the campaign's measured single-tracker
-      bound is 0.024° (86 arcsec) rather than 113. The 0.05° threshold still
-      stands and is still the right one — it holds with margin for a
-      single-tracker vehicle, which is what a requirement not presuming a
-      configuration has to do.
+      bound is 0.024° (86 arcsec) rather than 113. That is also why the enacted
+      threshold can be conditioned on two trackers rather than written to cover
+      one: the single-tracker case is a real, reachable configuration, so it is
+      carried as the :ref:`degraded floor <adet-007-degraded-floor>` instead of
+      setting the threshold to the weakest configuration and giving away the
+      margin the second unit buys.
 
       **What the second tracker actually buys, measured as a paired comparison.**
       ``SecondStarTrackerCoversTheFirstsWeakAxis`` flies the same run twice —
@@ -381,23 +396,21 @@ catches that instead.
       systematic that does not average down — the one way this number could be
       wrong in the flattering direction.
 
-      **Tightening to 0.02° is not enacted here, and should not be.** §8.1
-      committed to that figure once a second non-parallel tracker landed, and the
-      measured bound sits just above it at 0.021° — so enacting 0.02° would make
-      this requirement **fail**, and enacting anything near it would leave nothing
-      like the 20% margin the requirement declares. A threshold at 20% margin on
-      the measured bound is **0.0264°**, i.e. **0.03°** rounded to a number a
-      requirement can carry.
+      **Why 0.03° and not the committed 0.02°.** §8.1 committed to 0.02° once a
+      second non-parallel tracker landed. The measured bound sits *above* that at
+      0.021°, so enacting 0.02° would have made this requirement fail outright,
+      and anything near it would leave nothing like the declared 20% margin. A
+      threshold at exactly 20% margin on the measured bound is 0.0264°; **0.03°**
+      is that rounded to a number a requirement can carry, and it lands at 30%.
 
-      Note how little separates 0.020° from 0.021°: the two figures come from the
-      same campaign before and after the RNG substreams were separated to make the
-      single/dual comparison paired. A committed threshold that moves with a
-      test-harness refactor is a threshold too close to its own measurement, which
-      is the concrete reason not to chase 0.02°. Enacting 0.03° belongs with a
-      decision about whether the king's bias can be reduced at all — a
-      ground-calibrated tracker mounting, or an absolute alignment against a
-      payload-derived reference, are the levers, and neither is in the current
-      design.
+      Note how little separates 0.020° from 0.021°: the two are the same campaign
+      before and after the RNG substreams were separated to make the single/dual
+      comparison paired. A committed threshold that moves with a test-harness
+      refactor is a threshold too close to its own measurement, which is the
+      concrete reason 0.02° was not chased. Going below 0.03° needs the **king's
+      own bias** reduced — a ground-calibrated tracker mounting, or an absolute
+      alignment against a payload-derived reference — and neither is in the
+      current design.
 
       The status stays ``reviewed`` rather than ``approved`` for the same reason
       every other requirement here does: the docs job that runs the
