@@ -13,6 +13,7 @@ register_fprime_config(
     PolarisFprimeConfig
   CONFIGURATION_OVERRIDES
     "${CMAKE_CURRENT_LIST_DIR}/PrmDbImplCfg.hpp"
+    "${CMAKE_CURRENT_LIST_DIR}/CommandDispatcherImplCfg.hpp"
   # INTERFACE because the module contributes no compiled source of its own: it
   # only replaces a header inside the framework's config build.
   INTERFACE

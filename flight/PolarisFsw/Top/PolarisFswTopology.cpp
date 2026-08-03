@@ -203,6 +203,11 @@ void setupTopology(const TopologyState& state) {
   // reads the MagCal* tuning out of ParameterDb and would otherwise refuse with
   // MagCalRejected(CONFIG).
   attitudeEstimator.commandMagCalAtStartup(state.magCalSamples);
+  // The §8.2 twin, and it dispatches here like the one above: ST_ALIGN_CAL_START
+  // reads the king index and the per-unit boresights out of ParameterDb itself
+  // rather than from the estimator's per-cycle cache, so it does not need the
+  // rate group to have run once.
+  attitudeEstimator.commandStAlignCalAtStartup(state.stAlignUnit, state.stAlignSamples);
   // Autocoded task kick-off (active components). Function provided by autocoder.
   startTasks(state);
   // Initialize socket communication if and only if there is a valid specification

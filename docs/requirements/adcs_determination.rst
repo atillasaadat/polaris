@@ -313,32 +313,97 @@ catches that instead.
    :margin_required: 20 %
    :refs: markley2014
 
-   In fine mode with one or more star trackers fused (§8.2) — the star tracker
-   joining the SS+MAG+IMU suite as a further vector source, not replacing it,
-   with the IMU still propagating the solution between updates — the
-   attitude-knowledge error norm **shall** be ≤ **0.05°** (180 arcsec, 3σ).
+   In fine mode with one or more star trackers fused (§8.2) — the IMU still
+   propagating the solution between updates — the attitude-knowledge error norm
+   **shall** be ≤ **0.05°** (180 arcsec, 3σ).
 
    .. note::
 
-      Not yet verifiable: the §8.2 multi-sensor fusion layer is unbuilt, so this
-      requirement is held at ``reviewed`` and carries no verifying artifact. It
-      is promoted to ``approved`` — the status the CI traceability gate acts on —
-      by the push that lands the fusion layer and extends
-      ``tests/unit/attitude_accuracy_mc_test.cpp`` with a star-tracker campaign.
+      **Verified (Push 52): 0.021° 3σ against 0.05°, 58% margin.** Measured by
+      ``StarTrackerFineModeKnowledgeErrorNorm`` in
+      ``tests/unit/attitude_accuracy_mc_test.cpp``, an 800-run campaign on the
+      reference vehicle's two-AURIGA suite (boresights 90° apart, both 135° from
+      the payload/array face) with the commanded inter-tracker alignment
+      calibration flown through the real ``gnc::StAlignmentAccumulator`` before
+      each run. Median 0.009°. The status stays ``reviewed`` for the
+      repository-wide CI reason recorded below, not for any gap in the evidence.
 
-      **Where the number comes from.** On the error-**norm** metric a single
-      tracker is dominated by its about-boresight axis: for the AURIGA in
-      ``config/hardware/star_tracker/sodern_auriga.yaml`` the Z terms are ~6×
-      the cross-boresight ones (51 / 38 / 70 arcsec 3σ low-frequency spatial,
+      **The mode is ST+IMU only, and the wording above changed to say so.** The
+      first form of this requirement said the tracker "joins the SS+MAG+IMU suite
+      as a further vector source, not replacing it". That is not what the vehicle
+      flies (user decision, 2026-08-02): with at least one valid tracker the sun
+      and magnetic pairs are **not** fused at all. They are two orders of
+      magnitude wider, so folding them in can only pull the solution away from the
+      trackers, and the filter's white-``R`` model has no way to represent the
+      systematic floor that makes them wide. They are not discarded either — they
+      become FDIR-monitored residuals against the tracker solution
+      (REQ-ADET-012), which is a strictly better use of them, because a sun sensor
+      that has drifted is then *observable* instead of merely down-weighted.
+
+      **Where the number comes from, and where the earlier estimate was
+      pessimistic.** The pre-implementation note here read the AURIGA's
+      about-boresight terms (51 / 38 / 70 arcsec 3σ low-frequency spatial,
       high-frequency spatial, temporal — RSS ≈ 95 arcsec, against ≈ 16 arcsec
-      cross-boresight), and the unit's fixed 61 arcsec bias (``bias_deg``
-      0.017°) does not average down at all. That is ≈ 113 arcsec 3σ of hardware
-      alone before installation
-      alignment or fusion loss, which is why the threshold is 0.05° and not the
-      ~0.02° a cross-boresight-only reading of the datasheet suggests. Two
-      trackers with **non-parallel boresights** are what actually buy the
-      0.02°-class number, since each covers the other's weak axis — a
-      configuration decision this requirement deliberately does not presume.
+      cross-boresight) and its fixed 61 arcsec bias as ≈ 113 arcsec of hardware
+      alone. That added two 3σ figures as if they were the same kind of quantity.
+      The bias is quoted as a **bound** on an isotropic offset, so its per-axis
+      1σ is ``B/3`` = 20.4 arcsec, and the campaign's measured single-tracker
+      bound is 0.024° (86 arcsec) rather than 113. The 0.05° threshold still
+      stands and is still the right one — it holds with margin for a
+      single-tracker vehicle, which is what a requirement not presuming a
+      configuration has to do.
+
+      **What the second tracker actually buys, measured as a paired comparison.**
+      ``SecondStarTrackerCoversTheFirstsWeakAxis`` flies the same run twice —
+      identical truth, systematics and unit-0 noise sequence, the only difference
+      being whether unit 1 is fused — so the comparison is paired rather than two
+      independent samples. The dual configuration is better on **65.0% of 800
+      runs**; under "the second tracker changes nothing" the win count would be
+      Binomial(800, ½) = 50 ± 1.8%, so that is decisive. On the aggregate the
+      bound moves 0.024° → 0.021° and the median gain is small.
+
+      The datasheet asymmetry is ~6× on the *noise* terms, but the isotropic bias
+      dominates the cross-boresight budget and compresses the ratio the fusion sees
+      to 1.8×. The second unit does cover the first's weak axis — the algebra is
+      pinned directly in
+      ``Mekf.AnisotropicRIsWhatMakesTwoNonParallelTrackersWorthCarrying``, where
+      the about-boresight variance falls by more than 10× — but on the *norm*
+      metric that improvement is spent against a floor the trackers share.
+
+      **That floor is the king tracker's own bias, and nothing removes it.** The
+      king's mounting *defines* the body frame, so no alignment is estimated for
+      it; the inter-tracker calibration (REQ-ADET-013) removes the *difference*
+      between the two units, which is what lets them fuse without fighting. But
+      the payload is mounted against the physical structure, not against the
+      king's optical axis, so the king's 20.4 arcsec/axis bias is a real knowledge
+      error. The campaign asserts the measured median stays *above* it, because a
+      result below that floor would mean the campaign is averaging down a
+      systematic that does not average down — the one way this number could be
+      wrong in the flattering direction.
+
+      **Tightening to 0.02° is not enacted here, and should not be.** §8.1
+      committed to that figure once a second non-parallel tracker landed, and the
+      measured bound sits just above it at 0.021° — so enacting 0.02° would make
+      this requirement **fail**, and enacting anything near it would leave nothing
+      like the 20% margin the requirement declares. A threshold at 20% margin on
+      the measured bound is **0.0264°**, i.e. **0.03°** rounded to a number a
+      requirement can carry.
+
+      Note how little separates 0.020° from 0.021°: the two figures come from the
+      same campaign before and after the RNG substreams were separated to make the
+      single/dual comparison paired. A committed threshold that moves with a
+      test-harness refactor is a threshold too close to its own measurement, which
+      is the concrete reason not to chase 0.02°. Enacting 0.03° belongs with a
+      decision about whether the king's bias can be reduced at all — a
+      ground-calibrated tracker mounting, or an absolute alignment against a
+      payload-derived reference, are the levers, and neither is in the current
+      design.
+
+      The status stays ``reviewed`` rather than ``approved`` for the same reason
+      every other requirement here does: the docs job that runs the
+      ``req_without_verification`` gate does not execute the C++ suites, and the
+      GoogleTest traceability artifact is not committed, so an ``approved``
+      requirement would fail the gate on a run where its test never executed.
 
 .. _adet-imu-voting:
 
@@ -543,3 +608,317 @@ decision, and it is owed to every requirement here at once.
       fine solution wherever the Sun is near a boresight (88% of directions), and
       needs a per-cycle white-σ override on ``CoarseAttitudeInput``; the MEKF
       already takes σ per update.
+
+.. _adet-mag-voting:
+
+Redundant-magnetometer combination
+----------------------------------
+
+The reference vehicle carries **two** magnetometers (user decision, 2026-08-02),
+and they are combined by the same argument the gyros are: the arithmetic mean has
+a breakdown point of zero ([rousseeuw1987] §1.2) whatever it is averaging, so a
+second magnetometer averaged in is a second way to lose the field rather than a
+redundancy. What differs is the *physical gate* — a magnetometer has a natural
+one that a gyro does not — and the *cost of refusing*, which is one of two vector
+pairs rather than the body rate.
+
+.. req:: Fault-tolerant multi-magnetometer field combination
+   :id: REQ-ADET-011
+   :status: reviewed
+   :level: L2
+   :tags: adcs, estimation, fdir, redundancy
+   :method: Test
+   :derived_from: REQ-ADET-002, REQ-FDIR-002
+   :allocation: lib/gnc, flight/PolarisFsw/AttitudeEstimator
+   :refs: rousseeuw1987, gilmore1972
+
+   Each magnetometer's reading **shall** be gated on its magnitude against the
+   onboard IGRF-modelled field magnitude at the vehicle's current position, within
+   a configured ratio band, before it enters any combination. A cycle with no
+   modelled field **shall** produce no combined field rather than a combination
+   whose only surviving gate is finiteness.
+
+   The combined field **shall not** be an arithmetic mean of the reporting units.
+   With three or more units reporting it **shall** be unaffected — beyond the
+   spread of the healthy units themselves — by one unit reporting an arbitrary
+   in-band value. With exactly two units reporting, a disagreement beyond the
+   configured gate **shall** be detected, and **shall** be attributed to the
+   offending unit using the modelled field rotated into body axes where the
+   attitude solution behind that rotation meets a configured **quality** bound,
+   not merely a validity flag. Where no such reference is available the combined
+   field **shall** be reported invalid rather than published from an arbitrary
+   choice of unit.
+
+   An excluded magnetometer **shall** raise an FDIR event naming the unit and the
+   gate that closed, **shall** be latched out, and **shall** be re-admitted only
+   after a configured number of consecutive cycles passing the criterion that
+   excluded it, or by command. The set of excluded units **shall** be
+   telemetered, and a unit that is merely absent **shall not** be latched out.
+
+   An unattributable disagreement **shall** escalate after a configured
+   continuous-ambiguity horizon, with a distinct event naming the duration,
+   re-reported at a bounded cadence.
+
+   .. note::
+
+      **The plausibility gate is the interesting clause**, and it is what makes
+      this requirement different from REQ-ADET-008 rather than a copy of it. The
+      vehicle already evaluates IGRF-14 at its own position every cycle to build
+      the magnetic reference, so ``‖m‖`` against ``‖B_IGRF‖`` costs nothing new
+      and is *attitude-free* — it works in Safe mode and at cold start. It is
+      strictly better than a fixed full-scale check: it tracks the field from
+      ~22 µT to ~52 µT over an orbit instead of admitting everything below
+      saturation, so a reading that is plausible at one point in the orbit is
+      correctly rejected at another. It is stated as a **ratio** so it does not
+      need re-deriving when the orbit changes.
+
+      **The reference's quality condition is the second one.** A validity flag
+      cannot tell a 0.5° solution from a 10° one, and a 10° attitude error
+      mispredicts a 30 µT field by ~5 µT — the disagreement gate itself. Gating
+      on validity alone would hand the verdict to whichever unit happened to sit
+      nearer a badly rotated prediction, which is the same failure the IMU vote's
+      range-checked reference guards against, one level up.
+
+      **Refusing is cheaper here than for the gyros, and that is by design.** An
+      unattributable magnetometer disagreement costs the magnetic pair for that
+      cycle — the coarse chain refuses TRIAD and the MEKF skips the magnetic
+      update, which is the estimator's existing dropout behaviour — where the IMU
+      equivalent costs the body rate itself. The vehicle keeps propagating and,
+      with the Sun in view, keeps acquiring. The escalation horizon is *shared*
+      with the IMU vote (``ImuAmbiguityEscalateCycles``) rather than duplicated:
+      how long the ground should wait before a persistent refusal reaches a
+      console is a property of the operations concept, not of the sensor.
+
+      **Implementation.** The policy — plausibility ladder, median at three or
+      more, pairwise identification with margin and confirmation gates, exclusion
+      latch, criterion-matched re-admission — is shared with the multi-IMU vote in
+      ``lib/gnc/unit_voting``; ``lib/gnc/mag_voting`` is the thin wrapper that
+      supplies the two magnetometer-specific gates above. That sharing is the
+      point: a divergence between the two votes' policies would be a defect, and
+      one implementation cannot diverge from itself.
+
+      Verified by ``tests/unit/mag_voting_test.cpp`` (14 cases mirroring the IMU
+      suite's shapes, including the absurd-reference, indecisive-comparison,
+      flipping-verdict, flap and re-admission ones, plus the band cases the IMU
+      suite has no analogue for) and by the component cases
+      ``ImplausibleMagnetometerIsExcludedAndCostsNothing`` and
+      ``TwoMagnetometerDisagreementLeavesNoMagneticPair`` in
+      ``flight/PolarisFsw/AttitudeEstimator/test/ut/``. The first asserts the
+      published attitude is unchanged by a dead unit; the second asserts the cost
+      is bounded to the magnetic pair, with the body rate still flowing.
+
+.. _adet-mode-ladder:
+
+The estimation mode ladder
+--------------------------
+
+.. req:: Estimation mode ladder and residual monitoring of demoted sources
+   :id: REQ-ADET-012
+   :status: reviewed
+   :level: L2
+   :tags: adcs, estimation, fdir, mekf
+   :method: Test
+   :derived_from: REQ-ADET-004
+   :allocation: flight/PolarisFsw/AttitudeEstimator
+   :refs: markley2014
+
+   The fine estimator **shall** select its measurement sources by a fixed ladder:
+   with at least one valid star-tracker solution, star trackers **only**;
+   otherwise the sun and magnetic vector pairs; with neither, the coarse chain is
+   the published product. The active rung **shall** be telemetered, and
+   transitions between rungs **shall** be surfaced as events.
+
+   A rung transition **shall not** be a demotion: the filter **shall** retain its
+   state and covariance across it, and the published solution **shall** remain
+   valid, so that a consumer needing only *an* attitude sees no interruption while
+   a consumer with a knowledge requirement can gate on the rung.
+
+   A star tracker whose solutions the filter's consistency gate rejects on a
+   configured number of consecutive cycles **shall** be excluded from the fusion
+   and reported, **without demoting the mode**, and **shall** be re-admitted after
+   a configured run of cycles agreeing with the fine solution, or by command. The
+   mode-level rejection streak **shall not** advance on a cycle where any tracker
+   was accepted.
+
+   On any cycle where the sun or magnetic pair is **not** being fused, its
+   disagreement with the fine solution **shall** be computed, telemetered, and
+   monitored: a residual past a configured threshold for a configured number of
+   consecutive cycles **shall** raise an FDIR event naming the source, re-reported
+   at a bounded cadence, and cleared when it returns inside the threshold.
+
+   Where two or more sun sensors report the Sun in view, the selected unit's
+   direction **shall** be cross-checked against the runner-up's; a persistent
+   disagreement **shall** raise an FDIR event, and where a fine solution is
+   available to judge with, the estimator **shall** use whichever of the two
+   agrees better with it.
+
+   .. note::
+
+      **Why ST-only rather than ST-plus-vectors.** The sun and magnetic pairs are
+      two orders of magnitude wider than a tracker, so fusing them alongside can
+      only pull the solution away from the trackers; and the filter treats ``R``
+      as white, so it has no way to represent the systematic floor (albedo
+      residual, IGRF model error, hard iron) that makes them wide — it would
+      average down an offset that does not average down and report a covariance
+      tighter than the truth for the privilege.
+
+      **What demoting them buys is not nothing — it is observability.** A source
+      the filter is updating from cannot be checked against the filter: the
+      residual is small *because* the update made it small. Demoted, the same
+      measurement becomes a monitor, and a sun sensor that has drifted 20° is now
+      an event on the ground's console instead of a slightly worse solution. The
+      component test ``DriftedSunSensorRaisesTheResidualMonitor`` is exactly this
+      claim: the alert fires and the published attitude does not move.
+
+      **The sun cross-unit check closes a gap the selector leaves open.** The
+      flight rule takes the smallest *reported* σ, so a unit that is confidently
+      wrong — small σ, wrong direction — wins, and nothing else on the vehicle
+      would notice. Detection needs no attitude at all (it is one sensor against
+      another), which makes it the only cross-check available in Safe mode;
+      resolution needs one, and is gated on the monitor having already alerted so
+      a single noisy sample can never move the selection. Nothing is latched: the
+      override is re-decided each cycle from the current evidence, so a unit that
+      recovers simply stops being overridden and there is no exclusion for the
+      ground to reason about on a condition the vehicle resolved itself.
+
+      **A monitor that cannot run does not clear its own alert.** A cycle where
+      the source is absent resets the streak but leaves an existing alert
+      standing, because "we stopped looking" is not "it recovered" — otherwise a
+      faulted sensor could close its own alert by dropping out.
+
+      **A bad tracker is isolated; the mode is not.** A cycle-global rejection
+      streak ORs every tracker's verdict together, so one persistently-disbelieved
+      unit demotes the whole fine mode — which drops the filter, re-promotes off
+      the *same* bad unit, and flaps at the streak period, roughly 0.5 Hz on the
+      reference tuning. The unit is the thing to isolate, exactly as a disagreeing
+      IMU or magnetometer is. So the streak is **per unit**, and the mode-level one
+      is suppressed by any tracker acceptance: "the filter believes nothing it is
+      being told" is the condition that actually means divergence.
+
+      The vector path keeps the Push 44 rule unchanged, and the asymmetry is
+      deliberate: with no tracker fused, isolating one of the two vector sources
+      would leave a filter running on a single wide source, whereas isolating one
+      tracker leaves it running on an arcsecond-class one.
+
+      Re-admission is judged on the criterion that excluded it — agreement with the
+      solution the *surviving* trackers built — at the unit's own 3σ about its weak
+      axis, not at one of the residual-monitor thresholds. Those are sized for a
+      sun sensor or a magnetometer, in degrees, and an arcsecond-class instrument
+      that is degrees out would sail through one and earn its way back while still
+      grossly wrong, which is how a re-admission policy quietly becomes a no-op.
+
+      Verified by ``BadStarTrackerIsIsolatedWithoutDemotingTheMode`` (the
+      regression for exactly this: the king healthy, the second unit 5° out, the
+      mode staying engaged on the king with the bad unit latched out and later
+      re-admitted), ``StarTrackerTakesTheLadderToItsTopRung``,
+      ``StarTrackerLossFallsBackToSunAndMagnetometer``,
+      ``DriftedSunSensorRaisesTheResidualMonitor``,
+      ``MissingStarTrackerTuningCapsTheLadder`` and
+      ``SunCrossUnitCheckAlertsAndOverrides`` in
+      ``flight/PolarisFsw/AttitudeEstimator/test/ut/``.
+
+.. req:: Commanded inter-star-tracker alignment calibration
+   :id: REQ-ADET-013
+   :status: reviewed
+   :level: L2
+   :tags: adcs, estimation, calibration, mekf
+   :method: Test
+   :derived_from: REQ-ADET-007
+   :allocation: lib/gnc, flight/PolarisFsw/AttitudeEstimator
+   :refs: markley2007, markley2014
+
+   One star tracker **shall** be designated the **king**: its mounting defines the
+   vehicle body frame, no alignment **shall** be estimated for it, and every other
+   tracker's solution **shall** be stated in the king's frame before it reaches
+   the estimator.
+
+   The vehicle **shall** provide a commanded on-orbit calibration that estimates a
+   non-king tracker's constant rotation relative to the king from **simultaneous**
+   solution pairs — start, abort and clear commands; a window counted in accepted
+   pairs with a bounded self-close deadline; a fit on **uncorrected** readings; a
+   single application point; and the fit's residual, the misalignment it found and
+   the set of units carrying a correction telemetered.
+
+   Every unobservable or untrustworthy case **shall** be a refusal that applies
+   nothing and retains any previously applied correction, reporting the gate that
+   closed: too few pairs, pairs that do not share one fixed rotation, excessive
+   dispersion, numerical failure, missing tuning, and a commanded unit that is the
+   king, out of range, or has no configured boresight.
+
+   .. note::
+
+      **Naming a king removes an unobservable degree of freedom rather than
+      hiding one.** Two trackers on a structure observe only their *relative*
+      rotation: an unmodelled common rotation of the whole assembly is
+      indistinguishable from a rotation of the body frame, so estimating two
+      absolute alignments from tracker data alone is estimating six parameters
+      from three observable ones. What this does **not** do is remove the king's
+      own bias — that is a real knowledge error against the physical structure the
+      payload is mounted to, and it is the floor REQ-ADET-007 measures.
+
+      **The estimator is the maximum-eigenvalue quaternion average**
+      ([markley2007]): the eigenvector of ``M = Σ q_rel q_relᵀ`` for its largest
+      eigenvalue. Arithmetic-mean-then-renormalise is only its first-order
+      approximation and biases with dispersion; the outer product is invariant to
+      the ±q sign ambiguity, so no sample can cancel another by having been
+      reported with the opposite sign. ``M`` is a 4×4 accumulator, so the window
+      is **O(1) in its length** — the same property the magnetometer calibration's
+      normal equations have, and for the same reason: a flight component must not
+      hold a window's worth of samples.
+
+      **The quality metrics come out of the same eigenvalues, exactly.** With
+      ``λ_max = Σ cos²(θᵢ/2)``, the RMS residual is ``2·sqrt(1 − λ_max/N)``
+      without revisiting a sample, and the normalised gap ``(λ_max − λ₂)/N`` is
+      the consistency metric.
+
+      **The eigen-gap gate is not a geometry gate, and saying so matters.**
+      Attitude pairs have no degenerate geometry — one pair determines all three
+      parameters, at any attitude — so there is no analogue of TRIAD's
+      near-parallel refusal here and no coverage gate to get wrong. A window taken
+      with the vehicle parked is as valid as one taken through a tumble
+      (``StAlignment.FitsFromASingleAttitude`` pins this). What the gap detects is
+      a *fault*: a unit delivering solutions that do not sit at a fixed rotation
+      from the king's — a mis-identified star field, a stale or cross-wired
+      solution, a mounting that is moving. Refusing there is refusing to average a
+      rotation that does not exist.
+
+      **Simultaneity is the measurement.** A pair enters only on a cycle where
+      both units delivered a fresh valid solution; at 0.1 °/s a one-cycle skew is
+      already 36 arcsec, comparable to what is being measured. A cycle where only
+      one unit solved costs the window a pair, not its correctness — which is why
+      the window is counted in pairs and carries a self-close deadline, exactly as
+      the magnetometer window is counted in accepted samples.
+
+      **There is deliberately no "must beat the uncalibrated fit" gate** of the
+      kind the magnetometer calibration carries. An ellipsoid fit can converge on
+      a worse sensor model; an alignment estimate is a mean of a quantity that is
+      either constant (and the mean is right) or not (and the eigen-gap gate
+      catches it). A comparison against "no correction" would only ever fire where
+      the true misalignment is smaller than the noise, and applying the estimate
+      there is harmless.
+
+      **The correction does not survive a reboot**, on the same deferral as the
+      magnetometer calibration: it lives in component state and nothing is written
+      to ``ParameterDb`` (§23.6 owns non-volatile state). A vehicle whose event log
+      carries no ``StAlignComplete`` is fusing its second tracker as mounted.
+
+      Verified by ``tests/unit/st_alignment_test.cpp`` (exact recovery of a known
+      misalignment including the composition order, the 1/√N averaging of the
+      units' own noise against a residual that correctly does *not* fall with N,
+      the single-attitude case, and each refusal) and by the component cases
+      ``InterTrackerAlignmentCollectsFitsAndApplies``,
+      ``InterTrackerAlignmentRefusesTheKingAndBadCommands`` and
+      ``InterTrackerAlignmentAbortAndClear``. In the REQ-ADET-007 campaign the fit
+      is flown on every one of the 800 runs
+      (``InterTrackerAlignmentFitsOnEveryRun``): 800/800 accepted, residual median
+      45.4 arcsec against the shipped 103 arcsec gate, misalignment median
+      44.8 arcsec.
+
+      **A non-king tracker is not fused until this calibration has run.** Its
+      as-mounted reading carries the two units' bias *difference* — 45-110 arcsec
+      measured — and fusing it at the ~21.5 arcsec σ the configuration declares
+      would sell a systematic as white noise, which is the overconfidence the
+      white-``R`` model cannot represent. So the vehicle flies king-only until the
+      window closes, which is also the honest launch state and what makes
+      ``ST_ALIGN_CAL_CLEAR`` a safe command rather than one that silently degrades
+      the solution. Pinned by ``UncalibratedSecondTrackerIsNotFused``.

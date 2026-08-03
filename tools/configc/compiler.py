@@ -219,24 +219,65 @@ def _check_albedo_parameters(body: dict[str, Any]) -> None:
                 f"whichever is stale."
             )
 
-    boresights = fsw.get(_ALBEDO_BORESIGHTS_PARAM)
+    _check_per_unit_boresights(
+        fsw, _ALBEDO_BORESIGHTS_PARAM, sun_sensors, "sun sensor", _WHY_ALBEDO
+    )
+
+
+#: Per-unit star-tracker boresights, flattened three at a time in star-tracker
+#: build order (design doc §8.2). Same shape and same failure mode as the albedo
+#: set: the FSW builds each tracker's measurement covariance
+#: `R = σ_xy²(I − b bᵀ) + σ_z² b bᵀ` from this boresight, so a wrong one does not
+#: fail — it points the tight and loose axes of R in the wrong directions, which
+#: quietly discards the whole reason two non-parallel trackers are carried.
+_ST_BORESIGHTS_PARAM = "flight.attitudeEstimator.StBoresightsBody"
+
+_WHY_ALBEDO = (
+    "The flight albedo correction places the Earth in *this* unit's field, so a "
+    "wrong boresight scales the correction rather than failing it."
+)
+
+_WHY_STAR_TRACKER = (
+    "The flight fusion builds this unit's measurement covariance about *this* "
+    "boresight (loose about it, tight across it), so a wrong one points the weak "
+    "axis of R in the wrong direction and silently gives back what the second, "
+    "non-parallel tracker was carried for."
+)
+
+
+def _check_per_unit_boresights(
+    fsw: dict[str, Any],
+    param: str,
+    units: list[dict[str, Any]],
+    kind_label: str,
+    why: str,
+) -> None:
+    """Refuse a flattened per-unit boresight parameter that contradicts the mountings.
+
+    Shared by the albedo set and the star-tracker set: both are
+    `GncMaxUnits x 3` flat F64 arrays in build order, both use the zero vector as
+    "not installed / not characterised", and both fail the same way — by scaling
+    or mis-orienting a model rather than by erroring — which is exactly why the
+    check exists rather than a comment asking for care. Silent when the parameter
+    is absent, so a config that sets neither side compiles unchanged.
+    """
+    boresights = fsw.get(param)
     if boresights is None:
         return
-    for index, sun_unit in enumerate(sun_sensors):
+    for index, unit in enumerate(units):
         slot = boresights[3 * index : 3 * index + 3]
         if len(slot) < 3:
             raise ConfigError(
-                f"{_ALBEDO_BORESIGHTS_PARAM} has no slot for sun sensor "
-                f"{index} ('{sun_unit['name']}'): the parameter carries "
-                f"{len(boresights) // 3} slots against {len(sun_sensors)} installed units."
+                f"{param} has no slot for {kind_label} "
+                f"{index} ('{unit['name']}'): the parameter carries "
+                f"{len(boresights) // 3} slots against {len(units)} installed units."
             )
         written = tuple(float(v) for v in slot)
-        # The zero vector is the configured "no correction for this unit" and is
-        # always allowed — a mounting nobody has characterised is a legitimate
-        # state, and the estimator then takes the uncorrected sun sigma.
+        # The zero vector is the configured "no value for this unit" and is always
+        # allowed — a mounting nobody has characterised is a legitimate state.
         if written == (0.0, 0.0, 0.0):
             continue
-        expected = _boresight_from_mounting(sun_unit)
+        expected = _boresight_from_mounting(unit)
         # Compared as an **angle**, not component-wise. These are directions, and
         # what matters is where the boresight points: a component-wise tolerance
         # is neither rotation-invariant nor scale-invariant, so it would reject an
@@ -254,15 +295,40 @@ def _check_albedo_parameters(body: dict[str, Any]) -> None:
         angle = math.atan2(cross_norm, dot)
         if angle > 1.0e-6:
             raise ConfigError(
-                f"{_ALBEDO_BORESIGHTS_PARAM} slot {index} = {written} points "
-                f"{math.degrees(angle):.4f} deg away from the mounting of sun sensor "
-                f"'{sun_unit['name']}', whose boresight (unit +Z through its mounting) "
+                f"{param} slot {index} = {written} points "
+                f"{math.degrees(angle):.4f} deg away from the mounting of {kind_label} "
+                f"'{unit['name']}', whose boresight (unit +Z through its mounting) "
                 f"is {expected}. The tolerance is 1e-6 rad on the angle between them.\n"
-                f"The flight albedo correction places the Earth in *this* unit's field, "
-                f"so a wrong boresight scales the correction rather than failing it. "
+                f"{why} "
                 f"Fix the parameter or the mounting_quaternion_wxyz, whichever is stale; "
-                f"write the zero vector to skip the correction for this unit."
+                f"write the zero vector to skip this unit."
             )
+
+
+def _check_star_tracker_parameters(body: dict[str, Any]) -> None:
+    """Refuse a vehicle whose star-tracker boresights contradict their mountings (§8.2)."""
+    sc = body["spacecraft"]
+    fsw = sc.get("fsw_parameters", {})
+    trackers = [u for u in sc.get("sensors", []) if u.get("kind") == "star_tracker"]
+    if not trackers:
+        return
+    _check_per_unit_boresights(
+        fsw, _ST_BORESIGHTS_PARAM, trackers, "star tracker", _WHY_STAR_TRACKER
+    )
+
+    # The king tracker defines the body frame (design doc §8.2), so an index
+    # outside the installed set is not a tuning error to discover in flight — it
+    # names a unit that does not exist, and the estimator would then never reach
+    # its finest mode while reporting nothing more specific than StConfigInvalid.
+    king = fsw.get("flight.attitudeEstimator.StKingUnit")
+    if king is not None and not 0 <= int(king) < len(trackers):
+        raise ConfigError(
+            f"flight.attitudeEstimator.StKingUnit = {king} names no installed star "
+            f"tracker: this vehicle carries {len(trackers)} "
+            f"({', '.join(u['name'] for u in trackers)}).\n"
+            f"The king tracker's mounting *defines* the body frame, so this index is "
+            f"a vehicle-integration decision, not a tuning knob."
+        )
 
 
 def _config_hash(resolved_body: dict[str, Any]) -> str:
@@ -298,6 +364,7 @@ def resolve(
     # Cross-checks between the two halves of the resolved object, which only
     # become checkable once the hardware library has been inlined.
     _check_albedo_parameters(body)
+    _check_star_tracker_parameters(body)
     resolved = {
         "provenance": {
             "config_hash": _config_hash(body),

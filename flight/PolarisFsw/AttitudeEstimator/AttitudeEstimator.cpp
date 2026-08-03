@@ -29,25 +29,27 @@ using ECEF = pm::frames::ECEF;
 using ECI = pm::frames::ECI;
 using Body = pm::frames::Body;
 
-//! Number of F64 coarse-chain tuning parameters read from ParameterDb. The two
-//! §8.2 IMU-voting F64s ride in this set rather than in one of their own: without
-//! a voted body rate there is no gyro propagation, so a missing value costs
-//! exactly what a missing SigmaSunWhiteRad costs — the whole estimator — and a
-//! separate gate would imply a degraded-but-flying state that does not exist.
-//! (ImuReadmitCycles is U32 and is read alongside them.)
-constexpr FwSizeType kParamCount = 17;
+//! Number of F64 coarse-chain tuning parameters read from ParameterDb. The §8.2
+//! IMU- and magnetometer-voting F64s ride in this set rather than in one of their
+//! own: without a voted body rate there is no gyro propagation, and without a
+//! voted field there is no TRIAD, so a missing value costs exactly what a missing
+//! SigmaSunWhiteRad costs — the whole estimator — and a separate gate would imply
+//! a degraded-but-flying state that does not exist. (The cycle counts are U32 and
+//! are read alongside them.)
+constexpr FwSizeType kParamCount = 21;
 
 //! Number of fine-mode (MEKF + Davenport seed) tuning parameters. Validated
 //! separately: a missing one costs the fine mode, not the whole estimator.
-constexpr FwSizeType kFineF64ParamCount = 5;
+constexpr FwSizeType kFineF64ParamCount = 6;
 
 //! Not a value: telemetry channels that have nothing to report this cycle. Zero
 //! would draw as a perfect solution on a strip chart.
 const double kNoValue = std::numeric_limits<double>::quiet_NaN();
 
-//! Telemetered SunUnitSelected when no sun sensor was selectable this cycle.
-//! 255 rather than 0, which is a perfectly good port index.
-constexpr U8 kNoSunUnitIndex = 255;
+//! Telemetered unit index when no unit of that type was selectable this cycle —
+//! sun sensor, magnetometer, anything. 255 rather than 0, which is a perfectly
+//! good port index.
+constexpr U8 kNoUnitIndex = 255;
 
 //! Read a `Vec3F64` telemetry/port array member into a raw 3-vector.
 Eigen::Vector3d toEigen(const Vec3F64& v) {
@@ -107,6 +109,7 @@ AttitudeEstimator ::AttitudeEstimator(const char* const compName)
       estimator_(polaris::gnc::CoarseAttitudeConfig{}),
       mekf_(polaris::gnc::MekfConfig{}),
       mag_cal_accumulator_(polaris::gnc::MagCalibrationConfig{}),
+      st_align_accumulator_(polaris::gnc::StAlignmentConfig{}),
       igrf_(polaris::environment::IgrfCoefficients{}),
       leap_(polaris::time::LeapSecondTable::historical()) {}
 
@@ -172,6 +175,14 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
   values[14] = this->paramGet_SigmaSunEphemPreciseRad(valids[14]);
   values[15] = this->paramGet_ImuMaxRateRadps(valids[15]);
   values[16] = this->paramGet_ImuDisagreementRadps(valids[16]);
+  values[17] = this->paramGet_MagMinFieldRatio(valids[17]);
+  values[18] = this->paramGet_MagMaxFieldRatio(valids[18]);
+  values[19] = this->paramGet_MagDisagreementT(valids[19]);
+  values[20] = this->paramGet_MagMaxAttSigmaRad(valids[20]);
+  Fw::ParamValid mag_readmit_valid = Fw::ParamValid::INVALID;
+  const U32 mag_readmit_cycles = this->paramGet_MagReadmitCycles(mag_readmit_valid);
+  Fw::ParamValid mag_confirm_valid = Fw::ParamValid::INVALID;
+  const U32 mag_confirm_cycles = this->paramGet_MagIdentifyConfirmCycles(mag_confirm_valid);
   Fw::ParamValid readmit_valid = Fw::ParamValid::INVALID;
   const U32 readmit_cycles = this->paramGet_ImuReadmitCycles(readmit_valid);
   Fw::ParamValid confirm_valid = Fw::ParamValid::INVALID;
@@ -195,7 +206,11 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
                                                   "SigmaSunEphemRad",
                                                   "SigmaSunEphemPreciseRad",
                                                   "ImuMaxRateRadps",
-                                                  "ImuDisagreementRadps"};
+                                                  "ImuDisagreementRadps",
+                                                  "MagMinFieldRatio",
+                                                  "MagMaxFieldRatio",
+                                                  "MagDisagreementT",
+                                                  "MagMaxAttSigmaRad"};
 
   for (FwSizeType i = 0; i < kParamCount; ++i) {
     if (valids[i] != Fw::ParamValid::VALID || !std::isfinite(values[i])) {
@@ -225,6 +240,26 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
   vote_cfg.identify_confirm_cycles = confirm_cycles;
   if (!vote_cfg.isValid()) {
     this->failConfig("IMU voting tuning is out of range (see ImuVoteConfig::isValid)");
+    return false;
+  }
+
+  if (mag_readmit_valid != Fw::ParamValid::VALID || mag_confirm_valid != Fw::ParamValid::VALID) {
+    this->failConfig("MagReadmitCycles/MagIdentifyConfirmCycles missing from ParameterDb");
+    return false;
+  }
+  polaris::gnc::MagVoteConfig mag_vote_cfg;
+  mag_vote_cfg.min_field_ratio = values[17];
+  mag_vote_cfg.max_field_ratio = values[18];
+  mag_vote_cfg.disagreement_tesla = values[19];
+  mag_vote_cfg.max_attitude_sigma_rad = values[20];
+  mag_vote_cfg.readmit_cycles = mag_readmit_cycles;
+  mag_vote_cfg.identify_confirm_cycles = mag_confirm_cycles;
+  // The library owns the range rules — including that the band must straddle 1,
+  // since a band excluding the modelled magnitude itself would reject every
+  // healthy unit on every cycle — so the component cannot drift a second,
+  // disagreeing idea of what is in range.
+  if (!mag_vote_cfg.isValid()) {
+    this->failConfig("magnetometer voting tuning is out of range (see MagVoteConfig::isValid)");
     return false;
   }
 
@@ -287,8 +322,11 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
   // the alternative — carrying it — would leave a unit excluded by a limit the
   // vehicle is no longer flying.
   this->imu_voter_ = polaris::gnc::ImuVoter(vote_cfg);
+  this->mag_voter_ = polaris::gnc::MagVoter(mag_vote_cfg);
   this->imu_ambiguous_flagged_ = false;
   this->imu_ambiguous_cycles_ = 0;
+  this->mag_ambiguous_flagged_ = false;
+  this->mag_ambiguous_cycles_ = 0;
   this->imu_ambiguity_escalate_cycles_ = escalate_cycles;
   this->max_meas_age_s_ = values[9];
   this->min_position_radius_m_ = values[10];
@@ -320,9 +358,11 @@ bool AttitudeEstimator ::refreshFineConfig() {
   values[2] = this->paramGet_MekfMaxCoastSec(valids[2]);
   values[3] = this->paramGet_MekfBiasSigmaInit(valids[3]);
   values[4] = this->paramGet_SeedMinObservability(valids[4]);
+  values[5] = this->paramGet_MekfAttNisGate(valids[5]);
 
   static const char* const kNames[kFineF64ParamCount] = {
-      "MekfRrw", "MekfNisGate", "MekfMaxCoastSec", "MekfBiasSigmaInit", "SeedMinObservability"};
+      "MekfRrw",           "MekfNisGate",          "MekfMaxCoastSec",
+      "MekfBiasSigmaInit", "SeedMinObservability", "MekfAttNisGate"};
 
   for (FwSizeType i = 0; i < kFineF64ParamCount; ++i) {
     if (valids[i] != Fw::ParamValid::VALID || !std::isfinite(values[i])) {
@@ -368,6 +408,7 @@ bool AttitudeEstimator ::refreshFineConfig() {
   cfg.arw_rad_per_sqrt_s = arw;
   cfg.rrw_rad_per_s_per_sqrt_s = values[0];
   cfg.nis_gate = values[1];
+  cfg.attitude_nis_gate = values[5];
   cfg.max_coast_s = values[2];
   cfg.max_dt_s = max_dt;
 
@@ -624,12 +665,13 @@ void AttitudeEstimator ::parameterUpdated(FwPrmIdType id) {
 
 double AttitudeEstimator ::arbitrateFineMode(const polaris::time::Tai& epoch,
                                              const polaris::gnc::CoarseAttitudeInput& in,
-                                             const polaris::gnc::CoarseAttitudeOutput& coarse) {
+                                             const polaris::gnc::CoarseAttitudeOutput& coarse,
+                                             const StarTrackerSample* stars, int starCount) {
   if (!this->mekf_.isConfigured()) {
     return kNoValue;  // coarse-only operation; failFineConfig() has already said so
   }
   if (this->fine_active_) {
-    return this->stepFineMode(epoch, in);
+    return this->stepFineMode(epoch, in, stars, starCount);
   }
   // Deliberately else-if and not a second chance in the same cycle: a demotion
   // costs at least one cycle on coarse, so a condition that oscillates shows up
@@ -638,8 +680,17 @@ double AttitudeEstimator ::arbitrateFineMode(const polaris::time::Tai& epoch,
   // Promotion waits for a valid coarse attitude even though the Davenport solve
   // does not need one. It is the cheap statement that the vehicle has a working
   // floor before it starts trusting a filter on top of it.
-  if (coarse.attitude_valid && in.sun_valid && in.mag_valid) {
-    this->tryPromoteFineMode(epoch, in);
+  //
+  // **A star tracker promotes on its own**, without the coarse floor and without
+  // the vector pairs. The floor requirement is the cheap statement that the
+  // vehicle has something working underneath before it trusts a filter on top —
+  // a good rule when the filter is being seeded from the same two wide vector
+  // sources the floor is built from. It is the wrong rule against a tracker: the
+  // tracker *is* the better source, its solution carries its own covariance, and
+  // requiring a coarse fix first would make the top rung unreachable in eclipse
+  // and at cold start, which are exactly the cases a tracker exists to cover.
+  if (starCount > 0 || (coarse.attitude_valid && in.sun_valid && in.mag_valid)) {
+    this->tryPromoteFineMode(epoch, in, stars, starCount);
   } else {
     // Re-arm the seed alert whenever the preconditions are not met. Without this
     // a single refused solve latches the flag for the rest of the flight, since
@@ -652,7 +703,46 @@ double AttitudeEstimator ::arbitrateFineMode(const polaris::time::Tai& epoch,
 }
 
 void AttitudeEstimator ::tryPromoteFineMode(const polaris::time::Tai& epoch,
-                                            const polaris::gnc::CoarseAttitudeInput& in) {
+                                            const polaris::gnc::CoarseAttitudeInput& in,
+                                            const StarTrackerSample* stars, int starCount) {
+  // The seed bias is zero at the configured turn-on repeatability, whichever seed
+  // path runs: nothing better is known at cold start, and inventing a bias is
+  // worse than admitting to one this large.
+  const Eigen::Matrix3d seed_bias_cov =
+      (this->bias_sigma_init_ * this->bias_sigma_init_) * Eigen::Matrix3d::Identity();
+
+  // --- Star-tracker seed ----------------------------------------------------
+  // A tracker's solution and its own R *are* a seed — there is nothing to solve.
+  // Only the first (king-first ordered) unit seeds; the rest fold in as updates
+  // on the very next cycle, which is both simpler and the same answer to first
+  // order, and it keeps the seed's covariance one unit's honest R rather than a
+  // hand-combined one.
+  if (starCount > 0 && stars != nullptr) {
+    if (this->mekf_.initialize(epoch, stars[0].attitude, stars[0].noise_cov,
+                               pm::Vec3<Body>(Eigen::Vector3d::Zero()), seed_bias_cov)) {
+      this->fine_active_ = true;
+      this->refusal_streak_ = 0;
+      this->nis_streak_ = 0;
+      this->fine_init_failed_flagged_ = false;
+      this->log_ACTIVITY_HI_FineModeEngaged(stars[0].noise_cov.trace());
+      return;
+    }
+    if (!this->fine_init_failed_flagged_) {
+      const Fw::LogStringArg arg(
+          "MEKF rejected the star-tracker seed (non-finite or indefinite R)");
+      this->log_WARNING_LO_FineInitFailed(arg);
+      this->fine_init_failed_flagged_ = true;
+    }
+    // Deliberately falls through to the vector seed rather than returning: a
+    // tracker whose R the filter refuses is a configuration fault, and the
+    // vehicle should still reach the SS+MAG rung it could reach without any
+    // tracker at all.
+  }
+
+  // --- Vector-pair (Davenport) seed ----------------------------------------
+  if (!in.sun_valid || !in.mag_valid) {
+    return;
+  }
   polaris::gnc::DavenportInput seed;
   seed.count = 2;
   seed.min_observability = this->seed_min_observability_;
@@ -675,13 +765,8 @@ void AttitudeEstimator ::tryPromoteFineMode(const polaris::time::Tai& epoch,
     return;
   }
 
-  // The seed bias is zero at the configured turn-on repeatability: nothing
-  // better is known at cold start, and inventing a bias is worse than admitting
-  // to one this large.
-  const Eigen::Matrix3d bias_cov =
-      (this->bias_sigma_init_ * this->bias_sigma_init_) * Eigen::Matrix3d::Identity();
   if (!this->mekf_.initialize(epoch, solution.attitude, solution.covariance,
-                              pm::Vec3<Body>(Eigen::Vector3d::Zero()), bias_cov)) {
+                              pm::Vec3<Body>(Eigen::Vector3d::Zero()), seed_bias_cov)) {
     if (!this->fine_init_failed_flagged_) {
       const Fw::LogStringArg arg("MEKF rejected the seed (non-finite or indefinite covariance)");
       this->log_WARNING_LO_FineInitFailed(arg);
@@ -698,7 +783,8 @@ void AttitudeEstimator ::tryPromoteFineMode(const polaris::time::Tai& epoch,
 }
 
 double AttitudeEstimator ::stepFineMode(const polaris::time::Tai& epoch,
-                                        const polaris::gnc::CoarseAttitudeInput& in) {
+                                        const polaris::gnc::CoarseAttitudeInput& in,
+                                        const StarTrackerSample* stars, int starCount) {
   bool refused = !this->mekf_.propagate(epoch, in.gyro, in.gyro_valid);
   bool nis_rejected = false;
   // The **largest** NIS of the cycle, not the last: a rejected outlier followed
@@ -708,12 +794,27 @@ double AttitudeEstimator ::stepFineMode(const polaris::time::Tai& epoch,
   // rejected one whenever there was one.
   double worst_nis = kNoValue;
 
+  // --- The §8.2 mode ladder -------------------------------------------------
+  // Star trackers first, and if any of them is accepted the vector pairs are not
+  // fused **at all**. They are two orders of magnitude wider than a tracker, so
+  // folding them in can only pull the solution away from it, and the filter's
+  // white-R model has no way to represent the systematic floor that makes them
+  // wide — it would average down an offset that does not average down, and report
+  // a covariance tighter than the truth for the privilege. They are not discarded:
+  // they become the residual monitors below, which is a strictly better use of
+  // them, because a sun sensor that has drifted is then *observable* rather than
+  // merely down-weighted.
+  bool star_accepted = false;
+  const double star_nis =
+      this->fuseStarTrackers(stars, starCount, star_accepted, refused, nis_rejected);
+  this->tlmWrite_StNis(star_nis);
+
   // One update per available pair, folded in one at a time — which is what makes
   // the §8.2 fusion layer more calls rather than an interface change.
   const polaris::gnc::VectorObservation pairs[2] = {
       {in.sun_body, in.sun_ref, this->sigma_sun_total_cycle_},
       {in.mag_body, in.mag_ref, this->sigma_mag_total_rad_}};
-  const bool pair_valid[2] = {in.sun_valid, in.mag_valid};
+  const bool pair_valid[2] = {in.sun_valid && !star_accepted, in.mag_valid && !star_accepted};
 
   for (int i = 0; i < 2; ++i) {
     if (!pair_valid[i] || !this->mekf_.isInitialised()) {
@@ -741,7 +842,35 @@ double AttitudeEstimator ::stepFineMode(const polaris::time::Tai& epoch,
   }
 
   this->refusal_streak_ = refused ? (this->refusal_streak_ + 1) : 0;
-  this->nis_streak_ = nis_rejected ? (this->nis_streak_ + 1) : 0;
+  // **A rejection on one tracker while another was accepted is a *unit* fault,
+  // not a mode fault.** It is isolated per unit inside fuseStarTrackers; demoting
+  // the mode for it would drop a filter that another tracker is updating perfectly
+  // well, then re-promote off the same bad unit and flap at the streak period. So
+  // a tracker acceptance suppresses the mode-level streak.
+  //
+  // The vector path is deliberately left as it was: with no tracker fused,
+  // `star_accepted` is false and this reduces exactly to the Push 44 rule, where a
+  // persistently gate-rejected sun stream does demote. The two are not the same
+  // case — the vector sources are two of two, so isolating one leaves a filter
+  // running on a single wide source, whereas isolating a tracker leaves one
+  // running on an arcsecond-class one.
+  this->nis_streak_ = (nis_rejected && !star_accepted) ? (this->nis_streak_ + 1) : 0;
+  this->readmitStarTrackers(this->last_epoch_tai_ns_);
+
+  // The rung this cycle ended on, and the monitors that follow from it. Reported
+  // as a source *change* rather than as a demotion, because it is not one: the
+  // filter keeps its state and its covariance across the transition and the
+  // published solution stays valid throughout. What changes is how fast that
+  // covariance grows from here — about two orders of magnitude — which is why a
+  // consumer with a knowledge requirement gates on this and not on AttitudeValid.
+  const FineSource::T source = star_accepted ? FineSource::STAR_TRACKER : FineSource::SUN_MAG;
+  if (source != this->fine_source_) {
+    this->log_ACTIVITY_HI_FineSourceChanged(this->fine_source_, source,
+                                            static_cast<U32>(starCount));
+    this->fine_source_ = source;
+  }
+  this->tlmWrite_StContributing(star_accepted ? static_cast<U32>(starCount) : 0u);
+  this->updateResidualMonitors(in, this->mekf_.attitude(), star_accepted);
 
   if (!this->mekf_.isInitialised()) {
     this->demoteFineMode(FineDemotionReason::FILTER_FAULT);
@@ -774,6 +903,15 @@ void AttitudeEstimator ::demoteFineMode(FineDemotionReason::T reason) {
   this->fine_active_ = false;
   this->refusal_streak_ = 0;
   this->nis_streak_ = 0;
+  // The ladder goes with it. Reported as a source change so the event stream
+  // reads coherently — a demotion is a fall off the ladder entirely, and a
+  // consumer trending FineSource must see it reach NONE rather than infer it from
+  // the FineModeDemoted that accompanies it.
+  if (this->fine_source_ != FineSource::NONE) {
+    this->log_ACTIVITY_HI_FineSourceChanged(this->fine_source_, FineSource::NONE, 0);
+    this->fine_source_ = FineSource::NONE;
+  }
+  this->tlmWrite_StContributing(0u);
 }
 
 // ----------------------------------------------------------------------
@@ -797,10 +935,10 @@ void AttitudeEstimator ::gnssIn_handler(FwIndexType portNum, const GnssMeas& mea
 }
 
 void AttitudeEstimator ::starTrackerIn_handler(FwIndexType portNum, const StarTrackerMeas& meas) {
-  // TODO(§8.2): the fusion layer feeds this to the MEKF as a third measurement
-  // source. Counted here so the interface is exercised and a tracker delivering
-  // solutions is visible in telemetry; the coarse solution stays
-  // tracker-independent on purpose (§10).
+  this->star_[portNum] = meas;
+  // A raw arrival count, kept as it always was: it says a tracker is delivering
+  // solutions, which is a different fact from the filter accepting them
+  // (StContributing) and from the unit being usable this cycle (StValidMask).
   if (meas.get_valid()) {
     ++this->star_tracker_count_;
   }
@@ -829,17 +967,30 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
       this->finishMagCal();
     }
   }
+  // The alignment window ages on exactly the same rule and for the same reason: a
+  // window counted in *simultaneous pairs* is stalled rather than ended by a
+  // tracker losing its solution, and without a deadline the ground would wait on
+  // a completion that can no longer arrive.
+  if (this->st_align_collecting_) {
+    ++this->st_align_cycles_;
+    if (this->st_align_cycles_ >= this->st_align_deadline_cycles_) {
+      this->finishStAlign();
+    }
+  }
 
   if (this->params_dirty_) {
     this->params_dirty_ = false;
-    // Three independent gates, in decreasing order of what their failure costs.
+    // Four independent gates, in decreasing order of what their failure costs.
     // The coarse set failing leaves the vehicle with no attitude at all; the fine
     // set failing leaves it with the Safe-mode floor, which is a working vehicle;
-    // the albedo set failing leaves both running on the wider uncorrected sun
-    // budget, which is how the vehicle flew before the correction existed. None
-    // is allowed to take the ones above it down.
+    // the star-tracker set failing caps the §8.2 ladder at SS+MAG, which is the
+    // accuracy the vehicle had before trackers were fused; the albedo set failing
+    // leaves everything running on the wider uncorrected sun budget, which is how
+    // the vehicle flew before the correction existed. None is allowed to take the
+    // ones above it down.
     (void)this->refreshCoarseConfig();  // emits ConfigInvalid and leaves us inert
     (void)this->refreshFineConfig();    // emits FineConfigInvalid; coarse-only
+    (void)this->refreshStConfig();      // emits StConfigInvalid; no tracker fused
     (void)this->refreshAlbedoConfig();  // emits AlbedoConfigInvalid; uncorrected
   }
   if (!this->estimator_.isConfigured()) {
@@ -985,13 +1136,62 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
                                      ? this->sigma_sun_ephem_precise_rad_
                                      : this->sigma_sun_ephem_rad_;
 
+  // The previous cycle's published solution, which is the only attitude available
+  // when this cycle's measurements are being gated and combined. Two §8.2 checks
+  // need it — the magnetometer vote's identification reference and the sun
+  // cross-unit resolution — and both take its *quality*, not merely its validity
+  // flag, because a flag cannot tell a 0.5° solution from a 10° one.
+  bool have_prior_attitude = this->state_.valid.attitude && this->state_.valid.covariance;
+  double prior_sigma_rad = 0.0;
+  if (have_prior_attitude) {
+    // Per-axis 1σ from the attitude block's trace: trace = Σσᵢ², so √(trace/3) is
+    // the isotropic-equivalent per-axis figure the gates are stated in.
+    const double trace = this->state_.covariance
+                             .block<3, 3>(polaris::state::ErrorState::kAttitude,
+                                          polaris::state::ErrorState::kAttitude)
+                             .trace();
+    // A NaN or non-positive trace must **not** fall through as sigma = 0, which is
+    // the most permissive value every quality gate downstream takes: an unusable
+    // covariance would then read as a perfect attitude and unlock the very
+    // comparisons it should forbid. No usable covariance means no usable prior.
+    if (std::isfinite(trace) && trace > 0.0) {
+      prior_sigma_rad = std::sqrt(trace / 3.0);
+    } else {
+      have_prior_attitude = false;
+    }
+  }
+
   // Best-illuminated unit of the suite (§8.2), and its port index — which is
   // what selects that unit's albedo boresight below, so a handoff to a sensor on
   // another face corrects with that face's geometry rather than the previous
   // unit's.
   FwIndexType sun_index = 0;
-  const SunSensorMeas* const sun = this->selectSunSensor(nowNs, sun_index);
-  this->tlmWrite_SunUnitSelected(sun != nullptr ? static_cast<U8>(sun_index) : kNoSunUnitIndex);
+  FwIndexType sun_runner_up = -1;
+  const SunSensorMeas* sun = this->selectSunSensor(nowNs, sun_index, sun_runner_up);
+  if (sun != nullptr) {
+    // Cross-check the selected unit against the runner-up (§8.2). Detection needs
+    // no attitude, so this runs in every mode; the prior solution is used only to
+    // *resolve* a persistent disagreement, and only after the monitor has already
+    // alerted.
+    // Detection runs in every mode — it is one sensor against another and needs
+    // no attitude. **Resolution** needs an attitude the incumbent unit did not
+    // help build: in coarse mode TRIAD fits the sun pair *exactly*, so the
+    // selected unit's residual against the solution is near zero by construction
+    // and the check would confirm whichever unit it is already using. Only a
+    // tracker-fused solution is sun-independent.
+    pm::Vec3<Body> sun_reference;
+    const bool have_sun_reference =
+        have_prior_attitude && have_sun_ref && this->fine_source_ == FineSource::STAR_TRACKER;
+    if (have_sun_reference) {
+      sun_reference = this->state_.attitude.rotate(sun_ref);
+    }
+    sun = this->crossCheckSunUnit(sun_index, sun_runner_up, sun_reference, have_sun_reference);
+  } else {
+    this->tlmWrite_SunCrossUnitRad(kNoValue);
+    this->noteMonitorResidual(ResidualMonitor::SUN_CROSS_UNIT, kNoValue,
+                              this->monitor_threshold_rad_[ResidualMonitor::SUN_CROSS_UNIT]);
+  }
+  this->tlmWrite_SunUnitSelected(sun != nullptr ? static_cast<U8>(sun_index) : kNoUnitIndex);
   // Default for a cycle with no sun measurement at all: the uncorrected albedo
   // budget, so nothing downstream can read a corrected sigma off a cycle that
   // had no measurement to correct.
@@ -1013,9 +1213,51 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
     in.sun_sigma_sys_rad = this->sigma_sun_sys_cycle_;
   }
   this->tlmWrite_SunAlbedoCorrection(albedo_applied_rad);
-  const MagnetometerMeas* const magnetometer = this->selectMagnetometer(nowNs);
-  if (magnetometer != nullptr && have_mag_ref) {
-    const pm::Vec3<Body> m_raw(toEigen(magnetometer->get_fieldTesla()));
+
+  // --- Magnetometer: the fault-tolerant vote across the suite (§8.2) ---------
+  // Not "the first valid unit": with redundant magnetometers the combination has
+  // to be robust, because a railed unit reports a plausible-looking valid flag and
+  // an impossible field. The identification reference is the modelled field
+  // rotated through the previous cycle's attitude — the one independent statement
+  // the vehicle has about what the field should read — and it is gated on that
+  // attitude's *quality*, not merely its validity.
+  //
+  // The whole block is inside `have_mag_ref` because the plausibility gate is the
+  // measured magnitude against the modelled one: with no modelled field there is
+  // no gate, and a vote whose only surviving gate is finiteness would admit the
+  // railed reading the band exists to catch. That is the same condition under
+  // which there is no magnetic pair to form anyway.
+  pm::Vec3<Body> voted_field;
+  FwIndexType mag_index = 0;
+  bool have_mag_measurement = false;
+  if (have_mag_ref) {
+    // **The reference must not depend on the magnetometer it is judging.** In
+    // SS+MAG fine mode and in coarse mode the published attitude is built partly
+    // *from* the magnetic pair, so a unit that has drifted drags the solution,
+    // which drags the rotated reference toward the drifted unit — and the vote
+    // then latches out the HEALTHY one. That is a fault-tolerance inversion, and
+    // it is worse than having no reference at all. Only a tracker-fused solution
+    // is magnetically independent, so only that one is offered; anything else
+    // reports an honest kAmbiguous and costs the pair for the cycle.
+    const bool reference_independent = this->fine_source_ == FineSource::STAR_TRACKER;
+    const bool usable_reference = have_prior_attitude && reference_independent;
+    pm::Vec3<Body> mag_ref_body;
+    if (usable_reference) {
+      mag_ref_body = this->state_.attitude.rotate(mag_ref);
+    }
+    have_mag_measurement =
+        this->voteMagField(nowNs, mag_ref_body, usable_reference, prior_sigma_rad,
+                           mag_ref.eigen().norm(), voted_field, mag_index);
+  } else {
+    // No modelled field: the vote is not run, so its telemetry must still say so
+    // rather than holding the previous cycle's numbers.
+    this->tlmWrite_MagContributing(0u);
+    this->tlmWrite_MagExclusionMask(0u);
+    this->tlmWrite_MagUnitSelected(kNoUnitIndex);
+  }
+
+  if (have_mag_measurement) {
+    const pm::Vec3<Body> m_raw = voted_field;
 
     // §7 MTQ/MAG duty-cycle interlock gate point. An energised torque rod puts a
     // field on the sensor orders of magnitude above the ~30 uT ambient, and the
@@ -1046,6 +1288,19 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
     in.mag_valid = in.mag_body.isFinite();
   }
 
+  // --- Star trackers (§8.2) -------------------------------------------------
+  // Gathered before the coarse cycle so the alignment tap sees the same cycle's
+  // readings as the fusion does, and so the coarse chain's independence from them
+  // is visible: nothing below this block reaches `in`. The coarse solution stays
+  // tracker-independent on purpose — it is the §10 Safe-mode floor.
+  StarTrackerSample stars[NUM_STARTRACKERIN_INPUT_PORTS];
+  U32 star_valid_mask = 0;
+  const int star_count = this->collectStarTrackers(nowNs, stars, star_valid_mask);
+  this->tlmWrite_StValidMask(star_valid_mask);
+  // The alignment tap, on **uncorrected** readings and only on cycles where the
+  // king and the commanded unit both solved. A no-op unless a window is open.
+  this->collectStAlignSample(nowNs);
+
   // --- One estimation cycle -------------------------------------------------
   polaris::gnc::CoarseAttitudeOutput out;
   const bool valid_attitude = this->estimator_.update(in, out);
@@ -1070,8 +1325,21 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
   // Runs after the coarse cycle and on the same measurement set, so the coarse
   // solution is always a live fallback rather than one that has to re-acquire.
   const bool fine_was_active = this->fine_active_;
-  const double cycle_nis = this->arbitrateFineMode(epoch, in, out);
+  const double cycle_nis = this->arbitrateFineMode(epoch, in, out, stars, star_count);
   this->tlmWrite_MekfNis(cycle_nis);
+  // Gated on whether the filter was engaged *before* arbitration, not after. A
+  // cycle that demotes has already run the monitors inside stepFineMode with the
+  // right mode; re-running them here would reset the streak with a NaN and lose
+  // exactly the exceedance that may have contributed to the demotion.
+  if (!fine_was_active) {
+    // Coarse-only cycles write the fine-mode channels explicitly rather than
+    // leaving the last engaged cycle's values standing: a stale StNis or a stale
+    // residual on a strip chart reads as a live measurement.
+    this->tlmWrite_StNis(kNoValue);
+    this->tlmWrite_StContributing(0u);
+    this->updateResidualMonitors(in, this->mekf_.attitude(), false);
+  }
+  this->tlmWrite_FineSource(this->fine_source_);
 
   // The cycle that *engages* fine mode still publishes coarse. `Mekf::initialize`
   // seeds an attitude but no rate — nothing has been propagated yet — so
@@ -1136,6 +1404,31 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
                                                           : kNoValue);
   this->tlmWrite_MagCalResidualAngle(this->mag_cal_.valid ? this->mag_cal_.residual_angle_rad
                                                           : kNoValue);
+
+  // Inter-tracker alignment health, on the same derived-state rule as the
+  // magnetometer calibration: COLLECTING outranks APPLIED because a window opened
+  // over an applied alignment is the condition worth seeing. The residual and
+  // misalignment reported are the **commanded unit's**, which is the one an
+  // operator is grading; the mask says which units carry a correction at all.
+  U32 align_mask = 0;
+  for (FwIndexType i = 0; i < NUM_STARTRACKERIN_INPUT_PORTS; ++i) {
+    if (this->st_align_[i].valid) {
+      align_mask |= (1u << static_cast<U32>(i));
+    }
+  }
+  const FwIndexType align_unit = this->st_align_unit_;
+  const bool align_applied = align_unit >= 0 && align_unit < NUM_STARTRACKERIN_INPUT_PORTS &&
+                             this->st_align_[align_unit].valid;
+  this->tlmWrite_StAlignState(this->st_align_collecting_ ? StAlignState::COLLECTING
+                              : align_mask != 0u         ? StAlignState::APPLIED
+                                                         : StAlignState::IDLE);
+  this->tlmWrite_StAlignSamples(
+      this->st_align_collecting_ ? this->st_align_accumulator_.sampleCount() : 0u);
+  this->tlmWrite_StAlignResidualRad(align_applied ? this->st_align_[align_unit].residual_angle_rad
+                                                  : kNoValue);
+  this->tlmWrite_StAlignAngleRad(align_applied ? this->st_align_[align_unit].misalignment_angle_rad
+                                               : kNoValue);
+  this->tlmWrite_StAlignMask(align_mask);
   // Zero bias while coarse-only: the coarse chain does not estimate a bias, and
   // the MEKF's is zero when it holds no solution.
   this->tlmWrite_GyroBias(toVec3F64(this->mekf_.gyroBias().eigen()));
@@ -1246,6 +1539,24 @@ void AttitudeEstimator ::RESET_ESTIMATOR_cmdHandler(FwOpcodeType opCode, U32 cmd
   // ground the fault is persistent rather than latched.
   this->imu_voter_.clearExclusions();
   this->imu_ambiguous_cycles_ = 0;
+  // Same rule for the magnetometer vote's latches.
+  this->mag_voter_.clearExclusions();
+  this->mag_ambiguous_cycles_ = 0;
+  // And for the residual monitors: an alerted monitor is a condition the operator
+  // is being asked to look at again from scratch, so both the streaks and the
+  // alerted state go. A condition that is still there re-alerts after
+  // MonitorAlertCycles, which is also the honest statement that it persisted.
+  for (int i = 0; i < kMonitorCount; ++i) {
+    this->monitor_streak_[i] = 0;
+    this->monitor_alerted_[i] = false;
+  }
+  // And the per-unit star-tracker latches, on the same rule: an operator saying
+  // "start over" is different information from a unit having agreed for N cycles.
+  for (FwIndexType i = 0; i < NUM_STARTRACKERIN_INPUT_PORTS; ++i) {
+    this->st_excluded_[i] = false;
+    this->st_nis_streak_[i] = 0;
+    this->st_accepted_streak_[i] = 0;
+  }
   this->attitude_valid_ = false;
   this->last_age_s_ = 0.0;
   this->have_epoch_ = false;
@@ -1255,7 +1566,9 @@ void AttitudeEstimator ::RESET_ESTIMATOR_cmdHandler(FwOpcodeType opCode, U32 cmd
   this->config_invalid_flagged_ = false;
   this->fine_config_invalid_flagged_ = false;
   this->fine_init_failed_flagged_ = false;
+  this->st_config_invalid_flagged_ = false;
   this->imu_ambiguous_flagged_ = false;
+  this->mag_ambiguous_flagged_ = false;
   this->position_unavailable_flagged_ = false;
   this->igrf_stale_flagged_ = false;
   this->have_ephem_grade_ = false;
@@ -1272,6 +1585,17 @@ void AttitudeEstimator ::RESET_ESTIMATOR_cmdHandler(FwOpcodeType opCode, U32 cmd
   this->mag_cal_deadline_cycles_ = 0;
   this->mag_cal_accumulator_.reset();
   this->clearMagCal();
+  // The inter-tracker alignment goes the same way, and for the same reason: a
+  // correction fitted from data the operator no longer trusts is part of what is
+  // suspect. ST_ALIGN_CAL_CLEAR is the narrower command for dropping one unit's
+  // alignment alone.
+  this->st_align_collecting_ = false;
+  this->st_align_target_samples_ = 0;
+  this->st_align_deadline_cycles_ = 0;
+  this->st_align_accumulator_.reset();
+  for (FwIndexType i = 0; i < NUM_STARTRACKERIN_INPUT_PORTS; ++i) {
+    this->clearStAlign(i);
+  }
   this->log_ACTIVITY_HI_EstimatorReset();
   this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
 }

@@ -241,6 +241,88 @@ TEST(AttitudeEstimator, MissingAlbedoTuningLeavesTheEstimatorRunning) {
   tester.testMissingAlbedoTuningLeavesTheEstimatorRunning();
 }
 
+// ── §8.2 star-tracker fusion and the mode ladder ────────────────────────────
+
+TEST(AttitudeEstimator, StarTrackerTakesTheLadderToItsTopRung) {
+  RecordProperty("verifies", "REQ-ADET-012");
+  flight::AttitudeEstimatorTester tester;
+  tester.testStarTrackerTakesTheLadderToItsTopRung();
+}
+
+TEST(AttitudeEstimator, StarTrackerLossFallsBackToSunAndMagnetometer) {
+  RecordProperty("verifies", "REQ-ADET-012");
+  flight::AttitudeEstimatorTester tester;
+  tester.testStarTrackerLossFallsBackToSunAndMagnetometer();
+}
+
+TEST(AttitudeEstimator, DriftedSunSensorRaisesTheResidualMonitor) {
+  RecordProperty("verifies", "REQ-ADET-012");
+  flight::AttitudeEstimatorTester tester;
+  tester.testDriftedSunSensorRaisesTheResidualMonitor();
+}
+
+TEST(AttitudeEstimator, MissingStarTrackerTuningCapsTheLadder) {
+  RecordProperty("verifies", "REQ-ADET-012");
+  flight::AttitudeEstimatorTester tester;
+  tester.testMissingStarTrackerTuningCapsTheLadder();
+}
+
+TEST(AttitudeEstimator, StarTrackerSeedsFineModeWithoutTheVectorPairs) {
+  RecordProperty("verifies", "REQ-ADET-007");
+  flight::AttitudeEstimatorTester tester;
+  tester.testStarTrackerSeedsFineModeWithoutTheVectorPairs();
+}
+
+TEST(AttitudeEstimator, InterTrackerAlignmentCollectsFitsAndApplies) {
+  RecordProperty("verifies", "REQ-ADET-013");
+  flight::AttitudeEstimatorTester tester;
+  tester.testInterTrackerAlignmentCollectsFitsAndApplies();
+}
+
+TEST(AttitudeEstimator, InterTrackerAlignmentRefusesTheKingAndBadCommands) {
+  RecordProperty("verifies", "REQ-ADET-013");
+  flight::AttitudeEstimatorTester tester;
+  tester.testInterTrackerAlignmentRefusesTheKingAndBadCommands();
+}
+
+TEST(AttitudeEstimator, InterTrackerAlignmentAbortAndClear) {
+  RecordProperty("verifies", "REQ-ADET-013");
+  flight::AttitudeEstimatorTester tester;
+  tester.testInterTrackerAlignmentAbortAndClear();
+}
+
+// ── §8.2 multi-magnetometer voting ──────────────────────────────────────────
+
+TEST(AttitudeEstimator, ImplausibleMagnetometerIsExcludedAndCostsNothing) {
+  RecordProperty("verifies", "REQ-ADET-011");
+  flight::AttitudeEstimatorTester tester;
+  tester.testImplausibleMagnetometerIsExcludedAndCostsNothing();
+}
+
+TEST(AttitudeEstimator, TwoMagnetometerDisagreementLeavesNoMagneticPair) {
+  RecordProperty("verifies", "REQ-ADET-011");
+  flight::AttitudeEstimatorTester tester;
+  tester.testTwoMagnetometerDisagreementLeavesNoMagneticPair();
+}
+
+TEST(AttitudeEstimator, SunCrossUnitCheckAlertsAndOverrides) {
+  RecordProperty("verifies", "REQ-ADET-012");
+  flight::AttitudeEstimatorTester tester;
+  tester.testSunCrossUnitCheckAlertsAndOverrides();
+}
+
+TEST(AttitudeEstimator, BadStarTrackerIsIsolatedWithoutDemotingTheMode) {
+  RecordProperty("verifies", "REQ-ADET-012");
+  flight::AttitudeEstimatorTester tester;
+  tester.testBadStarTrackerIsIsolatedWithoutDemotingTheMode();
+}
+
+TEST(AttitudeEstimator, UncalibratedSecondTrackerIsNotFused) {
+  RecordProperty("verifies", "REQ-ADET-013");
+  flight::AttitudeEstimatorTester tester;
+  tester.testUncalibratedSecondTrackerIsNotFused();
+}
+
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

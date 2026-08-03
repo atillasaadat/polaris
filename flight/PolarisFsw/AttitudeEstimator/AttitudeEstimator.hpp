@@ -28,7 +28,9 @@
 #include "gnc/davenport.hpp"
 #include "gnc/imu_voting.hpp"
 #include "gnc/mag_calibration.hpp"
+#include "gnc/mag_voting.hpp"
 #include "gnc/mekf.hpp"
+#include "gnc/st_alignment.hpp"
 #include "math/frames.hpp"
 #include "math/typed_vector.hpp"
 #include "state/estimated_state.hpp"
@@ -54,6 +56,11 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! cycle rate still completes; anything slower is an outage, not a
   //! collection. See @ref mag_cal_deadline_cycles_.
   static constexpr U32 kMaxCalStallFactor = 10;
+
+  //! Residual monitors, indexed as `ResidualMonitor` (SUN, MAGNETOMETER,
+  //! SUN_CROSS_UNIT). Fixed so the streak/alert state is a plain array rather
+  //! than three near-identical members.
+  static constexpr int kMonitorCount = 3;
 
   //! Construct AttitudeEstimator object
   explicit AttitudeEstimator(const char* const compName);
@@ -90,6 +97,19 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! this from the ground and leaves the topology hook at zero.
   void commandMagCalAtStartup(U32 sampleCount);
 
+  //! Dispatch ST_ALIGN_CAL_START on @p unit for @p sampleCount pairs through this
+  //! component's own command port (no-op when zero). The star-tracker twin of
+  //! @ref commandMagCalAtStartup, and it exists for the same reason: the SITL
+  //! demonstration of the §8.2 commanded flow needs a command to arrive with no
+  //! ground link attached. Real opcode, real handler; only the uplink is skipped.
+  //!
+  //! Like its twin it is safe to call at topology setup: ST_ALIGN_CAL_START reads
+  //! the king index and the per-unit boresights out of ParameterDb itself rather
+  //! than from the per-cycle cache, so it does not need the rate group to have run
+  //! once. (It must still follow loadParameters(), for the same reason the
+  //! magnetometer hook does.)
+  void commandStAlignCalAtStartup(U8 unit, U32 sampleCount);
+
  private:
   // ----------------------------------------------------------------------
   // Handler implementations for typed input ports
@@ -110,9 +130,9 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! Latch one GNSS fix for the next cycle (position only is consumed).
   void gnssIn_handler(FwIndexType portNum, const GnssMeas& meas) override;
 
-  //! Count one star-tracker solution. Not fused yet — the §8.2 layer feeds it to
-  //! the MEKF; the coarse chain must stay tracker-independent regardless, to
-  //! remain the Safe-mode floor.
+  //! Latch one star tracker's attitude solution for the next cycle (§8.2). The
+  //! coarse chain never reads it — it must stay tracker-independent to remain the
+  //! Safe-mode floor — but the MEKF's finest rung is built from it.
   void starTrackerIn_handler(FwIndexType portNum, const StarTrackerMeas& meas) override;
 
   // ----------------------------------------------------------------------
@@ -135,6 +155,21 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! MAG_CAL_CLEAR: drop the applied calibration; consumers revert to raw. Does
   //! not touch a window in progress. Idempotent.
   void MAG_CAL_CLEAR_cmdHandler(FwOpcodeType opCode, U32 cmdSeq) override;
+
+  //! ST_ALIGN_CAL_START: open an inter-tracker alignment window on @p unit
+  //! against the king. Refuses (EXECUTION_ERROR + StAlignRejected) on missing
+  //! tuning, a bad unit index, or an out-of-range count; the estimator is
+  //! unaffected either way.
+  void ST_ALIGN_CAL_START_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, U8 unit,
+                                     U32 sampleCount) override;
+
+  //! ST_ALIGN_CAL_ABORT: close a window without fitting, keeping any applied
+  //! alignment. Idempotent.
+  void ST_ALIGN_CAL_ABORT_cmdHandler(FwOpcodeType opCode, U32 cmdSeq) override;
+
+  //! ST_ALIGN_CAL_CLEAR: drop the applied alignment for @p unit; that tracker
+  //! reverts to as-mounted. Does not touch a window in progress. Idempotent.
+  void ST_ALIGN_CAL_CLEAR_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, U8 unit) override;
 
   //! A parameter changed: re-read the whole set on the next cycle.
   void parameterUpdated(FwPrmIdType id) override;
@@ -169,6 +204,18 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! Emit AlbedoConfigInvalid(@p detail) if not already flagged and leave the
   //! correction inert. Neither estimator is touched — they run uncorrected.
   void failAlbedoConfig(const char* detail);
+
+  //! Read the star-tracker fusion parameters (king unit, the two sigmas, the
+  //! per-unit boresights, the three residual-monitor thresholds and their
+  //! persistence). A **fourth** independent gate: a missing value costs tracker
+  //! fusion — StConfigInvalid, the ladder capped at SS+MAG — not the fine mode
+  //! and not the estimator. Returns true when tracker fusion is configured.
+  bool refreshStConfig();
+
+  //! Emit StConfigInvalid(@p detail) if not already flagged and leave tracker
+  //! fusion inert. Neither estimator is touched; the ladder simply cannot reach
+  //! its top rung.
+  void failStConfig(const char* detail);
 
   //! Apply the Earth-albedo correction to @p sunBody in place, and set this
   //! cycle's sun sigmas (@ref sigma_sun_sys_cycle_, @ref sigma_sun_total_cycle_)
@@ -245,15 +292,166 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! the quantity the estimator consumes. Ties break to the lowest index, so the
   //! choice is deterministic. Returns nullptr when nothing is selectable, and
   //! writes the chosen port index to @p index (unchanged when none).
-  const SunSensorMeas* selectSunSensor(I64 nowTaiNs, FwIndexType& index) const;
+  //!
+  //! @param runnerUp receives the second-best unit's port index, or -1 when only
+  //!        one unit sees the Sun. That is the input to the §8.2 cross-unit
+  //!        consistency check: the selector orders on *reported* σ, so a unit that
+  //!        is confidently wrong wins, and nothing else would notice.
+  const SunSensorMeas* selectSunSensor(I64 nowTaiNs, FwIndexType& index,
+                                       FwIndexType& runnerUp) const;
+
+  //! Cross-check the selected sun sensor against the runner-up (§8.2), and choose
+  //! which of the two to use. Writes `SunCrossUnitRad`, runs the SUN_CROSS_UNIT
+  //! residual monitor, and — only once that monitor has alerted, and only with a
+  //! usable fine solution to judge against — switches to the runner-up when it
+  //! agrees better, emitting SunUnitOverridden.
+  //!
+  //! Needs no attitude of its own, which is what makes it the one cross-check
+  //! available in Safe mode; the attitude is needed only to *resolve* a
+  //! disagreement, not to detect one.
+  //!
+  //! @param index [in,out] the selected unit, replaced by the runner-up on an
+  //!        override.
+  //! @param runnerUp the second-best unit, or -1.
+  //! @param reference the fine solution's predicted sun direction in body axes.
+  //! @param haveReference @p reference is usable.
+  //! @return the unit to use (may be the runner-up), or nullptr when @p index is
+  //!         out of range.
+  const SunSensorMeas* crossCheckSunUnit(
+      FwIndexType& index, FwIndexType runnerUp,
+      const polaris::math::Vec3<polaris::math::frames::Body>& reference, bool haveReference);
+
+  //! Combine every magnetometer on the port array into one raw field (§8.2):
+  //! per-unit magnitude gates against the modelled IGRF magnitude, then a per-axis
+  //! median at three or more surviving units, or pairwise detection with the
+  //! rotated modelled field attributing a disagreement at exactly two. Never an
+  //! average (gnc/mag_voting.hpp). Emits the exclusion/re-admission FDIR edges and
+  //! writes MagContributing / MagExclusionMask / MagUnitSelected.
+  //!
+  //! @param nowTaiNs cycle epoch, for the §9.1 staleness gate.
+  //! @param magRefBody the modelled field rotated into body axes by the published
+  //!        attitude — the identification reference.
+  //! @param haveAttitude an attitude was available to rotate it with.
+  //! @param attitudeSigmaRad that attitude's per-axis 1σ [rad], which is the
+  //!        quality gate on the reference.
+  //! @param modelledMagnitudeT `‖B_IGRF‖` [T] at this cycle's position.
+  //! @param field [out] the voted **raw** field [T], written only on success.
+  //! @param index [out] the port index whose reading was published.
+  //! @return true when the vote produced a usable field.
+  bool voteMagField(I64 nowTaiNs,
+                    const polaris::math::Vec3<polaris::math::frames::Body>& magRefBody,
+                    bool haveAttitude, double attitudeSigmaRad, double modelledMagnitudeT,
+                    polaris::math::Vec3<polaris::math::frames::Body>& field, FwIndexType& index);
 
   //! First valid, fresh unit on its port array, or nullptr. "Fresh" is
   //! |now - timeTag| <= MaxMeasAgeSec (§9.1 staleness gate). Bounded loop; index
-  //! order is vehicle build order, so this is a deterministic priority. Not a
-  //! combination: the reference vehicle carries one of each, and a combination
-  //! rule with no redundancy to exercise is untested code.
-  const MagnetometerMeas* selectMagnetometer(I64 nowTaiNs) const;
+  //! order is vehicle build order, so this is a deterministic priority. Kept as
+  //! first-valid honestly: there is one GNSS receiver, and a combination rule with
+  //! no redundancy to exercise is untested code.
   const GnssMeas* selectGnss(I64 nowTaiNs) const;
+
+  //! One star tracker's contribution to a cycle: its solution already stated in
+  //! the king's frame, and the body-axes measurement covariance built from its own
+  //! boresight. Fixed-size and passed by array — no heap on the 10 Hz path.
+  struct StarTrackerSample {
+    //! Body ← ECI, through the unit's nominal mounting and (for a non-king unit)
+    //! its fitted inter-tracker alignment.
+    polaris::math::Quat<polaris::math::frames::Body, polaris::math::frames::ECI> attitude{};
+    //! `R = σ_xy²(I − b bᵀ) + σ_z² b bᵀ` [rad²], body axes. The anisotropy is the
+    //! whole reason two non-parallel trackers beat two parallel ones.
+    Eigen::Matrix3d noise_cov{Eigen::Matrix3d::Identity()};
+    //! Source port index, for telemetry and the alignment tap.
+    FwIndexType index{0};
+  };
+
+  //! Gather this cycle's usable star-tracker solutions: valid, fresh, with a
+  //! configured boresight, corrected into the king's frame, each with its `R`.
+  //!
+  //! @param nowTaiNs cycle epoch, for the §9.1 staleness gate.
+  //! @param out receives up to `NUM_STARTRACKERIN_INPUT_PORTS` samples, king first
+  //!        so the filter sees the frame-defining unit before any unit stated
+  //!        relative to it — which matters only for determinism, since the update
+  //!        is order-independent to first order, but determinism is worth having.
+  //! @param validMask [out] bit i set for each unit that produced a sample.
+  //! @return the number of samples written; 0 when tracker fusion is unconfigured.
+  int collectStarTrackers(I64 nowTaiNs, StarTrackerSample* out, U32& validMask) const;
+
+  //! Fold this cycle's tracker samples into the MEKF as attitude measurements.
+  //!
+  //! @param samples from @ref collectStarTrackers.
+  //! @param count number of samples.
+  //! @param accepted [out] at least one update was applied — which is what puts
+  //!        the ladder on its top rung. **Overwritten**, not accumulated.
+  //! @param refused [in,out] **accumulated**: set true if the filter refused an
+  //!        update (malformed input), left alone otherwise, so the caller's
+  //!        propagate-refusal survives this call. Feeds REFUSAL_STREAK.
+  //! @param nisRejected [in,out] **accumulated** on the same contract: set true if
+  //!        the χ²₃ gate rejected an update. Per-unit NIS streaks are maintained
+  //!        inside; this out-parameter is only the cycle's "something was
+  //!        rejected" flag.
+  //! @return the largest NIS of the cycle's tracker updates, or NaN if none ran.
+  double fuseStarTrackers(const StarTrackerSample* samples, int count, bool& accepted,
+                          bool& refused, bool& nisRejected);
+
+  //! Run the §8.2 residual monitors on the sources the fine solution is **not**
+  //! using this cycle, and write their telemetry.
+  //!
+  //! Called **every** cycle rather than only while a tracker is fused, with
+  //! @p active false on the cycles where the sun and magnetic pairs are
+  //! measurements rather than monitors. Monitoring a source the filter is already
+  //! folding in would be circular — the residual is small because the update made
+  //! it small — so those cycles report NaN and reset the streaks. One call site
+  //! is what keeps the NaN and the reset from being forgotten on one path.
+  void updateResidualMonitors(
+      const polaris::gnc::CoarseAttitudeInput& in,
+      const polaris::math::Quat<polaris::math::frames::Body, polaris::math::frames::ECI>& fine,
+      bool active);
+
+  //! Advance one monitor's streak against @p threshold and emit its alert /
+  //! recovery edges. Shared by all three so the persistence rule cannot drift
+  //! between them.
+  //!
+  //! @param monitor which monitor, indexing @ref monitor_streak_.
+  //! @param residualRad the measured residual, or NaN when it could not be
+  //!        computed — which resets the streak without clearing an alert, because
+  //!        "we stopped looking" is not "it recovered".
+  void noteMonitorResidual(ResidualMonitor::T monitor, double residualRad, double thresholdRad);
+
+  //! Advance the probation of star trackers latched out by the per-unit NIS
+  //! policy, and re-admit one that has agreed with the fine solution for
+  //! `MonitorAlertCycles` consecutive cycles. Judged on the criterion that
+  //! excluded it — agreement with the filter — since an excluded unit is not
+  //! fused and so cannot earn credit by being accepted. No-op without a valid
+  //! fine solution to judge against.
+  void readmitStarTrackers(I64 nowTaiNs);
+
+  //! Read the three StAlign* parameters and rebuild the alignment accumulator.
+  //! Called from ST_ALIGN_CAL_START rather than per cycle, on the same reasoning
+  //! as the magnetometer calibration: a missing value costs the ability to *start*
+  //! a calibration, so it is a command-time refusal and never a flight event.
+  bool refreshStAlignConfig();
+
+  //! Feed one cycle's tracker readings to an open alignment window. No-op unless a
+  //! window is open, or unless both the king and the commanded unit produced a
+  //! **simultaneous** valid solution this cycle. The readings passed here are
+  //! **uncorrected** — a fit fed its own correction would refit the identity.
+  void collectStAlignSample(I64 nowTaiNs);
+
+  //! Close the open alignment window and try the fit: StAlignComplete + apply on
+  //! success, StAlignRejected + nothing applied on refusal. No-op unless a window
+  //! is open.
+  void finishStAlign();
+
+  //! Drop the applied alignment for @p unit and emit StAlignCleared, if one is
+  //! applied. Shared by ST_ALIGN_CAL_CLEAR and the full RESET_ESTIMATOR semantics.
+  void clearStAlign(FwIndexType unit);
+
+  //! Unit @p index's star-tracker boresight from the flattened per-unit parameter,
+  //! or false when that slot is the zero vector (not installed, or an
+  //! uncharacterised mounting) — in which case that unit is not fused at all,
+  //! since its measurement covariance cannot be built without a boresight.
+  bool stBoresightFor(FwIndexType index,
+                      polaris::math::Vec3<polaris::math::frames::Body>& out) const;
 
   //! Unit @p index's albedo boresight from the flattened per-unit parameter, or
   //! false when that slot is the zero vector (not installed, or an
@@ -267,20 +465,36 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! touches the coarse solution. @p coarse is the cycle's coarse product, whose
   //! validity gates a promotion. Returns the cycle's NIS for telemetry, or NaN
   //! when no update ran — so the channel is written exactly once per cycle.
+  //! @param stars this cycle's usable star-tracker samples, and @p starCount how
+  //!        many. They are what decides the ladder's rung: with at least one
+  //!        accepted, the sun and magnetic pairs are not fused at all.
   double arbitrateFineMode(const polaris::time::Tai& epoch,
                            const polaris::gnc::CoarseAttitudeInput& in,
-                           const polaris::gnc::CoarseAttitudeOutput& coarse);
+                           const polaris::gnc::CoarseAttitudeOutput& coarse,
+                           const StarTrackerSample* stars, int starCount);
 
   //! Propagate and update the engaged filter on this cycle's measurements,
   //! maintaining the refusal and NIS-rejection streaks and demoting when a
   //! streak, the fine coast horizon, or an internal fault says to. Returns the
   //! largest NIS seen this cycle (NaN if no update ran).
-  double stepFineMode(const polaris::time::Tai& epoch, const polaris::gnc::CoarseAttitudeInput& in);
+  //!
+  //! **The ladder is applied here.** Tracker updates go in first; if any is
+  //! accepted the sun and magnetic pairs are skipped as measurements and handed to
+  //! @ref updateResidualMonitors instead.
+  double stepFineMode(const polaris::time::Tai& epoch, const polaris::gnc::CoarseAttitudeInput& in,
+                      const StarTrackerSample* stars, int starCount);
 
-  //! Try to seed the MEKF from a Davenport solve over this cycle's vector pairs.
-  //! Emits FineModeEngaged on success, edge-gated FineInitFailed on refusal.
+  //! Try to seed the MEKF: from a star tracker's own solution and covariance when
+  //! one is available, otherwise from a Davenport solve over this cycle's vector
+  //! pairs. Emits FineModeEngaged on success, edge-gated FineInitFailed on
+  //! refusal.
+  //!
+  //! A tracker seed needs no sun/field geometry and no coarse solution
+  //! underneath it, which is what makes the top rung reachable in eclipse and at
+  //! cold start — the case a Davenport seed structurally cannot cover.
   void tryPromoteFineMode(const polaris::time::Tai& epoch,
-                          const polaris::gnc::CoarseAttitudeInput& in);
+                          const polaris::gnc::CoarseAttitudeInput& in,
+                          const StarTrackerSample* stars, int starCount);
 
   //! Give up the fine solution for @p reason: emit FineModeDemoted, drop the
   //! filter state (a solution no longer trusted is not worth carrying), and
@@ -335,6 +549,18 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! with no voted rate has no estimator either.
   polaris::gnc::ImuVoter imu_voter_;
 
+  //! Fault-tolerant combiner for the redundant magnetometer set (§8.2). Same
+  //! shape, same lifetime and same gate as @ref imu_voter_: it holds an exclusion
+  //! latch across cycles, and refreshCoarseConfig() builds it, because a vehicle
+  //! with no voted field has no TRIAD and therefore no coarse attitude.
+  polaris::gnc::MagVoter mag_voter_;
+
+  //! Streaming quaternion-average accumulator for the commanded inter-tracker
+  //! alignment (§8.2). One 4×4 moment matrix and a count — O(1) in the window
+  //! length, so a collection window allocates nothing. Inert until
+  //! refreshStAlignConfig() builds it at ST_ALIGN_CAL_START.
+  polaris::gnc::StAlignmentAccumulator st_align_accumulator_;
+
   //! Streaming ellipsoid accumulator for the commanded calibration (§8.1).
   //! Fixed storage — a 10x10 normal matrix and a handful of moments, O(1) in the
   //! window length — so a collection window allocates nothing. Starts inert on
@@ -371,6 +597,13 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   SunSensorMeas sun_[NUM_SUNSENSORIN_INPUT_PORTS]{};
   MagnetometerMeas mag_[NUM_MAGNETOMETERIN_INPUT_PORTS]{};
   GnssMeas gnss_[NUM_GNSSIN_INPUT_PORTS]{};
+  StarTrackerMeas star_[NUM_STARTRACKERIN_INPUT_PORTS]{};
+
+  //! Applied inter-tracker alignment, per unit. Default-constructed means
+  //! `valid == false`, and `applyStAlignment` then passes the reading through
+  //! unchanged — which is why the tracker path calls it unconditionally, and why
+  //! the king's slot is simply never filled.
+  polaris::gnc::StAlignmentResult st_align_[NUM_STARTRACKERIN_INPUT_PORTS]{};
 
   char igrf_path_[kMaxPathLength]{};
 
@@ -425,6 +658,45 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! @ref sunBoresightFor.
   F64 sun_boresights_[NUM_SUNSENSORIN_INPUT_PORTS * 3]{};
 
+  //! Star-tracker fusion tuning (§8.2), the fourth independent validity gate.
+  //! Inert until refreshStConfig() succeeds; while inert no tracker is fused and
+  //! the ladder is capped at SS+MAG, which is how the vehicle flew before.
+  bool st_configured_{false};
+  FwIndexType st_king_unit_{0};
+  F64 sigma_st_xy_rad_{0.0};
+  F64 sigma_st_z_rad_{0.0};
+
+  //! Per-unit star-tracker boresights in body axes, flattened three at a time in
+  //! `starTrackerIn` port order (the `StBoresightsBody` parameter). A zero-vector
+  //! slot means "not installed" — see @ref stBoresightFor.
+  F64 st_boresights_[NUM_STARTRACKERIN_INPUT_PORTS * 3]{};
+
+  //! Residual-monitor thresholds [rad], indexed as `ResidualMonitor`, and the
+  //! persistence every monitor shares.
+  F64 monitor_threshold_rad_[kMonitorCount]{};
+  U32 monitor_alert_cycles_{0};
+
+  //! Consecutive cycles each monitor has been over threshold, and whether it is
+  //! currently in the alerted state (which is what makes the alert an edge and the
+  //! recovery reportable).
+  U32 monitor_streak_[kMonitorCount]{};
+  bool monitor_alerted_[kMonitorCount]{};
+
+  //! Which measurement source the fine solution is being updated from — the §8.2
+  //! ladder's current rung. Changes are events, not demotions: the filter keeps
+  //! its state across them.
+  FineSource::T fine_source_{FineSource::NONE};
+
+  //! **Per-unit** star-tracker NIS accounting. A cycle-global streak would let one
+  //! persistently-disbelieved tracker demote the whole fine mode, which drops the
+  //! filter and re-promotes off the same bad unit — a flap at the streak period.
+  //! The unit is what gets isolated; the mode is not. `st_excluded_` latches a
+  //! unit out of `collectStarTrackers`; `st_accepted_streak_` is its probation
+  //! toward re-admission (@ref readmitStarTrackers).
+  U32 st_nis_streak_[NUM_STARTRACKERIN_INPUT_PORTS]{};
+  U32 st_accepted_streak_[NUM_STARTRACKERIN_INPUT_PORTS]{};
+  bool st_excluded_[NUM_STARTRACKERIN_INPUT_PORTS]{};
+
   //! Fine-mode tuning cached from the parameter set alongside the MekfConfig.
   F64 seed_min_observability_{0.0};
   F64 bias_sigma_init_{0.0};
@@ -462,8 +734,16 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   bool config_invalid_flagged_{false};
   bool fine_config_invalid_flagged_{false};
   bool albedo_config_invalid_flagged_{false};
+  bool st_config_invalid_flagged_{false};
   bool fine_init_failed_flagged_{false};
   bool imu_ambiguous_flagged_{false};
+  bool mag_ambiguous_flagged_{false};
+
+  //! The magnetometer vote's continuous-ambiguity run, mirroring the IMU one and
+  //! sharing its horizon (`ImuAmbiguityEscalateCycles`). Separate counters because
+  //! the two conditions can be present at once and cost different things.
+  U32 mag_ambiguous_cycles_{0};
+  I64 mag_ambiguous_start_ns_{0};
 
   //! Consecutive cycles the IMU vote has been unattributably ambiguous, the TAI
   //! epoch that run started at, and the horizon/cadence the escalation fires on
@@ -499,6 +779,17 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! usual gates refuse it with SAMPLES if too little was collected.
   U32 mag_cal_cycles_{0};
   U32 mag_cal_deadline_cycles_{0};
+
+  //! The inter-tracker alignment window: whether one is open, which unit it is
+  //! calibrating against the king, and the same accepted-samples target plus
+  //! stall deadline the magnetometer window carries and for the same reason — a
+  //! window counted in *simultaneous pairs* is stalled rather than ended by a
+  //! tracker outage.
+  bool st_align_collecting_{false};
+  FwIndexType st_align_unit_{0};
+  U32 st_align_target_samples_{0};
+  U32 st_align_cycles_{0};
+  U32 st_align_deadline_cycles_{0};
 
   //! Fine mode is engaged: the MEKF is seeded and its solution is what
   //! estimateOut carries. False means the coarse chain is the published product.

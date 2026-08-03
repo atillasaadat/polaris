@@ -35,6 +35,7 @@
 #include <cmath>
 #include <cstdint>
 #include <Eigen/Core>
+#include <Eigen/Eigenvalues>
 #include <Eigen/Geometry>
 
 #include "gnc/davenport.hpp"
@@ -80,6 +81,7 @@ gnc::MekfConfig defaultConfig() {
   cfg.arw_rad_per_sqrt_s = 1.0e-4;        // ~0.34 deg/sqrt(h), a MEMS-grade gyro
   cfg.rrw_rad_per_s_per_sqrt_s = 1.0e-6;  // bias random walk
   cfg.nis_gate = 13.8;                    // chi-square(2) at 99.9%
+  cfg.attitude_nis_gate = 16.27;          // chi-square(3) at 99.9%
   cfg.max_coast_s = 60.0;
   cfg.max_dt_s = 1.0;
   return cfg;
@@ -670,6 +672,237 @@ TEST(Mekf, RefusesMalformedInputsAndUninitialisedUse) {
   filter.reset();
   EXPECT_FALSE(filter.isInitialised());
   EXPECT_TRUE(filter.isConfigured()) << "reset keeps the configuration";
+}
+
+// ── Attitude measurements: the star-tracker path (§8.2, REQ-ADET-007) ───────
+
+namespace {
+
+/// A star tracker's measurement covariance in body axes:
+/// `σ_⊥²(I − b bᵀ) + σ_∥² b bᵀ` for boresight @p b — tight across the boresight,
+/// loose about it. Same closed form the flight component builds.
+Eigen::Matrix3d starCov(const Eigen::Vector3d& boresight, double sigma_perp, double sigma_par) {
+  const Eigen::Vector3d b = boresight.normalized();
+  const Eigen::Matrix3d bbt = b * b.transpose();
+  return (sigma_perp * sigma_perp) * (Eigen::Matrix3d::Identity() - bbt) +
+         (sigma_par * sigma_par) * bbt;
+}
+
+/// Seed a filter at @p q with an isotropic covariance, the shortest path to a
+/// filter that is ready for an attitude update.
+bool seedAt(gnc::Mekf& filter, const pm::Quaternion& q, double sigma_rad) {
+  const Eigen::Matrix3d cov = (sigma_rad * sigma_rad) * Eigen::Matrix3d::Identity();
+  return filter.initialize(epochAt(0.0), pm::Quat<frames::Body, frames::ECI>(q), cov,
+                           pm::Vec3<frames::Body>(Eigen::Vector3d::Zero()),
+                           (1.0e-4 * 1.0e-4) * Eigen::Matrix3d::Identity());
+}
+
+}  // namespace
+
+TEST(Mekf, AttitudeUpdatePullsTheReferenceOntoTheMeasurement) {
+  RecordProperty("verifies", "REQ-ADET-007");
+  gnc::Mekf filter(defaultConfig());
+  // Seeded 2 degrees away from truth with a *loose* seed covariance, so an
+  // arcsecond-class measurement dominates and the reference should land almost on
+  // it in one update.
+  const pm::Quaternion truth =
+      pm::Quaternion::FromAxisAngle(Eigen::Vector3d(0.3, -0.5, 0.8).normalized(), 0.7);
+  const pm::Quaternion seed =
+      pm::Quaternion::FromAxisAngle(Eigen::Vector3d::UnitY(), 2.0 * kDeg) * truth;
+  ASSERT_TRUE(seedAt(filter, seed, 5.0 * kDeg));
+  ASSERT_GT(errorDeg(filter.attitude().core(), truth), 1.9);
+
+  gnc::MekfUpdate up{};
+  ASSERT_TRUE(filter.updateAttitude(pm::Quat<frames::Body, frames::ECI>(truth),
+                                    starCov(Eigen::Vector3d::UnitZ(), 1.0e-4, 2.0e-4), up));
+  EXPECT_TRUE(up.accepted);
+  // The innovation is the *exact* rotation vector between measurement and
+  // reference, not `2·vec(δq)`: at 2 degrees the two differ in the fifth decimal,
+  // and at a post-coast re-acquisition of tens of degrees they differ grossly.
+  EXPECT_NEAR(up.innovation.norm(), 2.0 * kDeg, 1.0e-12);
+  EXPECT_LT(errorDeg(filter.attitude().core(), truth), 0.01)
+      << "an arcsecond-class measurement against a 5 degree seed barely moved the reference";
+  EXPECT_TRUE(isPositiveDefinite(filter.covariance()));
+  EXPECT_EQ(filter.ageSeconds(), 0.0) << "an accepted attitude update must reset the coast age";
+  EXPECT_GE(filter.attitude().core().scalar(), 0.0) << "canonical q0 >= 0 (design doc 3.3)";
+}
+
+TEST(Mekf, AnisotropicRIsWhatMakesTwoNonParallelTrackersWorthCarrying) {
+  // The configuration decision, at the level of the algebra. A tracker constrains
+  // rotation about its own boresight ~6x more weakly than across it, so one unit
+  // leaves a weak direction; a second unit whose boresight is 90 degrees away has
+  // that direction as one of its *tight* ones.
+  const Eigen::Vector3d b0 = Eigen::Vector3d(-1.0, 0.0, -1.0).normalized();
+  const Eigen::Vector3d b1 = Eigen::Vector3d(1.0, 0.0, -1.0).normalized();
+  ASSERT_NEAR(b0.dot(b1), 0.0, 1.0e-15) << "the reference vehicle's boresights are 90 deg apart";
+  constexpr double kPerp = 1.0e-4;
+  constexpr double kPar = 6.0e-4;
+
+  const pm::Quaternion truth = pm::Quaternion::Identity();
+
+  // One tracker.
+  gnc::Mekf single(defaultConfig());
+  ASSERT_TRUE(seedAt(single, truth, 1.0 * kDeg));
+  gnc::MekfUpdate up{};
+  ASSERT_TRUE(single.updateAttitude(pm::Quat<frames::Body, frames::ECI>(truth),
+                                    starCov(b0, kPerp, kPar), up));
+
+  // Two, the second at 90 degrees.
+  gnc::Mekf dual(defaultConfig());
+  ASSERT_TRUE(seedAt(dual, truth, 1.0 * kDeg));
+  ASSERT_TRUE(dual.updateAttitude(pm::Quat<frames::Body, frames::ECI>(truth),
+                                  starCov(b0, kPerp, kPar), up));
+  ASSERT_TRUE(dual.updateAttitude(pm::Quat<frames::Body, frames::ECI>(truth),
+                                  starCov(b1, kPerp, kPar), up));
+
+  const Eigen::Matrix3d p_single =
+      single.covariance().block<3, 3>(gnc::Mekf::kAttitude, gnc::Mekf::kAttitude);
+  const Eigen::Matrix3d p_dual =
+      dual.covariance().block<3, 3>(gnc::Mekf::kAttitude, gnc::Mekf::kAttitude);
+
+  // The first unit's weak direction is its own boresight. That is where the second
+  // unit buys almost everything — a factor of ~(σ_par/σ_perp)² — and it is the
+  // number an isotropic R would silently throw away.
+  const double weak_single = b0.transpose() * p_single * b0;
+  const double weak_dual = b0.transpose() * p_dual * b0;
+  EXPECT_LT(weak_dual, 0.1 * weak_single)
+      << "the second tracker did not tighten the first's about-boresight direction";
+
+  // And it must not *loosen* anything: adding information cannot increase variance
+  // in any direction. Checked as a matrix inequality rather than on a few axes,
+  // because a sign error in the rotated R would show up in an off-diagonal.
+  const Eigen::Matrix3d difference = p_single - p_dual;
+  const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(difference);
+  ASSERT_EQ(solver.info(), Eigen::Success);
+  EXPECT_GE(solver.eigenvalues().minCoeff(), -1.0e-18)
+      << "fusing a second tracker made some direction less certain";
+
+  // Sanity on the anisotropy itself: after one unit, the boresight direction is
+  // much less certain than the cross-boresight ones.
+  const Eigen::Vector3d cross = b0.cross(Eigen::Vector3d::UnitY()).normalized();
+  EXPECT_GT(weak_single, 4.0 * static_cast<double>(cross.transpose() * p_single * cross));
+}
+
+TEST(Mekf, AttitudeGateIsThreeDegreesOfFreedomAndRejectionsAreCounted) {
+  gnc::Mekf filter(defaultConfig());
+  const pm::Quaternion truth = pm::Quaternion::Identity();
+  ASSERT_TRUE(seedAt(filter, truth, 1.0e-3));
+
+  const Eigen::Matrix3d r = starCov(Eigen::Vector3d::UnitZ(), 1.0e-4, 2.0e-4);
+  // A measurement 5 degrees out, against a seed and an R of milliradian class: far
+  // past any sane gate.
+  const pm::Quaternion outlier =
+      pm::Quaternion::FromAxisAngle(Eigen::Vector3d::UnitX(), 5.0 * kDeg) * truth;
+
+  const pm::Quaternion before = filter.attitude().core();
+  const gnc::Mekf::Covariance p_before = filter.covariance();
+  gnc::MekfUpdate up{};
+  EXPECT_FALSE(filter.updateAttitude(pm::Quat<frames::Body, frames::ECI>(outlier), r, up));
+  EXPECT_FALSE(up.accepted);
+  EXPECT_GT(up.nis, defaultConfig().attitude_nis_gate) << "the gate must be what rejected it";
+  EXPECT_EQ(filter.rejectedCount(), 1u);
+  // Bit-unchanged: a rejected measurement is not applied at reduced gain, it is
+  // not applied.
+  EXPECT_TRUE(filter.attitude().core().coeffs() == before.coeffs());
+  EXPECT_TRUE(filter.covariance() == p_before);
+
+  // The next good measurement is still accepted — the guard is per measurement,
+  // not a latch.
+  EXPECT_TRUE(filter.updateAttitude(pm::Quat<frames::Body, frames::ECI>(truth), r, up));
+  EXPECT_TRUE(up.accepted);
+  EXPECT_EQ(filter.rejectedCount(), 1u);
+
+  // The gate is its own value, on 3 degrees of freedom rather than the vector
+  // path's 2. A filter configured with only the vector gate is not configured.
+  gnc::MekfConfig missing = defaultConfig();
+  missing.attitude_nis_gate = 0.0;
+  EXPECT_FALSE(missing.isValid());
+}
+
+TEST(Mekf, AttitudeUpdateNisIsChiSquareOnThreeDegreesOfFreedom) {
+  // The consistency claim behind the gate's threshold. If the innovation
+  // covariance were wrong — a missing R rotation, an H of the wrong sign — the
+  // mean NIS would not sit at 3, and no single-shot test would notice.
+  polaris::random::SplitMix64 rng(0xA771);
+  const Eigen::Vector3d boresight = Eigen::Vector3d(-1.0, 0.0, -1.0).normalized();
+  constexpr double kPerp = 1.0e-4;
+  constexpr double kPar = 6.0e-4;
+  const Eigen::Matrix3d r = starCov(boresight, kPerp, kPar);
+  const Eigen::Vector3d c1 = boresight.cross(Eigen::Vector3d::UnitY()).normalized();
+  const Eigen::Vector3d c2 = boresight.cross(c1).normalized();
+
+  double sum = 0.0;
+  int samples = 0;
+  constexpr int kRuns = 400;
+  for (int run = 0; run < kRuns; ++run) {
+    gnc::Mekf filter(defaultConfig());
+    // Seeded exactly at truth with a covariance drawn from the same distribution
+    // the measurement noise has, so S = P + R is the honest one.
+    const pm::Quaternion truth = pm::Quaternion::FromAxisAngle(
+        Eigen::Vector3d(rng.gaussian(), rng.gaussian(), rng.gaussian()).normalized(),
+        M_PI * rng.uniform());
+    const Eigen::Vector3d seed_error =
+        kPerp * (rng.gaussian() * c1 + rng.gaussian() * c2) + kPar * rng.gaussian() * boresight;
+    const double seed_angle = seed_error.norm();
+    const pm::Quaternion seeded =
+        pm::Quaternion::FromAxisAngle(seed_error / seed_angle, seed_angle) * truth;
+    ASSERT_TRUE(filter.initialize(epochAt(0.0), pm::Quat<frames::Body, frames::ECI>(seeded), r,
+                                  pm::Vec3<frames::Body>(Eigen::Vector3d::Zero()),
+                                  (1.0e-6 * 1.0e-6) * Eigen::Matrix3d::Identity()));
+
+    const Eigen::Vector3d noise =
+        kPerp * (rng.gaussian() * c1 + rng.gaussian() * c2) + kPar * rng.gaussian() * boresight;
+    const double angle = noise.norm();
+    const pm::Quaternion measured = pm::Quaternion::FromAxisAngle(noise / angle, angle) * truth;
+
+    gnc::MekfUpdate up{};
+    filter.updateAttitude(pm::Quat<frames::Body, frames::ECI>(measured), r, up);
+    sum += up.nis;
+    ++samples;
+  }
+  const double mean_nis = sum / samples;
+  std::printf("[attitude NIS] mean=%.3f against 3 over %d updates\n", mean_nis, samples);
+  // The 99% interval on the mean of N chi-square(3) draws is 3 ± 2.576·sqrt(6/N).
+  EXPECT_NEAR(mean_nis, 3.0, 2.576 * std::sqrt(6.0 / kRuns));
+}
+
+TEST(Mekf, AttitudeUpdateRefusesMalformedInput) {
+  gnc::Mekf filter(defaultConfig());
+  gnc::MekfUpdate up{};
+  const Eigen::Matrix3d r = starCov(Eigen::Vector3d::UnitZ(), 1.0e-4, 2.0e-4);
+
+  // Uninitialised: a refusal, not an assert.
+  EXPECT_FALSE(filter.updateAttitude(pm::Quat<frames::Body, frames::ECI>::Identity(), r, up));
+
+  ASSERT_TRUE(seedAt(filter, pm::Quaternion::Identity(), 1.0e-3));
+  const pm::Quaternion before = filter.attitude().core();
+
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(filter.updateAttitude(
+      pm::Quat<frames::Body, frames::ECI>(pm::Quaternion(nan, 0.0, 0.0, 0.0)), r, up));
+  // Finite but unnormalisable — clears a caller's finiteness gate and is refused
+  // here, which is a *refusal* rather than a gate rejection and must not be
+  // counted as one.
+  EXPECT_FALSE(filter.updateAttitude(
+      pm::Quat<frames::Body, frames::ECI>(pm::Quaternion(0.0, 0.0, 0.0, 0.0)), r, up));
+  EXPECT_FALSE(filter.updateAttitude(pm::Quat<frames::Body, frames::ECI>::Identity(),
+                                     Eigen::Matrix3d::Constant(nan), up));
+
+  // **R is a trust boundary.** An indefinite R makes S indefinite, and the NIS
+  // could then come back negative and sail through a one-sided gate — the one
+  // failure mode a divergence guard must not have. Refused at the door instead.
+  Eigen::Matrix3d indefinite = r;
+  indefinite(2, 2) = -1.0;
+  EXPECT_FALSE(
+      filter.updateAttitude(pm::Quat<frames::Body, frames::ECI>::Identity(), indefinite, up));
+  // Singular (a rank-2 "transverse" R, the QUEST-style form) is refused too: it
+  // makes S singular along the boresight.
+  EXPECT_FALSE(filter.updateAttitude(pm::Quat<frames::Body, frames::ECI>::Identity(),
+                                     starCov(Eigen::Vector3d::UnitZ(), 1.0e-4, 0.0), up));
+
+  EXPECT_EQ(filter.rejectedCount(), 0u) << "a refusal is not a gate rejection";
+  EXPECT_TRUE(filter.attitude().core().coeffs() == before.coeffs());
+  EXPECT_TRUE(filter.isInitialised()) << "malformed input must not drop the filter";
 }
 
 TEST(Mekf, WritesTheCanonicalEstimatedState) {

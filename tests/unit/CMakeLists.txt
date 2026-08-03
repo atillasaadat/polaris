@@ -47,6 +47,8 @@ add_executable(polaris_unit_tests
   mag_calibration_test.cpp
   albedo_correction_test.cpp
   imu_voting_test.cpp
+  mag_voting_test.cpp
+  st_alignment_test.cpp
   attitude_accuracy_mc_test.cpp
   sim_vehicle_test.cpp)
 

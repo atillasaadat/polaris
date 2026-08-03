@@ -199,6 +199,59 @@ io::SitlServer::Counts estimationCounts() {
   return counts;
 }
 
+/// The reference vehicle's two AURIGA star trackers on top of the coarse suite,
+/// with the mountings `config/spacecraft/leo_smallsat.yaml` flies: boresights at
+/// (∓1, 0, −1)/√2, i.e. 90 deg apart and both 135 deg from the payload/array face
+/// (§8.2). The datasheet parameters must stay in step with
+/// `config/hardware/star_tracker/sodern_auriga.yaml` — a suite derived from one
+/// unit and flown as another proves nothing.
+scenario::SpacecraftConfig trackerSuite() {
+  scenario::SpacecraftConfig sc = estimationSuite();
+  const std::map<std::string, double> auriga{{"lf_spatial_xy_arcsec_3sigma", 9.0},
+                                             {"lf_spatial_z_arcsec_3sigma", 51.0},
+                                             {"hf_spatial_xy_arcsec_3sigma", 6.6},
+                                             {"hf_spatial_z_arcsec_3sigma", 38.0},
+                                             {"lf_spatial_correlation_s", 300.0},
+                                             {"hf_spatial_correlation_s", 10.0},
+                                             {"temporal_noise_xy_arcsec_3sigma", 11.0},
+                                             {"temporal_noise_z_arcsec_3sigma", 70.0},
+                                             {"bias_deg", 0.017},
+                                             {"thermo_elastic_arcsec_per_c", 1.5},
+                                             {"acquisition_rate_deg_s", 2.0},
+                                             {"tracking_rate_deg_s", 3.0},
+                                             {"acquisition_accel_deg_s2", 1.0},
+                                             {"tracking_accel_deg_s2", 2.5},
+                                             {"lost_in_space_s", 3.8},
+                                             {"update_rate_hz", 10.0},
+                                             {"fov_deg", 20.0},
+                                             {"sun_exclusion_deg", 35.0},
+                                             {"earth_exclusion_deg", 22.0},
+                                             {"moon_exclusion_deg", 0.0}};
+  // Rotations about ∓Y by 135 deg, which carry the sensor's own +Z onto each
+  // boresight. Written as matrices here because the scenario config takes a DCM;
+  // the vehicle YAML carries the equivalent quaternions.
+  const double c = std::cos(135.0 * M_PI / 180.0);
+  const double sn = std::sin(135.0 * M_PI / 180.0);
+  Eigen::Matrix3d about_minus_y;
+  about_minus_y << c, 0.0, -sn, 0.0, 1.0, 0.0, sn, 0.0, c;  // +Z -> (-1,0,-1)/sqrt(2)
+  Eigen::Matrix3d about_plus_y;
+  about_plus_y << c, 0.0, sn, 0.0, 1.0, 0.0, -sn, 0.0, c;  // +Z -> (+1,0,-1)/sqrt(2)
+
+  scenario::UnitConfig king = unit("st_a", "AURIGA", "star_tracker", auriga);
+  king.mounting_dcm = about_minus_y;
+  scenario::UnitConfig second = unit("st_b", "AURIGA", "star_tracker", auriga);
+  second.mounting_dcm = about_plus_y;
+  sc.sensors.push_back(king);
+  sc.sensors.push_back(second);
+  return sc;
+}
+
+io::SitlServer::Counts trackerCounts() {
+  io::SitlServer::Counts counts = estimationCounts();
+  counts.star_tracker = 2;
+  return counts;
+}
+
 /// Run the config compiler over the reference vehicle, writing PrmDb.dat (and
 /// the JSON artifacts) into @p out_dir. Returns the exit status; diagnostics go
 /// to @p err_path. The caller has already established the interpreter exists, so
@@ -222,15 +275,18 @@ int compileConfig(const std::string& out_dir, const std::string& err_path) {
 /// samples at startup (`-M`), which is how the calibration test gets a command
 /// into a deployment with no ground link attached.
 pid_t spawnFsw(const std::string& bin, std::uint16_t port, const std::string& prm_path,
-               const std::string& log_path, unsigned magCalSamples = 0) {
+               const std::string& log_path, unsigned magCalSamples = 0, unsigned stAlignPairs = 0,
+               unsigned stAlignUnit = 1) {
   const pid_t pid = ::fork();
   if (pid == 0) {
     ::freopen(log_path.c_str(), "w", stdout);
     ::freopen("/dev/null", "w", stderr);
     const std::string port_str = std::to_string(port);
     const std::string cal_str = std::to_string(magCalSamples);
+    const std::string align_str = std::to_string(stAlignUnit) + "," + std::to_string(stAlignPairs);
     ::execl(bin.c_str(), bin.c_str(), "-s", port_str.c_str(), "-P", prm_path.c_str(), "-Y",
-            kEpochDecimalYear, "-M", cal_str.c_str(), static_cast<char*>(nullptr));
+            kEpochDecimalYear, "-M", cal_str.c_str(), "-A", align_str.c_str(),
+            static_cast<char*>(nullptr));
     _exit(127);  // exec failed
   }
   return pid;
@@ -317,8 +373,8 @@ TEST(SitlAttitudeTuning, CompiledParametersLetTheEstimatorAcquireAttitude) {
   EXPECT_NE(log.find("PrmFileLoadComplete"), std::string::npos)
       << "prmDb never loaded the compiled parameter file:\n"
       << log;
-  EXPECT_NE(log.find("Records: 37"), std::string::npos)
-      << "prmDb loaded a record count other than the 37 declared parameters:\n"
+  EXPECT_NE(log.find("Records: 55"), std::string::npos)
+      << "prmDb loaded a record count other than the 55 declared parameters:\n"
       << log;
 
   // 2. The estimator accepted the whole tuning set — both gates. ConfigInvalid
@@ -331,6 +387,13 @@ TEST(SitlAttitudeTuning, CompiledParametersLetTheEstimatorAcquireAttitude) {
       << log;
   EXPECT_EQ(log.find("running coarse-only"), std::string::npos)
       << "estimator refused the compiled fine-mode tuning:\n"
+      << log;
+  // The fourth gate (Push 52): a vehicle that never reaches the star-tracker rung
+  // of the §8.2 ladder because its fusion tuning never arrived flies at
+  // REQ-ADET-006 accuracy while its telemetry says "fine mode" — the same silent
+  // degradation, two orders of magnitude down.
+  EXPECT_EQ(log.find("no tracker fused"), std::string::npos)
+      << "estimator refused the compiled star-tracker tuning:\n"
       << log;
   // The third gate (Push 47): a vehicle whose sun measurements silently carry
   // their full Earth albedo because the correction's tuning never arrived is the
@@ -846,3 +909,156 @@ TEST(SitlImuVoting, UnattributableDisagreementRefusesTheRateAndKeepsTheAttitude)
 }
 
 }  // namespace
+
+// ── §8.2 star-tracker fusion on the vehicle (REQ-ADET-007, REQ-ADET-012/013) ──
+//
+// What these two add over the component harness is the *plant*: the trackers'
+// solutions come out of the real `sim::sensors::StarTracker` with its own error
+// stack and its own availability state machine, through the SITL wire, into the
+// real mode ladder. The harness proves the component's logic; this proves the
+// vehicle reaches the top rung on hardware that behaves like hardware.
+
+namespace {
+
+/// Pairs the on-orbit alignment window collects: 100, the reference vehicle's
+/// `StAlignMinSamples`, i.e. 10 s at the 10 Hz rate with both trackers solving.
+/// The AURIGA needs `lost_in_space_s` = 3.8 s to acquire from cold, so the run
+/// has to be long enough for acquisition *plus* the window.
+constexpr unsigned kAlignPairs = 100;
+constexpr double kTrackerDurationS = 30.0;
+
+/// The estimation orbit flown **nadir-pointing**, which is the attitude the
+/// tracker mounting was designed against, and run long enough for both units to
+/// acquire and an alignment window to close.
+///
+/// The sun-pointing attitude the other cases in this file use is the wrong one
+/// here, and instructively so: it puts +Z on the Sun, which leaves the two
+/// tracker boresights — 135° from +Z — pointing wherever the Earth happens to be,
+/// and one of them lands inside the AURIGA's 22° Earth exclusion. That is not a
+/// defect, it is the keep-out geometry doing its job: the mounting is chosen so
+/// that in the **Earth-pointing** attitude both boresights sit 135° from nadir,
+/// which is 45° clear of the limb (§8.2, and the derivation in the vehicle YAML).
+///
+/// With +Z on nadir the sun sensor faces the Earth and there is no sun pair at
+/// all, so the coarse chain never acquires. That makes this the stronger test
+/// rather than a weaker one: the fine mode has to be seeded by a tracker on its
+/// own, with no Davenport solve and no coarse floor underneath — the eclipse and
+/// cold-start path, exercised on the vehicle.
+scenario::SimConfig trackerOrbit() {
+  scenario::SimConfig c = estimationOrbit();
+  c.scenario_name = "sitl-star-tracker-fusion";
+  // Body <- ECI with body +Z on nadir. The vehicle sits at ECI +X, so nadir is
+  // -X; body +X is placed on +Z_ECI and body +Y on +Y_ECI, which is right-handed
+  // (Z_ECI x Y_ECI = -X_ECI). Both tracker boresights are then 135 deg from nadir.
+  Eigen::Matrix3d dcm;
+  dcm.row(0) = Eigen::Vector3d::UnitZ();
+  dcm.row(1) = Eigen::Vector3d::UnitY();
+  dcm.row(2) = -Eigen::Vector3d::UnitX();
+  c.initial_state.attitude =
+      pm::Quat<pm::frames::Body, pm::frames::ECI>(pm::Quaternion::FromRotationMatrix(dcm));
+  // Inertially fixed. Over 30 s the nadir direction moves ~1.9 deg, far inside the
+  // 45 deg of Earth-exclusion margin, and a zero rate keeps the AURIGA inside its
+  // 2 deg/s acquisition envelope from the first cycle.
+  c.initial_state.body_rate = pm::Vec3<pm::frames::Body>(Eigen::Vector3d::Zero());
+  c.propagation.duration_s = kTrackerDurationS;
+  c.propagation.output_step_s = kTrackerDurationS;
+  return c;
+}
+
+}  // namespace
+
+TEST(SitlStarTracker, CommandedAlignmentAndDualTrackerFineMode) {
+  const std::string bin = fswBinaryPath();
+  if (::access(bin.c_str(), X_OK) != 0) {
+    GTEST_SKIP() << "flight binary not built at " << bin
+                 << " (run `uv run fprime-util build`, or set POLARIS_FSW_BIN)";
+  }
+  if (::access(pythonPath().c_str(), X_OK) != 0) {
+    GTEST_SKIP() << "no Python interpreter at " << pythonPath()
+                 << " (run `uv sync`, or set POLARIS_PYTHON)";
+  }
+
+  const std::string work_dir = "build-artifacts/test-st-fusion-" + std::to_string(::getpid());
+  const std::string err_path = work_dir + "/configc.err";
+  const std::string prm_path = work_dir + "/PrmDb.dat";
+  const std::string log_path = work_dir + "/fsw.log";
+  ASSERT_EQ(compileConfig(work_dir, err_path), 0) << "config compiler failed:\n"
+                                                  << readFile(err_path);
+
+  io::SitlServer server(trackerCounts(), 100'000'000LL);
+  ASSERT_TRUE(server.start(0)) << server.lastError();
+
+  // -A commands ST_ALIGN_CAL_START on unit 1 (st_b, against the king st_a). On a
+  // flight vehicle this comes from the ground; the deployment here has no uplink,
+  // and what is under test is the collect-fit-apply chain, not the radio.
+  const pid_t pid = spawnFsw(bin, server.port(), prm_path, log_path, /*magCalSamples=*/0,
+                             kAlignPairs, /*stAlignUnit=*/1);
+  ASSERT_GE(pid, 0);
+
+  scenario::Vehicle vehicle;
+  std::string error;
+  ASSERT_TRUE(scenario::buildVehicle(trackerSuite(), 1, vehicle, &error)) << error;
+  scenario::SimRunner runner;
+  io::ClosedLoop loop(runner, vehicle);
+  ASSERT_TRUE(runner.build(trackerOrbit(), scenario::DataPaths::under(POLARIS_GOLDEN_DIR), &error,
+                           loop.wrench()))
+      << error;
+  std::vector<io::MacroSample> trace;
+  ASSERT_TRUE(loop.run(server.callback(), &trace, &error)) << error;
+  EXPECT_TRUE(server.healthy()) << server.lastError();
+  server.stop();
+  reapFsw(pid);
+
+  const std::string log = readFile(log_path);
+  ASSERT_FALSE(log.empty()) << "no event stream captured at " << log_path;
+
+  // 1. The tracker tuning was accepted. Its own gate, so a failure here says
+  //    "the ladder is capped" rather than "the estimator is down".
+  EXPECT_EQ(log.find("no tracker fused"), std::string::npos)
+      << "estimator refused the compiled star-tracker tuning:\n"
+      << log;
+
+  // 2. The vehicle reached the **top rung**, on solutions from the real tracker
+  //    model rather than a harness stub.
+  EXPECT_NE(log.find("Fine-mode source changed"), std::string::npos)
+      << "the ladder never moved off SUN_MAG — check the tracker keep-out geometry:\n"
+      << log;
+  EXPECT_NE(log.find("-> STAR_TRACKER"), std::string::npos) << "no cycle fused a star tracker:\n"
+                                                            << log;
+
+  // 3. The commanded alignment ran end to end: window opened, pairs collected,
+  //    fit accepted and applied.
+  EXPECT_NE(log.find("Inter-tracker alignment collection started on unit 1"), std::string::npos)
+      << "the startup ST_ALIGN_CAL_START never opened a window:\n"
+      << log;
+  EXPECT_NE(log.find("Inter-tracker alignment fitted on unit 1"), std::string::npos)
+      << "the alignment window never produced an accepted fit:\n"
+      << log;
+  EXPECT_EQ(log.find("alignment on unit 1 rejected"), std::string::npos)
+      << "the alignment fit was refused:\n"
+      << log;
+
+  // 4. Nothing was lost getting there. A rung change is not a demotion: the
+  //    filter keeps its state and the published solution stays valid, so neither
+  //    a demotion nor an AttitudeLost may appear.
+  // Acquisition here is the *tracker's*: with +Z on nadir there is no sun pair, so
+  // the coarse chain never solves and the fine mode is seeded from a tracker
+  // solution alone — the path that makes the top rung reachable in eclipse.
+  EXPECT_NE(log.find("Attitude acquired"), std::string::npos) << log;
+  EXPECT_NE(log.find("Fine mode engaged"), std::string::npos) << log;
+  EXPECT_EQ(log.find("Attitude lost"), std::string::npos)
+      << "the vehicle lost its attitude during tracker fusion:\n"
+      << log;
+  EXPECT_EQ(log.find("Fine mode demoted"), std::string::npos)
+      << "fine mode was demoted over a healthy run — a real tuning defect:\n"
+      << log;
+
+  // 5. And the sources the ladder demoted did not start alerting. The sun and
+  //    magnetic pairs are healthy here, so their monitors must stay quiet; an
+  //    alert would mean the residual is being computed against the wrong frame,
+  //    which is the mistake this whole path is easiest to make.
+  EXPECT_EQ(log.find("Residual monitor"), std::string::npos)
+      << "a residual monitor alerted on healthy sources — suspect the frame the "
+         "residual is computed in:\n"
+      << log;
+}

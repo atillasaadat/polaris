@@ -238,6 +238,65 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! uncorrected budget.
   void testMissingAlbedoTuningLeavesTheEstimatorRunning();
 
+  //! A valid tracker takes the §8.2 ladder to STAR_TRACKER: the sun and magnetic
+  //! pairs stop being fused and become residual monitors, and the transition is
+  //! reported as a source change rather than as a demotion.
+  void testStarTrackerTakesTheLadderToItsTopRung();
+
+  //! Losing every tracker walks the ladder back down to SUN_MAG without losing
+  //! the attitude, the filter state, or emitting a demotion.
+  void testStarTrackerLossFallsBackToSunAndMagnetometer();
+
+  //! A sun sensor that has drifted is *observable* once it is a monitor rather
+  //! than a measurement: the alert fires after MonitorAlertCycles and clears on
+  //! recovery.
+  void testDriftedSunSensorRaisesTheResidualMonitor();
+
+  //! Missing star-tracker tuning costs the top rung and nothing else: one
+  //! StConfigInvalid, the vehicle still in SS+MAG fine mode.
+  void testMissingStarTrackerTuningCapsTheLadder();
+
+  //! A tracker seeds the filter with no sun/field pair and no coarse solution —
+  //! the eclipse and cold-start case a Davenport seed structurally cannot cover.
+  void testStarTrackerSeedsFineModeWithoutTheVectorPairs();
+
+  //! The commanded inter-tracker alignment: window, fit, apply, and the measured
+  //! improvement in the second unit's agreement with the king.
+  void testInterTrackerAlignmentCollectsFitsAndApplies();
+
+  //! ST_ALIGN_CAL_START refuses the king (a rotation that is zero by definition),
+  //! an out-of-range unit, an uncharacterised one, and a bad sample count.
+  void testInterTrackerAlignmentRefusesTheKingAndBadCommands();
+
+  //! ST_ALIGN_CAL_ABORT discards a window without fitting; ST_ALIGN_CAL_CLEAR
+  //! reverts one unit to as-mounted; RESET_ESTIMATOR does both.
+  void testInterTrackerAlignmentAbortAndClear();
+
+  //! A magnetometer outside the IGRF-magnitude band is latched out and the
+  //! surviving unit carries the pair — the published attitude is unchanged.
+  void testImplausibleMagnetometerIsExcludedAndCostsNothing();
+
+  //! Two plausible magnetometers disagreeing with no usable attitude reference
+  //! costs the magnetic pair for that cycle and latches nothing.
+  void testTwoMagnetometerDisagreementLeavesNoMagneticPair();
+
+  //! The sun cross-unit consistency check: a confidently-wrong selected unit is
+  //! caught by the runner-up and overridden against the fine solution.
+  void testSunCrossUnitCheckAlertsAndOverrides();
+
+  //! The C1+C2 regression together: with the king healthy and the second tracker
+  //! persistently rejected by the NIS gate, the fine mode **stays engaged on the
+  //! king** and the bad unit is latched out with its own EVR — where a
+  //! cycle-global NIS streak would have demoted the mode, dropped the filter and
+  //! re-promoted off the same bad unit at the streak period.
+  void testBadStarTrackerIsIsolatedWithoutDemotingTheMode();
+
+  //! An uncalibrated non-king tracker is not fused at all: its as-mounted reading
+  //! carries the two units' bias difference, and fusing it at the configured
+  //! sigma would sell a systematic as white noise. Fused once the alignment is
+  //! fitted, dropped again when it is cleared.
+  void testUncalibratedSecondTrackerIsNotFused();
+
  private:
   // ----------------------------------------------------------------------
   // Stubbed query ports (the component's outputs, this harness's inputs)
@@ -262,7 +321,18 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! correction never runs (one AlbedoConfigInvalid) and every cycle is weighted
   //! at SigmaSunAlbedoUncorrRad — the default, so the pre-existing tests keep
   //! proving the estimator works with no albedo tuning at all.
-  void setValidParameters(bool withFine = false, bool withAlbedo = false);
+  //! @p withStarTracker adds the star-tracker fusion set (king unit, the two
+  //! sigmas, the per-unit boresights and the three residual-monitor thresholds);
+  //! without them no tracker is fused (one StConfigInvalid) and the §8.2 ladder is
+  //! capped at SS+MAG — the default, so every pre-existing case keeps proving the
+  //! estimator works with no tracker tuning at all.
+  void setValidParameters(bool withFine = false, bool withAlbedo = false,
+                          bool withStarTracker = false);
+
+  //! Add the three StAlign* parameters and re-load. Kept out of
+  //! setValidParameters() for the same reason the MagCal set is: a missing one
+  //! costs only the ST_ALIGN_CAL_START command.
+  void setStAlignParameters();
 
   //! Per-unit albedo boresights staged into `SunAlbedoBoresightsBody`, flattened
   //! three at a time in port order. Default: slot 0 is body +Z (the reference
@@ -305,6 +375,12 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
 
   ExtraSunUnit sun_extra_{};
 
+  //! The extra sun unit reports the **true** direction while @ref
+  //! sun_body_error_rad_ is applied to the selected one only. That is the
+  //! §8.2 cross-unit case: the selected unit is confidently wrong (it reports the
+  //! smaller sigma and wins), and only the runner-up can say so.
+  bool sun_extra_truthful_{false};
+
   //! Number of IMU ports fed by feedMeasurements(). **Two** by default, matching
   //! the reference vehicle, so every test exercises the pairwise branch of the
   //! §8.2 vote — the one that actually flies — rather than a single-unit special
@@ -326,6 +402,56 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   };
 
   ImuFaultInjection imu_fault_{};
+
+  //! Number of magnetometer ports fed by feedMeasurements(). **Two** by default,
+  //! matching the reference vehicle, so every test exercises the pairwise branch
+  //! of the §8.2 magnetometer vote — the one that actually flies. Units report
+  //! identical readings unless @ref mag_fault_index_ says otherwise, and identical
+  //! readings combine to themselves, so the published solution is unchanged.
+  FwIndexType mag_unit_count_{2};
+
+  //! Field offset [T] added to magnetometer unit @ref mag_fault_index_ (< 0
+  //! injects nothing). Small values stay inside the magnitude band and are the
+  //! fault only a *comparison* between units can find; large ones trip the band.
+  //! Scale and offset applied to magnetometer unit @ref mag_fault_index_ as
+  //! `scale * field + offset` (< 0 index injects nothing). The scale models a dead
+  //! or unpowered sensor, which the IGRF-magnitude band catches whatever direction
+  //! the field happens to point; the offset models a plausible-magnitude
+  //! disagreement, the fault only a comparison between units can find.
+  FwIndexType mag_fault_index_{-1};
+  double mag_fault_scale_{1.0};
+  Eigen::Vector3d mag_fault_offset_t_{Eigen::Vector3d::Zero()};
+
+  //! Number of star-tracker ports fed by feedMeasurements(). **Zero** by default,
+  //! so every case that predates §8.2 tracker fusion runs exactly as it did — the
+  //! ladder never leaves SS+MAG unless a test asks it to.
+  FwIndexType star_unit_count_{0};
+
+  //! Per-unit small-angle error added to the fed tracker attitude [rad, body
+  //! axes], composed as δq(θ) ⊗ q_true. Slot 0 stands in for the king's own bias —
+  //! which nothing removes, because it is what defines the frame — and slot 1 for
+  //! the second unit's mounting misalignment, which is what ST_ALIGN_CAL
+  //! estimates.
+  //!
+  //! **Zeroed explicitly in the constructor, not by `{}`.** A fixed-size Eigen
+  //! type's default constructor leaves its storage *uninitialized*, so
+  //! `Eigen::Vector3d a[N]{}` value-initialises the array by calling that
+  //! constructor N times and produces garbage — which reads as zero on a fresh
+  //! stack and as the previous test's data inside a full suite run. That is a
+  //! test that passes alone and fails in CI, and it cost an afternoon here.
+  Eigen::Vector3d star_error_[AttitudeEstimator::NUM_STARTRACKERIN_INPUT_PORTS];
+
+  //! Which tracker units report `valid` this cycle. All true by default; a test
+  //! drops one to walk the ladder back down to SS+MAG.
+  bool star_valid_[AttitudeEstimator::NUM_STARTRACKERIN_INPUT_PORTS]{true, true, true, true,
+                                                                     true, true, true, true};
+
+  //! Per-unit star-tracker boresights staged into `StBoresightsBody`. Default:
+  //! the reference vehicle's two units at (∓1, 0, −1)/√2, 90° apart; the rest are
+  //! the zero vector, i.e. "not installed".
+  std::array<F64, 3 * AttitudeEstimator::NUM_STARTRACKERIN_INPUT_PORTS> st_boresights_{
+      {-0.7071067811865476, 0.0, -0.7071067811865476, 0.7071067811865476, 0.0,
+       -0.7071067811865476}};
 
   //! Put the Sun 45 degrees from the radial direction rather than square to the
   //! field: the geometry the albedo term peaks in (its magnitude goes as

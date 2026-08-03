@@ -82,6 +82,14 @@
 /// `(I−KH)P`), then the multiplicative reset: `q̂⁺ = δq̂ ⊗ q̂`,
 /// `b̂⁺ = b̂ + δb̂`, error state back to zero.
 ///
+/// **Attitude measurements** — a star tracker's complete Body ← ECI solution —
+/// go through @ref Mekf::updateAttitude instead, with `H = [I₃ 0₃]`, a full 3×3
+/// `R` (a tracker's error is strongly anisotropic about its boresight, and
+/// carrying that is what makes two non-parallel trackers worth more than two
+/// parallel ones), and its own χ²₃ gate. Same Joseph form, same multiplicative
+/// reset, same rejection accounting; only the sensitivity, the innovation
+/// reduction and the degrees of freedom differ.
+///
 /// **Measurement noise is the caller's, and white.** `sigma_rad` is passed per
 /// update, giving `R = σ²I`. Two things follow that a caller must know.
 /// *First*, the isotropic `σ²I` rather than the rank-2 `σ²(I − b̂b̂ᵀ)` of the
@@ -184,6 +192,16 @@ struct MekfConfig {
   /// third component carries no variance even though `R = σ²I` budgets for it
   /// (χ²₂ at 99.9% ≈ 13.8). Must be positive.
   double nis_gate{0.0};
+  /// NIS rejection threshold for one **attitude** update (@ref
+  /// Mekf::updateAttitude). A separate value from @ref nis_gate, and separate
+  /// because the degrees of freedom differ: a star tracker's innovation is a full
+  /// 3-DOF rotation with no degenerate direction, so this is χ²**₃** (99.9% ≈
+  /// 16.27) where the vector gate is χ²₂. Reusing the vector gate would reject at
+  /// the wrong tail probability in the tighter direction — a 2-DOF threshold
+  /// applied to a 3-DOF statistic gates at ~99.9% → ~99.0%, i.e. ten times the
+  /// false-rejection rate, on the one measurement source the fine mode is built
+  /// around. Must be positive.
+  double attitude_nis_gate{0.0};
   /// Longest interval without an accepted update before the attitude is
   /// declared invalid [s]. The filter state is kept — see the file header.
   double max_coast_s{0.0};
@@ -196,16 +214,18 @@ struct MekfConfig {
   bool isValid() const;
 };
 
-/// Diagnostics from one vector-measurement update. Populated whether or not the
-/// measurement was accepted, so the NIS of a *rejected* measurement is
-/// available to telemetry and FDIR.
+/// Diagnostics from one measurement update, vector or attitude. Populated
+/// whether or not the measurement was accepted, so the NIS of a *rejected*
+/// measurement is available to telemetry and FDIR.
 struct MekfUpdate {
-  /// Innovation `y = b̂_meas − A(q̂)r̂` [dimensionless direction], body frame.
+  /// Innovation, body frame: `y = b̂_meas − A(q̂)r̂` [dimensionless direction]
+  /// from @ref Mekf::update, or `z = δθ` [rad] from @ref Mekf::updateAttitude.
   Eigen::Vector3d innovation{Eigen::Vector3d::Zero()};
-  /// Innovation covariance `S = HPHᵀ + R` [dimensionless], body frame.
+  /// Innovation covariance `S = HPHᵀ + R`, body frame; units follow
+  /// @ref innovation.
   Eigen::Matrix3d innovation_cov{Eigen::Matrix3d::Identity()};
-  /// Normalised innovation squared `yᵀS⁻¹y` [dimensionless]; ~χ²₂ when the
-  /// filter is consistent.
+  /// Normalised innovation squared `yᵀS⁻¹y` [dimensionless]; ~χ²₂ for a vector
+  /// update and ~χ²₃ for an attitude update when the filter is consistent.
   double nis{0.0};
   /// The measurement passed the NIS gate and was applied.
   bool accepted{false};
@@ -300,6 +320,53 @@ class Mekf {
   ///         Malformed inputs return `false` with @p out default-constructed.
   bool update(const math::Vec3<math::frames::Body>& body_meas,
               const math::Vec3<math::frames::ECI>& reference, double sigma_rad, MekfUpdate& out);
+
+  /// Fold in one **attitude** measurement: a complete Body ← ECI solution, which
+  /// is what a star tracker reports (design doc §8.2; Markley & Crassidis §6.2.4
+  /// and §7.1 [markley2014]; Lefferts, Markley & Shuster §III [lefferts1982]).
+  ///
+  /// **Why this is not three vector updates.** A tracker's output is already the
+  /// attitude, so the natural measurement model is `z = δθ` with `H = [I₃ 0₃]` —
+  /// no direction is degenerate and the update is the full 3 DOF. Decomposing it
+  /// into observed star directions would need the star catalogue the tracker does
+  /// not publish; feeding the *quaternion* in as a pair of synthetic vectors
+  /// would double-count the same information and lose the anisotropy below.
+  ///
+  /// **The innovation is exact, not small-angle.** `z` is the rotation vector of
+  /// `q_meas ⊗ q̂⁻¹` taken the short way round (`2·atan2(‖v‖, |q₀|)·v̂`, §3.3),
+  /// the same reduction @ref nees uses, so it is the *same* `δθ` the filter's
+  /// error state is defined on (`q_true = δq ⊗ q̂`) rather than its linearisation.
+  /// That matters at acquisition, where a tracker returning after a coast can be
+  /// tens of degrees from the reference and `2·vec(δq)` would understate it.
+  ///
+  /// **R is a full 3×3, and that is the point of a second tracker.** A star
+  /// tracker's error is strongly **anisotropic** — about-boresight is ~6× the
+  /// cross-boresight terms for the reference vehicle's AURIGA — so the caller
+  /// passes `R = A_body←st · diag(σ⊥², σ⊥², σ∥²) · A_body←stᵀ`, the unit's own
+  /// covariance rotated into body axes. Two trackers with non-parallel boresights
+  /// then each carry the other's weak direction, which is the whole reason the
+  /// vehicle flies two of them (§8.1); an isotropic `σ²I` would throw that away
+  /// and report a covariance the geometry does not support.
+  ///
+  /// As with @ref update, `R` is treated as **white**: the tracker's fixed bias
+  /// and its low-frequency spatial term do not average down, so the caller
+  /// inflates R for them or the filter converges below its true error.
+  ///
+  /// @param measured  attitude Body ← ECI as reported, already corrected for
+  ///                  mounting and (for a non-king unit) inter-tracker alignment
+  ///                  by the caller — this filter has no idea which tracker it is
+  ///                  reading
+  /// @param noise_cov `E[δθ δθᵀ]` [rad²] in **body** axes; must be finite,
+  ///                  symmetric and positive-definite
+  /// @param out       innovation, `S`, NIS and the accept decision — filled on a
+  ///                  gate rejection too, exactly as @ref update does
+  /// @return `true` iff the measurement was applied. A @ref
+  ///         MekfConfig::attitude_nis_gate rejection returns `false` with the
+  ///         diagnostics populated and @ref rejectedCount incremented; malformed
+  ///         inputs return `false` with @p out default-constructed, so the caller
+  ///         can tell a divergence guard from a refusal on the count alone.
+  bool updateAttitude(const math::Quat<math::frames::Body, math::frames::ECI>& measured,
+                      const Eigen::Matrix3d& noise_cov, MekfUpdate& out);
 
   /// Reference attitude Body ← ECI (JPL scalar-first, canonical `q0 ≥ 0`).
   math::Quat<math::frames::Body, math::frames::ECI> attitude() const {
