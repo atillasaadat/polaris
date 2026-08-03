@@ -671,7 +671,7 @@ double AttitudeEstimator ::arbitrateFineMode(const polaris::time::Tai& epoch,
     return kNoValue;  // coarse-only operation; failFineConfig() has already said so
   }
   if (this->fine_active_) {
-    return this->stepFineMode(epoch, in, stars, starCount);
+    return this->stepFineMode(epoch, in, coarse, stars, starCount);
   }
   // Deliberately else-if and not a second chance in the same cycle: a demotion
   // costs at least one cycle on coarse, so a condition that oscillates shows up
@@ -784,6 +784,7 @@ void AttitudeEstimator ::tryPromoteFineMode(const polaris::time::Tai& epoch,
 
 double AttitudeEstimator ::stepFineMode(const polaris::time::Tai& epoch,
                                         const polaris::gnc::CoarseAttitudeInput& in,
+                                        const polaris::gnc::CoarseAttitudeOutput& coarse,
                                         const StarTrackerSample* stars, int starCount) {
   bool refused = !this->mekf_.propagate(epoch, in.gyro, in.gyro_valid);
   bool nis_rejected = false;
@@ -805,9 +806,47 @@ double AttitudeEstimator ::stepFineMode(const polaris::time::Tai& epoch,
   // them, because a sun sensor that has drifted is then *observable* rather than
   // merely down-weighted.
   bool star_accepted = false;
+  // What the filter had already refused before any tracker was consulted — a
+  // propagate failure. Kept so the suppression below can drop the *tracker's*
+  // contribution to the refusal flag without dropping this one, which is a
+  // genuine mode fault.
+  const bool refused_before_trackers = refused;
   const double star_nis =
       this->fuseStarTrackers(stars, starCount, star_accepted, refused, nis_rejected);
   this->tlmWrite_StNis(star_nis);
+
+  // **The ladder does not climb by itself.** A tracker arriving while the filter
+  // is running on the vector pairs is rejected by the χ² gate every cycle — the
+  // solution's error is the magnetometer's systematic and the reported covariance
+  // has averaged it away — so without this the vehicle can only reach its top rung
+  // by being seeded there. See arbitrateRejectedTrackers for the whole argument
+  // and for the coarse-covariance guard that keeps a *bad* tracker from hijacking
+  // the solution the same way.
+  if (!star_accepted && starCount > 0 && this->fine_source_ != FineSource::STAR_TRACKER) {
+    if (this->arbitrateRejectedTrackers(epoch, coarse, stars, starCount)) {
+      // The filter *is* the tracker's solution now, so this cycle is a
+      // tracker-sourced one: the vector pairs are skipped below and become the
+      // residual monitors instead.
+      star_accepted = true;
+    }
+    // **Either way, a tracker's fault is a unit matter here and never a mode
+    // one.** The fine mode is running on the sun and magnetic pairs and they are
+    // not what went wrong, so letting a tracker reach the mode-level streaks would
+    // demote a filter that a healthy vector pair is updating perfectly well — and
+    // then re-promote it off the same pairs, at the streak period. That is the P52
+    // lesson in the one direction it had not been applied: the rule below
+    // suppresses the streaks when a tracker is *accepted*, and this is the case
+    // where none was.
+    //
+    // Both flags, for the same reason one flag apart: a malformed tracker
+    // measurement sets `refused` exactly as a rejected one sets `nis_rejected`,
+    // and neither says anything about the mode. The propagate refusal that
+    // preceded them is restored rather than cleared — that one *is* a mode fault.
+    // The vector loop that follows sets both again on its own account, which are
+    // the failures that do mean the mode is in trouble.
+    nis_rejected = false;
+    refused = refused_before_trackers;
+  }
 
   // One update per available pair, folded in one at a time — which is what makes
   // the §8.2 fusion layer more calls rather than an interface change.
@@ -869,6 +908,15 @@ double AttitudeEstimator ::stepFineMode(const polaris::time::Tai& epoch,
                                             static_cast<U32>(starCount));
     this->fine_source_ = source;
   }
+  // ponytail: known-inexact on the one cycle the arbitration re-seeds. This
+  // reports every *gathered* unit, which is right when the count comes from
+  // fuseStarTrackers (each one was offered to the filter), but a re-seed adopts
+  // exactly one and updates from none — so that cycle over-reports by the number
+  // of other eligible trackers. Left as is because the channel's question is "is
+  // the solution tracker-sourced, and how much tracker is behind it", which it
+  // still answers, and FineReseededFromStarTracker names the unit that actually
+  // carried it. Split into an accepted-count if a consumer ever integrates this
+  // channel rather than reading it.
   this->tlmWrite_StContributing(star_accepted ? static_cast<U32>(starCount) : 0u);
   this->updateResidualMonitors(in, this->mekf_.attitude(), star_accepted);
 

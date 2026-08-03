@@ -297,6 +297,45 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! fitted, dropped again when it is cleared.
   void testUncalibratedSecondTrackerIsNotFused();
 
+  //! The §9.2 off-rung tracker arbitration (REQ-FDIR-013). A tracker the filter
+  //! persistently rejects while the solution is *not* tracker-sourced is judged
+  //! against the coarse solution instead, in the Mahalanobis metric at
+  //! χ²₃(0.999): inside, the filter is the outlier and is re-seeded from the
+  //! tracker; outside, the unit is refused — and **not** latched out, since the
+  //! criterion that would convict it is not the one that would re-admit it.
+  //!
+  //! Two branches of `arbitrateRejectedTrackers` are deliberately not covered
+  //! here because they are **unreachable by construction** rather than merely
+  //! awkward: an invalid coarse solution under an active fine mode cannot occur
+  //! while `MekfMaxCoastSec` < `MaxCoastSec` (the filter coasts out first, and it
+  //! does on the flight tuning too — 300 s against 2400 s), and a refused
+  //! `Mekf::initialize` needs a non-finite or indefinite `R`, which
+  //! `refreshStConfig` rejects before a tracker is ever fused. Both are guard
+  //! clauses that return without acting; building harness hooks to force them
+  //! would test the hooks.
+  //! @{
+
+  //! Arm the arbitration: promote on the vector pairs with no tracker in view,
+  //! then bring one in disagreeing by @p trackerErrorRad, so the filter rejects
+  //! it for `MekfNisStreak` consecutive cycles. Advances @p t.
+  void armOffRungArbitration(
+      I64& t,
+      const polaris::math::Quat<polaris::math::frames::Body, polaris::math::frames::ECI>& truth,
+      double trackerErrorRad);
+
+  //! Inside the gate: adopted, reported with the statistic it was decided on,
+  //! and the ladder is on its top rung from that cycle.
+  void testOffRungTrackerVerdictFollowsTheCoarseGate();
+
+  //! Outside the gate: refused, nothing latched, the mode untouched, and the
+  //! refusal repeated at a bounded cadence rather than once or per cycle.
+  void testOffRungTrackerOutsideTheGateIsRefusedNotLatched();
+
+  //! Two eligible trackers disagreeing off the rung: the one the coarse fix
+  //! supports is adopted and the other is left alone, not blamed.
+  void testOffRungArbitrationPicksTheTrackerTheCoarseFixSupports();
+  //! @}
+
  private:
   // ----------------------------------------------------------------------
   // Stubbed query ports (the component's outputs, this harness's inputs)

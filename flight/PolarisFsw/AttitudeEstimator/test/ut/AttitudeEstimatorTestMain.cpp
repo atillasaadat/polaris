@@ -323,6 +323,24 @@ TEST(AttitudeEstimator, UncalibratedSecondTrackerIsNotFused) {
   tester.testUncalibratedSecondTrackerIsNotFused();
 }
 
+TEST(AttitudeEstimator, OffRungTrackerVerdictFollowsTheCoarseGate) {
+  RecordProperty("verifies", "REQ-FDIR-013");
+  flight::AttitudeEstimatorTester tester;
+  tester.testOffRungTrackerVerdictFollowsTheCoarseGate();
+}
+
+TEST(AttitudeEstimator, OffRungTrackerOutsideTheGateIsRefusedNotLatched) {
+  RecordProperty("verifies", "REQ-FDIR-013");
+  flight::AttitudeEstimatorTester tester;
+  tester.testOffRungTrackerOutsideTheGateIsRefusedNotLatched();
+}
+
+TEST(AttitudeEstimator, OffRungArbitrationPicksTheTrackerTheCoarseFixSupports) {
+  RecordProperty("verifies", "REQ-FDIR-013");
+  flight::AttitudeEstimatorTester tester;
+  tester.testOffRungArbitrationPicksTheTrackerTheCoarseFixSupports();
+}
+
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

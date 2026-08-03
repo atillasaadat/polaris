@@ -34,6 +34,27 @@ before starting FDIR, estimator, or requirements work.
   An EVR promised coast-horizon escalation that a gyro-only fault provably never
   triggers (the vector pairs keep TRIAD alive). Either implement the escalation
   (persistence-counted, bounded cadence) or write the honest no-action.
+- **A filter's covariance is not entitled to veto a better source** (P53). A
+  solution built from systematic-dominated sources has a covariance the white-`R`
+  model has averaged *down* while the true error stayed put, so `S = HPHᵀ + R` is
+  tiny against a residual that is the systematic. An innovation gate on that `S`
+  then rejects an arriving instrument two orders of magnitude better — every
+  cycle, permanently — and the per-unit streak policy latches out the **good**
+  unit. Before gating source A against a solution built from source B, ask which
+  of the two the design says is better; the gate is only evidence when the
+  comparison is like for like. **Enacted in P53**
+  (`AttitudeEstimator::arbitrateRejectedTrackers`): the verdict moved to the
+  *coarse* covariance, which carries a systematic floor and therefore does not
+  lie — inside 3σ the filter is re-seeded from the tracker, outside it the unit
+  is excluded. Note the fix's own failure mode and close it in the same change:
+  adopting a rejected source is right only when it really is the better one, so
+  the guard that refuses a grossly wrong one is not optional. And the rule that
+  P53's own first attempt broke: **any new exclusion must ship its re-admission
+  criterion in the same change.** The fix latched a unit out on disagreement with
+  the *coarse* solution while the existing parole test was agreement with the
+  *fine* one — a criterion mismatch, i.e. a life sentence, written by the same
+  push that cites this catalog. If you cannot name the test that ends the
+  exclusion, do not latch: refuse the cycle and report it instead.
 - **An uncalibrated unit is not a calibrated unit at full weight** (P52). The
   launch-state second tracker was fused with the calibrated sigma — a 2–5σ
   systematic sold as noise, which is also what fed the demotion flap. Don't fuse
@@ -136,6 +157,17 @@ before starting FDIR, estimator, or requirements work.
 - clang-format reformats new files on its first pass — re-run gates after.
 - Test-count phrasing: report "N collected — M passed, K skipped", never a bare
   count that conflates them.
+- **A fault injected on the macro-step seam misses the first sample** (P53). The
+  closed loop samples the sensors and *then* calls back, so "faulted from step 0"
+  still lets one clean cycle through — and one clean cycle is all the estimator
+  needs to promote off a Davenport seed and change the mode the whole case was
+  about. A row whose premise is "this source was never available" has to inject
+  before the run starts.
+- **A conditional assertion that never fires is not a test** (P53). `if (found) {
+  EXPECT... }` is green whether the behaviour happened or not. When the run shows
+  the branch is never taken, assert the behaviour that *does* happen and say why
+  in the comment; the honest negative ("no exclusion ever, and here is the
+  mechanism that makes it impossible") is worth more than a dormant positive.
 - Stale docs, comments, and PR text are defects, not afterthoughts — every
   claim edited must be re-verified against the tree, and a hygiene change that
   introduces a new stale claim is worse than none.

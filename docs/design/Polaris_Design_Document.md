@@ -339,6 +339,8 @@ The sun sensor (`sim/sensors/sun_sensor`) implements **two output contracts**, b
 - **Analogue** — per-diode **counts**, following the cosine law (`count = full_scale·cos θ`), cut off at the acceptance cone, with dark current, quantization and saturation. Direction reconstruction is the FSW's job (§8.1); a truth model that returned a clean vector would do the estimator's work for it and hide the geometry where the failures live. Configurable as a single wide cell (coarse) or a canted cluster (quadrant/pyramid), which is how a fine sensor gets well-conditioned two-axis angles near boresight, where a single cosine cell is least sensitive.
 - **Digital** — the unit reports a **sun vector** over a bus, having run its own quadrant maths and factory calibration in a microcontroller. Simulating photocurrents for such a part would mean inventing the proprietary calibration and then undoing it with an algorithm that is not the vendor's, so the model reproduces the *specified output accuracy* instead — the same reasoning that has the star tracker modelled at its attitude output.
 
+**Fault hooks (§9, extended Push 53).** The model exposes a dead diode (`failDiode`, which degrades an analogue part's reconstruction rather than removing the unit), a dropout (`setDropout`, every reading invalid — the eclipse-equivalent and the case the unit's own validity flag catches), and, since Push 53, an injected **calibration shift** (`injectDirectionBias`, a rotation of the reported direction). The third is the one a redundant suite exists for: the unit keeps reporting valid, sun-present and its nominal σ while pointing somewhere else, so every per-unit gate passes and only a comparison with another unit can see it — which is exactly the §8.2 cross-unit check's job, and what the fault matrix (§23.1.1) drives it with. It applies to the vector-output path, since an analogue part has no reported direction to rotate.
+
 For digital parts, **accuracy is a function of incidence angle**, and by a wide margin: the GomSpace NanoSense FSS is ±0.5° (3σ) inside 45° and ±2.0° out to its 60° half-FOV. Quoting a single figure would flatter the sensor at wide angles or slander it near boresight, and coarse-attitude performance depends on which regime the vehicle actually flies it in. The realised σ is carried on every measurement, so an estimator can be fed the noise the sensor actually had. The part's **sample period** is modelled too (10 ms on the FSS): reading faster returns the previous value with `fresh = false`, because an estimator treating repeated register contents as independent averages down noise that never averaged.
 
 **Albedo is the dominant error, and it is a bias, not noise** — Earthshine reaching a wide-FOV diode is first-order in LEO, and GomSpace state plainly that uncorrected albedo can exceed 10° against their 0.5° clean-sky figure. It is computed from the §6.1 occlusion fractions (how much of the field the Earth fills) scaled by how sunlit the sub-satellite region is, so a sun sensor and a star tracker cannot disagree about where the Earth is.
@@ -637,6 +639,158 @@ Mode manager implementing a documented state machine with explicit entry/exit co
 - Transitions: autonomous (FDIR/conditions) + commanded; guards prevent illegal/unsafe transitions.
 - **Onboard ground-station list** (configurable): lat/lon/alt, mask angles; used for contact prediction, tracking, and link analysis.
 
+### 10.1 How the State Machine Is Defined, Compiled and Reviewed
+
+*Architecture decision, user decision 2026-08-03. Design only — nothing in this
+subsection is implemented; it lands in Phase 7 (§24).*
+
+The mode table above is a specification written in prose, and the guards that
+enforce it do not exist yet. The question this subsection settles is **what form
+they take when they do**, because the answer decides three things that are hard
+to change later: whether an operator can read the vehicle's behaviour without
+reading C++, whether a SITL case can exercise a mode path without a rebuild, and
+whether the §9 fault responses are *data* the fault matrix can enumerate or
+*code* it can only sample.
+
+#### 10.1.1 The declarative definition
+
+The satellite-wide modes of §10 and the GNC submodes underneath them (the §8.2
+estimator ladder, the §8.5 control-law selection, the §7 actuator
+configuration) are defined in **one declarative file per vehicle**, in
+`config/`, alongside every other vehicle-specific decision (§19.3). It carries:
+
+- **states**, hierarchically — a satellite-wide mode contains submodes, and a
+  submode's transitions are scoped to its parent, so "any pointing mode → Safe"
+  is one transition and not eight;
+- **transitions**, each naming a source state, a target state and a trigger;
+- **triggers**, of exactly three kinds: a **command** opcode, an **event** (an
+  FDIR alert raised by a monitor), and a **predicate becoming true** over
+  telemetry;
+- **guards** — boolean expressions over a **bounded predicate vocabulary**:
+  comparisons on telemetry channels, enumerated-state equality, event-presence
+  within a window, and a persistence count. Not a general expression language:
+  the vocabulary is fixed at compile time and every term is a channel the
+  vehicle already telemeters, which is what makes a guard readable from the
+  ground and evaluable in bounded time;
+- **entry and exit actions**, each a named, pre-registered command or port
+  invocation — a closed set the executor can dispatch, never arbitrary code.
+
+The config compiler (`tools/configc`, §19.3) validates it — every state
+reachable, every target defined, no transition whose guard references a channel
+the dictionary does not carry, exactly one initial state, and a Safe sink
+reachable from every state — and emits **flight tables** into `ParameterDb`
+alongside the rest of the tuning. There are no defaults: a vehicle whose table
+is missing or fails validation refuses to leave its initial state and says so,
+the same rule §19.3 applies to every other parameter.
+
+#### 10.1.2 The executor
+
+One generic F´ component consumes the tables: a **bounded table interpreter**,
+not generated logic. It holds the current state, evaluates the guards of the
+outgoing transitions of the active state and its ancestors in table order on its
+rate-group tick, dispatches entry/exit actions, and telemeters the state, the
+last transition, and the guard that fired. Flight rules apply in full and are
+what bound it: fixed-size tables sized at compile time, no heap, no recursion
+(hierarchy is walked as a bounded loop up a parent-index array), an explicit cap
+on transitions evaluated per tick, and every dispatch return code checked.
+
+This is the standard table-driven mode manager of flight practice rather than an
+invention — the pattern is old enough to be unremarkable, and its value here is
+the same as everywhere: the machine is a *reviewable artifact* instead of a
+control-flow graph distributed across handlers.
+
+#### 10.1.3 The alternative considered: F´ native FPP state machines
+
+F´ **v4.2.2** — the version vendored under `fprime/` — has real state-machine
+support in FPP, and it is better than a first look suggests. `fpp-to-cpp`
+generates a `<M>StateMachineBase` class from a `state machine` definition, and
+the language covers **hierarchical states with nested initial transitions,
+entry/exit actions, guards, choice pseudo-states, and signals with typed
+payloads** (see `fprime/docs/user-manual/framework/state-machines.md` and the
+worked models in `fprime/FppTestProject/FppTest/state_machine/`). It also
+supports *external* machines produced by JPL's STARS autocoder from a UML/Quantum
+Modeler model, which is the route several JPL missions actually fly. None of
+that is a toy, and adopting it would cost no new flight machinery at all.
+
+Two properties decide against it as the **satellite-wide** mode manager:
+
+1. **Guards and actions are hand-written C++.** FPP generates a pure-virtual
+   `guard_<g>` and `action_<a>` per guard and action; the component implements
+   them. So the states and transitions become data, and the *conditions* — which
+   are exactly what §9 FDIR reasons about and what the fault matrix has to
+   enumerate — stay code. A machine whose skeleton is declarative and whose
+   guards are not is not reviewable as a diagram, because the diagram cannot say
+   what `g` means.
+2. **The machine is not in the dictionary.** `fpp-to-dict` emits commands,
+   telemetry, events and parameters; it does not emit state machines (checked
+   against the generated `PolarisFswTopologyDictionary.json`, which contains no
+   state-machine entries). The ground therefore has no data view of the machine
+   at all, and there is no upstream visualization tool — `fpp-to-json` emits the
+   AST, so a diagram generator would have to be written either way.
+
+Against the four deciding criteria:
+
+| criterion | FPP state machines | config → tables → executor |
+|---|---|---|
+| user-side visibility / editability | FPP is readable, but lives in the flight source tree and a change is a rebuild; guards are opaque C++ | one file in `config/`, guards are telemetry predicates, uplinkable as a table |
+| SITL testability | a mode variant needs a rebuilt deployment | a variant is a different table; the same binary flies every row of the matrix |
+| generated code vs tables | generated code, statically checked, fast — but the guard logic is outside it | interpreted tables, one interpreter to verify once, all logic inside the artifact |
+| fault matrix table-verifiable | no: guards are not enumerable | yes: "which transitions can fire on this event" is a table query, and the SITL rows become a coverage check against it |
+
+**Recommendation: the declarative-config path**, for the satellite-wide modes and
+the GNC submodes. The deciding argument is the last row. §9's whole claim is that
+every alert maps to a documented action; today that mapping is prose in this
+document checked by hand against handlers, and the §23.1.1 fault matrix samples
+it one injected fault at a time. With the machine as a table, the mapping is a
+join — every FDIR event against the transitions it can trigger — and the fault
+matrix's job changes from "demonstrate the responses we thought of" to "cover the
+table", which is a coverage number rather than a judgement call.
+
+FPP state machines remain the right tool for a machine that is **internal to one
+component and not operator-facing** (a driver's initialisation sequence, a
+calibration window's lifecycle), and nothing here forbids using them there. If
+the executor's verification cost ever turns out to exceed the value of tabled
+guards — the risk this decision carries — the fallback is FPP with the guard
+vocabulary pushed into a shared, tested predicate library, which recovers most of
+row 4 at the cost of rows 1 and 2.
+
+#### 10.1.4 Visualization: the diagram is generated, never drawn
+
+The config compiler emits a **state diagram from the same file it compiles the
+tables from** — Mermaid (and DOT for the cases Mermaid renders badly) — which the
+Sphinx build renders into the docs site next to the requirements it implements.
+Consequences, which are the point rather than a side effect:
+
+- the architecture is **reviewed as a diagram** and edited as one file, so a
+  design discussion and a code review look at the same object;
+- a diff to the machine is a diff to one declarative file, and the rendered
+  diagram in the PR shows what it did;
+- the diagram **cannot go stale**, because it is not a document — it is a build
+  product of the artifact that flies. A hand-drawn state chart in a design
+  document is wrong from the first push that touches the machine, and this is the
+  standing complaint against every mode-manager diagram ever committed.
+
+The same emitter serves the traceability matrix: each transition carries the
+`REQ-` id(s) it implements, so the diagram can be rendered with unverified
+transitions highlighted — the state-machine equivalent of the coverage gate
+§22.2 already applies to requirements.
+
+#### 10.1.5 Migration seam
+
+Nothing is rewritten to get here. The hand-coded mode logic inside
+`flight/PolarisFsw/AttitudeEstimator` — the coarse/fine arbitration, the §8.2
+source ladder, the per-unit exclusion latches — **stays as it is**. It is the
+first *instance* the target architecture describes, and the seam is already in
+the right place: the estimator's mode transitions are reported as F´ events
+(`FineModeEngaged`, `FineSourceChanged`, `FineModeDemoted`, the per-unit
+exclusion edges), and its inputs are telemetry channels. Those events are exactly
+the trigger kind the executor consumes and those channels exactly the guard
+vocabulary, so lifting the estimator's ladder into a table later is a translation
+with a behaviour-equivalence test, not a redesign. Until then the executor owns
+the satellite-wide modes and the estimator owns its own submode — which is also
+the safer order, since the estimator's ladder is the §10 Safe-mode floor and is
+the last thing that should depend on new infrastructure.
+
 ---
 
 ## 11. Orbital Mechanics & Multi-Object Handling
@@ -933,6 +1087,12 @@ A dedicated closed-loop SITL test suite injects faults into the truth sim / sens
 
 Each case asserts both **detection** (right fault flagged, no false positives on nominal runs) and **response** (correct action and recovery), with detection latency checked against requirement thresholds.
 
+**Started (Push 53) — the attitude-source matrix.** `tests/integration/sitl_fault_matrix_test.cpp` is the first systematic sweep of the case library, covering the §8.2 sensor set (SS / MAG / IMU / ST) against the estimator's mode machine. Eleven rows, each a closed-loop SITL run of the deployed flight binary against the truth sim, all flying **one** vehicle, orbit and attitude so the rows differ only in the injected fault: the attitude is solved from the ephemeris so that both star trackers, two sun sensors and both magnetometers are available *simultaneously* (nadir on body +Z for the tracker keep-outs, plus a roll placing the Sun between the +X and +Y faces), and a row that needs a source absent removes it with a dropout. The assertions are **behavioural, not accuracy**: which rung of the ladder the run ended on, which unit was blamed, in what order, and whether an `AttitudeLost` or a `FineModeDemoted` accompanied it. They read the deployment's own event stream, which is what an operator would see. Rows: dark start (the top rung reached from a tracker seed with no coarse floor, and sunrise changing nothing); king-tracker loss (fine stays on the second unit); both trackers lost and returned (`STAR_TRACKER → SUN_MAG` and back, no loss, no demotion); a tracker arriving after a sunlit promotion (adopted, not blamed — see below); a 17°-faulted tracker pair in sun/magnetic mode (refused and reported, nothing latched); a biased magnetometer identified in tracker mode and re-admitted on recovery; the same fault in SS+MAG mode reported as unattributable with nothing latched (the circularity gate); a confidently-wrong sun sensor detected by its neighbour and overridden onto the runner-up; total sun loss coasting on the magnetic pair with no sun-sensor fault event (an eclipse must not trip FDIR); an unattributable gyro pair holding attitude on the vector pairs with no rate and no exclusion; and a cascade in which a magnetometer fault present from cold start is blamed only once a tracker-fused reference exists. Verified requirements: REQ-FDIR-005 … REQ-FDIR-013.
+
+The sweep also **found a defect and drove its fix**, which is what a first systematic sweep is for — and it found it on a *nominal* run, with no injected fault at all. A star tracker that became available after the fine mode had promoted on the sun/magnetic pairs was never fused: every update was rejected by the MEKF's χ²₃ attitude gate, and after `MekfNisStreak` cycles the **tracker** was latched out and the mode demoted. The mechanism is structural rather than a tuning accident — the vector-pair solution's error is dominated by the magnetometer's ~34 mrad *systematic*, which the filter's white-`R` model averages the covariance down through, so `S = HPHᵀ + R` shrinks to a few mrad² (a tracker's own R is ~0.05 mrad) against a residual that is the whole systematic. A sunlit boot promotes off a Davenport seed within one cycle, well before a tracker's cold acquisition, so with only the king fused (the launch state, before `ST_ALIGN_CAL` has run) the vehicle stayed on the sun/magnetic rung for the rest of the flight: **REQ-ADET-007 accuracy unreachable from a sunlit boot and unrecoverable after any tracker outage**, with one event to say so.
+
+The fix (`AttitudeEstimator::arbitrateRejectedTrackers`) is the ladder's own logic applied one step further: a gate rejection while the solution is not tracker-sourced is a statement about the filter's covariance, not about the unit, so the verdict is taken against the **coarse** solution instead — the one attitude covariance on the vehicle that converges to its systematic floor rather than to zero (§8.1) and therefore does not lie. The comparison is **Mahalanobis** on that covariance at χ²₃(0.999) rather than an isotropic radius — the coarse attitude uncertainty is strongly anisotropic (roll about the sun line grows as `1/sin²θ`), so a trace-derived bound is too tight across its stiff axes and too loose along its weak one at once, and the Mahalanobis form also widens honestly as the covariance grows through a coast. Inside it the filter is the outlier and is re-seeded from the tracker (`FineReseededFromStarTracker`, a warning-low event so the ground reads the transition as an arbitration rather than as a tracker fault); outside it the unit is **refused and reported at a bounded cadence** (`FineTrackerAdoptionRefused`) but deliberately **not latched out** — an exclusion convicted on coarse agreement whose re-admission test is *fine* agreement could never be served, so the unit stays a candidate that a later cycle with a better reference can still adopt. That second branch is not optional: without it the fix would let a faulted tracker hijack the solution by being rejected persistently enough, which is worse than the defect. Neither branch can repeat without an intervening change of state — a re-seed succeeds by construction, a refusal changes no state at all — so no rate limiter is needed and none is carried. One further consequence fell out of the same run: a tracker's gate rejection no longer feeds the **mode-level** NIS streak while the mode is running on the vector pairs, since demoting a filter that a healthy sun/magnetic pair is updating is the same unit-fault-as-mode-fault error §8.2 already forbids in the other direction. Verified by three rows of the matrix (adoption from a sunlit start, recovery after a tracker outage, and a 17° faulted pair refused and reported) and by three `AttitudeEstimator` component tests that pin what SITL cannot enumerate cheaply: the gate boundary from both sides (6° adopted at d² = 15.9, 9° refused at d² = 35.6, bracketing 16.266), the no-latch rule, and the selection when two eligible trackers disagree. REQ-FDIR-013.
+
 ### 23.2 Build, Quality Gates & CI/CD
 - **CMake** + F´ build; host (WSL/Linux/macOS) baseline; Python tooling with pinned, reproducible environments.
 - Gates: `clang-format` (enforced), `clang-tidy`, `cppcheck`, **warnings-as-errors**, ASan/UBSan in test builds, valgrind optional.
@@ -983,7 +1143,7 @@ Dependency-ordered so the suite is buildable and testable at every step:
 - **Phase 4 — Attitude determination:** initializers (TRIAD/QUEST), MEKF fine mode + **coarse mode (SS+MAG+IMU)**, multi-IMU/multi-sun-sensor fusion, validity flags + occlusion handling. *Started (Push 39, 40, 41, 42, 44):* the `lib/gnc` coarse chain — TRIAD with Shuster covariance + the coarse SS+MAG+IMU estimator behind the §10 Safe-mode floor — and the F´ `AttitudeEstimator` component running it on the barrier-driven 10 Hz GNC cycle, fed by the `GncPorts` measurement seam (port arrays, multi-unit ready) and the `OnboardTables`/IGRF-14 references (§8.1). Push 41 closed the config-compiler→`ParameterDb` tuning path the estimator refuses without, so a SITL run with the compiled parameter file now demonstrates closed-loop coarse attitude estimation end to end (§19.3). Push 42 added the fine mode at the `lib/gnc` level — Davenport's q-method N-vector initializer and the 6-state attitude/gyro-bias MEKF with per-update NIS gating and Monte-Carlo-validated NEES/NIS consistency (§8.1). Push 44 wired that filter onto the `AttitudeEstimator` component with real fine↔coarse arbitration — Davenport cold start, demotion on refusal/NIS streaks, the fine coast horizon, filter fault or command, each an FDIR-visible event, over a coarse chain that keeps running underneath so the fallback is never cold — plus seven no-default fine-mode parameters through the same config-compiler path and NIS/bias/covariance telemetry, which **closes REQ-ADET-004**. Remaining: an onboard position source for the magnetic reference that does not depend on a live GNSS fix (§8.3), the multi-unit fusion layer (§8.2), which is also what brings a star tracker into the filter and removes the white-`R` optimism the sun/magnetometer-only budget carries, and the **calibration items** — onboard magnetometer hard/soft-iron calibration and sun-vector albedo correction — that tighten REQ-ADET-005/006 to their committed post-calibration values of 5°/3° (§8.1; the second, non-parallel star tracker that tightens REQ-ADET-007 to 0.02° arrives with §8.2). Push 45 put **numbers** on all of it: the quantitative knowledge requirements REQ-ADET-005/006/007 on the error norm, and REQ-PAY-001 on a payload's cross-boresight error, each set from the Monte Carlo campaign that also guards it in CI (§8.1). Push 46 delivered the first of the two calibration items end to end: the attitude-free hard/soft-iron ellipsoid fit in `lib/gnc/mag_calibration` (stage 1, 0.087° worst-case post-calibration systematic against a 1.93° uncalibrated term) and the commanded flow on the component (stage 2 — `MAG_CAL_START`/`ABORT`/`CLEAR`, live coverage telemetry, one application point ahead of every magnetometer consumer, seven no-default parameters, and a SITL demonstration fitting to 0.14° over a 500 s tumbling window). **Persisting** an applied calibration across a reboot is deferred to §23.6; today it is component state and the ground re-flies the window. Push 47 delivered the second item, the **sun-vector Earth-albedo correction**: the truth model's albedo error became a *directed* pull toward the sunlit Earth rather than a random tilt of the same size (§6.2 — modelling it as noise had made a physically correctable term look uncorrectable), `lib/gnc/albedo_correction` inverts that model in closed form from onboard geometry, and the component applies it at one point ahead of every sun consumer with a **per-cycle choice between a corrected and an uncorrected sun sigma**, because the correction needs a position fix, a sunlit Earth in the field and an attitude to place it with, and a cycle without them must not be weighted as if it had them. With **both** items the campaign projects coarse 3σ 8.49° → 2.77° and fine 8.07° → 2.69°, clearing the committed 5°/3° — the coarse with 45% margin, the fine with 10%, and the whole result turning on the 0.30 albedo dispersion fraction rather than on the correction algorithm, which removes its modelled term exactly (§8.1). REQ-ADET-005/006 nonetheless stayed at 15° through Push 47, the same rule item (1) was held to; Push 48 added the ephemeris grading and Push 50 **enacted** the tightening at 5°/3°, the fine threshold conditioned on the DE440 tables being active.
 - **Phase 5 — Attitude control:** B-dot, PID, RW L-norm/L-∞ allocation **or** CMG steering (modular), momentum management + MTQ desaturation; **onboard disturbance feedforward** (§8.5 — model-based gravity-gradient/`m_res×B` first, then the momentum-based residual-torque observer shared with the §9 momentum-anomaly monitor).
 - **Phase 6 — Orbit determination & propagation:** GNSS-sim, onboard MEKF OD + self-covariance, multi-object propagation, batch LS, SGP4, CCSDS OEM (GMAT-validated).
-- **Phase 7 — Guidance + full state machine:** pointing modes, slew planning with keep-out/keep-in cones, GS tracking, complete mode set.
+- **Phase 7 — Guidance + full state machine:** pointing modes, slew planning with keep-out/keep-in cones, GS tracking, complete mode set. **The state machine is built the §10.1 way** and that is a phase item in its own right, not an implementation detail of the mode set: the satellite-wide modes and GNC submodes are **defined declaratively in `config/`** (states, hierarchical scoping, transitions, guards over a bounded telemetry-predicate vocabulary, entry/exit actions from a closed dispatch set), **compiled by `configc` into flight tables** validated for reachability and Safe-sink coverage, and executed by **one generic bounded table interpreter** — no code generation of transition logic. The same source emits the **auto-generated state diagram** (Mermaid/DOT) rendered into the Sphinx site, so the machine is reviewed as a diagram and a change to it is a diff to one file. F´ v4.2.2's native FPP state machines were evaluated and are the documented fallback (§10.1.3); they stay the right tool for machines internal to a single component. The `AttitudeEstimator`'s hand-coded ladder is not rewritten — it becomes the first instance the architecture describes (§10.1.5).
 - **Phase 8 — Maneuvering + interop outputs:** thruster targeting (SMA/altitude) with **finite burns as the default for every burn type** (impulsive = first guess only, §17), Delta-V mode, pre/post-burn CCSDS/TLE, STK/FreeFlyer export.
 - **Phase 9 — Subsystems:** simple power, thermal, comms/link budget; subsystem monitors into FDIR; **CCSDS CFDP (Class 1/2) file transfer** over the `ComCcsds` stack (§20 — adopt upstream F´ CFDP if available by then, else implement; decision checkpoint at the §22.4 push).
 - **Phase 10 — FDIR:** monitors, isolation, responses, safing escalation across sensors/actuators/subsystems; **fault-injection integration suite** (sensor faults/loss, occlusions, GPS outage/spoofing, actuator faults, subsystem limits, cascades — §23.1.1); **reboot-surviving time-tagged sequencing** (§23.6 — persisted absolute/relative-time sequences that resume past-due-skipped after a reset).

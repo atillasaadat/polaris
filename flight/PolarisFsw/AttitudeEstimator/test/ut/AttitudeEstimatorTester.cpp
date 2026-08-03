@@ -143,6 +143,11 @@ constexpr U32 kMonitorAlertCycles = 3;
 //! 100 so a window closes inside a short harness run; the residual and eigen-gap
 //! gates are the flight values.
 constexpr U32 kStAlignMinSamples = 20;
+
+//! `kCoarseAgreementGate` in AttitudeEstimatorStarTracker.cpp: χ²₃ at 0.999.
+//! Mirrored rather than exported, so the tests read the contract at the same
+//! number the flight code decides on and a change to either fails loudly.
+constexpr double kCoarseAgreementGate = 16.266;
 constexpr F64 kStAlignMaxResidualRad = 5.0e-4;
 constexpr F64 kStAlignMinEigenGap = 0.9;
 
@@ -2811,6 +2816,207 @@ void AttitudeEstimatorTester ::testBadStarTrackerIsIsolatedWithoutDemotingTheMod
   this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
   this->runCycleAt(t);
   ASSERT_TLM_StContributing(0, 2);
+}
+
+// ----------------------------------------------------------------------
+// The off-rung tracker arbitration (§8.2, §9.2; REQ-FDIR-013)
+// ----------------------------------------------------------------------
+
+void AttitudeEstimatorTester ::armOffRungArbitration(
+    I64& t,
+    const polaris::math::Quat<polaris::math::frames::Body, polaris::math::frames::ECI>& truth,
+    double trackerErrorRad) {
+  // Promote on the vector pairs *first*, with no tracker in sight — the state the
+  // whole arbitration exists for, and the one a sunlit boot always lands in
+  // because the Davenport seed closes within a cycle while a tracker needs
+  // seconds to acquire.
+  // Long enough for the filter's covariance to converge well below the coarse
+  // systematic floor — which is the whole precondition: the arbitration only
+  // arms once the filter is confident enough to reject a tracker it should not.
+  this->star_valid_[0] = false;
+  for (int i = 0; i < 30; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+  // The telemetry history indexes from the first cycle, so the state under test
+  // is read on a cleared history rather than at index 0 of the whole run.
+  this->clearHistory();
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  t += kNsPerSecond / 10;
+  ASSERT_TLM_FineSource(0, FineSource::SUN_MAG);
+  this->clearHistory();
+
+  // Now the tracker arrives, disagreeing with the filter by more than an
+  // arcsecond-class R allows, so every update is gate-rejected and the streak
+  // arms the arbitration.
+  this->star_error_[0] = Eigen::Vector3d(0.0, trackerErrorRad, 0.0);
+  this->star_valid_[0] = true;
+  for (U32 i = 0; i < kMekfNisStreak + 1; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+}
+
+void AttitudeEstimatorTester ::testOffRungTrackerVerdictFollowsTheCoarseGate() {
+  // **Just inside the boundary, and self-calibrating on it.** The event carries
+  // the statistic it was decided on, so the test asserts the *contract* — adopted
+  // iff d² is inside the gate — rather than an angle, which would move with the
+  // coarse covariance and therefore with the tuning. At this harness's tuning the
+  // boundary sits between 6° (d² = 15.9) and 9° (d² = 35.6), bracketing
+  // χ²₃(0.999) = 16.266; the sibling test below takes the other side.
+  //
+  // The window exists at all because the filter's covariance converges *below*
+  // the coarse chain's, which holds a systematic floor: under ~2° the filter
+  // accepts the tracker and there is nothing to arbitrate.
+  const QuatBI truth(
+      polaris::math::Quaternion::FromAxisAngle(Eigen::Vector3d(0.6, 0.1, 0.8).normalized(), 1.0));
+  this->loadIgrf();
+  this->setValidParameters(true, false, true);
+  this->star_unit_count_ = 1;
+  I64 t = kStartTaiNs;
+  this->armOffRungArbitration(t, truth, 6.0 * M_PI / 180.0);
+
+  ASSERT_EVENTS_FineReseededFromStarTracker_SIZE(1);
+  const auto& adopted = this->eventHistory_FineReseededFromStarTracker->at(0);
+  EXPECT_EQ(adopted.unit, 0);
+  EXPECT_LE(adopted.mahalanobis, kCoarseAgreementGate)
+      << "adopted a tracker outside the gate it is supposed to be decided by";
+  EXPECT_NEAR(adopted.separationRad, 6.0 * M_PI / 180.0, 2.0e-3);
+  ASSERT_EVENTS_FineTrackerAdoptionRefused_SIZE(0);
+  ASSERT_EVENTS_StUnitExcluded_SIZE(0);
+  ASSERT_EVENTS_FineModeDemoted_SIZE(0);
+  ASSERT_EVENTS_AttitudeLost_SIZE(0);
+
+  // The adoption took effect: the ladder is on its top rung, and the published
+  // solution is the tracker's rather than the vector pairs'.
+  this->clearHistory();
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_TLM_FineSource(0, FineSource::STAR_TRACKER);
+  ASSERT_TLM_StContributing(0, 1);
+}
+
+void AttitudeEstimatorTester ::testOffRungTrackerOutsideTheGateIsRefusedNotLatched() {
+  const QuatBI truth(
+      polaris::math::Quaternion::FromAxisAngle(Eigen::Vector3d(0.6, 0.1, 0.8).normalized(), 1.0));
+  this->loadIgrf();
+  this->setValidParameters(true, false, true);
+  this->star_unit_count_ = 1;
+  I64 t = kStartTaiNs;
+  // 9 degrees: **just** outside, d² = 35.6 against the 16.266 gate, so the pair of
+  // tests brackets the boundary rather than sitting at opposite ends of the range.
+  this->armOffRungArbitration(t, truth, 9.0 * M_PI / 180.0);
+
+  ASSERT_EVENTS_FineTrackerAdoptionRefused_SIZE(1);
+  const auto& refused = this->eventHistory_FineTrackerAdoptionRefused->at(0);
+  EXPECT_EQ(refused.unit, 0);
+  EXPECT_GT(refused.mahalanobis, kCoarseAgreementGate)
+      << "refused a tracker the gate should have adopted";
+  ASSERT_EVENTS_FineReseededFromStarTracker_SIZE(0);
+
+  // **C1: nothing is latched.** An exclusion decided on coarse agreement whose
+  // re-admission is decided on *fine* agreement (readmitStarTrackers) can never be
+  // served, so the unit must stay a candidate — which is also what lets it be
+  // adopted later from a better reference.
+  ASSERT_EVENTS_StUnitExcluded_SIZE(0);
+
+  // The mode is untouched: the vector pairs are healthy and they are not what
+  // went wrong.
+  ASSERT_EVENTS_FineModeDemoted_SIZE(0);
+  ASSERT_EVENTS_AttitudeLost_SIZE(0);
+  this->clearHistory();
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_TLM_FineSource(0, FineSource::SUN_MAG);
+
+  // Bounded cadence, not once and not per cycle: the condition is permanent, so
+  // the report repeats every MonitorAlertCycles and no more often.
+  this->clearHistory();
+  const U32 cycles = 3 * kMonitorAlertCycles;
+  for (U32 i = 0; i < cycles; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+  const U32 refusals = this->eventHistory_FineTrackerAdoptionRefused->size();
+  EXPECT_GE(refusals, 1u) << "a permanently unusable tracker went silent";
+  EXPECT_LE(refusals, cycles / kMonitorAlertCycles + 1)
+      << "the refusal is not on its bounded cadence: " << refusals << " in " << cycles << " cycles";
+  ASSERT_EVENTS_StUnitExcluded_SIZE(0);
+}
+
+void AttitudeEstimatorTester ::testOffRungArbitrationPicksTheTrackerTheCoarseFixSupports() {
+  // Two calibrated trackers, both rejected by the filter, disagreeing with each
+  // other: one near the coarse solution and one far from it. The arbitration has
+  // to take the one the coarse fix vouches for and leave the other alone — the
+  // selection SITL cannot enumerate cheaply, because it needs two units to
+  // disagree by a controlled amount.
+  const QuatBI truth(
+      polaris::math::Quaternion::FromAxisAngle(Eigen::Vector3d(0.6, 0.1, 0.8).normalized(), 1.0));
+  this->loadIgrf();
+  this->setValidParameters(true, false, true);
+  this->setStAlignParameters();
+  this->star_unit_count_ = 2;
+
+  // Calibrate unit 1 so it is a fusion candidate at all (the launch-state rule),
+  // with both units still healthy so the fit is clean.
+  I64 t = kStartTaiNs;
+  this->sendCmd_ST_ALIGN_CAL_START(0, 0, 1, kStAlignMinSamples);
+  for (U32 i = 0; i <= kStAlignMinSamples; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+  this->clearHistory();
+
+  // Drop back to the vector pairs, then bring both units back disagreeing.
+  this->sendCmd_RESET_ESTIMATOR(0, 0);
+  this->star_valid_[0] = false;
+  this->star_valid_[1] = false;
+  for (int i = 0; i < 30; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+  this->clearHistory();
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  t += kNsPerSecond / 10;
+  ASSERT_TLM_FineSource(0, FineSource::SUN_MAG);
+  this->clearHistory();
+
+  this->star_error_[0] = Eigen::Vector3d(0.0, 6.0 * M_PI / 180.0, 0.0);   // inside
+  this->star_error_[1] = Eigen::Vector3d(0.0, 15.0 * M_PI / 180.0, 0.0);  // outside
+  this->star_valid_[0] = true;
+  this->star_valid_[1] = true;
+  for (U32 i = 0; i < kMekfNisStreak + 1; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+
+  // The king was adopted; the far unit was neither adopted nor latched out.
+  ASSERT_EVENTS_FineReseededFromStarTracker_SIZE(1);
+  EXPECT_EQ(this->eventHistory_FineReseededFromStarTracker->at(0).unit, 0);
+  ASSERT_EVENTS_StUnitExcluded_SIZE(0);
+  ASSERT_EVENTS_FineModeDemoted_SIZE(0);
+  ASSERT_EVENTS_AttitudeLost_SIZE(0);
+
+  // And the solution really is the good tracker's, not the bad one's.
+  this->clearHistory();
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_TLM_FineSource(0, FineSource::STAR_TRACKER);
+  // The solution is the *adopted* unit's, not the refused one's: about 6 deg from
+  // truth (unit 0's error) and nowhere near 15 (unit 1's). Bracketed on both sides
+  // deliberately — an upper bound alone would also pass if the arbitration had
+  // quietly kept the vector solution.
+  const double published_deg = this->publishedErrorRad(truth) * 180.0 / M_PI;
+  EXPECT_GT(published_deg, 4.0) << "the solution is not the tracker's at all";
+  EXPECT_LT(published_deg, 9.0) << "the arbitration adopted the far unit";
 }
 
 void AttitudeEstimatorTester ::testUncalibratedSecondTrackerIsNotFused() {
