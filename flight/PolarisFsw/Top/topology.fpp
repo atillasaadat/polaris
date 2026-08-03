@@ -169,12 +169,30 @@ module flight {
       # rate group instead (recipe: PolarisFsw/README.md).
       PolarisSitl.sitlRateGroup.RateGroupMemberOut[0] -> attitudeEstimator.run
 
-      # Sensor measurements, SITL end of the GncPorts seam. One unit of each type
-      # today (config/spacecraft/leo_smallsat.yaml), so port 0 of each array;
-      # adding a unit is one line here plus the vehicle config, with no port or
-      # component change. SitlBridge skips units nothing is connected to.
+      # Sensor measurements, SITL end of the GncPorts seam. One line per installed
+      # unit, in the order config/spacecraft/leo_smallsat.yaml declares them —
+      # port index is vehicle build order (§19.4), and it is the index the
+      # estimator's per-unit parameters (SunAlbedoBoresightsBody) and its FDIR
+      # events (ImuUnitExcluded) name. Adding a unit is one line here plus the
+      # vehicle config, with no port or component change; SitlBridge skips units
+      # nothing is connected to.
+      #
+      # Two IMUs. That makes the flown branch of the §8.2 vote the *pairwise*
+      # one: detect a disagreement, then identify the offender against the MEKF's
+      # propagated rate. A third unit would buy a median instead, which needs no
+      # external reference — see the vehicle config for the trade.
       PolarisSitl.sitlBridge.imuOut[0]           -> attitudeEstimator.imuIn[0]
+      PolarisSitl.sitlBridge.imuOut[1]           -> attitudeEstimator.imuIn[1]
+      # Six sun sensors on the six faces: full-sky coverage. The best-available
+      # unit is never worse than 54.7 deg (the body diagonal), and the *selected*
+      # one is bounded by the 60 deg field edge the sigma budget is derived at —
+      # two separate facts, both in the vehicle config.
       PolarisSitl.sitlBridge.sunSensorOut[0]     -> attitudeEstimator.sunSensorIn[0]
+      PolarisSitl.sitlBridge.sunSensorOut[1]     -> attitudeEstimator.sunSensorIn[1]
+      PolarisSitl.sitlBridge.sunSensorOut[2]     -> attitudeEstimator.sunSensorIn[2]
+      PolarisSitl.sitlBridge.sunSensorOut[3]     -> attitudeEstimator.sunSensorIn[3]
+      PolarisSitl.sitlBridge.sunSensorOut[4]     -> attitudeEstimator.sunSensorIn[4]
+      PolarisSitl.sitlBridge.sunSensorOut[5]     -> attitudeEstimator.sunSensorIn[5]
       PolarisSitl.sitlBridge.magnetometerOut[0]  -> attitudeEstimator.magnetometerIn[0]
       PolarisSitl.sitlBridge.gnssOut[0]          -> attitudeEstimator.gnssIn[0]
       PolarisSitl.sitlBridge.starTrackerOut[0]   -> attitudeEstimator.starTrackerIn[0]

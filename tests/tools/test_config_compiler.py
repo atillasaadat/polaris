@@ -8,6 +8,7 @@ all three emitted artifacts, deterministic hashing, and strict validation.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -790,6 +791,88 @@ def test_albedo_tuning_contradicting_the_catalog_is_refused(
     # The message has to name both sides, or it sends the reader hunting.
     assert "GS-NANOSENSE-FSS" in message
     assert "ss_zp" in message
+
+
+_BORESIGHTS = "flight.attitudeEstimator.SunAlbedoBoresightsBody"
+
+
+def test_reference_vehicle_sun_suite_covers_the_whole_sky(tmp_path):
+    # The §8.2 coverage claim, checked against the artifact rather than against
+    # the comment that derives it: six units on the six face normals, each with a
+    # 60 deg acceptance cone. The worst-placed direction is a body diagonal at
+    # arccos(1/sqrt(3)) = 54.736 deg, so every direction is inside some unit's
+    # cone and the *selected* unit's incidence never exceeds that — which is what
+    # lets the shipped SigmaSunWhiteRad (the 60 deg field-edge figure) bound
+    # every handoff geometry.
+    compile_config(_TEMPLATE, _HARDWARE, tmp_path)
+    setup = json.loads((tmp_path / "sim_setup.json").read_text())
+    suns = [u for u in setup["spacecraft"]["sensors"] if u["kind"] == "sun_sensor"]
+    assert len(suns) == 6
+
+    def boresight(unit):
+        # No mounting means identity, hence body +Z (ss_zp, the array normal).
+        dcm = unit["mounting_dcm_row_major"]
+        return (0.0, 0.0, 1.0) if dcm is None else (dcm[2], dcm[5], dcm[8])
+
+    axes = sorted(tuple(round(c, 9) for c in boresight(u)) for u in suns)
+    assert axes == sorted(
+        [
+            (1.0, 0.0, 0.0),
+            (-1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, -1.0, 0.0),
+            (0.0, 0.0, 1.0),
+            (0.0, 0.0, -1.0),
+        ]
+    )
+    # The body diagonal, the direction furthest from every face normal.
+    diagonal = [1.0 / math.sqrt(3.0)] * 3
+    best = max(sum(a * b for a, b in zip(diagonal, boresight(u))) for u in suns)
+    assert math.degrees(math.acos(best)) < 60.0
+    assert math.degrees(math.acos(best)) == pytest.approx(54.7356, abs=1e-3)
+
+    # And unit 0 is the solar-array normal, which is what makes it the index the
+    # accuracy budget and the shipped albedo slot 0 both describe.
+    assert suns[0]["name"] == "ss_zp"
+    assert boresight(suns[0]) == (0.0, 0.0, 1.0)
+
+
+def test_albedo_boresights_matching_the_mountings_compile():
+    # The shipped vehicle: each slot is that unit's mounting quaternion applied
+    # to the sensor's +Z.
+    resolve(load_config(_TEMPLATE), load_hardware_library(_HARDWARE))  # must not raise
+
+
+def test_albedo_boresight_contradicting_the_mounting_is_refused(tmp_path):
+    # Same failure mode as the peak/FOV pair, one level down: the correction
+    # places the Earth in *this* unit's field, so a boresight that disagrees with
+    # the mounting scales the correction rather than failing it.
+    config = yaml.safe_load(_TEMPLATE.read_text(encoding="utf-8"))
+    boresights = list(config["spacecraft"]["fsw_parameters"][_BORESIGHTS])
+    boresights[6:9] = [0.0, 0.0, 1.0]  # slot 2 is ss_xp, whose boresight is +X
+    config["spacecraft"]["fsw_parameters"][_BORESIGHTS] = boresights
+    path = tmp_path / "mismounted.yaml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    with pytest.raises(ConfigError) as exc:
+        resolve(load_config(path), load_hardware_library(_HARDWARE))
+    message = str(exc.value)
+    assert "ss_xp" in message  # names the unit, not just the slot
+    assert "SunAlbedoBoresightsBody" in message
+
+
+def test_albedo_boresight_zero_slot_is_allowed(tmp_path):
+    # The zero vector is the configured "no correction for this unit" — a unit
+    # whose mounting nobody has characterised is a legitimate state, and the
+    # estimator then takes the uncorrected sun sigma rather than guessing.
+    config = yaml.safe_load(_TEMPLATE.read_text(encoding="utf-8"))
+    boresights = list(config["spacecraft"]["fsw_parameters"][_BORESIGHTS])
+    boresights[9:12] = [0.0, 0.0, 0.0]
+    config["spacecraft"]["fsw_parameters"][_BORESIGHTS] = boresights
+    path = tmp_path / "one_uncharacterised.yaml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    resolve(load_config(path), load_hardware_library(_HARDWARE))  # must not raise
 
 
 def test_albedo_check_is_silent_without_a_sun_sensor(tmp_path):

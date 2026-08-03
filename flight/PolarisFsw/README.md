@@ -290,15 +290,50 @@ demotion just created, so the component carries a running total that only
 **Measurement seam.** Inputs arrive on **port arrays** (`GncMaxUnits = 8`)
 defined in the interface-only `GncPorts/` module: `imuIn`, `sunSensorIn`,
 `magnetometerIn`, `gnssIn`, `starTrackerIn`, with `estimateOut` publishing the
-§8.0 product. The arrays exist from the start because the vehicle will fly
-several sun sensors, magnetometers and IMUs and one or more star trackers —
+§8.0 product. The arrays exist from the start because the vehicle flies
+several sun sensors and IMUs and will fly more magnetometers and star trackers —
 adding a unit is a topology line plus a vehicle-config entry, never a port
-change. This push consumes the **first valid, fresh** unit of each type (a
-deterministic priority in build order, *not* fusion — that is §8.2), and the
-star-tracker input is latched and counted but never fused, so coarse mode stays
-tracker-independent. Under SITL `SitlBridge` fills the seam from each STEP_REQ's
+change. Under SITL `SitlBridge` fills the seam from each STEP_REQ's
 sensor records before cycling the rate group; on hardware `Drv` sensor drivers
 do, which is why the seam is a shared port module rather than a SITL type.
+
+**Combination rules, one per sensor type (§8.2).** Each type gets the rule its
+redundancy is worth, and the differences are deliberate:
+
+- **IMUs — a fault-tolerant vote** (`lib/gnc/imu_voting`). Per-unit plausibility
+  gates (finiteness, rate magnitude against `ImuMaxRateRadps`, staleness), then a
+  per-axis **median** over the survivors at three or more units. Never an
+  average: its breakdown point is zero, so one unit railed at full scale would
+  drag the combined rate without limit — while its own validity flag still reads
+  true. **This vehicle carries two IMUs**, so the flown branch is the pairwise
+  one: a pair can detect a disagreement and not attribute it, so the tie-break is
+  the MEKF's propagated rate (the loser is excluded as `OUTVOTED`), and with no
+  filter solution available the cycle reports **no rate** rather than a coin
+  flip — the estimator then holds attitude on a growing covariance, which is the
+  §9.2 conservative response and the price of the second unit rather than the
+  third. Identification is guarded three ways: the reference is range-checked
+  against `ImuMaxRateRadps` (not merely finite), the comparison must be decisive
+  (loser outside `ImuDisagreementRadps`, winner inside), and the verdict must
+  repeat over `ImuIdentifyConfirmCycles` before the latch is spent. A persistent
+  unattributable disagreement escalates with `ImuVoteAmbiguousPersistent` every
+  `ImuAmbiguityEscalateCycles`; recovery from that is a **ground action**
+  (disambiguate, then `RESET_ESTIMATOR`, or uplink a widened gate), since no
+  autonomous choice between two disagreeing units beats continuing to refuse. Exclusions are latched and reported (`ImuUnitExcluded` with the gate
+  that closed, `ImuUnitReadmitted` on recovery, `ImuExclusionMask` and
+  `ImuContributing` as telemetry); re-admission is `ImuReadmitCycles` consecutive
+  plausible cycles, or `RESET_ESTIMATOR`.
+- **Sun sensors — selection of the best-illuminated unit**: the valid, fresh,
+  sun-in-view unit reporting the smallest realised σ, ties to the lowest index.
+  Selection rather than a weighted combination because the units share their
+  dominant systematic (albedo residual, ephemeris), which combining cannot
+  average down. The chosen index is telemetered as `SunUnitSelected` and is what
+  picks that unit's slot out of `SunAlbedoBoresightsBody`, so a handoff corrects
+  with the new face's geometry.
+- **Magnetometers and GNSS — first valid, fresh unit**, a deterministic priority
+  in build order. There is one of each on the reference vehicle, and a
+  combination rule with no redundancy to exercise is untested code.
+- **Star trackers — latched and counted, never fused**, so coarse mode stays
+  tracker-independent; fusing them into the MEKF is the next §8.2 push.
 
 **References.** The sun reference is `getBodyPosition(SUN)` (normalised,
 spacecraft-centric when a position is known) and the magnetic reference is the
@@ -493,16 +528,20 @@ the data it asked for.
    `CONDITION`/`NUMERICAL` the data is unobservable or pathological,
    `NO_IMPROVEMENT` the sensor is already as good as this fit can make it (a
    result, not a fault), `CONFIG` uplink the missing `MagCal*` parameters.
-4. **Grade the fit, then re-derive three parameters.** `MagCalResidualAngle`
+4. **Grade the fit, then re-derive two parameters.** `MagCalResidualAngle`
    should land in the few-milliradian class — SITL measures 2.4e-3 rad on the
    reference suite against a 34 mrad uncalibrated systematic. It is indicative,
    not a bound: the scalar magnitude check is blind to the error component
-   transverse to the field. Once the fit is accepted, `SigmaMagWhiteRad` and
-   `SigmaMagSysRad` no longer describe this magnetometer, and
-   `SeedMinObservability` was derived from the *ratio* of the sun and magnetic
-   sigmas — with a ~16× tighter magnetic pair the shipped `0.0076` refuses every
-   geometry in the band, and ≈`1.1e-4` preserves its 10°-separation meaning.
-   Uplink all three (`PRM_SET` + `PRM_SAVE`). **Do not follow that with
+   transverse to the field. Once the fit is accepted, `SigmaMagSysRad` no longer
+   describes this magnetometer (set it from the measured residual; `SigmaMagWhiteRad`
+   is unchanged, since the fit removes the systematic and not the sensor noise),
+   and `SeedMinObservability` was derived from the *ratio* of the sun and
+   magnetic sigmas — with a much tighter magnetic pair the shipped `0.0076`
+   refuses every geometry in the band, and **5.1e-4** preserves its
+   10°-separation meaning with the albedo correction also in force. The
+   derivation, and why an earlier `1.1e-4` was wrong, is in the post-fit uplink
+   block of `config/spacecraft/leo_smallsat.yaml`.
+   Uplink both (`PRM_SET` + `PRM_SAVE`). **Do not follow that with
    `RESET_ESTIMATOR`:** `parameterUpdated` already re-reads the whole set on the
    next cycle and rebuilds both estimators (which drops and re-seeds the MEKF on
    the new sigmas, which is what you want), while the reset would additionally

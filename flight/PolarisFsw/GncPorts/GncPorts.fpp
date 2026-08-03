@@ -32,6 +32,19 @@ module flight {
   @ A JPL scalar-first quaternion [q0,q1,q2,q3].
   array QuatF64 = [4] F64
 
+  @ One body-frame 3-vector per unit of a sensor type, flattened: unit i occupies
+  @ elements [3i, 3i+2]. Used for the per-unit sun-sensor boresights the §8.2
+  @ fusion layer needs (`AttitudeEstimator.SunAlbedoBoresightsBody`).
+  @
+  @ Flat rather than an array of `Vec3F64` because F´ parameter serialization and
+  @ the config compiler encode an array of scalars, not an array of arrays; and
+  @ one parameter rather than `GncMaxUnits` separately named ones because that
+  @ would be eight chances for them to disagree about which vector they describe.
+  @ A slot for a unit that is not installed is written as the zero vector, which
+  @ every consumer reads as "no value for this index" — it cannot be mistaken for
+  @ a direction.
+  array Vec3F64PerUnit = [GncMaxUnits * 3] F64
+
   @ Active attitude-estimation mode (design doc §8.1), mirroring
   @ polaris::state::EstimationMode. Ordered by increasing fidelity.
   enum EstimationMode : U8 {

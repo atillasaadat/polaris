@@ -248,6 +248,18 @@ void reapFsw(pid_t pid) {
   }
 }
 
+/// Occurrences of @p needle in @p text. Event streams are the only channel back
+/// from the deployment, so "fired once" and "fired every cycle" are told apart
+/// by counting rather than by finding.
+std::size_t countOf(const std::string& text, const std::string& needle) {
+  std::size_t n = 0;
+  for (std::size_t at = text.find(needle); at != std::string::npos;
+       at = text.find(needle, at + 1)) {
+    ++n;
+  }
+  return n;
+}
+
 std::string readFile(const std::string& path) {
   std::ifstream in(path);
   std::ostringstream text;
@@ -305,8 +317,8 @@ TEST(SitlAttitudeTuning, CompiledParametersLetTheEstimatorAcquireAttitude) {
   EXPECT_NE(log.find("PrmFileLoadComplete"), std::string::npos)
       << "prmDb never loaded the compiled parameter file:\n"
       << log;
-  EXPECT_NE(log.find("Records: 32"), std::string::npos)
-      << "prmDb loaded a record count other than the 32 declared parameters:\n"
+  EXPECT_NE(log.find("Records: 37"), std::string::npos)
+      << "prmDb loaded a record count other than the 37 declared parameters:\n"
       << log;
 
   // 2. The estimator accepted the whole tuning set — both gates. ConfigInvalid
@@ -516,6 +528,320 @@ TEST(SitlMagCalibration, CommandedCalibrationCollectsFitsAndApplies) {
       << log;
   EXPECT_NE(log.find("Fine mode engaged"), std::string::npos)
       << "estimator never promoted to fine mode:\n"
+      << log;
+}
+
+// ----------------------------------------------------------------------
+// Multi-IMU voting and its FDIR response (design doc §8.2, §9.2)
+// ----------------------------------------------------------------------
+
+/// Redundant gyro suite: two identical STIM300s, the reference vehicle's, in the
+/// order `config/spacecraft/leo_smallsat.yaml` declares them — so the port index
+/// the FDIR events name is the same index there.
+scenario::SpacecraftConfig votingSuite() {
+  scenario::SpacecraftConfig sc = estimationSuite();
+  // By value: push_back reallocates, and a reference into the vector would dangle.
+  scenario::UnitConfig second = sc.sensors.front();
+  second.name = "imu_b";
+  sc.sensors.push_back(second);
+  return sc;
+}
+
+io::SitlServer::Counts votingCounts() {
+  io::SitlServer::Counts counts = estimationCounts();
+  counts.imu = 2;
+  return counts;
+}
+
+/// Long enough to fly healthy, break a unit, and recover it: the re-admission
+/// policy is 10 consecutive plausible cycles (1 s at 10 Hz) on the flight
+/// tuning, so a few seconds either side of each transition is plenty.
+constexpr double kVotingDurationS = 30.0;
+constexpr unsigned kFaultStep = 100;    ///< 10 s in, well past fine-mode promotion
+constexpr unsigned kRecoverStep = 200;  ///< 20 s in, 10 s of running degraded
+
+/// Gyro bias jump injected into one unit [rad/s]: 0.05 = 2.9 deg/s, about six
+/// times the pairwise disagreement gate (0.0087) and a tenth of the plausibility
+/// limit (0.5236), so the fault is invisible to every per-unit gate and visible
+/// only to the pair.
+constexpr double kImuFaultRadps = 0.05;
+
+/// `flight.attitudeEstimator.ImuAmbiguityEscalateCycles` in the reference
+/// vehicle config, mirrored so the expected escalation count is derived rather
+/// than pasted. A change to the flight value fails this test loudly, which is
+/// the intent — the cadence is the operator-facing contract.
+constexpr std::size_t kFlightEscalateCycles = 600;
+
+scenario::SimConfig votingOrbit() {
+  scenario::SimConfig c = estimationOrbit();
+  c.scenario_name = "sitl-imu-voting";
+  c.propagation.duration_s = kVotingDurationS;
+  c.propagation.output_step_s = kVotingDurationS;
+  return c;
+}
+
+/// The ambiguity case runs longer than the identification one, and has to:
+/// asserting a *cadence* needs at least two escalations, so the run must span
+/// two 600-cycle horizons at the flight tuning. 130 s = 1300 cycles gives
+/// exactly two, with the second well clear of the boundary.
+constexpr double kAmbiguityDurationS = 130.0;
+
+scenario::SimConfig ambiguityOrbit() {
+  scenario::SimConfig c = votingOrbit();
+  c.scenario_name = "sitl-imu-ambiguity";
+  c.propagation.duration_s = kAmbiguityDurationS;
+  c.propagation.output_step_s = kAmbiguityDurationS;
+  return c;
+}
+
+/// The §8.2/§9.2 fault path **the reference vehicle actually flies**: with two
+/// IMUs there is no median to hide behind, so a disagreement has to be detected
+/// on the pair and then *attributed* by a third information source — the MEKF's
+/// propagated body rate. One unit is faulted mid-run, the estimator must
+/// identify and isolate it, keep publishing an attitude across the transition,
+/// and re-admit the unit when it recovers.
+///
+/// **The fault is deliberately a plausible one.** 0.05 rad/s (2.9 deg/s) is about
+/// six times the pairwise disagreement gate and a tenth of the 30 deg/s
+/// plausibility limit, so no per-unit gate can see it and the only thing that
+/// can is the comparison — which is the case a two-unit suite exists to handle
+/// and the one a mean would silently split the difference on. A hard-railed unit
+/// is the *easier* fault (the rate-limit gate catches it before the pair is ever
+/// consulted) and is covered in the component harness and `imu_voting_test.cpp`;
+/// this test spends the process on the harder one.
+///
+/// Verifies REQ-ADET-008 and REQ-ADET-009 on the vehicle.
+TEST(SitlImuVoting, DisagreeingImuIsIdentifiedAndTheAttitudeSurvives) {
+  const std::string bin = fswBinaryPath();
+  if (::access(bin.c_str(), X_OK) != 0) {
+    GTEST_SKIP() << "flight binary not built at " << bin
+                 << " (run `uv run fprime-util build`, or set POLARIS_FSW_BIN)";
+  }
+  if (::access(pythonPath().c_str(), X_OK) != 0) {
+    GTEST_SKIP() << "no Python interpreter at " << pythonPath()
+                 << " (run `uv sync`, or set POLARIS_PYTHON)";
+  }
+
+  const std::string work_dir = "build-artifacts/test-imu-voting-" + std::to_string(::getpid());
+  const std::string err_path = work_dir + "/configc.err";
+  const std::string prm_path = work_dir + "/PrmDb.dat";
+  const std::string log_path = work_dir + "/fsw.log";
+  ASSERT_EQ(compileConfig(work_dir, err_path), 0) << "config compiler failed:\n"
+                                                  << readFile(err_path);
+
+  io::SitlServer server(votingCounts(), 100'000'000LL);
+  ASSERT_TRUE(server.start(0)) << server.lastError();
+
+  const pid_t pid = spawnFsw(bin, server.port(), prm_path, log_path);
+  ASSERT_GE(pid, 0);
+
+  scenario::Vehicle vehicle;
+  std::string error;
+  ASSERT_TRUE(scenario::buildVehicle(votingSuite(), 1, vehicle, &error)) << error;
+  ASSERT_EQ(vehicle.imus.size(), 2u);
+  scenario::SimRunner runner;
+  io::ClosedLoop loop(runner, vehicle);
+  ASSERT_TRUE(runner.build(votingOrbit(), scenario::DataPaths::under(POLARIS_GOLDEN_DIR), &error,
+                           loop.wrench()))
+      << error;
+
+  // Fault injection on the macro-step seam: the callback runs once per exchanged
+  // step, so incrementing here counts steps and the injected bias takes effect
+  // from the next sample onwards. 0.05 rad/s is individually plausible and only
+  // the pair can see it — see the note above.
+  unsigned step = 0;
+  const io::FswCallback inner = server.callback();
+  const io::FswCallback faulted = [&](const io::FswInputs& in) {
+    if (step == kFaultStep) {
+      vehicle.imus[1].model.injectGyroBiasJump(
+          pm::Vec3<pm::frames::Body>(kImuFaultRadps, 0.0, 0.0));
+    }
+    if (step == kRecoverStep) {
+      vehicle.imus[1].model.clearFaults();
+    }
+    ++step;
+    return inner(in);
+  };
+
+  std::vector<io::MacroSample> trace;
+  ASSERT_TRUE(loop.run(faulted, &trace, &error)) << error;
+  EXPECT_TRUE(server.healthy()) << server.lastError();
+  server.stop();
+  reapFsw(pid);
+
+  const std::string log = readFile(log_path);
+  ASSERT_FALSE(log.empty()) << "no event stream captured at " << log_path;
+
+  // 1. Healthy first: the run has to have been working before the fault, or the
+  //    rest of the assertions are about a vehicle that never flew.
+  ASSERT_NE(log.find("Attitude acquired"), std::string::npos)
+      << "estimator never acquired an attitude before the fault:\n"
+      << log;
+  ASSERT_NE(log.find("Fine mode engaged"), std::string::npos)
+      << "estimator never promoted to fine mode before the fault:\n"
+      << log;
+
+  // 2. The fault was detected AND attributed. Attribution is the whole point on a
+  //    two-unit suite: the pair can only say "one of us is lying", so the reason
+  //    has to read OUTVOTED — the MEKF's propagated rate is what named the unit.
+  //    A RATE_LIMIT here would mean the injected fault was too crude to exercise
+  //    this path, and an ImuVoteAmbiguous would mean the tie-break was not
+  //    available when it should have been.
+  EXPECT_NE(log.find("IMU 1 excluded from the rate vote"), std::string::npos)
+      << "the disagreeing IMU was never excluded:\n"
+      << log;
+  EXPECT_NE(log.find("OUTVOTED"), std::string::npos)
+      << "the exclusion did not come from the filter's identification — a two-unit "
+         "disagreement was detected but not attributed:\n"
+      << log;
+  EXPECT_EQ(log.find("Two IMUs disagree"), std::string::npos)
+      << "the disagreement went unattributed while a fine solution was available:\n"
+      << log;
+  // Exactly one exclusion over the whole 10 s the fault is held. More than one
+  // is the C1 flap: an outvoted unit re-admitting itself on plausibility alone,
+  // losing the same comparison, and re-excluding — forever, at the re-admission
+  // period.
+  EXPECT_EQ(countOf(log, "excluded from the rate vote"), 1u)
+      << "the sustained fault was reported more than once: the unit flapped\n"
+      << log;
+
+  // 3. It cost nothing that matters. This is the single-fault-survival claim: the
+  //    surviving unit carried the rate through, so the attitude solution never
+  //    went invalid and the filter never lost confidence in its own measurements.
+  EXPECT_EQ(log.find("Attitude lost"), std::string::npos)
+      << "a single faulted IMU cost the attitude solution:\n"
+      << log;
+  EXPECT_EQ(log.find("Fine mode demoted"), std::string::npos)
+      << "a single faulted IMU demoted the fine solution — note the circularity "
+         "this would expose: the filter that identified the fault is the one that "
+         "then has to survive it:\n"
+      << log;
+  // And the healthy unit was not blamed for it.
+  EXPECT_EQ(log.find("IMU 0 excluded"), std::string::npos) << log;
+
+  // 4. Recovery is automatic, and it happens (§9.2): the unit behaved for
+  //    ImuReadmitCycles consecutive cycles and came back. Spending a unit of
+  //    redundancy permanently on a transient is the more expensive error, which
+  //    is why the policy is hysteresis rather than a command.
+  EXPECT_NE(log.find("IMU 1 re-admitted to the rate vote"), std::string::npos)
+      << "the recovered IMU was never re-admitted:\n"
+      << log;
+}
+
+/// The other half of the two-unit story, witnessed on the vehicle rather than
+/// only in unit tests: the **deliberate non-monotonicity**. Faulting a unit from
+/// the first step means the disagreement is present before the MEKF has a rate
+/// to be believed against, so there is nothing to attribute it with — and the
+/// vote publishes **no rate at all**, where a *single* unit in exactly the same
+/// state would have been passed straight through.
+///
+/// That is chosen, not fallen into: one unit carries no evidence of a fault,
+/// while two disagreeing units carry evidence and no attribution, and a
+/// possibly-wrong rate propagates into the attitude where the coast does not.
+/// What this run pins is that the cost is bounded to the *rate* — the vector
+/// pairs still acquire an attitude — and that nothing is latched, because
+/// latching the wrong unit is worse than carrying the disagreement.
+TEST(SitlImuVoting, UnattributableDisagreementRefusesTheRateAndKeepsTheAttitude) {
+  const std::string bin = fswBinaryPath();
+  if (::access(bin.c_str(), X_OK) != 0) {
+    GTEST_SKIP() << "flight binary not built at " << bin
+                 << " (run `uv run fprime-util build`, or set POLARIS_FSW_BIN)";
+  }
+  if (::access(pythonPath().c_str(), X_OK) != 0) {
+    GTEST_SKIP() << "no Python interpreter at " << pythonPath()
+                 << " (run `uv sync`, or set POLARIS_PYTHON)";
+  }
+
+  const std::string work_dir = "build-artifacts/test-imu-ambiguous-" + std::to_string(::getpid());
+  const std::string err_path = work_dir + "/configc.err";
+  const std::string prm_path = work_dir + "/PrmDb.dat";
+  const std::string log_path = work_dir + "/fsw.log";
+  ASSERT_EQ(compileConfig(work_dir, err_path), 0) << "config compiler failed:\n"
+                                                  << readFile(err_path);
+
+  io::SitlServer server(votingCounts(), 100'000'000LL);
+  ASSERT_TRUE(server.start(0)) << server.lastError();
+
+  const pid_t pid = spawnFsw(bin, server.port(), prm_path, log_path);
+  ASSERT_GE(pid, 0);
+
+  scenario::Vehicle vehicle;
+  std::string error;
+  ASSERT_TRUE(scenario::buildVehicle(votingSuite(), 1, vehicle, &error)) << error;
+  scenario::SimRunner runner;
+  io::ClosedLoop loop(runner, vehicle);
+  ASSERT_TRUE(runner.build(ambiguityOrbit(), scenario::DataPaths::under(POLARIS_GOLDEN_DIR), &error,
+                           loop.wrench()))
+      << error;
+
+  // Faulted from the first step, so the disagreement is in force before the
+  // filter has ever published a rate — and it stays that way, because the vote
+  // withholds the rate that the filter would need in order to acquire one. That
+  // self-sustaining state is the point: it is what a two-IMU vehicle sits in
+  // when it meets this fault outside fine mode.
+  const io::FswCallback inner = server.callback();
+  bool injected = false;
+  const io::FswCallback faulted = [&](const io::FswInputs& in) {
+    if (!injected) {
+      vehicle.imus[1].model.injectGyroBiasJump(
+          pm::Vec3<pm::frames::Body>(kImuFaultRadps, 0.0, 0.0));
+      injected = true;
+    }
+    return inner(in);
+  };
+
+  std::vector<io::MacroSample> trace;
+  ASSERT_TRUE(loop.run(faulted, &trace, &error)) << error;
+  EXPECT_TRUE(server.healthy()) << server.lastError();
+  server.stop();
+  reapFsw(pid);
+
+  const std::string log = readFile(log_path);
+  ASSERT_FALSE(log.empty()) << "no event stream captured at " << log_path;
+
+  // 1. The refusal fired, and it is the *unattributed* one — the whole
+  //    distinction from the identification test above.
+  EXPECT_NE(log.find("Two IMUs disagree"), std::string::npos)
+      << "the unattributable disagreement was never reported:\n"
+      << log;
+
+  // 2. Edge-gated: the condition persists for the whole run, so a per-cycle
+  //    event would be 300 of them. One is the contract.
+  const std::size_t reports = countOf(log, "Two IMUs disagree");
+  EXPECT_EQ(reports, 1u) << "ImuVoteAmbiguous is not edge-gated: " << reports << " reports in "
+                         << kAmbiguityDurationS << " s\n"
+                         << log;
+
+  // 2b. ...which is exactly why the escalation exists. Edge-gating alone would
+  //     leave a *permanent* fault reported once and then silent for the rest of
+  //     the flight. The escalation fires at the configured horizon and repeats
+  //     at that period — bounded, not per cycle.
+  const std::size_t escalations = countOf(log, "unattributable for");
+  const std::size_t expected =
+      static_cast<std::size_t>(kAmbiguityDurationS * 10.0) / kFlightEscalateCycles;
+  static_assert(static_cast<std::size_t>(kAmbiguityDurationS * 10.0) / kFlightEscalateCycles >= 2,
+                "the run must span two horizons or it pins the first fire, not the cadence");
+  EXPECT_GE(escalations, 1u) << "a permanently rate-less vehicle never escalated:\n" << log;
+  EXPECT_EQ(escalations, expected)
+      << "escalation cadence is not the configured horizon: " << escalations << " in "
+      << kAmbiguityDurationS << " s, expected " << expected << "\n"
+      << log;
+
+  // 3. Nothing was latched. Detection is not attribution, and excluding the
+  //    wrong unit would spend the vehicle's remaining redundancy on a guess.
+  EXPECT_EQ(log.find("excluded from the rate vote"), std::string::npos)
+      << "an unattributable disagreement latched an exclusion anyway:\n"
+      << log;
+
+  // 4. The cost is bounded to the body rate. The sun and magnetic pairs are
+  //    untouched by a gyro fault, so TRIAD still acquires and the vehicle keeps
+  //    an attitude — which is exactly why withholding the rate is the safe
+  //    response rather than a self-inflicted outage.
+  EXPECT_NE(log.find("Attitude acquired"), std::string::npos)
+      << "withholding the rate cost the attitude as well:\n"
+      << log;
+  EXPECT_EQ(log.find("Attitude lost"), std::string::npos)
+      << "the estimator could not hold the attitude through the rate refusal:\n"
       << log;
 }
 

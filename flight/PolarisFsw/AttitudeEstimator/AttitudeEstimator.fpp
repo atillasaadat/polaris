@@ -35,6 +35,18 @@ module flight {
     CONFIG = 5 @< the calibration parameters are missing or out of range in ParameterDb
   }
 
+  @ Why one IMU is not contributing to the voted body rate (design doc §8.2,
+  @ §9.2; REQ-ADET-008, REQ-ADET-009). Mirrors `polaris::gnc::ImuVoteReason`.
+  @ Carried on ImuUnitExcluded so the ground knows whether to expect recovery:
+  @ a rate-limit trip is a unit that reported something the vehicle cannot be
+  @ doing, a non-finite reading is a broken data path, and OUTVOTED is a
+  @ two-unit disagreement the filter's own propagated rate attributed.
+  enum ImuExclusionReason : U8 {
+    NOT_FINITE = 0 @< NaN or Inf in the reported rate
+    RATE_LIMIT = 1 @< magnitude above ImuMaxRateRadps — not a rate this vehicle can be at
+    OUTVOTED = 2 @< the disagreeing unit of a pair, identified by the MEKF propagated rate
+  }
+
   @ Attitude estimator — coarse chain plus MEKF fine mode with arbitration
   @ (design doc §8.1, §10; REQ-ADET-002, REQ-ADET-003, REQ-ADET-004).
   @
@@ -83,12 +95,37 @@ module flight {
   @ the fit is on raw data, and the published attitude changes only when a
   @ calibration is applied or cleared.
   @
-  @ **Multiple units are the design point.** The measurement inputs are port
-  @ arrays sized `GncMaxUnits` because the vehicle will fly several sun sensors,
-  @ magnetometers and IMUs and one or more star trackers. This push consumes the
-  @ first valid unit of each type — genuine multi-unit fusion is the §8.2 layer,
-  @ and the star-tracker input is declared but only counted until that layer
-  @ lands. Adding units is then a topology change, not a port change.
+  @ **Multiple units are combined, not merely accepted (§8.2).** The measurement
+  @ inputs are port arrays sized `GncMaxUnits`, and each type has its own
+  @ combination rule, chosen by what redundancy is worth on that sensor:
+  @
+  @  - **IMUs: a fault-tolerant vote** (`polaris::gnc::ImuVoter`). Per-unit
+  @    plausibility gates (finiteness, rate magnitude against a configured
+  @    physical vehicle limit, staleness), then a per-axis **median** at three or
+  @    more units, or — the branch the two-IMU reference vehicle flies —
+  @    pairwise-disagreement detection with the MEKF's propagated rate
+  @    identifying the offender. Averaging is forbidden: its breakdown point is
+  @    zero, so one railed unit drags the combined rate without limit. An
+  @    excluded unit is an FDIR event with a latch and an automatic re-admission
+  @    policy.
+  @  - **Sun sensors: validity-gated selection of the best-illuminated unit** —
+  @    the valid, fresh, sun-in-view unit reporting the smallest realised sigma,
+  @    which is the incidence-cosine criterion expressed in the quantity the
+  @    estimator actually consumes. Selection rather than a weighted combination
+  @    because the units' errors are dominated by a *shared* systematic (albedo,
+  @    ephemeris) that combining cannot average down, so a second unit at a worse
+  @    incidence buys noise reduction on the small term and nothing on the large
+  @    one. Ties break to the lowest index, so the choice is deterministic.
+  @  - **Magnetometers and GNSS: first valid, fresh unit**, a deterministic
+  @    priority in vehicle build order. Unchanged, and honest: there is one of
+  @    each on the reference vehicle, and a combination rule with no redundancy
+  @    to exercise is untested code.
+  @  - **Star trackers: counted only.** The tracker joins the MEKF in the next
+  @    §8.2 push; the coarse chain must stay tracker-independent to remain the
+  @    Safe-mode floor (§10).
+  @
+  @ Adding a unit is a topology line plus a vehicle-config entry — no port or
+  @ component change.
   @
   @ **Tuning has no defaults, by design (§19.3).** Every parameter below is
   @ mission configuration; a coarse estimator quietly running on an invented
@@ -359,6 +396,61 @@ module flight {
     @ Largest geocentric radius accepted from a GNSS fix [m] (§9.1 range gate).
     param MaxPositionRadiusM: F64
 
+    # --- Multi-IMU voting (§8.2) -------------------------------------------
+    # Part of the **coarse** validity gate above rather than a set of their own,
+    # and deliberately so: without a voted body rate there is no gyro
+    # propagation, so a missing value here costs exactly what a missing
+    # SigmaSunWhiteRad costs — the whole estimator. A separate gate would imply
+    # a degraded-but-flying state that does not exist.
+
+    @ Physical body-rate magnitude limit for this vehicle [rad/s]. A unit
+    @ reporting above it is failed, not fast. Derive it from the vehicle's worst
+    @ credible rate (separation tip-off, detumble entry) with margin — **not**
+    @ from the gyro's measurement range, which is what a railed unit reports.
+    @ Must be finite and positive.
+    param ImuMaxRateRadps: F64
+
+    @ Pairwise disagreement gate on the rate difference magnitude [rad/s], used
+    @ only when the surviving set is exactly two units. Above the pair's combined
+    @ noise and bias repeatability by a comfortable factor: a false disagreement
+    @ costs the body rate for that cycle, because two units can detect a fault
+    @ and never attribute one. Must be finite and positive.
+    param ImuDisagreementRadps: F64
+
+    @ Consecutive cycles passing **the criterion that excluded it** that re-admit
+    @ an IMU. The hysteresis on the automatic recovery policy (§9.2): long enough
+    @ that a marginal unit cannot flap in and out, short enough that a transient
+    @ does not cost a unit of redundancy for the rest of the flight. Must be
+    @ non-zero — zero would make the exclusion latch a no-op.
+    @
+    @ The criterion is per exclusion kind. A gate failure is undone by passing
+    @ that gate; a unit excluded by *identification* was plausible by
+    @ construction, so it earns credit only on cycles where it agrees with the
+    @ combination — otherwise it would re-admit unconditionally and be outvoted
+    @ again, flapping at this period with an FDIR event per lap.
+    param ImuReadmitCycles: U32
+
+    @ Consecutive cycles the same IMU must lose the pairwise identification
+    @ before it is latched out. Must be non-zero.
+    @
+    @ A latch is permanent until re-admission earns it back, so one sample must
+    @ not buy one — particularly under a slow common-mode drift, where the
+    @ residual ordering can flip cycle to cycle. This costs detection latency,
+    @ not rate availability: the winning unit is published throughout the
+    @ confirmation window.
+    param ImuIdentifyConfirmCycles: U32
+
+    @ Consecutive cycles of unattributable IMU disagreement after which the
+    @ estimator escalates (§9.2), and the period at which that escalation is
+    @ re-reported while the condition persists. Must be non-zero.
+    @
+    @ The refusal itself is edge-gated, which is right for a transient and wrong
+    @ for a permanent condition: without this the vehicle would fly rate-less
+    @ indefinitely after a single warning. One parameter serves both the horizon
+    @ and the repeat cadence, because a condition worth re-reporting is worth
+    @ re-reporting at the interval that made it notable.
+    param ImuAmbiguityEscalateCycles: U32
+
     # ----------------------------------------------------------------------
     # Fine-mode (MEKF) parameters — a second, independent validity gate
     # ----------------------------------------------------------------------
@@ -484,27 +576,36 @@ module flight {
     # not collected data, so there is no command, no window, and no fitted state
     # to persist. It runs on every cycle whose geometry supports it.
     #
-    # All three describe the sun sensor the correction is applied to. The vehicle
-    # carries one today and `selectSunSensor` picks one unit per cycle; when the
-    # §8.2 fusion layer fuses several, these become per-unit and this set is what
-    # generalises.
+    # The peak and the field of view describe the sun-sensor **part**, of which
+    # the vehicle carries one type, so they are one value each; the boresight is
+    # per **unit**, since the whole point of the §8.2 suite is that different
+    # units point at different faces. A suite of mixed parts would need the first
+    # two per-unit as well — the change is another Vec3F64PerUnit-shaped
+    # parameter each, not a redesign.
 
-    @ Peak angular error from Earthshine for the selected sun sensor [rad]:
-    @ the value reached with the Earth filling the field on a fully sunlit day
-    @ side, 90 deg from the Sun. The unit's datasheet figure — `albedo_error_deg`
-    @ in its config/hardware entry, converted to radians. Must be finite, >= 0,
-    @ and below a quarter turn (which catches degrees left unconverted).
+    @ Peak angular error from Earthshine [rad]: the value reached with the Earth
+    @ filling the field on a fully sunlit day side, 90 deg from the Sun. The
+    @ unit's datasheet figure — `albedo_error_deg` in its config/hardware entry,
+    @ converted to radians. Must be finite, >= 0, and below a quarter turn (which
+    @ catches degrees left unconverted).
     param SunAlbedoPeakRad: F64
 
-    @ Acceptance half-angle of the selected sun sensor [rad], which sets how much
+    @ Acceptance half-angle of the sun-sensor part [rad], which sets how much
     @ Earth can be in its field at all. Must be positive and <= pi/2.
     param SunAlbedoHalfFovRad: F64
 
-    @ Boresight of the selected sun sensor in **body** axes (unit vector): its
-    @ mounting quaternion applied to the sensor's +Z. Mounting is configuration,
-    @ not measurement, which is why it arrives here rather than on the
-    @ measurement port.
-    param SunAlbedoBoresightBody: Vec3F64
+    @ Per-unit boresights in **body** axes, flattened three components at a time
+    @ in `sunSensorIn` port-array order: each unit's mounting quaternion applied
+    @ to the sensor's +Z. Mounting is configuration, not measurement, which is why
+    @ it arrives here rather than on the measurement port.
+    @
+    @ A slot for a unit that is not installed — or one whose mounting has not been
+    @ characterised — is the **zero vector**, and the correction is then skipped
+    @ for that unit and the cycle weighted at SigmaSunAlbedoUncorrRad. Skipping
+    @ rather than guessing: the correction places the Earth in *this* unit's
+    @ field, so a wrong boresight injects a bias the size of the one being
+    @ removed, pointed in an arbitrary direction (§8.1).
+    param SunAlbedoBoresightsBody: Vec3F64PerUnit
 
     # ----------------------------------------------------------------------
     # Telemetry (health: mode, solution, margins, source quality)
@@ -550,8 +651,30 @@ module flight {
     @ degraded (analytic ephemeris / zero-EOP); UNAVAILABLE means no reference.
     telemetry RefGrade: TableGrade
 
-    @ A valid, fresh gyro measurement was found this cycle.
+    @ A valid, fresh gyro measurement was found this cycle. With the §8.2 vote in
+    @ place this means "the vote produced a usable rate", which is not the same as
+    @ "some unit reported": a two-unit disagreement nothing could attribute leaves
+    @ this false with both units still talking.
     telemetry GyroValid: bool
+
+    @ IMUs contributing to this cycle's voted rate (§8.2). The redundancy margin,
+    @ read alongside ImuExclusionMask: 2 is the healthy reference vehicle, which
+    @ can *detect* a disagreement and needs the MEKF's propagated rate to
+    @ attribute one; 1 has lost detection as well; 0 means no rate this cycle. A
+    @ vehicle carrying 3 or more reads 3+ here and takes the median branch, which
+    @ needs no external reference.
+    telemetry ImuContributing: U32
+
+    @ Bit i set means IMU i is latched out of the vote (§9.2). One word rather
+    @ than a channel per unit, so the whole array's health is one trend line; the
+    @ transitions are ImuUnitExcluded / ImuUnitReadmitted.
+    telemetry ImuExclusionMask: U32
+
+    @ Port index of the sun sensor selected this cycle — the valid, fresh,
+    @ sun-in-view unit with the smallest realised sigma (§8.2). 255 when no unit
+    @ was selectable (eclipse, or the Sun outside every field). Watching this step
+    @ between units is how a handoff shows up on the ground.
+    telemetry SunUnitSelected: U8
 
     @ A valid, fresh sun measurement with the sun in view, paired with a
     @ reference, was found this cycle.
@@ -762,6 +885,67 @@ module flight {
       severity activity high \
       format "Attitude reference recovered: domain={} grade={}"
 
+    @ One IMU failed a plausibility gate and has been latched out of the vote
+    @ (design doc §8.2, §9.2; REQ-ADET-008, REQ-ADET-009). Fires on the
+    @ **transition** into exclusion, not once per cycle in it, so a permanently
+    @ dead unit costs one event rather than 10 per second.
+    @ Action: none autonomously — the vote has already isolated the unit and the
+    @ remaining set carries the rate. Operator: trend ImuExclusionMask. A unit
+    @ that re-excludes repeatedly after ImuUnitReadmitted is degrading rather
+    @ than glitching, and is a candidate for a commanded power cycle.
+    event ImuUnitExcluded(unit: U8, reason: ImuExclusionReason) \
+      severity warning high \
+      format "IMU {} excluded from the rate vote: {}"
+
+    @ An excluded IMU behaved for ImuReadmitCycles consecutive cycles and is back
+    @ in the vote. The recovery edge of ImuUnitExcluded.
+    event ImuUnitReadmitted(unit: U8) \
+      severity activity high \
+      format "IMU {} re-admitted to the rate vote"
+
+    @ Exactly two IMUs survived the plausibility gates, they disagree by more than
+    @ ImuDisagreementRadps, and no MEKF propagated rate was available to say which
+    @ of them to believe. **No body rate is published this cycle** — a rate that
+    @ cannot be trusted is worse than none, because it propagates the fault into
+    @ the attitude solution, whereas the estimator's dropout behaviour (hold and
+    @ coast on a growing covariance) is designed for. Edge-gated.
+    @
+    @ On the two-IMU reference vehicle this is a reachable flight state rather
+    @ than an already-degraded one: the pair is the whole suite, so a
+    @ disagreement while the vehicle is in coarse mode — before the MEKF has
+    @ seeded, or after a demotion — has nothing to attribute it with.
+    @ Action: a genuine loss of rate knowledge, and the §9.2 conservative
+    @ response is already taken (hold, coast, grow the covariance). This event is
+    @ **edge-gated**, so a persistent condition is reported by
+    @ ImuVoteAmbiguousPersistent rather than by this one repeating — read that
+    @ event's Action block for the recovery path. If fine mode is available the
+    @ identification runs instead and this event is not emitted; an
+    @ ImuUnitExcluded(OUTVOTED) appears in its place.
+    event ImuVoteAmbiguous(rateDifferenceRadps: F64) \
+      severity warning high \
+      format "Two IMUs disagree by {} rad/s and nothing can attribute it: no body rate"
+
+    @ The unattributable disagreement above has persisted for
+    @ ImuAmbiguityEscalateCycles, and the vehicle has been without a body rate
+    @ for that whole time. Re-emitted at the same period while it continues, so
+    @ the condition stays visible without becoming per-cycle noise.
+    @
+    @ **The onboard response is refusal plus this escalation, and nothing more.**
+    @ That is a deliberate boundary, not an omission: choosing between two
+    @ disagreeing units without evidence is exactly what the refusal exists to
+    @ avoid, so there is no autonomous action that is better than continuing to
+    @ refuse. Recovery is a **ground action**: disambiguate from telemetry (per-unit
+    @ rates are not downlinked individually, but ImuContributing, the attitude
+    @ solution's behaviour and the vehicle's commanded history are), then either
+    @ RESET_ESTIMATOR after the faulty unit is known, or uplink a widened
+    @ ImuDisagreementRadps if the pair is merely out of family rather than faulted.
+    @ Action: an autonomous FDIR mode response (e.g. escalation to Safe) is
+    @ explicitly **deferred to the §9 FDIR push**, which owns the mode ladder;
+    @ this event is the signal that push will consume.
+    event ImuVoteAmbiguousPersistent(durationSec: F64, cyclesWithoutRate: U32) \
+      severity warning high \
+      format "IMU disagreement unattributable for {} s ({} cycles without a body rate): ground intervention required"
+
     @ No valid GNSS position was available, so the geomagnetic reference could
     @ not be evaluated and the magnetic pair was excluded this cycle. With no
     @ magnetic pair there is no TRIAD, so the estimator gyro-coasts. Edge-gated.
@@ -819,12 +1003,14 @@ module flight {
     @ does and does not bound.
     @ Action: grade the fit. A residual in the few-milliradian class is the
     @ expected result on the reference budget. Then consider the **re-derivation
-    @ the calibration forces**: SigmaMagWhiteRad/SigmaMagSysRad describe an
-    @ uncalibrated magnetometer, and SeedMinObservability was derived from the
-    @ *ratio* of the sun and magnetic sigmas — a ~16x tighter magnetic pair makes
-    @ the shipped 0.0076 refuse every geometry in the band (~1.1e-4 preserves its
-    @ 10 deg meaning). Uplink all three before relying on fine mode. §8.1 and
-    @ flight/PolarisFsw/README.md carry the procedure.
+    @ the calibration forces**: SigmaMagSysRad describes an uncalibrated
+    @ magnetometer, and SeedMinObservability was derived from the *ratio* of the
+    @ sun and magnetic sigmas — a much tighter magnetic pair makes the shipped
+    @ 0.0076 refuse every geometry in the band, and 5.1e-4 preserves its 10 deg
+    @ meaning with the albedo correction also in force. Uplink both before
+    @ relying on fine mode (SigmaMagWhiteRad is unchanged: the fit removes the
+    @ systematic, not the sensor noise). §8.1 and flight/PolarisFsw/README.md
+    @ carry the procedure.
     event MagCalComplete(residualAngleRad: F64, coverage: F64, samples: U32) \
       severity activity high \
       format "Magnetometer calibration applied: residual={} rad, coverage={}, samples={}"

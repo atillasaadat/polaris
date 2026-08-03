@@ -15,6 +15,7 @@ register_fprime_module(
     SOURCES
         "${CMAKE_CURRENT_LIST_DIR}/AttitudeEstimator.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/AttitudeEstimatorMagCal.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/AttitudeEstimatorSensors.cpp"
     DEPENDS
         polaris_gnc
         polaris_environment
@@ -41,6 +42,7 @@ register_fprime_ut(
     SOURCES
         "${CMAKE_CURRENT_LIST_DIR}/AttitudeEstimator.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/AttitudeEstimatorMagCal.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/AttitudeEstimatorSensors.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/test/ut/AttitudeEstimatorTester.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/test/ut/AttitudeEstimatorTestMain.cpp"
     DEPENDS

@@ -186,16 +186,25 @@ constexpr double kSunSysPostAlbedoTables = 0.0105;
 /// because it is a **flight-parameter finding, not a test detail**. The gated
 /// ratio `λ_min/λ_max` of `M = Σ σᵢ⁻²(I − b̂ᵢb̂ᵢᵀ)` is scale-free under a
 /// *common* rescaling of the σ's, which is what makes it a geometry gate — but
-/// it is not invariant to changing the σ's *relative* to each other. With the
-/// uncalibrated budget the two sources are within 10% of each other in weight
-/// and a 10° separation gives 0.0076, the shipped value. Calibrated, the
-/// magnetic pair is ~16× tighter than the sun pair, so its weight is ~270×
-/// larger, `λ_max ≈ w_mag` while `λ_min ≈ w_sun·sin²θ`, and the same 10°
-/// geometry now reads ~1.1e-4. The shipped 0.0076 would refuse **every**
-/// geometry in the band. So `fine.seedMinObservability` in
-/// `config/spacecraft/leo_smallsat.yaml` must be re-derived when the
-/// calibration is actually enabled on the vehicle; this constant is that
-/// re-derivation for the projection.
+/// it is not invariant to changing the σ's *relative* to each other. Splitting
+/// `M` into its out-of-plane direction (eigenvalue `w_s + w_m`) and its 2×2
+/// in-plane block (trace `w_s + w_m`, determinant `w_s w_m sin²θ`) gives
+///
+///     λ_min/λ_max = ½[1 − √(1 − 4 w_s w_m sin²θ / (w_s + w_m)²)],
+///
+/// which collapses to `sin²(θ/2)` at equal weights — the shipped 0.0076 at
+/// θ = 10°. On the post-calibration budget the weights are far from equal, and
+/// the same 10° reads **5.16e-4** on the analytic ephemeris and 6.14e-4 with the
+/// DE440 tables. **5.1e-4** is what the ground uplinks: the grade changes per
+/// cycle without an uplink, so the gate has to admit 10° in the worse of the two
+/// (design doc §8.1, and the derivation block in
+/// `config/spacecraft/leo_smallsat.yaml`).
+///
+/// This campaign runs the gate at **1.0e-4**, deliberately looser than flight.
+/// The sweep never goes below 45° of separation, so the gate is not what any run
+/// here turns on, and a looser value keeps the projections from being
+/// accidentally gated by a flight parameter they are not measuring. Do **not**
+/// read this constant as the uplink value; 5.1e-4 is.
 constexpr double kSeedMinObservabilityPostCal = 1.0e-4;
 
 /// Sun/field separations sampled: the well-conditioned band the requirements are
@@ -327,13 +336,109 @@ RunSetup drawRun(polaris::random::SplitMix64& rng, double sun_sys, double mag_sy
   return s;
 }
 
+// ── The sun-sensor suite, and what a handoff costs (§8.2) ───────────────────
+//
+// The reference vehicle carries six GomSpace FSS units on the six body faces
+// (`config/spacecraft/leo_smallsat.yaml`). Two consequences matter to this
+// campaign, and the second is the one the requirement rests on.
+//
+// **Coverage.** Six 60°-half-angle cones on the face normals cover the sphere:
+// the worst-placed direction is a body diagonal at arccos(1/√3) = 54.736° from
+// each of the three nearest normals. So the Sun is always in *some* unit's
+// field, with the best-available incidence never exceeding 54.736°. The flight
+// selector does not always pick that unit (see selectSunUnit — σ-ordered, ties
+// to the lowest index), so the *selected* incidence is bounded only by the 60°
+// field edge; 54.736° is a property of the layout, not of the selection.
+//
+// **What the vehicle is told, versus what it gets.** The FSS is specified 0.5°
+// (3σ) inside 45° incidence and 2.0° out to the 60° edge, and it reports its
+// realised σ per sample. The *truth* noise below follows that curve, because
+// that is the sensor's physics. The estimators are handed the shipped
+// `SigmaSunWhiteRad` — the conservative 60°-edge figure — on every cycle,
+// because that is what the flight code does: `AttitudeEstimator` weights with
+// the configured constant and does not yet consume the per-sample σ the port
+// already carries. Since 54.736° < 60°, the constant **bounds** every geometry
+// the suite can hand it, which is exactly the claim the handoff sweep verifies.
+// Consuming the realised σ would tighten the fine solution and is deferred: it
+// needs a per-cycle white override on `CoarseAttitudeInput` (the MEKF already
+// takes σ per update).
+
+constexpr int kSunUnits = 6;
+
+/// Body-frame boresights of the six-face suite, in the vehicle-config order.
+const Eigen::Vector3d kSunBoresights[kSunUnits] = {
+    Eigen::Vector3d::UnitZ(), Eigen::Vector3d(0.0, 0.0, -1.0),
+    Eigen::Vector3d::UnitX(), Eigen::Vector3d(-1.0, 0.0, 0.0),
+    Eigen::Vector3d::UnitY(), Eigen::Vector3d(0.0, -1.0, 0.0)};
+
+/// FSS acceptance half-angle and its two accuracy regimes
+/// (`config/hardware/sun_sensor/gomspace_nanosense_fss.yaml`), as 1σ.
+constexpr double kFssHalfFovRad = 60.0 * kDeg;
+constexpr double kFssInnerHalfAngleRad = 45.0 * kDeg;
+constexpr double kFssSigmaInner = (0.5 / 3.0) * kDeg;
+constexpr double kFssSigmaOuter = (2.0 / 3.0) * kDeg;
+
+/// The realised 1σ a unit at @p incidence_rad reports, from the FSS's two
+/// accuracy regimes. This is the step function the *sensor* publishes, and
+/// therefore the only thing the flight selector can order on.
+double fssSigmaAt(double incidence_rad) {
+  return (incidence_rad <= kFssInnerHalfAngleRad) ? kFssSigmaInner : kFssSigmaOuter;
+}
+
+/// The unit `AttitudeEstimator::selectSunSensor` would pick for a Sun at
+/// @p sun_body, and the σ and incidence that unit realises.
+///
+/// **This mirrors the flight selector exactly, and the distinction matters.**
+/// The flight rule is *smallest reported σ, ties to the lowest index* — not
+/// smallest incidence, which the estimator cannot see. Because σ is a two-regime
+/// step function, ties are the common case: with several units inside 45° they
+/// all report `kFssSigmaInner`, and the vehicle takes the lowest-indexed of
+/// them, which is generally **not** the best-aimed one. Selecting on incidence
+/// here would flatter the campaign by modelling a selector the vehicle does not
+/// have.
+///
+/// Returns -1 in @p index when no unit sees the Sun, which the six-face suite
+/// makes unreachable — asserted rather than assumed by
+/// @ref SunSuiteCoversEveryAttitude.
+void selectSunUnit(const Eigen::Vector3d& sun_body, int& index, double& sigma_rad,
+                   double& incidence_rad) {
+  index = -1;
+  sigma_rad = kFssSigmaOuter;
+  incidence_rad = M_PI;
+  for (int i = 0; i < kSunUnits; ++i) {
+    // atan2 of the cross-product norm against the dot product (lib/README.md).
+    const double angle =
+        std::atan2(sun_body.cross(kSunBoresights[i]).norm(), sun_body.dot(kSunBoresights[i]));
+    if (angle > kFssHalfFovRad) {
+      continue;  // Sun outside this unit's field: it reports no sun in view
+    }
+    const double sigma = fssSigmaAt(angle);
+    // Strictly-less, so a tie keeps the earlier index — the flight rule.
+    if (index < 0 || sigma < sigma_rad) {
+      index = i;
+      sigma_rad = sigma;
+      incidence_rad = angle;
+    }
+  }
+}
+
 /// The measured sun direction in body: truth, tilted by the run's fixed
 /// systematic offset, then by this cycle's white draw.
+///
+/// @param white_sigma_rad the 1σ of that white draw. The single-unit campaigns
+///        pass the shipped field-edge `kSigmaSunWhite`; the handoff sweep passes
+///        the σ the *selected* unit of the six-face suite realises at this
+///        attitude, which is the sensor's own accuracy-vs-incidence curve.
 Eigen::Vector3d measureSun(const RunSetup& s, const pm::Quaternion& q_true,
-                           polaris::random::SplitMix64& rng) {
+                           polaris::random::SplitMix64& rng, double white_sigma_rad) {
   const Eigen::Vector3d truth = q_true.rotate(s.sun_eci);
   const Eigen::Vector3d biased = tilt(truth, s.sys.sun1, s.sys.sun2);
-  return tilt(biased, kSigmaSunWhite * rng.gaussian(), kSigmaSunWhite * rng.gaussian());
+  return tilt(biased, white_sigma_rad * rng.gaussian(), white_sigma_rad * rng.gaussian());
+}
+
+Eigen::Vector3d measureSun(const RunSetup& s, const pm::Quaternion& q_true,
+                           polaris::random::SplitMix64& rng) {
+  return measureSun(s, q_true, rng, kSigmaSunWhite);
 }
 
 Eigen::Vector3d measureMag(const RunSetup& s, const pm::Quaternion& q_true,
@@ -424,13 +529,33 @@ struct PairedRun {
   pm::Quaternion fine{};
   pm::Quaternion truth{};
   bool ok{false};  ///< false if either chain failed to seed or ended invalid
+
+  /// Sun-sensor suite diagnostics, written only by the handoff sweep: which unit
+  /// the §8.2 selection picked on the last cycle, the worst incidence at the
+  /// selected unit over the run, and how many times the selection changed. Kept
+  /// on the run rather than accumulated globally so the assertions can be stated
+  /// on the distribution rather than on a side effect.
+  int sun_unit{-1};
+  double worst_incidence_rad{0.0};
+  int handoffs{0};
 };
 
 /// Run the campaign at a given magnetic-systematic level [rad]. The seeds do not
 /// depend on it, so two levels give the same geometry and the same noise
 /// sequences with only the magnetic bias rescaled — the projection below is
 /// therefore paired against the baseline as well.
-std::vector<PairedRun> runCampaign(double sun_sys, double mag_sys, double seed_min_observability) {
+/// @param sweep_handoff model the six-face sun-sensor suite (§8.2): each cycle's
+///        white noise is drawn at the σ the *selected* unit realises at that
+///        attitude, and the per-run diagnostics above are filled. The estimators
+///        are still told the shipped field-edge σ, exactly as the flight code
+///        does — see the suite note above. False reproduces the single-unit
+///        campaign the earlier pushes measured, bit for bit.
+/// @param rate_scale multiplier on the drawn body rate. The default 1 is the
+///        slow controlled-vehicle rate; the handoff case raises it so the
+///        selected unit changes **within** a run rather than only between runs.
+std::vector<PairedRun> runCampaign(double sun_sys, double mag_sys, double seed_min_observability,
+                                   bool sweep_handoff = false, double rate_scale = 1.0,
+                                   int steps = kSteps) {
   // The 1σ handed to the MEKF and the Davenport seed per source: white ⊕
   // systematic, exactly as `AttitudeEstimator::refreshCoarseConfig` inflates it.
   // The filter has no way to model a systematic term, so the caller pays for it
@@ -443,11 +568,12 @@ std::vector<PairedRun> runCampaign(double sun_sys, double mag_sys, double seed_m
 
     for (int run = 0; run < kRuns; ++run) {
       polaris::random::SplitMix64 rng(polaris::random::streamSeed(0xC0A125Eu, run));
-      const RunSetup s = drawRun(rng, sun_sys, mag_sys);
+      RunSetup s = drawRun(rng, sun_sys, mag_sys);
+      s.rate *= rate_scale;
       Eigen::Vector3d bias = s.bias;
 
       PairedRun paired{};
-      paired.truth = truthAttitude(s.rate, kSteps * kDt, s.q0);
+      paired.truth = truthAttitude(s.rate, steps * kDt, s.q0);
 
       gnc::CoarseAttitudeEstimator coarse(coarseConfig(sun_sys, mag_sys));
       gnc::Mekf fine(mekfConfig());
@@ -482,13 +608,33 @@ std::vector<PairedRun> runCampaign(double sun_sys, double mag_sys, double seed_m
 
       gnc::CoarseAttitudeOutput coarse_out{};
       bool fine_ok = true;
-      for (int step = 1; step <= kSteps; ++step) {
+      int previous_unit = -1;
+      for (int step = 1; step <= steps; ++step) {
         const double t = step * kDt;
         const pm::Quaternion q_true = truthAttitude(s.rate, t, s.q0);
 
+        // The §8.2 suite: which unit sees the Sun best at this attitude, and the
+        // σ it realises there. Off the handoff sweep this is the shipped
+        // field-edge constant on every cycle, which is what the earlier campaigns
+        // measured.
+        double white_sigma = kSigmaSunWhite;
+        if (sweep_handoff) {
+          int unit = -1;
+          double incidence = 0.0;
+          selectSunUnit(q_true.rotate(s.sun_eci), unit, white_sigma, incidence);
+          if (unit >= 0) {
+            paired.sun_unit = unit;
+            paired.worst_incidence_rad = std::max(paired.worst_incidence_rad, incidence);
+            if (previous_unit >= 0 && unit != previous_unit) {
+              ++paired.handoffs;
+            }
+            previous_unit = unit;
+          }
+        }
+
         // Drawn once, handed to both chains.
         const Eigen::Vector3d gyro = measureGyro(s.rate, bias, rng);
-        const Eigen::Vector3d sun_body = measureSun(s, q_true, rng);
+        const Eigen::Vector3d sun_body = measureSun(s, q_true, rng, white_sigma);
         const Eigen::Vector3d mag_body = measureMag(s, q_true, rng);
 
         gnc::CoarseAttitudeInput in{};
@@ -562,6 +708,29 @@ const std::vector<PairedRun>& requirementRuns() {
   return runs;
 }
 
+/// Body rate for the handoff sweep: 0.5 rad/s ≈ 29 °/s, so a 10 s run turns the
+/// vehicle through ~290° and the selected sun sensor changes several times
+/// *inside* the run. Not a controlled-pointing rate — it is a slew/detumble one,
+/// and that is the point: a handoff is a slew-time event, so the sweep has to be
+/// flown at slew rates or it only ever samples one unit per run.
+constexpr double kHandoffRateScale = 100.0;
+/// 5 s at 10 Hz. Longer than the steady-state runs because the transient this
+/// case is about — the cycles either side of a handoff — has to be *inside* the
+/// sampled window rather than before it, and short enough that the campaign
+/// stays a fraction of this binary's runtime. At the slew rate above it turns
+/// the vehicle through ~145°, which crosses two or three unit boundaries.
+constexpr int kHandoffSteps = 50;
+
+/// The **handoff** campaign: the same post-calibration budget REQ-ADET-005/006
+/// are verified on, flown at slew rates through the six-face sun-sensor suite so
+/// the active unit changes within each run (§8.2). Run once on first use.
+const std::vector<PairedRun>& handoffRuns() {
+  static const std::vector<PairedRun> runs =
+      runCampaign(kSunSysPostAlbedoTables, kSigmaMagSysPostCal, kSeedMinObservabilityPostCal,
+                  /*sweep_handoff=*/true, kHandoffRateScale, kHandoffSteps);
+  return runs;
+}
+
 /// The campaign's coarse (or fine) error norms as a @ref Campaign.
 Campaign errorNorms(const std::vector<PairedRun>& runs, bool fine) {
   Campaign c;
@@ -625,6 +794,140 @@ TEST(AttitudeAccuracyMonteCarlo, FineModeKnowledgeErrorNorm) {
       << kFineLimitDeg << " deg threshold; REQ-ADET-006 requires 20%";
   // Same sensitivity floor as the coarse campaign; measured median is 0.51°.
   EXPECT_GT(campaign.median(), 0.1) << "median error implausibly small — is the noise wired in?";
+}
+
+// ── §8.2: the sun-sensor suite and its handoff geometry ─────────────────────
+
+/// The coverage claim the handoff argument rests on, checked directly rather
+/// than inherited from the vehicle-config comment that derives it.
+///
+/// **Two separate facts, and conflating them is the trap.**
+///  - *Coverage geometry:* every direction is inside some unit's 60° cone, and
+///    the **best available** unit is never worse than the body-diagonal
+///    arccos(1/sqrt(3)) = 54.736°. That is a property of the six-face layout
+///    alone, independent of how the vehicle chooses among the units in view.
+///  - *Accuracy bound:* the shipped `SigmaSunWhiteRad` is the FSS's **60°
+///    field-edge** figure, and that — not 54.736° — is what bounds the error of
+///    whatever unit the flight selector actually picks. The selector orders on
+///    reported sigma with ties to the lowest index, and sigma is a two-regime
+///    step, so under a tie it can take a unit aimed considerably worse than the
+///    best available, anywhere out to the 60° edge. The edge figure covers that;
+///    the body-diagonal figure would not.
+///
+/// Both are asserted below, separately and on the right quantity.
+TEST(AttitudeAccuracyMonteCarlo, SunSuiteCoversEveryAttitude) {
+  RecordProperty("verifies", "REQ-ADET-010");
+  polaris::random::SplitMix64 rng(polaris::random::streamSeed(0x5A0E5u, 1));
+  double worst_best_available = 0.0;  // coverage geometry
+  double worst_selected = 0.0;        // what the flight selector actually takes
+  int uncovered = 0;
+  int inner_regime = 0;
+  constexpr int kDirections = 200000;
+  for (int i = 0; i < kDirections; ++i) {
+    const Eigen::Vector3d u =
+        Eigen::Vector3d(rng.gaussian(), rng.gaussian(), rng.gaussian()).normalized();
+
+    // Best available, over every unit with the Sun in field: the layout property.
+    double best = M_PI;
+    for (int k = 0; k < kSunUnits; ++k) {
+      const double angle = std::atan2(u.cross(kSunBoresights[k]).norm(), u.dot(kSunBoresights[k]));
+      if (angle <= kFssHalfFovRad) {
+        best = std::min(best, angle);
+      }
+    }
+
+    int unit = -1;
+    double sigma = 0.0;
+    double incidence = 0.0;
+    selectSunUnit(u, unit, sigma, incidence);
+    if (unit < 0) {
+      ++uncovered;
+      continue;
+    }
+    worst_best_available = std::max(worst_best_available, best);
+    worst_selected = std::max(worst_selected, incidence);
+    if (sigma == kFssSigmaInner) {
+      ++inner_regime;
+    }
+  }
+  const double best_deg = worst_best_available / kDeg;
+  const double selected_deg = worst_selected / kDeg;
+  std::printf(
+      "[sun suite] %d directions: uncovered=%d  worst best-available=%.3f deg  worst "
+      "selected=%.3f deg  %.1f%% in the 45 deg regime\n",
+      kDirections, uncovered, best_deg, selected_deg,
+      100.0 * static_cast<double>(inner_regime) / static_cast<double>(kDirections));
+
+  EXPECT_EQ(uncovered, 0) << "the six-face suite left a direction with no sun sensor in view";
+
+  // Coverage geometry: arccos(1/sqrt(3)) = 54.7356 deg, the body diagonal. The
+  // lower bound is there to prove the sweep reached the worst-case direction.
+  EXPECT_LT(best_deg, 54.7357);
+  EXPECT_GT(best_deg, 54.0) << "the sweep never reached the worst-case direction";
+
+  // Accuracy bound: the *selected* unit is bounded by the field edge and by
+  // nothing tighter, which is precisely why the budget is derived at the edge.
+  // Asserting the body-diagonal figure here instead would be asserting a
+  // selector the vehicle does not implement.
+  EXPECT_LT(worst_selected, kFssHalfFovRad) << "a selected unit was outside its own field of view";
+  EXPECT_GT(selected_deg, best_deg)
+      << "the tie-breaking selector never took a unit worse than the best available — "
+         "either the selector or this model has changed";
+}
+
+/// **The handoff sweep** (§8.2): the requirement campaign re-flown at slew rates
+/// through the six-face suite, so the active sun sensor changes several times
+/// inside every run and the estimators fly across those changes.
+///
+/// Both REQ-ADET-005 and REQ-ADET-006 must still hold **with their 20% margin**.
+/// This is the evidence that the multi-unit suite did not buy coverage at the
+/// cost of accuracy: a handoff moves the measurement to a unit at a different
+/// incidence, and the estimators are never told which unit they are reading.
+///
+/// Two things about the setup are worth naming. The rate is a *slew* rate, not a
+/// pointing one, because a handoff is a slew-time event; at controlled-pointing
+/// rates the suite geometry is swept between runs but never within one. And the
+/// run is 10 s rather than 1.5 s so the cycles either side of a handoff are
+/// inside the sampled window instead of before it.
+TEST(AttitudeAccuracyMonteCarlo, KnowledgeHoldsAcrossSunSensorHandoffs) {
+  RecordProperty("verifies", "REQ-ADET-010");
+  requireAllRunsValid(handoffRuns());
+
+  // The sweep has to have actually swept, or the thresholds below are being held
+  // by a campaign that never handed off.
+  int runs_with_handoff = 0;
+  int total_handoffs = 0;
+  double worst_incidence = 0.0;
+  bool unit_selected[kSunUnits] = {};
+  for (const PairedRun& r : handoffRuns()) {
+    total_handoffs += r.handoffs;
+    runs_with_handoff += (r.handoffs > 0) ? 1 : 0;
+    worst_incidence = std::max(worst_incidence, r.worst_incidence_rad);
+    ASSERT_GE(r.sun_unit, 0) << "a run ended with no sun sensor in view";
+    unit_selected[r.sun_unit] = true;
+  }
+  std::printf(
+      "[handoff] %d/%d runs handed off, %d handoffs total, worst selected incidence %.2f deg\n",
+      runs_with_handoff, kRuns, total_handoffs, worst_incidence / kDeg);
+
+  EXPECT_GT(runs_with_handoff, kRuns / 2)
+      << "most runs never changed sun sensor: the sweep is not sweeping";
+  for (int i = 0; i < kSunUnits; ++i) {
+    EXPECT_TRUE(unit_selected[i]) << "sun sensor " << i << " was never the selected unit";
+  }
+  EXPECT_LT(worst_incidence, kFssHalfFovRad) << "a selected unit was outside its own field of view";
+
+  const Campaign coarse = errorNorms(handoffRuns(), false);
+  const Campaign fine = errorNorms(handoffRuns(), true);
+  report(coarse, kCoarseLimitDeg, "REQ-ADET-005 coarse, handoff sweep");
+  report(fine, kFineLimitDeg, "REQ-ADET-006 fine, handoff sweep");
+
+  EXPECT_LE(coarse.max(), kMarginFraction * kCoarseLimitDeg)
+      << "coarse bound " << coarse.max() << " deg across sun-sensor handoffs does not keep the "
+      << "20% margin against " << kCoarseLimitDeg << " deg";
+  EXPECT_LE(fine.max(), kMarginFraction * kFineLimitDeg)
+      << "fine bound " << fine.max() << " deg across sun-sensor handoffs does not keep the "
+      << "20% margin against " << kFineLimitDeg << " deg";
 }
 
 // ── Head to head: does the filter actually earn its keep? ───────────────────

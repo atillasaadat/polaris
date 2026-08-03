@@ -17,6 +17,7 @@
 #ifndef FLIGHT_POLARISFSW_ATTITUDEESTIMATOR_TESTER_HPP
 #define FLIGHT_POLARISFSW_ATTITUDEESTIMATOR_TESTER_HPP
 
+#include <array>
 #include <optional>
 
 #include "AttitudeEstimatorGTestBase.hpp"
@@ -165,10 +166,63 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! converges — never reaching the uncorrected budget.
   void testAlbedoSigmaInflatesWithTheAttitudeUncertainty();
 
-  //! A sun sensor selected at a port index other than 0 is never albedo
-  //! corrected: the one parameter set describes unit 0, and applying its
-  //! boresight to another unit fails silently rather than loudly.
-  void testAlbedoSkippedForASunSensorOtherThanUnitZero();
+  //! A sun sensor whose per-unit boresight slot is the zero vector — not
+  //! installed, or mounting not characterised — is never albedo corrected:
+  //! applying a neighbour's boresight fails silently rather than loudly.
+  void testAlbedoSkippedForAnUncharacterisedSunSensor();
+
+  //! ...and the other half: a unit on another port *with* a configured boresight
+  //! is corrected, with its own geometry. Without this the §8.2 handoff would
+  //! silently drop back to the uncorrected sun budget.
+  void testAlbedoFollowsTheSelectedUnitsBoresight();
+
+  //! Sun-sensor selection takes the unit reporting the smallest realised sigma,
+  //! whichever port it arrives on, with ties keeping the lower index (§8.2).
+  void testSunSelectionTakesTheBestIlluminatedUnit();
+
+  //! A non-positive or non-finite reported sigma is gated out of the selection
+  //! rather than winning it by being the smallest number in the array.
+  void testSunSelectionRejectsAnUnusableSigma();
+
+  //! REQ-ADET-008 through the component: one railed IMU among three leaves the
+  //! published attitude bit-identical to the all-healthy run, with one
+  //! ImuUnitExcluded and the exclusion mask set.
+  void testRailedImuIsExcludedAndCostsNothing();
+
+  //! A NaN gyro reading is gated before it can propagate a NaN quaternion behind
+  //! a validity flag that still reads true.
+  void testNonFiniteImuIsExcludedNotPropagated();
+
+  //! A stale unit is *absent*, not implausible: no exclusion is latched and no
+  //! FDIR event is raised (§9.1 vs §9.2).
+  void testStaleImuIsAbsentNotExcluded();
+
+  //! REQ-ADET-009: an excluded unit comes back after ImuReadmitCycles
+  //! consecutive plausible cycles, with the recovery edge reported once.
+  void testExcludedImuIsReadmittedAfterRecovery();
+
+  //! Two plausible units disagreeing with nothing to attribute it leaves the
+  //! vehicle with **no** body rate, and latches nothing.
+  void testTwoImuDisagreementLeavesNoRate();
+
+  //! The reference vehicle's branch: two units disagree, the MEKF's propagated
+  //! rate identifies the offender, it is excluded as OUTVOTED, and the surviving
+  //! unit carries the solution with no loss and no demotion.
+  void testTwoImuDisagreementIsIdentifiedByTheFilter();
+
+  //! An outvoted unit does not re-admit itself while it still disagrees: over a
+  //! sustained fault the exclusion is reported once, not once per re-admission
+  //! window (the flap C1 named).
+  void testOutvotedImuDoesNotFlap();
+
+  //! A persistent unattributable disagreement escalates at the configured
+  //! horizon and repeats at that bounded cadence, while the vehicle keeps a
+  //! TRIAD attitude throughout.
+  void testPersistentAmbiguityEscalates();
+
+  //! RESET_ESTIMATOR is the commanded re-admission: every exclusion latch drops
+  //! at once, without serving out the automatic policy.
+  void testResetClearsImuExclusions();
 
   //! A negative sun sigma on the good side of either pair is refused: the hypot
   //! composition would otherwise absorb the sign silently.
@@ -210,6 +264,15 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! proving the estimator works with no albedo tuning at all.
   void setValidParameters(bool withFine = false, bool withAlbedo = false);
 
+  //! Per-unit albedo boresights staged into `SunAlbedoBoresightsBody`, flattened
+  //! three at a time in port order. Default: slot 0 is body +Z (the reference
+  //! vehicle's solar-array normal) and every other slot is the zero vector, i.e.
+  //! "not installed" — so a test that moves the sun measurement to another port
+  //! sees the correction skipped unless it also writes that slot's boresight.
+  //! Only read when `setValidParameters(withAlbedo = true)` is called.
+  std::array<F64, 3 * AttitudeEstimator::NUM_SUNSENSORIN_INPUT_PORTS> sun_boresights_{
+      {0.0, 0.0, 1.0}};
+
   //! Add the seven MagCal* parameters to the tester's table and re-load. Kept
   //! out of setValidParameters() so the existing tests keep proving the
   //! estimator runs with no calibration tuning at all — which is the design:
@@ -225,9 +288,44 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! The Sun's ECI direction the stubbed ephemeris reports at @p taiNs.
   Eigen::Vector3d sunDirectionEci(I64 taiNs) const;
 
-  //! Port index the sun-sensor measurement is fed on. 0 for every test but the
-  //! multi-unit gate, which needs a unit the albedo parameters do not describe.
+  //! Port index the sun-sensor measurement is fed on. 0 for most tests; the §8.2
+  //! selection and per-unit-boresight cases move it, and the handoff case feeds
+  //! several ports at once through @ref sun_extra_.
   FwIndexType sun_port_index_{0};
+
+  //! One extra sun-sensor unit fed alongside @ref sun_port_index_, so a test can
+  //! exercise the best-illuminated *selection* rather than a single candidate.
+  //! `index < 0` (the default) feeds nothing extra. The measurement is the same
+  //! true direction; only the reported sigma differs, which is exactly the
+  //! discriminator the component selects on.
+  struct ExtraSunUnit {
+    FwIndexType index{-1};
+    double sigma_rad{0.0};
+  };
+
+  ExtraSunUnit sun_extra_{};
+
+  //! Number of IMU ports fed by feedMeasurements(). **Two** by default, matching
+  //! the reference vehicle, so every test exercises the pairwise branch of the
+  //! §8.2 vote — the one that actually flies — rather than a single-unit special
+  //! case. The median branch is still covered, by the cases that raise this to
+  //! three explicitly. Units report identical readings unless @ref imu_fault_
+  //! says otherwise, and identical readings combine to themselves either way.
+  FwIndexType imu_unit_count_{2};
+
+  //! Fault injected into one IMU unit, for the single-fault-survival cases.
+  enum class ImuFault { kNone, kRailed, kNotFinite, kStale, kOffset };
+
+  struct ImuFaultInjection {
+    FwIndexType index{-1};  //!< which unit; < 0 injects nothing
+    ImuFault kind{ImuFault::kNone};
+    //! Rate reported by a kRailed unit, or the offset added by a kOffset one
+    //! [rad/s]. kOffset stays inside the plausibility limit on purpose: it is the
+    //! fault only a *comparison* between units can find.
+    Eigen::Vector3d value{Eigen::Vector3d::Zero()};
+  };
+
+  ImuFaultInjection imu_fault_{};
 
   //! Put the Sun 45 degrees from the radial direction rather than square to the
   //! field: the geometry the albedo term peaks in (its magnitude goes as

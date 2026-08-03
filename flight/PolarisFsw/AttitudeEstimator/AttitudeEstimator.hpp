@@ -26,6 +26,7 @@
 #include "gnc/albedo_correction.hpp"
 #include "gnc/coarse_attitude.hpp"
 #include "gnc/davenport.hpp"
+#include "gnc/imu_voting.hpp"
 #include "gnc/mag_calibration.hpp"
 #include "gnc/mekf.hpp"
 #include "math/frames.hpp"
@@ -174,9 +175,9 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! to match what actually happened. The one application point: called between
   //! unit selection and every consumer.
   //!
-  //! @param sun the selected sun-sensor measurement; only the unit at index 0 is
-  //!        corrected, because there is one set of albedo parameters and it
-  //!        describes that unit.
+  //! @param sunIndex port index of the selected unit, which is what picks its
+  //!        boresight out of the per-unit parameter (§8.2). A slot written as
+  //!        the zero vector takes the uncorrected path.
   //! @param sunBody [in,out] the measured sun direction, replaced by the
   //!        corrected one on success and left untouched otherwise.
   //! @return the pull angle removed [rad], or NaN when the correction did not
@@ -188,11 +189,12 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   void setSunSigmaForCycle(double albedoSigmaRad, double ephemSigmaRad);
 
   //! TODO: eight parameters is one past comfortable. Fold the geometry into a
-  //! small input struct **when a third reference term arrives** (a second sun
-  //! sensor's boresight under §8.2 fusion is the likely trigger) — not before,
-  //! since a struct for one call site is indirection without a payer.
+  //! small input struct **when a third reference term arrives** — not before,
+  //! since a struct for one call site is indirection without a payer. (The §8.2
+  //! per-unit boresights did not trigger it: they replaced the measurement
+  //! pointer with an index, leaving the count where it was.)
   double applyAlbedoCorrection(
-      const SunSensorMeas* sun, const polaris::math::Vec3<polaris::math::frames::ECEF>& r_ecef,
+      FwIndexType sunIndex, const polaris::math::Vec3<polaris::math::frames::ECEF>& r_ecef,
       const polaris::math::Quat<polaris::math::frames::ECI, polaris::math::frames::ECEF>&
           q_eci_ecef,
       const polaris::math::Vec3<polaris::math::frames::ECI>& sun_geocentric,
@@ -226,14 +228,39 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! if it was engaged, and leave the MEKF inert. The coarse chain is untouched.
   void failFineConfig(const char* detail);
 
-  //! First valid, fresh unit of each type on its port array, or nullptr. "Fresh"
-  //! is |now - timeTag| <= MaxMeasAgeSec (§9.1 staleness gate). Bounded loop
-  //! over the array; index order is vehicle build order, so this is a
-  //! deterministic priority, not a fusion — §8.2 owns fusion.
-  const ImuMeas* selectImu(I64 nowTaiNs) const;
-  const SunSensorMeas* selectSunSensor(I64 nowTaiNs) const;
+  //! Combine every IMU on the port array into one body rate (§8.2): per-unit
+  //! plausibility gates, then a per-axis median at three or more surviving
+  //! units. Never an average — one railed unit would drag it without limit
+  //! (gnc/imu_voting.hpp). Emits the exclusion/re-admission FDIR events and
+  //! writes ImuContributing / ImuExclusionMask.
+  //!
+  //! @param nowTaiNs cycle epoch, for the §9.1 staleness gate.
+  //! @param rate [out] the voted body rate [rad/s], written only on success.
+  //! @return true when the vote produced a usable rate.
+  bool voteImuRate(I64 nowTaiNs, polaris::math::Vec3<polaris::math::frames::Body>& rate);
+
+  //! **Best-illuminated** valid, fresh sun sensor: of the units reporting the
+  //! sun in view with a usable sigma, the one with the smallest realised
+  //! `sigmaRad` (§6.4) — which is the incidence-cosine criterion expressed in
+  //! the quantity the estimator consumes. Ties break to the lowest index, so the
+  //! choice is deterministic. Returns nullptr when nothing is selectable, and
+  //! writes the chosen port index to @p index (unchanged when none).
+  const SunSensorMeas* selectSunSensor(I64 nowTaiNs, FwIndexType& index) const;
+
+  //! First valid, fresh unit on its port array, or nullptr. "Fresh" is
+  //! |now - timeTag| <= MaxMeasAgeSec (§9.1 staleness gate). Bounded loop; index
+  //! order is vehicle build order, so this is a deterministic priority. Not a
+  //! combination: the reference vehicle carries one of each, and a combination
+  //! rule with no redundancy to exercise is untested code.
   const MagnetometerMeas* selectMagnetometer(I64 nowTaiNs) const;
   const GnssMeas* selectGnss(I64 nowTaiNs) const;
+
+  //! Unit @p index's albedo boresight from the flattened per-unit parameter, or
+  //! false when that slot is the zero vector (not installed, or an
+  //! uncharacterised mounting) — in which case the correction is skipped for
+  //! that unit rather than run on a guessed direction.
+  bool sunBoresightFor(FwIndexType index,
+                       polaris::math::Vec3<polaris::math::frames::Body>& out) const;
 
   //! One cycle of fine-mode arbitration, after the coarse cycle has run and
   //! with the same measurement set. Engages, steps, or demotes fine mode; never
@@ -300,6 +327,13 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! The fine estimator. Starts inert on the same rule, and is rebuilt by
   //! refreshFineConfig(); an inert filter simply means coarse-only operation.
   polaris::gnc::Mekf mekf_;
+
+  //! Fault-tolerant combiner for the redundant IMU set (§8.2). Holds the
+  //! exclusion latch and re-admission counters across cycles, so it is component
+  //! state rather than a per-cycle call. Starts inert on the same no-defaults
+  //! rule as the estimators; refreshCoarseConfig() builds it, because a vehicle
+  //! with no voted rate has no estimator either.
+  polaris::gnc::ImuVoter imu_voter_;
 
   //! Streaming ellipsoid accumulator for the commanded calibration (§8.1).
   //! Fixed storage — a 10x10 normal matrix and a handful of moments, O(1) in the
@@ -380,8 +414,16 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! The Earth-albedo correction's per-unit constants (§8.1). Inert until
   //! refreshAlbedoConfig() succeeds; while inert every cycle is weighted at the
   //! uncorrected sigma, which is how the vehicle flew before it existed.
+  //! The part-level terms (peak error, field of view). The per-unit boresight is
+  //! filled in per cycle from @ref sun_boresights_ before the correction runs.
   polaris::gnc::AlbedoCorrectionConfig albedo_config_{};
   bool albedo_configured_{false};
+
+  //! Per-unit albedo boresights in body axes, flattened three at a time in
+  //! `sunSensorIn` port order (the `SunAlbedoBoresightsBody` parameter). A
+  //! zero-vector slot means "no correction for this unit" — see
+  //! @ref sunBoresightFor.
+  F64 sun_boresights_[NUM_SUNSENSORIN_INPUT_PORTS * 3]{};
 
   //! Fine-mode tuning cached from the parameter set alongside the MekfConfig.
   F64 seed_min_observability_{0.0};
@@ -421,6 +463,15 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   bool fine_config_invalid_flagged_{false};
   bool albedo_config_invalid_flagged_{false};
   bool fine_init_failed_flagged_{false};
+  bool imu_ambiguous_flagged_{false};
+
+  //! Consecutive cycles the IMU vote has been unattributably ambiguous, the TAI
+  //! epoch that run started at, and the horizon/cadence the escalation fires on
+  //! (§9.2). The edge-gated alert alone would leave a *permanent* disagreement
+  //! reported once and then silent for the rest of the flight.
+  U32 imu_ambiguous_cycles_{0};
+  I64 imu_ambiguous_start_ns_{0};
+  U32 imu_ambiguity_escalate_cycles_{0};
   bool position_unavailable_flagged_{false};
   bool igrf_stale_flagged_{false};
   TableGrade::T last_ephem_grade_{TableGrade::PRECISE};
