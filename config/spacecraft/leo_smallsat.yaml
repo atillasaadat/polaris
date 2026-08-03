@@ -19,12 +19,87 @@ spacecraft:
     iyy: 0.12
     izz: 0.10
   sensors:
+    # Two IMUs, identically mounted (no mounting_quaternion_wxyz -> identity).
+    # Two rather than three is a mass/cost decision (user, 2026-08-02), and it
+    # decides which branch of the §8.2 vote this vehicle actually flies. Three
+    # units give a **median**, which tolerates one arbitrary fault without
+    # knowing which unit is at fault. Two units cannot: a pair can *detect* a
+    # disagreement and never attribute it on its own, so identification needs a
+    # third information source — the MEKF's propagated body rate, with the unit
+    # the filter's own dynamics disbelieve losing. When no filter solution is
+    # available the disagreement stays unattributed and the vehicle publishes no
+    # rate, holding attitude on a growing covariance (§9.2 conservative
+    # response), which is the cost of the second unit rather than the third.
+    # Averaging them is forbidden either way — one railed unit drags the mean
+    # without limit (lib/gnc/imu_voting.hpp).
     - name: imu_a
+      model_id: STIM300
+    - name: imu_b
       model_id: STIM300
     - name: st_a
       model_id: ST-16
-    - name: ss_zp                     # sun sensor + magnetometer = coarse attitude (§8.1)
+    # --- Sun-sensor suite: six units on the six faces (§8.2) ----------------
+    # Sun sensor + magnetometer = coarse attitude (§8.1), and the sun pair is the
+    # primary TRIAD vector — so losing the Sun from every field of view costs the
+    # attitude, not just accuracy. One unit on a single face buys that loss over
+    # three quarters of the sky.
+    #
+    # COVERAGE MATH. The FSS has a 60 deg acceptance half-angle, so one unit sees
+    # the solid-angle fraction (1 - cos 60 deg)/2 = 0.25 of the sphere. Six cones
+    # on the six face normals cover it **completely**: the worst-placed direction
+    # is a body diagonal, at arccos(1/sqrt(3)) = 54.736 deg from each of the three
+    # nearest face normals, which is inside the 60 deg cone. So there is no
+    # attitude at which the vehicle cannot see the Sun.
+    #
+    # TWO SEPARATE FACTS, and conflating them would mis-derive the budget.
+    # 54.736 deg is the worst-case *best-available* unit — pure layout geometry.
+    # It is NOT a bound on what the vehicle actually reads: the flight selector
+    # orders on reported sigma with ties to the lowest index, and sigma is a
+    # two-regime step (0.5 deg inside 45, 2.0 deg to the edge), so under a tie it
+    # takes the lowest-indexed unit in view rather than the best-aimed one —
+    # anywhere out to the 60 deg edge. The shipped SigmaSunWhiteRad is the EDGE
+    # figure, which is what bounds every geometry the suite can produce, and the
+    # handoff sweep in tests/unit/attitude_accuracy_mc_test.cpp models the flight
+    # selector exactly rather than an idealised best-incidence one.
+    # Measured over 4e6 uniform directions: mean best-unit incidence 31.9 deg,
+    # 87.9% of directions inside the 45 deg inner-accuracy regime, 47.3% seen by
+    # two or more units; worst selected incidence 60.0 deg.
+    #
+    # Dropping one face (the +-X/+-Y/+Z pattern) would leave 8.8% of the sphere —
+    # a region about -Z — seen by nothing, so the sixth unit is what makes the
+    # coverage statement unconditional rather than attitude-dependent.
+    #
+    # WHY SIX OF THE SAME PART. Six fine sun sensors on a 6U is a deliberate
+    # simplification, not a cost-optimised suite: a real vehicle would fly one FSS
+    # on the array normal and five coarse photodiode cells (config/hardware/
+    # sun_sensor/coarse_generic.yaml) on the rest. Those parts report **diode
+    # counts**, and the FSW has no onboard counts->vector reconstruction yet
+    # (§8.2 names it; it is not implemented). Flying one part type keeps the FSW
+    # path single and the coverage math clean until that lands.
+    #
+    # MOUNTING. The sensor boresight is unit +Z always, and
+    # mounting_quaternion_wxyz is the unit->body rotation, so each entry below is
+    # the quaternion that carries +Z onto that face normal. ss_zp keeps identity
+    # and index 0: it is the **solar-array normal**, the face the vehicle points
+    # at the Sun in Sun-Point and Safe (§10), so it is the unit in view in the
+    # nominal attitude and the one the accuracy budget was measured on.
+    - name: ss_zp                     # boresight body +Z  (solar-array normal)
       model_id: GS-NANOSENSE-FSS
+    - name: ss_zm                     # boresight body -Z  (180 deg about X)
+      model_id: GS-NANOSENSE-FSS
+      mounting_quaternion_wxyz: [0.0, 1.0, 0.0, 0.0]
+    - name: ss_xp                     # boresight body +X  (-90 deg about Y)
+      model_id: GS-NANOSENSE-FSS
+      mounting_quaternion_wxyz: [0.7071067811865476, 0.0, -0.7071067811865476, 0.0]
+    - name: ss_xm                     # boresight body -X  (+90 deg about Y)
+      model_id: GS-NANOSENSE-FSS
+      mounting_quaternion_wxyz: [0.7071067811865476, 0.0, 0.7071067811865476, 0.0]
+    - name: ss_yp                     # boresight body +Y  (+90 deg about X)
+      model_id: GS-NANOSENSE-FSS
+      mounting_quaternion_wxyz: [0.7071067811865476, 0.7071067811865476, 0.0, 0.0]
+    - name: ss_ym                     # boresight body -Y  (-90 deg about X)
+      model_id: GS-NANOSENSE-FSS
+      mounting_quaternion_wxyz: [0.7071067811865476, -0.7071067811865476, 0.0, 0.0]
     - name: mag_a
       model_id: MAG-GENERIC
     - name: gps_a                     # GNSS PVT fix -> onboard OD (§8.3)
@@ -246,9 +321,47 @@ spacecraft:
     # SigmaMagSysRad describe an uncalibrated magnetometer (the 33.7 mrad
     # systematic above is almost entirely the hard iron this fit removes), and
     # SeedMinObservability was derived from the *ratio* of the sun and magnetic
-    # sigmas, so a ~16x tighter magnetic pair makes 0.0076 refuse every geometry
-    # in the band (~1.1e-4 preserves its 10 deg meaning). Re-derive and uplink
-    # all three after a good fit; see flight/PolarisFsw/README.md.
+    # sigmas, so a much tighter magnetic pair makes 0.0076 refuse every geometry
+    # in the band. THE POST-FIT UPLINK SET, and how each value is derived:
+    #
+    #   SigmaMagSysRad:       ~1.5e-3   [rad]  the fitted residual, graded from
+    #                                          MagCalResidualAngle telemetry
+    #                                          (0.087 deg measured on this budget)
+    #   SigmaMagWhiteRad:     0.0017    [rad]  unchanged — the fit removes the
+    #                                          systematic, not the sensor noise
+    #   SeedMinObservability: 5.1e-4    [-]    re-derived below
+    #
+    # THE OBSERVABILITY GATE, DERIVED. The gate is lambda_min/lambda_max of the
+    # information matrix M = w_s (I - s s') + w_m (I - m m'), w = 1/sigma^2. That
+    # ratio is scale-free under a *common* rescaling of the sigmas — which is what
+    # makes it a geometry gate — but not under changing them relative to each
+    # other. Splitting M into the out-of-plane direction (eigenvalue w_s + w_m)
+    # and the 2x2 in-plane block (trace w_s + w_m, determinant w_s w_m sin^2 th)
+    # gives the closed form
+    #
+    #   lambda_min/lambda_max = [1 - sqrt(1 - 4 w_s w_m sin^2(th) / (w_s+w_m)^2)]/2
+    #
+    # which collapses to sin^2(th/2) at equal weights — the shipped 0.0076 at
+    # th = 10 deg. Post-fit the weights are not equal. With the albedo correction
+    # also in force (it is a model, always on, and needs no uplink) the sun total
+    # is hypot(0.0116, 0.0126) = 0.01713 on the analytic ephemeris and
+    # hypot(0.0116, 0.0105) = 0.01565 with the DE440 tables, against a magnetic
+    # total of hypot(0.0017, 0.0015) = 0.00228. The same 10 deg then reads
+    # 5.16e-4 (analytic) and 6.14e-4 (tables). **5.1e-4** is the value to uplink:
+    # the ephemeris grade changes per cycle without an uplink, so the gate must
+    # admit 10 deg in the worse of the two, and being slightly loose in the other
+    # (it admits down to 9.1 deg there) errs toward accepting a geometry the
+    # coarse chain's own MinSinAngle = sin(10 deg) is still publishing at.
+    #
+    # An earlier note here said ~1.1e-4. That figure is the same formula on the
+    # *uncalibrated* sun budget (0.0356 systematic, the "~16x tighter magnetic
+    # pair" reading) — a parameter set the vehicle never flies, because a vehicle
+    # with a calibrated magnetometer also has the albedo correction running. It
+    # would gate at 4.6 deg rather than 10 deg, i.e. seed the filter on geometry
+    # the coarse chain has already refused to solve.
+    #
+    # Re-derive and uplink all three after a good fit; see
+    # flight/PolarisFsw/README.md.
     #
     # Preconditioner for the ten-parameter fit: the IGRF magnitude at this 500 km
     # SSO runs ~22-52 uT over an orbit, so 30 uT is the mid-scale value. Numerics
@@ -285,23 +398,95 @@ spacecraft:
     # that learned nothing — and refusing there is the point: a calibration that
     # makes the magnetometer worse is the outcome guarded hardest against.
     flight.attitudeEstimator.MagCalMinImprovement: 2.0     # [-]
+    # --- Multi-IMU voting (§8.2, §9.2) -------------------------------------
+    # This vehicle's TWO STIM300s are combined by pairwise disagreement detection
+    # with the MEKF's propagated rate identifying the offender — never by an
+    # average (lib/gnc/imu_voting.hpp). Two units is the NOMINAL configuration
+    # here, not a degraded one: the median branch the library also implements
+    # engages at three or more, which this vehicle does not carry.
+    #
+    # Physical rate limit. Not the gyro's measurement range — that is what a
+    # railed unit reports — but the fastest this vehicle can credibly be turning:
+    # a launch-vehicle separation tip-off of a few deg/s, with an order of
+    # magnitude of margin. 30 deg/s = 0.5236 rad/s. A reading above it is a failed
+    # unit, and on this 12 kg vehicle with 1.4 mNm of magnetorquer authority it is
+    # a rate no fault of the actuators can produce either.
+    flight.attitudeEstimator.ImuMaxRateRadps: 0.5236       # [rad/s]
+    # Pairwise disagreement gate — on this vehicle the gate that decides every
+    # comparison, since two units is the whole suite.
+    # The STIM300 pair's combined 1-sigma is dominated by bias repeatability
+    # (10 deg/hr each, so ~0.004 deg/s on the difference) plus ARW; 0.5 deg/s =
+    # 8.7e-3 rad/s sits two orders above that, so it fires on faults and not on
+    # tails. Set high deliberately: a false disagreement costs the body rate for
+    # that cycle, since two units cannot say which of them is wrong.
+    flight.attitudeEstimator.ImuDisagreementRadps: 0.0087  # [rad/s]
+    # Consecutive cycles passing THE CRITERION THAT EXCLUDED IT that re-admit a
+    # unit: 10 = 1 s at the 10 Hz GNC rate. Automatic re-admission (rather than
+    # command-only) because the dominant real cause of one implausible sample is
+    # transient, and spending a unit of redundancy permanently on a bus glitch is
+    # the more expensive error; the consecutive count is the hysteresis that stops
+    # a marginal unit flapping. A genuinely dead unit never accumulates it.
+    #
+    # "The criterion that excluded it" is load-bearing: a unit excluded by
+    # IDENTIFICATION was plausible by construction, so it earns credit only on
+    # cycles where it agrees with the combination. Counting plausibility for it
+    # would re-admit it unconditionally and it would be outvoted again next
+    # cycle — a permanent flap at this period, one FDIR event per lap.
+    flight.attitudeEstimator.ImuReadmitCycles: 10          # [cycles]
+    # Consecutive cycles the same unit must lose the identification before it is
+    # latched out: 5 = 0.5 s at 10 Hz. A latch is permanent until re-admission
+    # earns it back, so one sample must not buy one — and under a slow
+    # common-mode drift the residual ordering can flip cycle to cycle, which is
+    # precisely the case a single-sample latch would get wrong. 0.5 s is long
+    # enough that a verdict has to be consistent rather than lucky, and short
+    # enough to be invisible against the 300 s fine coast horizon. It costs
+    # detection latency, not rate availability: the winning unit is published
+    # throughout the window.
+    flight.attitudeEstimator.ImuIdentifyConfirmCycles: 5   # [cycles]
+    # Continuous-ambiguity horizon, and the cadence the escalation repeats at:
+    # 600 = 60 s at 10 Hz. An unattributable disagreement leaves the vehicle with
+    # no body rate, and the per-condition alert is edge-gated — right for a
+    # transient, wrong for a permanent fault, which would otherwise be one
+    # warning and then silence. A minute is long enough that a passing
+    # disagreement never escalates and short enough that a real one is on the
+    # ground's console within a pass.
+    flight.attitudeEstimator.ImuAmbiguityEscalateCycles: 600  # [cycles]
     # --- Earth-albedo correction of the sun vector (§8.1) ------------------
     # Not a commanded calibration: a model, always on wherever the geometry
-    # supports it. All three describe the ss_zp unit above (GS-NANOSENSE-FSS) —
-    # its datasheet albedo peak, its field of view, and where it points — so
-    # re-derive them if that model_id or its mounting changes.
+    # supports it. The peak and the field of view describe the GS-NANOSENSE-FSS
+    # part, which every sun sensor on this vehicle is, so they are one value each;
+    # the boresights are per unit. Re-derive if that model_id changes.
     #
     # 12 deg peak albedo error, from the catalog entry's albedo_error_deg:
     # 12 * pi/180 = 0.2094 rad.
     flight.attitudeEstimator.SunAlbedoPeakRad: 0.20944     # [rad]
     # 60 deg acceptance half-angle, from half_fov_deg: 60 * pi/180 = 1.0472.
     flight.attitudeEstimator.SunAlbedoHalfFovRad: 1.04720  # [rad]
-    # ss_zp declares no mounting_quaternion_wxyz, so its mounting is identity and
-    # its boresight is the sensor's +Z along body +Z — the "zp" in the name. A
-    # unit mounted on another face must have its rotated +Z written here; the
-    # correction places the Earth in *this* field, so a wrong boresight silently
-    # scales the correction rather than failing.
-    flight.attitudeEstimator.SunAlbedoBoresightBody: [0.0, 0.0, 1.0]
+    # Per-unit boresights, body frame, **in sunSensorIn port-array order** — which
+    # is the order the sun sensors are declared above (§19.4 build order). Eight
+    # slots (flight.GncMaxUnits), three components each, flat: F´ has no
+    # array-of-array parameter the config compiler encodes, and eight separately
+    # named parameters would be eight chances for them to disagree about which
+    # vector they describe.
+    #
+    # A slot for a unit that is not installed is written as the **zero vector**,
+    # which the estimator reads as "no correction for this index" and takes the
+    # uncorrected sun sigma on. That is the honest default: the correction places
+    # the Earth in *this* unit's field, so a wrong boresight silently scales the
+    # correction rather than failing, and skipping is strictly better than
+    # guessing (§8.1).
+    #
+    # These must match the mounting_quaternion_wxyz entries above — each is that
+    # quaternion applied to the sensor's +Z.
+    flight.attitudeEstimator.SunAlbedoBoresightsBody: [
+       0.0,  0.0,  1.0,    # 0: ss_zp  (+Z, solar-array normal)
+       0.0,  0.0, -1.0,    # 1: ss_zm  (-Z)
+       1.0,  0.0,  0.0,    # 2: ss_xp  (+X)
+      -1.0,  0.0,  0.0,    # 3: ss_xm  (-X)
+       0.0,  1.0,  0.0,    # 4: ss_yp  (+Y)
+       0.0, -1.0,  0.0,    # 5: ss_ym  (-Y)
+       0.0,  0.0,  0.0,    # 6: not installed
+       0.0,  0.0,  0.0]    # 7: not installed
   drag_area_m2: 0.06                 # 6U broadside, ~0.2 x 0.3 m
   drag_cd: 2.2
   srp_area_m2: 0.06

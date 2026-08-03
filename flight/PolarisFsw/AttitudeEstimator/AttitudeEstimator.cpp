@@ -29,8 +29,13 @@ using ECEF = pm::frames::ECEF;
 using ECI = pm::frames::ECI;
 using Body = pm::frames::Body;
 
-//! Number of coarse-chain tuning parameters read from ParameterDb.
-constexpr FwSizeType kParamCount = 15;
+//! Number of F64 coarse-chain tuning parameters read from ParameterDb. The two
+//! §8.2 IMU-voting F64s ride in this set rather than in one of their own: without
+//! a voted body rate there is no gyro propagation, so a missing value costs
+//! exactly what a missing SigmaSunWhiteRad costs — the whole estimator — and a
+//! separate gate would imply a degraded-but-flying state that does not exist.
+//! (ImuReadmitCycles is U32 and is read alongside them.)
+constexpr FwSizeType kParamCount = 17;
 
 //! Number of fine-mode (MEKF + Davenport seed) tuning parameters. Validated
 //! separately: a missing one costs the fine mode, not the whole estimator.
@@ -39,6 +44,10 @@ constexpr FwSizeType kFineF64ParamCount = 5;
 //! Not a value: telemetry channels that have nothing to report this cycle. Zero
 //! would draw as a perfect solution on a strip chart.
 const double kNoValue = std::numeric_limits<double>::quiet_NaN();
+
+//! Telemetered SunUnitSelected when no sun sensor was selectable this cycle.
+//! 255 rather than 0, which is a perfectly good port index.
+constexpr U8 kNoSunUnitIndex = 255;
 
 //! Read a `Vec3F64` telemetry/port array member into a raw 3-vector.
 Eigen::Vector3d toEigen(const Vec3F64& v) {
@@ -161,6 +170,14 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
   values[12] = this->paramGet_SigmaSunAlbedoUncorrRad(valids[12]);
   values[13] = this->paramGet_SigmaSunEphemRad(valids[13]);
   values[14] = this->paramGet_SigmaSunEphemPreciseRad(valids[14]);
+  values[15] = this->paramGet_ImuMaxRateRadps(valids[15]);
+  values[16] = this->paramGet_ImuDisagreementRadps(valids[16]);
+  Fw::ParamValid readmit_valid = Fw::ParamValid::INVALID;
+  const U32 readmit_cycles = this->paramGet_ImuReadmitCycles(readmit_valid);
+  Fw::ParamValid confirm_valid = Fw::ParamValid::INVALID;
+  const U32 confirm_cycles = this->paramGet_ImuIdentifyConfirmCycles(confirm_valid);
+  Fw::ParamValid escalate_valid = Fw::ParamValid::INVALID;
+  const U32 escalate_cycles = this->paramGet_ImuAmbiguityEscalateCycles(escalate_valid);
 
   static const char* const kNames[kParamCount] = {"SigmaSunWhiteRad",
                                                   "SigmaSunAlbedoRad",
@@ -176,7 +193,9 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
                                                   "MaxPositionRadiusM",
                                                   "SigmaSunAlbedoUncorrRad",
                                                   "SigmaSunEphemRad",
-                                                  "SigmaSunEphemPreciseRad"};
+                                                  "SigmaSunEphemPreciseRad",
+                                                  "ImuMaxRateRadps",
+                                                  "ImuDisagreementRadps"};
 
   for (FwSizeType i = 0; i < kParamCount; ++i) {
     if (valids[i] != Fw::ParamValid::VALID || !std::isfinite(values[i])) {
@@ -186,6 +205,27 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
       this->failConfig(detail);
       return false;
     }
+  }
+  if (readmit_valid != Fw::ParamValid::VALID || confirm_valid != Fw::ParamValid::VALID ||
+      escalate_valid != Fw::ParamValid::VALID) {
+    this->failConfig(
+        "ImuReadmitCycles/ImuIdentifyConfirmCycles/ImuAmbiguityEscalateCycles missing from "
+        "ParameterDb");
+    return false;
+  }
+  if (escalate_cycles == 0) {
+    this->failConfig("ImuAmbiguityEscalateCycles must be non-zero");
+    return false;
+  }
+
+  polaris::gnc::ImuVoteConfig vote_cfg;
+  vote_cfg.max_rate_radps = values[15];
+  vote_cfg.disagreement_radps = values[16];
+  vote_cfg.readmit_cycles = readmit_cycles;
+  vote_cfg.identify_confirm_cycles = confirm_cycles;
+  if (!vote_cfg.isValid()) {
+    this->failConfig("IMU voting tuning is out of range (see ImuVoteConfig::isValid)");
+    return false;
   }
 
   polaris::gnc::CoarseAttitudeConfig cfg;
@@ -242,6 +282,14 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
   // covariance the old solution carries was computed under the old budget.
   this->noteAttitudeLost();  // the rebuild drops the solution; say so
   this->estimator_ = polaris::gnc::CoarseAttitudeEstimator(cfg);
+  // The voter is rebuilt with the rest, which also drops every exclusion latch:
+  // a latch earned under one plausibility limit says nothing under another, and
+  // the alternative — carrying it — would leave a unit excluded by a limit the
+  // vehicle is no longer flying.
+  this->imu_voter_ = polaris::gnc::ImuVoter(vote_cfg);
+  this->imu_ambiguous_flagged_ = false;
+  this->imu_ambiguous_cycles_ = 0;
+  this->imu_ambiguity_escalate_cycles_ = escalate_cycles;
   this->max_meas_age_s_ = values[9];
   this->min_position_radius_m_ = values[10];
   this->max_position_radius_m_ = values[11];
@@ -368,10 +416,12 @@ void AttitudeEstimator ::setSunSigmaForCycle(double albedoSigmaRad, double ephem
   this->sigma_sun_total_cycle_ = std::hypot(this->sigma_sun_white_rad_, this->sigma_sun_sys_cycle_);
 }
 
-double AttitudeEstimator ::applyAlbedoCorrection(
-    const SunSensorMeas* sun, const pm::Vec3<ECEF>& r_ecef, const pm::Quat<ECI, ECEF>& q_eci_ecef,
-    const pm::Vec3<ECI>& sun_geocentric, bool havePositionAndRotation, bool haveSunGeocentric,
-    double ephemSigmaRad, pm::Vec3<Body>& sunBody) {
+double AttitudeEstimator ::applyAlbedoCorrection(FwIndexType sunIndex, const pm::Vec3<ECEF>& r_ecef,
+                                                 const pm::Quat<ECI, ECEF>& q_eci_ecef,
+                                                 const pm::Vec3<ECI>& sun_geocentric,
+                                                 bool havePositionAndRotation,
+                                                 bool haveSunGeocentric, double ephemSigmaRad,
+                                                 pm::Vec3<Body>& sunBody) {
   // **The one application point** for the Earth-albedo correction (§8.1), called
   // between unit selection and every consumer for the same reason the
   // magnetometer calibration is applied where it is: the coarse chain, the MEKF
@@ -390,19 +440,19 @@ double AttitudeEstimator ::applyAlbedoCorrection(
   // pointed in an arbitrary direction.
   this->setSunSigmaForCycle(this->sigma_sun_albedo_uncorr_rad_, ephemSigmaRad);
 
-  // Multi-unit gate. `selectSunSensor` takes the first valid unit at *any* index,
-  // but there is one set of albedo parameters and it describes the unit at index
-  // 0. Correcting a unit at another index would apply that unit's boresight and
-  // field of view to a different part — silently, since a wrong boresight scales
-  // the correction rather than failing it. Any other index therefore takes the
-  // uncorrected path. Per-unit parameter arrays arrive with the §8.2 fusion
-  // layer, which is also what makes "the selected unit" a fusion rather than a
-  // priority.
-  if (sun != &this->sun_[0]) {
-    return kNoValue;
-  }
   if (!this->albedo_configured_ || !havePositionAndRotation || !haveSunGeocentric ||
       !this->state_.valid.attitude) {
+    return kNoValue;
+  }
+
+  // **Multi-unit (§8.2): the correction follows the selected unit's boresight.**
+  // A wrong boresight scales the correction rather than failing it, so correcting
+  // a unit on one face with another face's geometry would be a silent bias the
+  // size of the one being removed. A slot the configuration left as the zero
+  // vector — a unit that is not installed, or one whose mounting has not been
+  // characterised — therefore takes the uncorrected path.
+  polaris::gnc::AlbedoCorrectionConfig unit_config = this->albedo_config_;
+  if (!this->sunBoresightFor(sunIndex, unit_config.boresight_body) || !unit_config.isValid()) {
     return kNoValue;
   }
 
@@ -422,7 +472,7 @@ double AttitudeEstimator ::applyAlbedoCorrection(
 
   pm::Vec3<Body> corrected;
   double applied = 0.0;
-  if (!polaris::gnc::albedoCorrection(this->albedo_config_, ain, corrected, applied)) {
+  if (!polaris::gnc::albedoCorrection(unit_config, ain, corrected, applied)) {
     return kNoValue;
   }
   sunBody = corrected;
@@ -466,19 +516,39 @@ bool AttitudeEstimator ::refreshAlbedoConfig() {
   Fw::ParamValid boresight_valid = Fw::ParamValid::INVALID;
   const F64 peak = this->paramGet_SunAlbedoPeakRad(peak_valid);
   const F64 half_fov = this->paramGet_SunAlbedoHalfFovRad(fov_valid);
-  const Vec3F64 boresight = this->paramGet_SunAlbedoBoresightBody(boresight_valid);
+  const Vec3F64PerUnit boresights = this->paramGet_SunAlbedoBoresightsBody(boresight_valid);
 
   if (peak_valid != Fw::ParamValid::VALID || fov_valid != Fw::ParamValid::VALID ||
       boresight_valid != Fw::ParamValid::VALID) {
     this->failAlbedoConfig(
-        "SunAlbedoPeakRad/SunAlbedoHalfFovRad/SunAlbedoBoresightBody missing from ParameterDb");
+        "SunAlbedoPeakRad/SunAlbedoHalfFovRad/SunAlbedoBoresightsBody missing from ParameterDb");
     return false;
+  }
+
+  // Every slot must at least be *finite*; a NaN boresight would otherwise sit in
+  // the array until a handoff selected its unit, and then silently disable the
+  // correction on a cycle nobody was watching. Non-finiteness is a configuration
+  // error, so it is reported now rather than discovered later.
+  for (FwIndexType i = 0; i < NUM_SUNSENSORIN_INPUT_PORTS * 3; ++i) {
+    if (!std::isfinite(boresights[i])) {
+      this->failAlbedoConfig("SunAlbedoBoresightsBody contains a non-finite component");
+      return false;
+    }
+    this->sun_boresights_[i] = boresights[i];
   }
 
   polaris::gnc::AlbedoCorrectionConfig cfg;
   cfg.albedo_error_rad = peak;
   cfg.half_fov_rad = half_fov;
-  cfg.boresight_body = pm::Vec3<Body>(toEigen(boresight));
+  // Slot 0's boresight stands in for the range check below. It is the
+  // solar-array normal — the unit the vehicle nominally flies on — so a vehicle
+  // whose slot 0 is unusable has no working correction at all and should say so;
+  // the other slots are checked per cycle by `sunBoresightFor`, where a zero
+  // vector is a legitimate "not installed" rather than an error.
+  if (!this->sunBoresightFor(0, cfg.boresight_body)) {
+    this->failAlbedoConfig("SunAlbedoBoresightsBody slot 0 is not a usable direction");
+    return false;
+  }
   // isValid() carries the range checks (units, field width, a boresight that
   // names an axis) so the library and the component cannot disagree about what
   // a usable configuration is.
@@ -736,68 +806,8 @@ void AttitudeEstimator ::starTrackerIn_handler(FwIndexType portNum, const StarTr
   }
 }
 
-const ImuMeas* AttitudeEstimator ::selectImu(I64 nowTaiNs) const {
-  for (FwIndexType i = 0; i < NUM_IMUIN_INPUT_PORTS; ++i) {
-    const ImuMeas& m = this->imu_[i];
-    if (m.get_valid() && m.get_intervalSec() > 0.0 &&
-        fresh(nowTaiNs, m.get_timeTagNs(), this->max_meas_age_s_)) {
-      return &this->imu_[i];
-    }
-  }
-  return nullptr;
-}
-
-const SunSensorMeas* AttitudeEstimator ::selectSunSensor(I64 nowTaiNs) const {
-  for (FwIndexType i = 0; i < NUM_SUNSENSORIN_INPUT_PORTS; ++i) {
-    const SunSensorMeas& m = this->sun_[i];
-    // No sun in view is a normal condition (eclipse, or the unit facing away),
-    // not a fault — it simply excludes this unit from the pair this cycle.
-    if (m.get_valid() && m.get_sunPresent() &&
-        fresh(nowTaiNs, m.get_timeTagNs(), this->max_meas_age_s_)) {
-      return &this->sun_[i];
-    }
-  }
-  return nullptr;
-}
-
-const MagnetometerMeas* AttitudeEstimator ::selectMagnetometer(I64 nowTaiNs) const {
-  for (FwIndexType i = 0; i < NUM_MAGNETOMETERIN_INPUT_PORTS; ++i) {
-    const MagnetometerMeas& m = this->mag_[i];
-    if (m.get_valid() && fresh(nowTaiNs, m.get_timeTagNs(), this->max_meas_age_s_)) {
-      return &this->mag_[i];
-    }
-  }
-  return nullptr;
-}
-
-const GnssMeas* AttitudeEstimator ::selectGnss(I64 nowTaiNs) const {
-  for (FwIndexType i = 0; i < NUM_GNSSIN_INPUT_PORTS; ++i) {
-    const GnssMeas& m = this->gnss_[i];
-    if (!m.get_valid()) {
-      continue;
-    }
-    // §9.1 range gate. A GNSS fix is wire data from outside the FSW, and a
-    // non-finite or absurd position does not fail loudly downstream — it
-    // poisons *both* references (a NaN radius through the field model, a NaN
-    // sun direction through r_eci) while every validity flag still reads true.
-    // So it is checked here, with the other per-source gates.
-    const Eigen::Vector3d r = toEigen(m.get_posEcefM());
-    if (!r.allFinite()) {
-      continue;
-    }
-    const double radius = r.norm();
-    if (radius < this->min_position_radius_m_ || radius > this->max_position_radius_m_) {
-      continue;
-    }
-    // The receiver stamps GPS time; TAI = GPS + 19 s on ingest (§3.2).
-    const polaris::time::Tai tag =
-        polaris::time::toTai(polaris::time::Gps::fromNanosecondsSinceEpoch(m.get_timeTagGpsNs()));
-    if (fresh(nowTaiNs, tag.nanosecondsSinceEpoch(), this->max_meas_age_s_)) {
-      return &this->gnss_[i];
-    }
-  }
-  return nullptr;
-}
+// Per-type unit selection and the fault-tolerant IMU vote live in
+// AttitudeEstimatorSensors.cpp (§8.2).
 
 // ----------------------------------------------------------------------
 // Estimation cycle
@@ -856,11 +866,14 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
   polaris::gnc::CoarseAttitudeInput in;
   in.epoch = epoch;
 
-  // --- Gyro -----------------------------------------------------------------
-  const ImuMeas* const imu = this->selectImu(nowNs);
-  if (imu != nullptr) {
-    const Eigen::Vector3d rate = toEigen(imu->get_deltaAngleRad()) / imu->get_intervalSec();
-    in.gyro = pm::Vec3<Body>(rate);
+  // --- Gyro: the fault-tolerant vote across the IMU suite (§8.2) -------------
+  // Not "the first valid unit": with redundant gyros the combination has to be
+  // robust, because a railed unit reports a plausible-looking valid flag and an
+  // impossible rate. voteImuRate gates each unit, takes the per-axis median of
+  // the survivors, and raises the exclusion FDIR edges.
+  pm::Vec3<Body> voted_rate;
+  if (this->voteImuRate(nowNs, voted_rate)) {
+    in.gyro = voted_rate;
     in.gyro_valid = in.gyro.isFinite();
   }
   // gyro_bias stays zero: the coarse mode does not estimate bias (the MEKF
@@ -972,7 +985,13 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
                                      ? this->sigma_sun_ephem_precise_rad_
                                      : this->sigma_sun_ephem_rad_;
 
-  const SunSensorMeas* const sun = this->selectSunSensor(nowNs);
+  // Best-illuminated unit of the suite (§8.2), and its port index — which is
+  // what selects that unit's albedo boresight below, so a handoff to a sensor on
+  // another face corrects with that face's geometry rather than the previous
+  // unit's.
+  FwIndexType sun_index = 0;
+  const SunSensorMeas* const sun = this->selectSunSensor(nowNs, sun_index);
+  this->tlmWrite_SunUnitSelected(sun != nullptr ? static_cast<U8>(sun_index) : kNoSunUnitIndex);
   // Default for a cycle with no sun measurement at all: the uncorrected albedo
   // budget, so nothing downstream can read a corrected sigma off a cycle that
   // had no measurement to correct.
@@ -981,7 +1000,7 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
   if (sun != nullptr && have_sun_ref) {
     pm::Vec3<Body> sun_body(toEigen(sun->get_dirBody()));
     albedo_applied_rad = this->applyAlbedoCorrection(
-        sun, r_ecef, q_eci_ecef, sun_geocentric, have_position && have_rotation,
+        sun_index, r_ecef, q_eci_ecef, sun_geocentric, have_position && have_rotation,
         have_sun_geocentric, ephem_sigma_rad, sun_body);
 
     in.sun_body = sun_body;
@@ -1220,6 +1239,13 @@ void AttitudeEstimator ::RESET_ESTIMATOR_cmdHandler(FwOpcodeType opCode, U32 cmd
   // keeps for its own count. A demotion carries the total forward instead.
   this->fine_rejected_total_ = 0;
   this->estimator_.reset();
+  // The commanded re-admission path for the IMU vote (§8.2): an operator saying
+  // "start over" is different information from a unit having behaved for N
+  // cycles, so it clears every exclusion latch outright. A unit that is really
+  // failed re-excludes on its next reading, which costs one EVR and tells the
+  // ground the fault is persistent rather than latched.
+  this->imu_voter_.clearExclusions();
+  this->imu_ambiguous_cycles_ = 0;
   this->attitude_valid_ = false;
   this->last_age_s_ = 0.0;
   this->have_epoch_ = false;
@@ -1229,6 +1255,7 @@ void AttitudeEstimator ::RESET_ESTIMATOR_cmdHandler(FwOpcodeType opCode, U32 cmd
   this->config_invalid_flagged_ = false;
   this->fine_config_invalid_flagged_ = false;
   this->fine_init_failed_flagged_ = false;
+  this->imu_ambiguous_flagged_ = false;
   this->position_unavailable_flagged_ = false;
   this->igrf_stale_flagged_ = false;
   this->have_ephem_grade_ = false;

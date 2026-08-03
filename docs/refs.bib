@@ -448,3 +448,25 @@
   url          = {https://people.eecs.berkeley.edu/~wkahan/MathH110/Cross.pdf},
   note         = {\S``Mangled Angles'': the angle between two vectors must be formed as atan2 of the cross-product norm against the dot product; acos of the dot product alone loses half its significant digits near 0 and pi. The source of the repo-wide convention in lib/README.md}
 }
+
+@book{rousseeuw1987,
+  author    = {Rousseeuw, Peter J. and Leroy, Annick M.},
+  title     = {Robust Regression and Outlier Detection},
+  publisher = {John Wiley \& Sons},
+  year      = {1987},
+  isbn      = {978-0-471-85233-9},
+  doi       = {10.1002/0471725382},
+  note      = {\S1.2: the breakdown point. The arithmetic mean's is 0 --- one arbitrary observation moves it arbitrarily --- against 50\% for the median. The reason lib/gnc/imu_voting combines redundant gyros by a per-axis median and never by an average}
+}
+
+@article{gilmore1972,
+  author  = {Gilmore, J. P. and McKern, R. A.},
+  title   = {A Redundant Strapdown Inertial Reference Unit ({SIRU})},
+  journal = {Journal of Spacecraft and Rockets},
+  volume  = {9},
+  number  = {1},
+  pages   = {39--47},
+  year    = {1972},
+  doi     = {10.2514/3.61628},
+  note    = {The classical redundancy-management treatment for redundant inertial sensor arrays: failure detection and isolation by parity residuals, and why a failed unit must be isolated rather than blended into the combined output}
+}

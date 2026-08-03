@@ -149,9 +149,80 @@ TEST(AttitudeEstimator, AlbedoSigmaInflatesWithTheAttitudeUncertainty) {
   tester.testAlbedoSigmaInflatesWithTheAttitudeUncertainty();
 }
 
-TEST(AttitudeEstimator, AlbedoSkippedForASunSensorOtherThanUnitZero) {
+TEST(AttitudeEstimator, AlbedoSkippedForAnUncharacterisedSunSensor) {
   flight::AttitudeEstimatorTester tester;
-  tester.testAlbedoSkippedForASunSensorOtherThanUnitZero();
+  tester.testAlbedoSkippedForAnUncharacterisedSunSensor();
+}
+
+TEST(AttitudeEstimator, AlbedoFollowsTheSelectedUnitsBoresight) {
+  flight::AttitudeEstimatorTester tester;
+  tester.testAlbedoFollowsTheSelectedUnitsBoresight();
+}
+
+// ── §8.2 multi-unit selection and fault-tolerant voting ─────────────────────
+
+TEST(AttitudeEstimator, SunSelectionTakesTheBestIlluminatedUnit) {
+  flight::AttitudeEstimatorTester tester;
+  tester.testSunSelectionTakesTheBestIlluminatedUnit();
+}
+
+TEST(AttitudeEstimator, SunSelectionRejectsAnUnusableSigma) {
+  flight::AttitudeEstimatorTester tester;
+  tester.testSunSelectionRejectsAnUnusableSigma();
+}
+
+TEST(AttitudeEstimator, RailedImuIsExcludedAndCostsNothing) {
+  RecordProperty("verifies", "REQ-ADET-008");
+  flight::AttitudeEstimatorTester tester;
+  tester.testRailedImuIsExcludedAndCostsNothing();
+}
+
+TEST(AttitudeEstimator, NonFiniteImuIsExcludedNotPropagated) {
+  RecordProperty("verifies", "REQ-ADET-008");
+  flight::AttitudeEstimatorTester tester;
+  tester.testNonFiniteImuIsExcludedNotPropagated();
+}
+
+TEST(AttitudeEstimator, StaleImuIsAbsentNotExcluded) {
+  RecordProperty("verifies", "REQ-ADET-009");
+  flight::AttitudeEstimatorTester tester;
+  tester.testStaleImuIsAbsentNotExcluded();
+}
+
+TEST(AttitudeEstimator, ExcludedImuIsReadmittedAfterRecovery) {
+  RecordProperty("verifies", "REQ-ADET-009");
+  flight::AttitudeEstimatorTester tester;
+  tester.testExcludedImuIsReadmittedAfterRecovery();
+}
+
+TEST(AttitudeEstimator, TwoImuDisagreementLeavesNoRate) {
+  RecordProperty("verifies", "REQ-ADET-008");
+  flight::AttitudeEstimatorTester tester;
+  tester.testTwoImuDisagreementLeavesNoRate();
+}
+
+TEST(AttitudeEstimator, TwoImuDisagreementIsIdentifiedByTheFilter) {
+  RecordProperty("verifies", "REQ-ADET-008");
+  flight::AttitudeEstimatorTester tester;
+  tester.testTwoImuDisagreementIsIdentifiedByTheFilter();
+}
+
+TEST(AttitudeEstimator, OutvotedImuDoesNotFlap) {
+  RecordProperty("verifies", "REQ-ADET-009");
+  flight::AttitudeEstimatorTester tester;
+  tester.testOutvotedImuDoesNotFlap();
+}
+
+TEST(AttitudeEstimator, PersistentAmbiguityEscalates) {
+  RecordProperty("verifies", "REQ-ADET-008");
+  flight::AttitudeEstimatorTester tester;
+  tester.testPersistentAmbiguityEscalates();
+}
+
+TEST(AttitudeEstimator, ResetClearsImuExclusions) {
+  RecordProperty("verifies", "REQ-ADET-009");
+  flight::AttitudeEstimatorTester tester;
+  tester.testResetClearsImuExclusions();
 }
 
 TEST(AttitudeEstimator, NegativeSunSigmaIsRefused) {

@@ -156,14 +156,16 @@ mismatch here does not degrade gracefully — the flight correction subtracts a
 model of the error the sim generates from the catalog value, so a stale
 parameter removes an error the sensor never had, invisibly.
 
-> **A successful calibration invalidates three of the values above.**
-> `SigmaMagWhiteRad` and `SigmaMagSysRad` describe an *uncalibrated*
-> magnetometer — on the reference vehicle the 33.7 mrad systematic is almost
-> entirely the hard iron the fit removes — and `SeedMinObservability` was
-> derived from the *ratio* of the sun and magnetic sigmas, so a ~16× tighter
-> magnetic pair makes the shipped `0.0076` refuse every geometry in the band
-> (≈`1.1e-4` preserves its 10°-separation meaning). Re-derive and uplink all
-> three after a good fit; the ops procedure is in
+> **A successful calibration invalidates two of the values above.**
+> `SigmaMagSysRad` describes an *uncalibrated* magnetometer — on the reference
+> vehicle the 33.7 mrad systematic is almost entirely the hard iron the fit
+> removes — and `SeedMinObservability` was derived from the *ratio* of the sun
+> and magnetic sigmas, so a much tighter magnetic pair makes the shipped
+> `0.0076` refuse every geometry in the band; **5.1e-4** preserves its
+> 10°-separation meaning with the albedo correction also in force. Re-derive and
+> uplink both after a good fit (`SigmaMagWhiteRad` is unchanged — the fit removes
+> the systematic, not the sensor noise); the derivation is in the post-fit uplink
+> block of `config/spacecraft/leo_smallsat.yaml` and the ops procedure is in
 > `flight/PolarisFsw/README.md`.
 
 The parameter database holds at most `PRMDB_NUM_DB_ENTRIES` records and a longer

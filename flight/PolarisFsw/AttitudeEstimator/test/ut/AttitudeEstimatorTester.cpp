@@ -57,6 +57,21 @@ constexpr F64 kMaxMeasAgeSec = 0.5;
 constexpr F64 kMinPositionRadiusM = 6.4e6;
 constexpr F64 kMaxPositionRadiusM = 5.0e7;
 
+//! Multi-IMU voting gates (§8.2). The rate limit is 30 deg/s, the reference
+//! vehicle's; the disagreement gate is 0.5 deg/s. Re-admission is deliberately
+//! **3** rather than the flight 10, so a harness case can walk the recovery edge
+//! in three cycles instead of ten — the policy is what is under test here, not
+//! the number, which lib/gnc's own tests pin at its own value.
+constexpr F64 kImuMaxRateRadps = 0.5236;
+constexpr F64 kImuDisagreementRadps = 0.0087;
+constexpr U32 kImuReadmitCycles = 3;
+//! Two cycles rather than the flight five, for the same reason: the *policy* is
+//! under test here, not the number.
+constexpr U32 kImuIdentifyConfirmCycles = 2;
+//! Ambiguity escalation horizon, in cycles. Short enough that a harness case can
+//! walk past it twice and see the bounded repeat.
+constexpr U32 kImuAmbiguityEscalateCycles = 5;
+
 //! Earth-albedo correction tuning. The peak and field of view are the reference
 //! vehicle's GomSpace FSS; the boresight is body +Z, its mounting there. The
 //! uncorrected sun systematic is deliberately much wider than the corrected one
@@ -197,11 +212,21 @@ void AttitudeEstimatorTester ::setValidParameters(bool withFine, bool withAlbedo
   this->paramSet_SigmaSunAlbedoUncorrRad(kSigmaSunAlbedoUncorr, Fw::ParamValid::VALID);
   this->paramSet_SigmaSunEphemRad(kSigmaSunEphem, Fw::ParamValid::VALID);
   this->paramSet_SigmaSunEphemPreciseRad(kSigmaSunEphemPrecise, Fw::ParamValid::VALID);
+  // The §8.2 IMU-voting gates ride in the coarse set: without a voted rate there
+  // is no estimator at all, so their absence costs what a missing sigma costs.
+  this->paramSet_ImuMaxRateRadps(kImuMaxRateRadps, Fw::ParamValid::VALID);
+  this->paramSet_ImuDisagreementRadps(kImuDisagreementRadps, Fw::ParamValid::VALID);
+  this->paramSet_ImuReadmitCycles(kImuReadmitCycles, Fw::ParamValid::VALID);
+  this->paramSet_ImuIdentifyConfirmCycles(kImuIdentifyConfirmCycles, Fw::ParamValid::VALID);
+  this->paramSet_ImuAmbiguityEscalateCycles(kImuAmbiguityEscalateCycles, Fw::ParamValid::VALID);
   if (withAlbedo) {
     this->paramSet_SunAlbedoPeakRad(kSunAlbedoPeakRad, Fw::ParamValid::VALID);
     this->paramSet_SunAlbedoHalfFovRad(kSunAlbedoHalfFovRad, Fw::ParamValid::VALID);
-    this->paramSet_SunAlbedoBoresightBody(toVec3F64(Eigen::Vector3d::UnitZ()),
-                                          Fw::ParamValid::VALID);
+    Vec3F64PerUnit boresights;
+    for (FwIndexType i = 0; i < static_cast<FwIndexType>(this->sun_boresights_.size()); ++i) {
+      boresights[i] = this->sun_boresights_[static_cast<std::size_t>(i)];
+    }
+    this->paramSet_SunAlbedoBoresightsBody(boresights, Fw::ParamValid::VALID);
   }
   if (withFine) {
     this->paramSet_MekfRrw(kMekfRrw, Fw::ParamValid::VALID);
@@ -351,15 +376,44 @@ void AttitudeEstimatorTester ::feedMeasurements(I64 taiNs, const QuatBI& q_bi,
                                                 const Eigen::Vector3d& rate_body, bool sunInView) {
   const I64 tag = taiNs + this->meas_time_offset_ns_;
 
-  ImuMeas imu;
-  // The gyro reports rate + bias; the vector measurements below keep following
-  // the true attitude, which is exactly the split the MEKF resolves.
-  imu.set_deltaAngleRad(toVec3F64((rate_body + this->gyro_bias_) * 0.1));  // 10 Hz cycle
-  imu.set_deltaVelMps(toVec3F64(Eigen::Vector3d::Zero()));
-  imu.set_intervalSec(0.1);
-  imu.set_timeTagNs(tag);
-  imu.set_valid(true);
-  this->invoke_to_imuIn(0, imu);
+  // The IMU suite (§8.2). Every unit reports the same rate + bias — identical
+  // readings median to themselves, so a healthy suite behaves exactly as the
+  // single unit did — unless imu_fault_ names one to break.
+  for (FwIndexType unit = 0; unit < this->imu_unit_count_; ++unit) {
+    ImuMeas imu;
+    Eigen::Vector3d delta_angle = (rate_body + this->gyro_bias_) * 0.1;  // 10 Hz cycle
+    I64 unit_tag = tag;
+    bool unit_valid = true;
+    if (unit == this->imu_fault_.index) {
+      switch (this->imu_fault_.kind) {
+        case ImuFault::kRailed:
+          // Reported as a delta-angle, so the rate the component reconstructs is
+          // value / interval * interval = value.
+          delta_angle = this->imu_fault_.value * 0.1;
+          break;
+        case ImuFault::kNotFinite:
+          delta_angle = Eigen::Vector3d(std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0);
+          break;
+        case ImuFault::kStale:
+          // Aged past MaxMeasAgeSec: the unit is *absent*, not implausible, which
+          // is the distinction the vote has to keep (a dropout must not latch an
+          // exclusion).
+          unit_tag = tag - static_cast<I64>(10.0 * kMaxMeasAgeSec * kNsPerSecond);
+          break;
+        case ImuFault::kOffset:
+          delta_angle = (rate_body + this->gyro_bias_ + this->imu_fault_.value) * 0.1;
+          break;
+        case ImuFault::kNone:
+          break;
+      }
+    }
+    imu.set_deltaAngleRad(toVec3F64(delta_angle));
+    imu.set_deltaVelMps(toVec3F64(Eigen::Vector3d::Zero()));
+    imu.set_intervalSec(0.1);
+    imu.set_timeTagNs(unit_tag);
+    imu.set_valid(unit_valid);
+    this->invoke_to_imuIn(unit, imu);
+  }
 
   SunSensorMeas sun;
   Eigen::Vector3d sun_body = q_bi.rotate(this->expectedSunRef(taiNs)).eigen();
@@ -376,10 +430,17 @@ void AttitudeEstimatorTester ::feedMeasurements(I64 taiNs, const QuatBI& q_bi,
   sun.set_timeTagNs(tag);
   sun.set_sunPresent(sunInView);
   sun.set_valid(true);
-  // Which port the unit arrives on. Only index 0 is the unit the albedo
-  // parameters describe, so the correction gates on it; feeding the same
-  // measurement on another index is how that gate is tested.
+  // Which port the unit arrives on. The albedo correction follows the *selected*
+  // unit's boresight (§8.2), so moving this index — with or without writing that
+  // slot's boresight — is how the per-unit path is tested.
   this->invoke_to_sunSensorIn(this->sun_port_index_, sun);
+  if (this->sun_extra_.index >= 0) {
+    // A second unit seeing the same Sun, differing only in its reported sigma:
+    // the discriminator the component selects on.
+    SunSensorMeas other = sun;
+    other.set_sigmaRad(this->sun_extra_.sigma_rad);
+    this->invoke_to_sunSensorIn(this->sun_extra_.index, other);
+  }
 
   MagnetometerMeas mag;
   // The sensor model the ellipsoid fit inverts: m = S·B_body + b. With the
@@ -1336,17 +1397,15 @@ void AttitudeEstimatorTester ::testAlbedoSigmaInflatesWithTheAttitudeUncertainty
   }
 }
 
-void AttitudeEstimatorTester ::testAlbedoSkippedForASunSensorOtherThanUnitZero() {
-  // There is **one** set of albedo parameters and it describes the unit at port
-  // index 0 — its boresight, its field of view, its datasheet albedo peak.
-  // `selectSunSensor` will happily take the first valid unit at any index, so a
-  // vehicle flying two sun sensors whose primary drops out would otherwise have
-  // unit 0's boresight silently applied to unit 1. Silently is the operative
-  // word: a wrong boresight *scales* the correction rather than failing it, so
-  // nothing downstream could see the error. Per-unit parameter arrays arrive
-  // with the §8.2 fusion layer.
+void AttitudeEstimatorTester ::testAlbedoSkippedForAnUncharacterisedSunSensor() {
+  // The albedo boresight is **per unit** (§8.2) and a slot the configuration
+  // left as the zero vector means "not installed, or mounting not
+  // characterised". A wrong boresight *scales* the correction rather than
+  // failing it, so applying unit 0's geometry to a unit on another face would be
+  // a silent bias the size of the one being removed — which is why the zero slot
+  // takes the uncorrected path instead of falling back to a neighbour's value.
   this->sun_at_45_from_nadir_ = true;
-  this->sun_port_index_ = 1;
+  this->sun_port_index_ = 1;  // default sun_boresights_ leaves slot 1 zero
   this->loadIgrf();
   this->setValidParameters(false, true);
 
@@ -1359,14 +1418,449 @@ void AttitudeEstimatorTester ::testAlbedoSkippedForASunSensorOtherThanUnitZero()
   }
 
   // The estimator is working — the unit at index 1 is a perfectly good sun
-  // sensor and is selected — but it is never corrected.
+  // sensor and is selected — but it is never corrected, and the whole albedo
+  // configuration stays valid (this is a per-unit condition, not a config fault).
   ASSERT_EVENTS_AlbedoConfigInvalid_SIZE(0);
   ASSERT_EVENTS_AttitudeAcquired_SIZE(1);
   ASSERT_TLM_SunValid(2, true);
+  ASSERT_TLM_SunUnitSelected(2, 1);
   for (U32 i = 0; i < this->tlmHistory_SunAlbedoCorrection->size(); ++i) {
     EXPECT_TRUE(std::isnan(this->tlmHistory_SunAlbedoCorrection->at(i).arg))
-        << "cycle " << i << " corrected a unit the albedo parameters do not describe";
+        << "cycle " << i << " corrected a unit whose boresight is not configured";
   }
+}
+
+void AttitudeEstimatorTester ::testAlbedoFollowsTheSelectedUnitsBoresight() {
+  // The other half of the per-unit path: a unit on a *different* port whose
+  // boresight **is** configured must be corrected, with its own geometry. This
+  // is what makes the §8.2 handoff sweep meaningful — without it, every attitude
+  // that moves the Sun off the array normal would silently drop back to the
+  // uncorrected sun budget and the accuracy campaign would be measuring a
+  // suite the vehicle does not fly.
+  this->sun_at_45_from_nadir_ = true;
+  this->sun_port_index_ = 2;
+  // Slot 2 gets the same body +Z the geometry helper points the Earth into, so
+  // the correction has the same thing to remove as the slot-0 case does; the
+  // point under test is that the *lookup* follows the selected index.
+  this->sun_boresights_[6] = 0.0;
+  this->sun_boresights_[7] = 0.0;
+  this->sun_boresights_[8] = 1.0;
+  this->loadIgrf();
+  this->setValidParameters(false, true);
+
+  I64 t = kStartTaiNs;
+  const QuatBI truth = this->earthInTheSunSensorField(t);
+  for (int i = 0; i < 3; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+
+  ASSERT_EVENTS_AlbedoConfigInvalid_SIZE(0);
+  ASSERT_TLM_SunUnitSelected(2, 2);
+  bool corrected = false;
+  for (U32 i = 0; i < this->tlmHistory_SunAlbedoCorrection->size(); ++i) {
+    const F64 applied = this->tlmHistory_SunAlbedoCorrection->at(i).arg;
+    if (std::isfinite(applied) && applied > 0.0) {
+      corrected = true;
+    }
+  }
+  EXPECT_TRUE(corrected) << "the correction did not follow the selected unit's boresight";
+}
+
+void AttitudeEstimatorTester ::testSunSelectionTakesTheBestIlluminatedUnit() {
+  // Selection is on the **realised sigma** the unit reports, which is the
+  // incidence-cosine criterion in the quantity the estimator consumes (§8.2).
+  // Two units see the same Sun; the one reporting the tighter sigma wins,
+  // whichever port it arrives on — so the ordering is a property of the
+  // measurement, not of the wiring.
+  this->loadIgrf();
+  this->setValidParameters();
+
+  // Unit 0 at the default kSigmaSunWhite, unit 3 tighter: unit 3 must win even
+  // though unit 0 is the lower index.
+  this->sun_extra_ = ExtraSunUnit{3, 0.5 * kSigmaSunWhite};
+
+  I64 t = kStartTaiNs;
+  const QuatBI q(polaris::math::Quaternion::Identity());
+  this->feedMeasurements(t, q, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_TLM_SunUnitSelected(0, 3);
+
+  // Now make the extra unit the worse of the two: selection follows the sigma
+  // back to unit 0. A tie would keep the lower index, which is the deterministic
+  // half of the rule and is what the equality below pins.
+  t += kNsPerSecond / 10;
+  this->sun_extra_ = ExtraSunUnit{3, 2.0 * kSigmaSunWhite};
+  this->feedMeasurements(t, q, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_TLM_SunUnitSelected(1, 0);
+
+  t += kNsPerSecond / 10;
+  this->sun_extra_ = ExtraSunUnit{3, kSigmaSunWhite};
+  this->feedMeasurements(t, q, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_TLM_SunUnitSelected(2, 0);
+}
+
+void AttitudeEstimatorTester ::testSunSelectionRejectsAnUnusableSigma() {
+  // A sigma is wire data the estimator weights with, so a non-positive or
+  // non-finite one is gated with the rest (§9.1) rather than trusted because the
+  // unit's own valid flag reads true — it would otherwise win every comparison
+  // by being the smallest number in the array.
+  this->loadIgrf();
+  this->setValidParameters();
+  this->sun_extra_ = ExtraSunUnit{3, -1.0};
+
+  const QuatBI q(polaris::math::Quaternion::Identity());
+  this->feedMeasurements(kStartTaiNs, q, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(kStartTaiNs);
+  ASSERT_TLM_SunUnitSelected(0, 0);
+  ASSERT_TLM_SunValid(0, true);
+}
+
+void AttitudeEstimatorTester ::testRailedImuIsExcludedAndCostsNothing() {
+  // The **median** branch of REQ-ADET-008, run through the component rather than
+  // the library: a unit railed at 100 deg/s among three healthy ones must leave
+  // the published solution **bit-identical** to the same run with three healthy
+  // units. Bit-identical rather than "close": the vote either isolated the fault
+  // completely or it did not, and a tolerance would hide the difference.
+  //
+  // Three units is deliberately *not* the reference vehicle, which flies two
+  // (config/spacecraft/leo_smallsat.yaml). The median branch is still the
+  // library's design point and stays covered here, so a vehicle that adds a
+  // third IMU inherits a tested path rather than an untested one.
+  const Eigen::Vector3d rate(0.004, -0.002, 0.003);
+
+  auto flyCycles = [&](AttitudeEstimatorTester& tester) {
+    tester.imu_unit_count_ = 3;
+    tester.loadIgrf();
+    tester.setValidParameters();
+    I64 t = kStartTaiNs;
+    for (int i = 0; i < 5; ++i) {
+      const QuatBI truth(polaris::math::Quaternion::FromAxisAngle(
+          rate.normalized(), rate.norm() * static_cast<double>(i) * 0.1));
+      tester.feedMeasurements(t, truth, rate, true);
+      tester.runCycleAt(t);
+      t += kNsPerSecond / 10;
+    }
+  };
+
+  AttitudeEstimatorTester healthy;
+  flyCycles(healthy);
+  const QuatF64 reference = healthy.last_estimate_.get_qBodyEci();
+
+  this->imu_fault_ = ImuFaultInjection{2, ImuFault::kRailed, Eigen::Vector3d(1.745, 0.0, 0.0)};
+  flyCycles(*this);
+
+  ASSERT_EVENTS_ImuUnitExcluded_SIZE(1);
+  ASSERT_EVENTS_ImuUnitExcluded(0, 2, ImuExclusionReason::RATE_LIMIT);
+  ASSERT_TLM_ImuContributing(4, 2);
+  ASSERT_TLM_ImuExclusionMask(4, 1u << 2);
+  ASSERT_TLM_GyroValid(4, true);
+
+  const QuatF64 published = this->last_estimate_.get_qBodyEci();
+  for (U32 i = 0; i < 4; ++i) {
+    EXPECT_EQ(reference[i], published[i])
+        << "component " << i << ": the railed unit moved the published attitude";
+  }
+}
+
+void AttitudeEstimatorTester ::testNonFiniteImuIsExcludedNotPropagated() {
+  // A NaN rate does not fail loudly downstream: it propagates a NaN quaternion
+  // behind a validity flag that still reads true. The gate is what stops it, and
+  // the event names the data path rather than the vehicle's motion.
+  this->imu_unit_count_ = 3;  // the median branch; the pair is covered below
+  this->loadIgrf();
+  this->setValidParameters();
+  this->imu_fault_ = ImuFaultInjection{0, ImuFault::kNotFinite, Eigen::Vector3d::Zero()};
+
+  const Eigen::Vector3d rate(0.004, -0.002, 0.003);
+  I64 t = kStartTaiNs;
+  for (int i = 0; i < 3; ++i) {
+    this->feedMeasurements(t, QuatBI(polaris::math::Quaternion::Identity()), rate, true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+
+  ASSERT_EVENTS_ImuUnitExcluded_SIZE(1);
+  ASSERT_EVENTS_ImuUnitExcluded(0, 0, ImuExclusionReason::NOT_FINITE);
+  ASSERT_TLM_GyroValid(2, true);
+  ASSERT_TLM_ImuContributing(2, 2);
+  const Vec3F64 published = this->last_estimate_.get_bodyRateRadps();
+  for (U32 i = 0; i < 3; ++i) {
+    EXPECT_TRUE(std::isfinite(published[i]));
+  }
+}
+
+void AttitudeEstimatorTester ::testStaleImuIsAbsentNotExcluded() {
+  // Absence is not implausibility. A dropped or stale unit says nothing about
+  // whether it is lying, so it must not latch an exclusion the ground then has
+  // to reason about — and it must not accumulate re-admission credit either.
+  this->imu_unit_count_ = 3;
+  this->loadIgrf();
+  this->setValidParameters();
+  this->imu_fault_ = ImuFaultInjection{1, ImuFault::kStale, Eigen::Vector3d::Zero()};
+
+  const Eigen::Vector3d rate(0.004, -0.002, 0.003);
+  I64 t = kStartTaiNs;
+  for (int i = 0; i < 3; ++i) {
+    this->feedMeasurements(t, QuatBI(polaris::math::Quaternion::Identity()), rate, true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+
+  ASSERT_EVENTS_ImuUnitExcluded_SIZE(0);
+  ASSERT_TLM_ImuExclusionMask(2, 0);
+  ASSERT_TLM_ImuContributing(2, 2);
+  ASSERT_TLM_GyroValid(2, true);
+}
+
+void AttitudeEstimatorTester ::testExcludedImuIsReadmittedAfterRecovery() {
+  // The automatic re-admission policy end to end (REQ-ADET-009): exclude, serve
+  // out kImuReadmitCycles plausible cycles, come back — with the recovery edge
+  // reported once, so the ground can pair it with the exclusion.
+  this->imu_unit_count_ = 3;
+  this->loadIgrf();
+  this->setValidParameters();
+
+  const Eigen::Vector3d rate(0.004, -0.002, 0.003);
+  const QuatBI q(polaris::math::Quaternion::Identity());
+  I64 t = kStartTaiNs;
+
+  this->imu_fault_ = ImuFaultInjection{2, ImuFault::kRailed, Eigen::Vector3d(1.745, 0.0, 0.0)};
+  this->feedMeasurements(t, q, rate, true);
+  this->runCycleAt(t);
+  t += kNsPerSecond / 10;
+  ASSERT_EVENTS_ImuUnitExcluded_SIZE(1);
+
+  this->imu_fault_ = ImuFaultInjection{};
+  for (U32 i = 0; i < kImuReadmitCycles; ++i) {
+    this->feedMeasurements(t, q, rate, true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+  ASSERT_EVENTS_ImuUnitReadmitted_SIZE(1);
+  ASSERT_EVENTS_ImuUnitReadmitted(0, 2);
+  ASSERT_TLM_ImuExclusionMask(kImuReadmitCycles, 0);
+  ASSERT_TLM_ImuContributing(kImuReadmitCycles, 3);
+
+  // And it stays in: the edge is an edge.
+  this->feedMeasurements(t, q, rate, true);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_ImuUnitReadmitted_SIZE(1);
+}
+
+void AttitudeEstimatorTester ::testTwoImuDisagreementLeavesNoRate() {
+  // Two units, individually plausible, disagreeing by more than the gate, with
+  // no fine-mode solution to attribute it: **no body rate**. The deliberate
+  // non-monotonicity against the single-unit case — one unit is no evidence of
+  // a fault, two disagreeing units are evidence with no attribution.
+  this->loadIgrf();  // imu_unit_count_ defaults to the reference vehicle's two
+  this->setValidParameters();
+  this->imu_fault_ = ImuFaultInjection{1, ImuFault::kOffset, Eigen::Vector3d(0.05, 0.0, 0.0)};
+
+  const Eigen::Vector3d rate(0.004, -0.002, 0.003);
+  const QuatBI q(polaris::math::Quaternion::Identity());
+  I64 t = kStartTaiNs;
+  for (int i = 0; i < 3; ++i) {
+    this->feedMeasurements(t, q, rate, true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+
+  // Edge-gated: one event for the condition, not one per cycle in it.
+  ASSERT_EVENTS_ImuVoteAmbiguous_SIZE(1);
+  ASSERT_TLM_GyroValid(2, false);
+  ASSERT_TLM_ImuContributing(2, 0);
+  // Nothing is latched: latching the wrong unit is worse than carrying an
+  // unattributed disagreement.
+  ASSERT_TLM_ImuExclusionMask(2, 0);
+  ASSERT_EVENTS_ImuUnitExcluded_SIZE(0);
+}
+
+void AttitudeEstimatorTester ::testTwoImuDisagreementIsIdentifiedByTheFilter() {
+  // **The reference vehicle's branch** (REQ-ADET-008): two IMUs, one drifting by
+  // an amount that is individually plausible — it clears the 30 deg/s rate limit
+  // easily — so only the *pair* reveals the fault, and only a third information
+  // source can say which of the two is lying. That source is the MEKF's
+  // propagated body rate, so the test runs with fine mode engaged, which is the
+  // condition the identification path depends on.
+  this->loadIgrf();
+  this->setValidParameters(true, false);
+
+  const Eigen::Vector3d rate(0.004, -0.002, 0.003);
+  const QuatBI q(polaris::math::Quaternion::Identity());
+  I64 t = kStartTaiNs;
+
+  // Fly healthy until the filter is seeded and publishing a rate the vote can
+  // use as its reference. Promotion takes one cycle beyond the coarse
+  // acquisition, and the published rate has to be valid *before* the fault.
+  for (int i = 0; i < 5; ++i) {
+    this->feedMeasurements(t, q, rate, true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+  ASSERT_EVENTS_FineModeEngaged_SIZE(1);
+  ASSERT_TLM_ImuContributing(4, 2);
+  ASSERT_TLM_GyroValid(4, true);
+  this->clearEvents();
+
+  // 0.05 rad/s ~= 2.9 deg/s: about six times the pairwise gate, a tenth of the
+  // plausibility limit. Exactly the fault a single-unit gate cannot see.
+  this->imu_fault_ = ImuFaultInjection{1, ImuFault::kOffset, Eigen::Vector3d(0.05, 0.0, 0.0)};
+  this->feedMeasurements(t, q, rate, true);
+  this->runCycleAt(t);
+  t += kNsPerSecond / 10;
+
+  // One cycle is not enough: a latch is permanent until re-admission earns it
+  // back, so the same verdict has to repeat before it is spent. The healthy unit
+  // is published throughout, so nothing is lost while it confirms.
+  ASSERT_EVENTS_ImuUnitExcluded_SIZE(0);
+  ASSERT_TLM_GyroValid(this->tlmHistory_GyroValid->size() - 1, true);
+
+  for (U32 i = 0; i < kImuIdentifyConfirmCycles; ++i) {
+    this->feedMeasurements(t, q, rate, true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+
+  // Identified, not merely detected: the offender is named and the gate says the
+  // filter is what named it. The ambiguous fallback must NOT have fired — that
+  // is the whole difference the fine solution buys.
+  ASSERT_EVENTS_ImuUnitExcluded_SIZE(1);
+  ASSERT_EVENTS_ImuUnitExcluded(0, 1, ImuExclusionReason::OUTVOTED);
+  ASSERT_EVENTS_ImuVoteAmbiguous_SIZE(0);
+
+  // Solution continuity: the healthy unit carries the rate straight through, so
+  // there is no loss of attitude and no demotion of the filter that did the
+  // identifying.
+  this->feedMeasurements(t, q, rate, true);
+  this->runCycleAt(t);
+  ASSERT_TLM_ImuContributing(this->tlmHistory_ImuContributing->size() - 1, 1);
+  ASSERT_TLM_GyroValid(this->tlmHistory_GyroValid->size() - 1, true);
+  ASSERT_EVENTS_AttitudeLost_SIZE(0);
+  ASSERT_EVENTS_FineModeDemoted_SIZE(0);
+  EXPECT_TRUE(this->last_estimate_.get_rateValid());
+
+  // And the surviving unit's reading is what is published — the faulted one
+  // contributed nothing, rather than being averaged in at half weight.
+  const Vec3F64 published = this->last_estimate_.get_bodyRateRadps();
+  EXPECT_NEAR(published[0], rate.x(), 1.0e-3)
+      << "the excluded unit's 0.05 rad/s offset leaked into the published rate";
+}
+
+void AttitudeEstimatorTester ::testOutvotedImuDoesNotFlap() {
+  // C1, at component level. An outvoted unit is plausible **by construction** —
+  // it passed every per-unit gate and lost a comparison — so a re-admission
+  // policy that counts plausibility returns it unconditionally, and it loses the
+  // same comparison on the next cycle. Over a sustained fault that is a
+  // permanent exclude/re-admit flap, with an FDIR event on every lap, which is
+  // exactly the "one event on the transition" contract it breaks.
+  //
+  // 50 cycles is 5 s at 10 Hz, more than sixteen re-admission windows at the
+  // harness tuning: a flap could not hide in it.
+  this->loadIgrf();
+  this->setValidParameters(true, false);
+
+  const Eigen::Vector3d rate(0.004, -0.002, 0.003);
+  const QuatBI q(polaris::math::Quaternion::Identity());
+  I64 t = kStartTaiNs;
+  for (int i = 0; i < 5; ++i) {
+    this->feedMeasurements(t, q, rate, true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+  ASSERT_EVENTS_FineModeEngaged_SIZE(1);
+  this->clearEvents();
+
+  this->imu_fault_ = ImuFaultInjection{1, ImuFault::kOffset, Eigen::Vector3d(0.05, 0.0, 0.0)};
+  for (int i = 0; i < 50; ++i) {
+    this->feedMeasurements(t, q, rate, true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+
+  ASSERT_EVENTS_ImuUnitExcluded_SIZE(1);
+  ASSERT_EVENTS_ImuUnitReadmitted_SIZE(0);
+  ASSERT_TLM_ImuExclusionMask(this->tlmHistory_ImuExclusionMask->size() - 1, 1u << 1);
+  // And the vehicle kept flying on the surviving unit throughout.
+  ASSERT_EVENTS_AttitudeLost_SIZE(0);
+  ASSERT_TLM_GyroValid(this->tlmHistory_GyroValid->size() - 1, true);
+}
+
+void AttitudeEstimatorTester ::testPersistentAmbiguityEscalates() {
+  // C4. The per-condition alert is edge-gated, which is right for a transient
+  // and wrong for a permanent fault: without an escalation the vehicle would fly
+  // rate-less indefinitely after a single warning. The escalation fires at the
+  // configured horizon and repeats at that same period, bounded — not per cycle.
+  this->loadIgrf();  // coarse only: no filter, so nothing can attribute the pair
+  this->setValidParameters();
+  this->imu_fault_ = ImuFaultInjection{1, ImuFault::kOffset, Eigen::Vector3d(0.05, 0.0, 0.0)};
+
+  const Eigen::Vector3d rate(0.004, -0.002, 0.003);
+  const QuatBI q(polaris::math::Quaternion::Identity());
+  I64 t = kStartTaiNs;
+  const int cycles = static_cast<int>(3 * kImuAmbiguityEscalateCycles);
+  for (int i = 0; i < cycles; ++i) {
+    this->feedMeasurements(t, q, rate, true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+
+  // The condition alert stays edge-gated...
+  ASSERT_EVENTS_ImuVoteAmbiguous_SIZE(1);
+  // ...and the escalation carries the persistence, three times over three
+  // horizons rather than once per cycle.
+  ASSERT_EVENTS_ImuVoteAmbiguousPersistent_SIZE(3);
+  // The reported duration is measured from the clock, so it has to match the
+  // cycles actually flown: the first escalation is one horizon in.
+  EXPECT_NEAR(this->eventHistory_ImuVoteAmbiguousPersistent->at(0).durationSec,
+              0.1 * static_cast<double>(kImuAmbiguityEscalateCycles - 1), 0.05);
+  EXPECT_EQ(this->eventHistory_ImuVoteAmbiguousPersistent->at(0).cyclesWithoutRate,
+            kImuAmbiguityEscalateCycles);
+
+  // Throughout: no rate, but the vector pairs are untouched by a gyro fault, so
+  // the vehicle still holds a TRIAD attitude. That is what makes withholding the
+  // rate a safe response rather than a self-inflicted outage.
+  ASSERT_TLM_GyroValid(this->tlmHistory_GyroValid->size() - 1, false);
+  ASSERT_EVENTS_AttitudeAcquired_SIZE(1);
+  ASSERT_EVENTS_AttitudeLost_SIZE(0);
+  // Nothing latched: detection is not attribution.
+  ASSERT_TLM_ImuExclusionMask(this->tlmHistory_ImuExclusionMask->size() - 1, 0);
+}
+
+void AttitudeEstimatorTester ::testResetClearsImuExclusions() {
+  // RESET_ESTIMATOR is the commanded re-admission path: an operator saying
+  // "start over" is different information from a unit having behaved for N
+  // cycles, so it drops every latch outright. A really-failed unit re-excludes
+  // on its next reading, which tells the ground the fault is persistent.
+  this->imu_unit_count_ = 3;
+  this->loadIgrf();
+  this->setValidParameters();
+
+  const Eigen::Vector3d rate(0.004, -0.002, 0.003);
+  const QuatBI q(polaris::math::Quaternion::Identity());
+  I64 t = kStartTaiNs;
+
+  this->imu_fault_ = ImuFaultInjection{1, ImuFault::kRailed, Eigen::Vector3d(1.745, 0.0, 0.0)};
+  this->feedMeasurements(t, q, rate, true);
+  this->runCycleAt(t);
+  t += kNsPerSecond / 10;
+  ASSERT_TLM_ImuExclusionMask(0, 1u << 1);
+
+  this->imu_fault_ = ImuFaultInjection{};
+  this->sendCmd_RESET_ESTIMATOR(0, 0);
+  // A reset re-reads the tuning, which rebuilds the voter — so this pins the
+  // *commanded* clear rather than the rebuild's, by asserting the vote is whole
+  // again on the very next cycle with no re-admission wait.
+  this->feedMeasurements(t, q, rate, true);
+  this->runCycleAt(t);
+  // Back to three straight away — no re-admission wait, and no recovery edge,
+  // because the latch was dropped rather than served out.
+  ASSERT_TLM_ImuExclusionMask(1, 0);
+  ASSERT_TLM_ImuContributing(1, 3);
+  ASSERT_EVENTS_ImuUnitReadmitted_SIZE(0);
 }
 
 void AttitudeEstimatorTester ::testNegativeSunSigmaIsRefused() {

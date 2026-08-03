@@ -160,13 +160,36 @@ _ALBEDO_PARAM_TO_CATALOG_KEY = {
 }
 
 
-def _check_albedo_parameters(body: dict[str, Any]) -> None:
-    """Refuse a vehicle whose albedo tuning contradicts its sun sensor's catalog entry.
+#: Per-unit albedo boresights, flattened three at a time in sun-sensor build
+#: order (design doc §8.2). Same failure mode as the pair above and the same
+#: remedy: the boresight the FSW corrects with must be the mounting the sim
+#: places the unit at, and a mismatch *scales* the correction instead of failing
+#: it — so it is checked here rather than trusted.
+_ALBEDO_BORESIGHTS_PARAM = "flight.attitudeEstimator.SunAlbedoBoresightsBody"
 
-    Checked against the **first** sun sensor, which is the unit the correction
-    applies to: `AttitudeEstimator` gates on port index 0 because there is one
-    parameter set. Silent on a vehicle that sets neither side, so a config with
-    no sun sensor or no albedo tuning compiles unchanged.
+
+def _boresight_from_mounting(unit: dict[str, Any]) -> tuple[float, float, float]:
+    """This unit's body-frame boresight: its unit->body rotation applied to +Z.
+
+    The sensor boresight is unit +Z by convention (design doc §6.3), so this is
+    the third column of the mounting matrix `_mounting_dcm` produced. A unit with
+    no mounting is identity, hence body +Z.
+    """
+    dcm = unit.get("mounting_dcm_row_major")
+    if dcm is None:
+        return (0.0, 0.0, 1.0)
+    return (float(dcm[2]), float(dcm[5]), float(dcm[8]))
+
+
+def _check_albedo_parameters(body: dict[str, Any]) -> None:
+    """Refuse a vehicle whose albedo tuning contradicts its sun sensors' catalog entries.
+
+    The peak error and field of view describe the sun-sensor *part*, and are
+    checked against the **first** unit — the vehicle's sun sensors are one model
+    today, and a mixed suite would need those per unit too (§8.2). The
+    boresights are per **unit** and are checked against every installed one.
+    Silent on a vehicle that sets neither side, so a config with no sun sensor or
+    no albedo tuning compiles unchanged.
     """
     sc = body["spacecraft"]
     fsw = sc.get("fsw_parameters", {})
@@ -194,6 +217,51 @@ def _check_albedo_parameters(body: dict[str, Any]) -> None:
                 f"the catalog value, so a mismatch removes an error the sensor never "
                 f"had. Fix the vehicle config's fsw_parameters or the hardware entry, "
                 f"whichever is stale."
+            )
+
+    boresights = fsw.get(_ALBEDO_BORESIGHTS_PARAM)
+    if boresights is None:
+        return
+    for index, sun_unit in enumerate(sun_sensors):
+        slot = boresights[3 * index : 3 * index + 3]
+        if len(slot) < 3:
+            raise ConfigError(
+                f"{_ALBEDO_BORESIGHTS_PARAM} has no slot for sun sensor "
+                f"{index} ('{sun_unit['name']}'): the parameter carries "
+                f"{len(boresights) // 3} slots against {len(sun_sensors)} installed units."
+            )
+        written = tuple(float(v) for v in slot)
+        # The zero vector is the configured "no correction for this unit" and is
+        # always allowed — a mounting nobody has characterised is a legitimate
+        # state, and the estimator then takes the uncorrected sun sigma.
+        if written == (0.0, 0.0, 0.0):
+            continue
+        expected = _boresight_from_mounting(sun_unit)
+        # Compared as an **angle**, not component-wise. These are directions, and
+        # what matters is where the boresight points: a component-wise tolerance
+        # is neither rotation-invariant nor scale-invariant, so it would reject an
+        # honestly-written unit vector for round-off in one component while
+        # accepting a vector of the wrong length pointing the right way. The angle
+        # is formed as atan2 of the cross-product norm against the dot product
+        # (lib/README.md), which stays conditioned near zero where acos does not.
+        cross = (
+            written[1] * expected[2] - written[2] * expected[1],
+            written[2] * expected[0] - written[0] * expected[2],
+            written[0] * expected[1] - written[1] * expected[0],
+        )
+        cross_norm = math.sqrt(sum(c * c for c in cross))
+        dot = sum(a * b for a, b in zip(written, expected))
+        angle = math.atan2(cross_norm, dot)
+        if angle > 1.0e-6:
+            raise ConfigError(
+                f"{_ALBEDO_BORESIGHTS_PARAM} slot {index} = {written} points "
+                f"{math.degrees(angle):.4f} deg away from the mounting of sun sensor "
+                f"'{sun_unit['name']}', whose boresight (unit +Z through its mounting) "
+                f"is {expected}. The tolerance is 1e-6 rad on the angle between them.\n"
+                f"The flight albedo correction places the Earth in *this* unit's field, "
+                f"so a wrong boresight scales the correction rather than failing it. "
+                f"Fix the parameter or the mounting_quaternion_wxyz, whichever is stale; "
+                f"write the zero vector to skip the correction for this unit."
             )
 
 
