@@ -318,6 +318,10 @@ bool SitlServer::exchange(const FswInputs& in, FswOutputs& out) {
     d = math::Vec3<math::frames::Body>(
         Eigen::Vector3d(rec.dipole_am2[0], rec.dipole_am2[1], rec.dipole_am2[2]));
   }
+  // The §7 duty-cycle on-window for the interval these commands apply over. The
+  // loop clamps it to the macro step; a value the FSW never set arrives as zero,
+  // which is the rods-off schedule.
+  out.mtq_on_window_s = rhdr.mtq_on_window_s;
   ++steps_;
   return true;
 }
@@ -330,6 +334,7 @@ FswCallback SitlServer::callback() {
       // Degrade to open loop: zero commands, run flagged via healthy().
       out.wheels.assign(counts_.wheel, WheelCommand{});
       out.magnetorquer_dipoles.assign(counts_.mtq, math::Vec3<math::frames::Body>{});
+      out.mtq_on_window_s = 0.0;
     }
     return out;
   };

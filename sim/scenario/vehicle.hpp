@@ -48,6 +48,9 @@ struct MountedModel {
   std::string model_id;
   /// Unit→body rotation; the caller rotates commands in and outputs out.
   Eigen::Matrix3d mounting_dcm{Eigen::Matrix3d::Identity()};
+  /// Unit origin in the body frame [m]. Zero when the config gave no position,
+  /// which co-locates it with the body origin.
+  Eigen::Vector3d position_body_m{Eigen::Vector3d::Zero()};
   Model model;
 };
 

@@ -13,20 +13,22 @@
  * longer than this limit, which is what turns the failure into a build error;
  * that module's MAX_ENTRIES must stay equal to PRMDB_NUM_DB_ENTRIES below.
  *
- * **Why 64, and how much of it is left.** The reference vehicle reached 26
+ * **Why 128, and how much of it is left.** The reference vehicle reached 26
  * parameters at Push 46 against the framework default of 25, which is what forced
  * this file; Push 51 took it to 37 and Push 52's star-tracker fusion, mode-ladder
- * monitors, magnetometer voting and alignment calibration take it to **55 of 64**.
- * The cost is a `Fw::ArrayMap` of 64 parameter buffers, statically allocated,
- * comfortably inside the deployment's memory budget.
+ * monitors, magnetometer voting and alignment calibration took it to 55 of 64 —
+ * nine spare. Push 54's attitude control adds 30 (B-dot, the pointing PID, the
+ * wheel allocation and the MTQ/MAG interlock), which is what the Push 52 note
+ * predicted would happen, so the limit moved to **128** rather than being shaved
+ * against: the vehicle now sits at **85 of 128**.
  *
- * So the honest headroom is **nine parameters**, not the comfortable margin the
- * original note implied — and Phases 5-10 still owe control, orbit determination,
- * FDIR, CFDP and sequencing tuning, any one of which will exceed it. The next
- * push that adds a parameter set should raise this to 128 rather than shaving
- * against the limit. Only this number needs changing: `tools/configc/prmdb.py`
- * parses it out of this file, and refuses to emit a longer one — so overflowing
- * it is a build error rather than a partially-loaded database in flight.
+ * The cost is a `Fw::ArrayMap` of 128 parameter buffers, statically allocated,
+ * comfortably inside the deployment's memory budget. Phases 6-10 still owe orbit
+ * determination, FDIR, CFDP and sequencing tuning; at 43 spare that is headroom
+ * rather than a countdown. Only this number needs changing:
+ * `tools/configc/prmdb.py` parses it out of this file, and refuses to emit a
+ * longer one — so overflowing it is a build error rather than a partially-loaded
+ * database in flight.
  */
 
 #ifndef PRMDB_PRMDBLIMPLCFG_HPP_
@@ -36,7 +38,7 @@
 namespace {
 
 enum {
-  PRMDB_NUM_DB_ENTRIES = 64,    // !< Number of entries in the parameter database
+  PRMDB_NUM_DB_ENTRIES = 128,   // !< Number of entries in the parameter database
   PRMDB_ENTRY_DELIMITER = 0xA5  // !< Byte value that should precede each parameter in file; sanity
                                 // check against file integrity. Should match ground system.
 };

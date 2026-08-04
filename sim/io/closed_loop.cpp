@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "actuators/magnetorquer.hpp"
 #include "constants/constants.hpp"
 #include "frames/eci_ecef.hpp"
 #include "frames/eop.hpp"
@@ -179,6 +180,14 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
 
   FswOutputs commands;  // zero until the first boundary: nothing commanded yet
   std::vector<Eigen::Vector3d> mtq_actual(vehicle_.magnetorquers.size(), Eigen::Vector3d::Zero());
+  // §7 MTQ/MAG duty-cycle state. The rods carry the commanded dipole over
+  // [macro boundary, duty_off_ns) and are then de-energised, their field decaying
+  // over the catalog settle time — which is what leaves a *quiet window* at the
+  // end of each period for the magnetometer to be read in. `rods_off` tracks
+  // which side of that boundary the march is on; `duty_off_ns` is when it
+  // happened (or will).
+  std::int64_t duty_off_ns = 0;
+  bool rods_off = true;
   std::vector<Eigen::Vector3d> st_prev_rate(vehicle_.star_trackers.size(), Eigen::Vector3d::Zero());
   std::vector<bool> st_has_prev(vehicle_.star_trackers.size(), false);
 
@@ -205,7 +214,20 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
 
   /// Advance actuators over [from, to) under zero-order-held commands and write
   /// the net wrench into the plant for that interval.
-  auto applyActuators = [&](double dt_s) {
+  /// This unit's produced dipole at truth time @p at_ns: the driven moment inside
+  /// the on-window, the decaying transient after it. Zero-order held across each
+  /// micro-interval, which is exact inside the on-window and a small
+  /// approximation of the decay tail — whose torque contribution is a fraction of
+  /// a per-cent of the driven one by construction.
+  auto mtqMomentAt = [&](std::size_t i, std::int64_t at_ns) {
+    if (!rods_off) {
+      return mtq_actual[i];
+    }
+    const double since_off_s = static_cast<double>(at_ns - duty_off_ns) / 1.0e9;
+    return vehicle_.magnetorquers[i].model.settlingDipole(since_off_s).eigen();
+  };
+
+  auto applyActuators = [&](std::int64_t at_ns, double dt_s) {
     Eigen::Vector3d torque = Eigen::Vector3d::Zero();
     for (std::size_t i = 0; i < vehicle_.wheels.size(); ++i) {
       const auto out = vehicle_.wheels[i].model.step(dt_s);
@@ -218,8 +240,8 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
       math::Vec3<math::frames::ECI> b_eci;
       if (field_fn(s.epoch, s.position, b_eci)) {
         const Eigen::Vector3d b_body = s.attitude.rotate(b_eci).eigen();
-        for (const Eigen::Vector3d& m : mtq_actual) {
-          torque += m.cross(b_body);
+        for (std::size_t i = 0; i < vehicle_.magnetorquers.size(); ++i) {
+          torque += mtqMomentAt(i, at_ns).cross(b_body);
         }
       }
     }
@@ -297,6 +319,20 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
           b_body = s.attitude.rotate(b_eci);
         }
       }
+      // §7 interlock fidelity: every energised (or still-settling) rod adds its
+      // near field at *this* magnetometer's mounted location. The FSW knows
+      // nothing about this geometry by design — it protects itself with the
+      // duty-cycle schedule, and a schedule that slips shows up here as a sample
+      // hundreds of microtesla wrong rather than as an assumption.
+      Eigen::Vector3d near_field = Eigen::Vector3d::Zero();
+      for (std::size_t k = 0; k < vehicle_.magnetorquers.size(); ++k) {
+        near_field +=
+            actuators::dipoleNearField(math::Vec3<math::frames::Body>(mtqMomentAt(k, t_ns)),
+                                       vehicle_.magnetorquers[k].position_body_m,
+                                       vehicle_.magnetometers[i].position_body_m)
+                .eigen();
+      }
+      b_body = math::Vec3<math::frames::Body>(Eigen::Vector3d(b_body.eigen() + near_field));
       inputs.magnetometers[i].measurement = vehicle_.magnetometers[i].model.sample(t, b_body);
       inputs.magnetometers[i].ever_sampled = true;
     }
@@ -355,13 +391,26 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
           next_ns = std::min(next_ns, track.next_ns);
         }
       }
+      // The end of the MTQ-on window is an event of the grid, not something a
+      // micro-interval is allowed to straddle: a step spanning it would apply the
+      // driven moment across the quiet window too, which is precisely the
+      // violation this model exists to make visible.
+      if (!rods_off && duty_off_ns > t_ns) {
+        next_ns = std::min(next_ns, duty_off_ns);
+      }
       const double dt_s = static_cast<double>(next_ns - t_ns) / 1.0e9;
       if (dt_s > 0.0) {
-        applyActuators(dt_s);
+        applyActuators(t_ns, dt_s);
         s = runner_.body()->propagate(s, dt_s, control);
         s.epoch = taiAt(next_ns);
       }
       t_ns = next_ns;
+      if (!rods_off && t_ns >= duty_off_ns) {
+        for (auto& rod : vehicle_.magnetorquers) {
+          rod.model.deenergize();
+        }
+        rods_off = true;
+      }
       if (!sampleDue(t_ns)) {
         return false;
       }
@@ -381,13 +430,31 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
         vehicle_.wheels[i].model.commandTorque(cmd.value);
       }
     }
+    // §7 duty cycle: the commanded dipole is the *peak* the rods are driven at
+    // over the on-window, not an average over the step. A window the FSW never
+    // scheduled arrives as zero, which leaves the rods off — the safe reading of
+    // a flight side that has not taken ownership of the schedule.
+    const std::int64_t on_ns =
+        std::clamp(static_cast<std::int64_t>(std::llround(commands.mtq_on_window_s * 1.0e9)),
+                   static_cast<std::int64_t>(0), macro_ns);
+    duty_off_ns = t_ns + on_ns;
+    rods_off = on_ns <= 0;
     for (std::size_t i = 0; i < vehicle_.magnetorquers.size(); ++i) {
       const math::Vec3<math::frames::Body> dipole = i < commands.magnetorquer_dipoles.size()
                                                         ? commands.magnetorquer_dipoles[i]
                                                         : math::Vec3<math::frames::Body>::Zero();
-      // The rods' hysteresis advances once per command — the actual produced
-      // dipole is then held for the whole next interval.
-      mtq_actual[i] = vehicle_.magnetorquers[i].model.commandDipole(dipole).eigen();
+      // The rods' hysteresis advances once per command; the produced dipole is
+      // then held for the on-window and decays through the quiet window.
+      // A zero-length on-window means the rods are never driven this period, so
+      // the zero command is what reaches the play operator — commanding the
+      // dipole and de-energising in the same instant would leave the driven
+      // moment as the start of a settle transient the rod never had.
+      const math::Vec3<math::frames::Body> applied =
+          rods_off ? math::Vec3<math::frames::Body>::Zero() : dipole;
+      mtq_actual[i] = vehicle_.magnetorquers[i].model.commandDipole(applied).eigen();
+      if (rods_off) {
+        vehicle_.magnetorquers[i].model.deenergize();
+      }
     }
 
     // Reset the IMU accumulators: the FSW has consumed this interval.

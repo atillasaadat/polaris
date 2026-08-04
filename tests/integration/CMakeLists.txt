@@ -7,7 +7,8 @@ add_executable(polaris_integration_tests
   sim_closed_loop_orbit_test.cpp
   sim_sitl_lockstep_test.cpp
   sitl_attitude_tuning_test.cpp
-  sitl_fault_matrix_test.cpp)
+  sitl_fault_matrix_test.cpp
+  sitl_attitude_control_test.cpp)
 
 target_compile_definitions(polaris_integration_tests
   PRIVATE POLARIS_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden")

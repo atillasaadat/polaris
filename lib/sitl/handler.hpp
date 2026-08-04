@@ -98,16 +98,20 @@ class SitlHandler {
   /// least `nWheel()` `WheelCommandRecord`s (the rate group's latched wheel
   /// commands) and @p mtqs to at least `nMtq()` `MtqCommandRecord`s; passing
   /// `nullptr` for either fills that section with default (zero) records.
+  /// @p mtq_on_window_s is the §7 duty-cycle on-window for the next step [s],
+  /// which the plant needs to apply the rods over the right fraction of it.
   /// Returns the reply length, or 0 if @p out cannot hold it (caller emits a
   /// warning EVR — never overruns). Requires a prior HELLO (`helloSeen()`).
   std::size_t buildStepReply(std::uint64_t macro_step, const WheelCommandRecord* wheels,
-                             const MtqCommandRecord* mtqs, std::uint8_t* out, std::size_t out_cap) {
+                             const MtqCommandRecord* mtqs, double mtq_on_window_s,
+                             std::uint8_t* out, std::size_t out_cap) {
     if (!hello_seen_) {
       return 0;  // STEP_REPLY before HELLO breaks the handshake order
     }
     std::size_t woff = 0;
     StepReplyHeader rhdr;
-    rhdr.macro_step = macro_step;  // barrier echo (§2.4)
+    rhdr.macro_step = macro_step;            // barrier echo (§2.4)
+    rhdr.mtq_on_window_s = mtq_on_window_s;  // §7 duty-cycle schedule
     if (!writeRecord(out, out_cap, woff, rhdr)) {
       return 0;  // reply would overflow the caller buffer
     }

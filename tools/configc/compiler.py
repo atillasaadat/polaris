@@ -138,6 +138,8 @@ def _resolve_units(
                 "params": model.params,
                 "mounting_dcm_row_major": _mounting_dcm(unit),
                 "spin_axis": unit.spin_axis,
+                "dipole_axis": unit.dipole_axis,
+                "mounting_position_m": unit.mounting_position_m,
                 "noise_enabled": unit.noise_enabled,
             }
         )
@@ -245,25 +247,50 @@ _WHY_STAR_TRACKER = (
 )
 
 
+def _axis_key(key: str):
+    """Expected-direction accessor reading a named vector key off the unit."""
+
+    def expected(unit: dict[str, Any]) -> tuple[float, float, float]:
+        axis = unit.get(key)
+        if axis is None:
+            # No axis declared: nothing to contradict, so the caller's slot is
+            # accepted by pointing the expectation at itself. Handled by the
+            # zero-vector escape below rather than here.
+            return (0.0, 0.0, 0.0)
+        return (float(axis[0]), float(axis[1]), float(axis[2]))
+
+    return expected
+
+
 def _check_per_unit_boresights(
     fsw: dict[str, Any],
     param: str,
     units: list[dict[str, Any]],
     kind_label: str,
     why: str,
+    expected_fn=None,
 ) -> None:
-    """Refuse a flattened per-unit boresight parameter that contradicts the mountings.
+    """Refuse a flattened per-unit direction parameter that contradicts the config.
 
-    Shared by the albedo set and the star-tracker set: both are
-    `GncMaxUnits x 3` flat F64 arrays in build order, both use the zero vector as
-    "not installed / not characterised", and both fail the same way — by scaling
-    or mis-orienting a model rather than by erroring — which is exactly why the
-    check exists rather than a comment asking for care. Silent when the parameter
-    is absent, so a config that sets neither side compiles unchanged.
+    Shared by the albedo set, the star-tracker set and the Phase-5 wheel/rod axis
+    sets: all are `GncMaxUnits x 3` flat F64 arrays in build order, all use the
+    zero vector as "not installed / not characterised", and all fail the same way
+    — by scaling or mis-orienting a model rather than by erroring — which is
+    exactly why the check exists rather than a comment asking for care. Silent
+    when the parameter is absent, so a config that sets neither side compiles
+    unchanged.
+
+    @p expected_fn maps a resolved unit to the direction the parameter must
+    agree with; it defaults to the unit's boresight (its mounting applied to +Z),
+    which is what the sensor sets mean. The actuator sets pass an accessor for
+    ``spin_axis`` / ``dipole_axis`` instead, since a wheel or a rod is placed by
+    its axis rather than by a full mounting.
     """
     boresights = fsw.get(param)
     if boresights is None:
         return
+    if expected_fn is None:
+        expected_fn = _boresight_from_mounting
     for index, unit in enumerate(units):
         slot = boresights[3 * index : 3 * index + 3]
         if len(slot) < 3:
@@ -277,7 +304,11 @@ def _check_per_unit_boresights(
         # allowed — a mounting nobody has characterised is a legitimate state.
         if written == (0.0, 0.0, 0.0):
             continue
-        expected = _boresight_from_mounting(unit)
+        expected = expected_fn(unit)
+        if expected == (0.0, 0.0, 0.0):
+            # The config declares no direction for this unit, so there is nothing
+            # for the parameter to contradict.
+            continue
         # Compared as an **angle**, not component-wise. These are directions, and
         # what matters is where the boresight points: a component-wise tolerance
         # is neither rotation-invariant nor scale-invariant, so it would reject an
@@ -331,6 +362,70 @@ def _check_star_tracker_parameters(body: dict[str, Any]) -> None:
         )
 
 
+#: Per-unit actuator axes for the §8.5 control layer, flattened three at a time
+#: in vehicle build order. Same shape and same silent failure mode as the sensor
+#: boresight sets: a wrong wheel axis does not error, it allocates the commanded
+#: torque onto a geometry the vehicle does not have — which reads as a controller
+#: that points slightly wrong and slowly gets worse. A wrong rod axis clamps the
+#: dipole on the wrong body axis.
+_WHEEL_AXES_PARAM = "flight.attitudeController.WheelAxesBody"
+_MTQ_AXES_PARAM = "flight.attitudeController.MtqAxesBody"
+
+_WHY_WHEEL_AXES = (
+    "The flight allocation solves A u = tau on *these* columns, so a wrong axis "
+    "distributes the commanded torque over a geometry the vehicle does not have."
+)
+
+_WHY_MTQ_AXES = (
+    "The flight controller resolves the commanded body dipole onto *these* axes "
+    "and clamps each rod against its own rating, so a wrong axis saturates the "
+    "wrong rod."
+)
+
+
+def _check_control_parameters(body: dict[str, Any]) -> None:
+    """Refuse control tuning that contradicts the installed actuator suite (§8.5)."""
+    sc = body["spacecraft"]
+    fsw = sc.get("fsw_parameters", {})
+    actuators = sc.get("actuators", [])
+    wheels = [u for u in actuators if u.get("kind") == "reaction_wheel"]
+    rods = [u for u in actuators if u.get("kind") == "magnetorquer"]
+
+    _check_per_unit_boresights(
+        fsw,
+        _WHEEL_AXES_PARAM,
+        wheels,
+        "reaction wheel",
+        _WHY_WHEEL_AXES,
+        expected_fn=_axis_key("spin_axis"),
+    )
+    _check_per_unit_boresights(
+        fsw,
+        _MTQ_AXES_PARAM,
+        rods,
+        "magnetorquer",
+        _WHY_MTQ_AXES,
+        expected_fn=_axis_key("dipole_axis"),
+    )
+
+    # The counts are what bound every loop in the flight allocation, so a count
+    # that disagrees with the suite is not a tuning error to find in orbit: it
+    # either drops an installed wheel out of the allocation or reads an axis slot
+    # nothing filled.
+    for param, units, label in (
+        ("flight.attitudeController.WheelCount", wheels, "reaction wheel"),
+        ("flight.attitudeController.MtqCount", rods, "magnetorquer"),
+    ):
+        declared = fsw.get(param)
+        if declared is not None and int(declared) != len(units):
+            raise ConfigError(
+                f"{param} = {declared} against {len(units)} installed {label}(s) "
+                f"({', '.join(u['name'] for u in units) or 'none'}).\n"
+                f"The count bounds the flight control loops over this suite, so a "
+                f"mismatch silently drops a unit or reads an axis nothing filled."
+            )
+
+
 def _config_hash(resolved_body: dict[str, Any]) -> str:
     """SHA-256 over the canonical resolved config — everything that determines output."""
     canonical = json.dumps(resolved_body, sort_keys=True, separators=(",", ":"))
@@ -365,6 +460,7 @@ def resolve(
     # become checkable once the hardware library has been inlined.
     _check_albedo_parameters(body)
     _check_star_tracker_parameters(body)
+    _check_control_parameters(body)
     resolved = {
         "provenance": {
             "config_hash": _config_hash(body),

@@ -10,7 +10,9 @@ module PolarisSitl {
     # dedicated comm stack disjoint from the GDS ComCcsds stack: its own
     # TcpClient + ComStub + FrameAccumulator + FprimeDeframer/FprimeFramer,
     # feeding the SitlBridge payload boundary, plus the barrier-driven
-    # PassiveRateGroup and the placeholder ScriptedCmdSource.
+    # PassiveRateGroup. The actuator commander is the real GNC
+    # AttitudeController, which lives in the main topology (it ships to hardware);
+    # the Phase-4 placeholder ScriptedCmdSource it replaced was deleted in Push 54.
     #
     # All instances are inert unless flight_PolarisFsw is given -s <port>: the
     # TcpClient is never started and the rate group is never cycled, so a
@@ -49,11 +51,6 @@ module PolarisSitl {
     instance sitlRateGroup: Svc.PassiveRateGroup \
         base id PolarisSitlConfig.BASE_ID + 0x7000
 
-    # Phase-4 placeholder actuator commander; the SITL rate group's only member
-    # until real GNC components replace it.
-    instance scriptedCmdSource: flight.ScriptedCmdSource \
-        base id PolarisSitlConfig.BASE_ID + 0x8000
-
     topology Subtopology {
         instance sitlBridge
         instance comDriverSitl
@@ -63,20 +60,18 @@ module PolarisSitl {
         instance framerSitl
         instance commsBufferManagerSitl
         instance sitlRateGroup
-        instance scriptedCmdSource
 
         connections Sitl {
             # --- Barrier-driven rate group (design doc §2.4 steps 3-4) ---
             # sitlBridge drives the SITL rate group synchronously per STEP; its
-            # members run in port order, and the scripted command source commands
-            # actuators back to sitlBridge. Member 0 is left to the importing
-            # topology's GNC estimator (Top/topology.fpp): estimation must run
-            # before anything that acts on the estimate, so the placeholder
-            # commander sits behind it.
+            # members run in port order. Members 0 and 1 — the GNC estimator and
+            # the GNC controller — are left to the importing topology
+            # (Top/topology.fpp), together with the controller's command
+            # connections back to sitlBridge: both are flight components that
+            # ship to hardware, so they do not belong in the SITL subtopology.
+            # The order is load-bearing: estimation runs before anything that
+            # acts on the estimate.
             sitlBridge.sitlCycleOut             -> sitlRateGroup.CycleIn
-            sitlRateGroup.RateGroupMemberOut[1] -> scriptedCmdSource.run
-            scriptedCmdSource.wheelCmdOut       -> sitlBridge.wheelCmdIn
-            scriptedCmdSource.mtqCmdOut         -> sitlBridge.mtqCmdIn
 
             # --- Buffer allocations (shared SITL pool) ---
             comDriverSitl.allocate                -> commsBufferManagerSitl.bufferGetCallee

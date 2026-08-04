@@ -45,6 +45,12 @@ module flight {
   @ a direction.
   array Vec3F64PerUnit = [GncMaxUnits * 3] F64
 
+  @ One scalar per unit of a type, indexed in vehicle build order. Used for the
+  @ per-wheel torque commands the §8.5 allocation produces
+  @ (`AttitudeController.WheelTorque`). A slot for a unit that is not installed is
+  @ written as zero.
+  array F64PerUnit = [GncMaxUnits] F64
+
   @ Active attitude-estimation mode (design doc §8.1), mirroring
   @ polaris::state::EstimationMode. Ordered by increasing fidelity.
   enum EstimationMode : U8 {
@@ -102,20 +108,73 @@ module flight {
     valid: bool @< the unit reports a tracking solution (§9.1)
   }
 
+  @ The magnetorquer duty-cycle schedule for one control period, published by the
+  @ controller that owns it and consumed by every magnetometer consumer (design
+  @ doc §7, layers 1-2 of the MTQ/MAG interlock).
+  @
+  @ It is the *schedule*, not a live actuation flag, because that is what makes
+  @ the interlock deterministic: the rods are energised over
+  @ [periodStartTaiNs, onWindowEndTaiNs), the field then decays for the rod
+  @ model's settle time, and only samples time-tagged inside
+  @ [quietStartTaiNs, quietEndTaiNs] are measurements of the geomagnetic field.
+  @ A consumer compares its sample's own time tag against that window, so a
+  @ scheduling slip shows up as a rejected sample rather than as corrupted data
+  @ wearing a valid flag.
+  @
+  @ Published once per control cycle for the period that cycle is *commanding*,
+  @ so a consumer running earlier in the rate group reads the schedule of the
+  @ period its current sample was taken in. That one-cycle offset is the correct
+  @ pairing, not a staleness bug.
+  struct MtqActuation {
+    periodStartTaiNs: I64 @< TAI ns the commanded control period begins
+    onWindowEndTaiNs: I64 @< TAI ns the rods are de-energised at
+    quietStartTaiNs: I64 @< TAI ns the quiet window opens (on-window end + settle time)
+    quietEndTaiNs: I64 @< TAI ns the quiet window closes (the period boundary)
+    commandedMask: U32 @< bit i set = rod i carried a non-zero dipole this period
+    interlockHealthy: bool @< no rod is latched stuck-on; false makes every sample in this period suspect whatever its time tag says
+  }
+
   @ The attitude part of the canonical onboard state (§8.0) as published by the
   @ attitude estimator: what guidance, control and FDIR need every cycle. The
   @ orbit fields of `polaris::state::EstimatedState` are deliberately absent
   @ until the §8.3 orbit filter owns them — publishing zeros for a field nobody
   @ estimates yet is how a consumer ends up trusting one.
+  @
+  @ The magnetic block is here rather than on a second port because the estimator
+  @ is the vehicle's **one** gate on magnetometer data: it votes the units (§8.2),
+  @ applies the hard/soft-iron calibration (§8.1) and enforces the §7 quiet-window
+  @ interlock. A controller that read the raw port array instead would be a second
+  @ opinion about which magnetometer the vehicle believes, and the two would
+  @ disagree on exactly the cycles that matter. `magModelMagnitudeT` is the
+  @ onboard IGRF magnitude at the estimated position — **attitude-free**, so a
+  @ consumer can compare measured against modelled field strength without the
+  @ circularity of judging a sensor through an attitude that sensor helped build.
+  @
+  @ `magRawMagnitudeT` is the *diagnostic* twin of `magFieldBody` and exists for
+  @ one consumer: the §7 stuck-on monitor. It is the largest raw magnitude among
+  @ the units the interlock admitted this cycle — **before** the plausibility band
+  @ and the vote, and deliberately so. A rod stuck on puts hundreds of microtesla
+  @ on the sensor, which the §8.2 magnitude gate rejects as implausible before the
+  @ vote ever runs; a monitor reading the voted field would therefore go blind at
+  @ exactly the disturbance it exists to name. Being out of band is *evidence* for
+  @ this monitor, not a reason to look away. It is not a measurement and no
+  @ estimator reads it.
   struct AttitudeEstimate {
     epochTaiNs: I64 @< TAI ns this estimate is valid at
     qBodyEci: QuatF64 @< attitude Body <- ECI (JPL scalar-first, q0 >= 0)
     bodyRateRadps: Vec3F64 @< bias-corrected body rate [rad/s]
     attCovDiagRad2: Vec3F64 @< diagonal of the body-frame attitude-error covariance [rad^2]
     ageSec: F64 @< time since the last accepted vector fix [s]
+    magFieldBody: Vec3F64 @< voted, calibration-corrected body-frame field [T]
+    magFieldTimeTagNs: I64 @< TAI ns the accepted magnetometer sample was taken at
+    magModelMagnitudeT: F64 @< onboard IGRF field magnitude at the estimated position [T]
+    magRawMagnitudeT: F64 @< largest raw magnetometer magnitude admitted by the §7 interlock this cycle [T]
     mode: EstimationMode @< active estimation mode
     attitudeValid: bool @< qBodyEci and attCovDiagRad2 are usable
     rateValid: bool @< bodyRateRadps is usable
+    magFieldValid: bool @< magFieldBody/magFieldTimeTagNs are usable this cycle
+    magModelValid: bool @< magModelMagnitudeT is usable this cycle
+    magRawValid: bool @< magRawMagnitudeT is usable this cycle
   }
 
   @ IMU increments, sensor source -> estimator.
@@ -135,5 +194,8 @@ module flight {
 
   @ Attitude estimate, estimator -> guidance/control/FDIR.
   port AttitudeEstimatePort(estimate: AttitudeEstimate)
+
+  @ Magnetorquer duty-cycle schedule, controller -> magnetometer consumers (§7).
+  port MtqActuationPort($state: MtqActuation)
 
 }

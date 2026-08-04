@@ -19,7 +19,6 @@
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/SitlPorts/")
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/GncPorts/")
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/SitlTime/")
-add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/ScriptedCmdSource/")
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/SitlBridge/")
 
 # Onboard time/EOP/ephemeris tables (design doc §11.3, §22). A flight component
@@ -32,6 +31,11 @@ add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/OnboardTables/")
 # ships to hardware and consumes the GncPorts measurement seam, whichever source
 # fills it (SitlBridge under SITL, Drv sensor drivers on the vehicle).
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/AttitudeEstimator/")
+
+# Attitude control (design doc §8.5, §7). The estimator's consumer and the
+# vehicle's actuator commander; it replaced the Phase-4 placeholder
+# ScriptedCmdSource in Push 54, which is why that component no longer exists.
+add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/AttitudeController/")
 
 # SITL lockstep transport, packaged as an importable subtopology (design doc
 # §2.2). Added after the SITL components it groups and before Top, which imports

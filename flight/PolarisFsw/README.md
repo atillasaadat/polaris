@@ -80,14 +80,11 @@ connects to the truth sim, which listens. Enable it with the SITL port option:
 before. Each STEP_REQ drives a real 10 Hz FSW cycle: `SitlBridge` publishes the
 step epoch to `SitlTime` (the sim-time source), fires the SITL `PassiveRateGroup`
 (`sitlRateGroup`) synchronously, then builds the STEP_REPLY from the actuator
-commands the rate group produced. Until Phase-4 GNC exists, the rate group's sole
-member is `ScriptedCmdSource`, a placeholder that commands actuators from a
-deterministic profile (`lib/sitl/scripted_profile.hpp`); it is off by default and
-enabled with `-c`:
-
-```
-./flight_PolarisFsw -s 50500 -c
-```
+commands the rate group produced. Since Push 54 the rate group's members are the
+real GNC chain: `attitudeEstimator` (member 0) then `attitudeController`
+(member 1), so the commands crossing the wire are a control law's, not a
+placeholder profile's. The Phase-4 `ScriptedCmdSource` and its
+`lib/sitl/scripted_profile.hpp` were deleted with that push.
 
 The wire format and the FSW-side decode/reply logic are shared, testable code in
 `lib/sitl/`.
@@ -97,7 +94,7 @@ The wire format and the FSW-side decode/reply logic are shared, testable code in
 The whole SITL comm stack — `SitlBridge`, its dedicated
 `Drv::TcpClient`/`Svc::ComStub`/`Svc::FrameAccumulator`/`Svc::FprimeDeframer`/
 `Svc::FprimeFramer`/`Svc::BufferManager`, the barrier-driven
-`Svc::PassiveRateGroup` (`sitlRateGroup`), and `ScriptedCmdSource` — is packaged
+`Svc::PassiveRateGroup` (`sitlRateGroup`) — is packaged
 as the **`PolarisSitl` subtopology** (`PolarisSitl/`), following the F´
 subtopology pattern (config module with `BASE_ID`, instances + internal
 connections in the subtopology, cross-boundary connections left to the importer).
@@ -119,31 +116,36 @@ F´ has no build-time switch to conditionally drop a subtopology import (the
 so exclusion is a topology-authoring edit, not a CMake option. A flight variant
 deletes exactly these lines — nothing else references the SITL instances:
 
-1. `CMakeLists.txt` — the `add_fprime_subdirectory` lines for `PolarisSitl/`,
-   `SitlBridge/`, and `ScriptedCmdSource/` (the latter two would otherwise
-   remain as orphaned, unlinked SITL modules). `SitlPorts/` and `SitlTime/`
-   stay — the deployment-wide time source depends on them.
+1. `CMakeLists.txt` — the `add_fprime_subdirectory` lines for `PolarisSitl/` and
+   `SitlBridge/` (the latter would otherwise remain an orphaned, unlinked SITL
+   module). `SitlPorts/` and `SitlTime/` stay — the deployment-wide time source
+   depends on them, and the actuator-command port types are flight types the
+   `Drv` actuator drivers will consume.
 2. `Top/CMakeLists.txt` — the `flight_PolarisFsw_PolarisSitl` dependency (and, if
    nothing else needs them, the `Svc_FrameAccumulator` / `Svc_BufferManager` /
    `polaris_sitl` deps used only by the SITL setup below).
 3. `Top/topology.fpp` — the `import PolarisSitl.Subtopology` line and the whole
    `connections Sitl { ... }` block. That block also carries the GNC rate-group
    and measurement connections (`sitlRateGroup.RateGroupMemberOut[0] ->
-   attitudeEstimator.run` and the five `sitlBridge.*Out[0] ->
-   attitudeEstimator.*In[0]` lines), so a flight variant must **replace** them:
-   the estimator's `run` goes on a wall-clock 10 Hz rate group and its
-   measurement inputs on the `Drv` sensor drivers. The estimator itself, and the
-   `GncPorts` module it speaks over, stay — they are flight, not SITL.
+   attitudeEstimator.run`, `[1] -> attitudeController.run`, the controller's two
+   command connections into `sitlBridge`, and the `sitlBridge.*Out[i] ->
+   attitudeEstimator.*In[i]` lines), so a flight variant must **replace** them:
+   both `run` ports go on a wall-clock 10 Hz rate group in that order, the
+   measurement inputs on the `Drv` sensor drivers, and the actuator commands on
+   the `Drv` wheel/torque-rod drivers. The estimator and controller themselves,
+   and the `GncPorts` module they speak over, stay — they are flight, not SITL.
+   The estimator↔controller connections in `connections PolarisFsw` are already
+   outside the SITL block and need no change.
 4. `Top/PolarisFswTopology.cpp` — the SITL globals and the `PolarisSitl::`-qualified
    setup/teardown lines (frame detector, allocator, buffer bins, the
    `sitlRateGroup`/`frameAccumulatorSitl`/`commsBufferManagerSitl` config, and the
    `if (state.sitlPort != 0) { ... }` blocks in `setupTopology`, plus the
    `comDriverSitl` stop/join and `cleanup()` calls in `teardownTopology`), and the
-   `state.sitlPort`/`scriptedCommands` fields in `Top/PolarisFswTopologyDefs.hpp`.
-5. `Main.cpp` — the full `-s`/`-c` CLI surface: their `print_usage` lines, the
-   `sitl_port`/`scripted_commands` locals, the `s:`/`c` entries in the getopt
-   optstring, the `case 's'`/`case 'c'` blocks, and the two `inputs.`
-   assignments that populate the `TopologyState` fields deleted in step 4.
+   `state.sitlPort` field in `Top/PolarisFswTopologyDefs.hpp`.
+5. `Main.cpp` — the full `-s` CLI surface: its `print_usage` line, the
+   `sitl_port` local, the `s:` entry in the getopt optstring, the `case 's'`
+   block, and the `inputs.` assignment that populates the `TopologyState` field
+   deleted in step 4.
 
 After those deletions the topology autocodes and links with no dangling
 references — the remaining instances (`sitlTime` included) are self-consistent.
@@ -679,3 +681,77 @@ tests only what the component adds. Note that F´ gates `register_fprime_ut` on
 `BUILD_TESTING`, which `cmake/Dependencies.cmake` used to force off for Eigen's
 benefit — it now restores it, and a component UT that never builds is the
 failure mode to watch for if that ever regresses.
+
+## Attitude control and the MTQ/MAG interlock
+
+`AttitudeController` (`AttitudeController/`) is the vehicle's torque authority
+(design doc §8.5) and the owner of the §7 MTQ/MAG duty-cycle interlock. Like the
+estimator it is a **passive** component and a thin wrapper: the laws are
+`polaris::gnc::BdotController`, `polaris::gnc::AttitudePid` and
+`polaris::gnc::RwAllocator`, and no control math lives in the component.
+
+It is **member 1** of the barrier-driven 10 Hz SITL rate group, immediately after
+the estimator (member 0), so it acts on the solution that member just published —
+`attitudeEstimator.estimateOut -> attitudeController.estimateIn` in
+`Top/topology.fpp`. Its commands ride the STEP_REPLY the bridge builds after the
+group returns (§2.4 step 4). On hardware both `run` ports go on a wall-clock
+10 Hz rate group in that order and the commands go to `Drv` actuator drivers; the
+estimator↔controller connections are already outside the SITL block and need no
+change.
+
+**Modes.** `IDLE` (zero on every actuator), `DETUMBLE` (B-dot on the torque rods)
+and `POINT` (quaternion-error PID allocated across the wheel array), commanded by
+`CTRL_MODE_SET`, with a commanded inertial-hold reference from
+`CTRL_SET_TARGET_Q`. `POINT` refuses — with `ModeRefused`, leaving the mode where
+it was — unless the estimate is fresh, valid and inside `MaxAttSigmaRad`. `IDLE`
+is accepted unconditionally: the way out of a bad state must never itself have a
+precondition. A refused *cycle* commands zero rather than saying nothing, because
+an actuator nobody re-commands keeps driving. Autonomous entry into `DETUMBLE` on
+rate is deliberately not here — §10 makes that the Phase-7 mode manager's
+decision, and this component ships the predicate (`DetumbleComplete`) for it to
+read.
+
+**The interlock, in one place.** Each control period splits into an MTQ-on window
+(`MtqDutyFactor`) and a quiet window opening one `MtqSettleSec` later; the dipole
+is zero outside the on-window; the schedule goes out on `mtqActuationOut` as
+`GncPorts.MtqActuation` and the on-window length crosses the SITL wire with the
+dipoles, because the plant cannot apply a peak-over-a-fraction command without
+it. `AttitudeEstimator` gates its magnetometer port array on that schedule inside
+`voteMagField`, which is the single place magnetometer data enters the vehicle —
+so a rod-corrupted sample reaches neither the estimators nor the §8.1 calibration
+accumulator, and is reported as *absent* rather than implausible so it cannot
+latch a sensor exclusion. A configuration whose on-window plus settle time leaves
+no quiet window inside the control period is refused at load.
+
+**The stuck-on monitor** lives here for a reason: "the field is disturbed and I
+commanded nothing" is a comparison only the thing doing the commanding can make.
+It works on field *magnitudes* against the onboard IGRF, which is attitude-free
+(judging a magnetometer through an attitude that magnetometer helped build is the
+circularity the review-lessons catalog names), and it reads the estimator's
+`magRawMagnitudeT` — the largest raw magnitude the interlock admitted, **before**
+the §8.2 plausibility band and the vote — because a disturbance large enough to
+matter is rejected by that band, and a monitor on the voted field would be blind
+to exactly the fault it exists to name.
+
+**Tuning.** Thirty parameters, no defaults (§19.3). A missing or
+out-of-range value leaves the controller inert in `IDLE` with one `ConfigInvalid`
+and zero on every actuator. The config compiler cross-checks `WheelAxesBody` and
+`MtqAxesBody` against the installed units' `spin_axis`/`dipole_axis` and the
+counts against the suite, so a controller allocating onto a geometry the vehicle
+does not have is a compile-time failure rather than a slow mispointing.
+
+**Testing.** `AttitudeController/test/ut/` covers what the component adds — the
+mode ladder and its refusal paths, the parameter-missing refusal, the duty-cycle
+schedule invariants and the stuck-on monitor's confirmation and re-admission
+edges — with the laws themselves pinned at the `lib/gnc` level in
+`tests/unit/gnc_control_test.cpp`. Closed-loop behaviour is
+`tests/integration/sitl_attitude_control_test.cpp`: detumble, inertial hold, a
+stuck-on rod that the estimator survives, and the negative row that makes the
+third one evidence.
+
+**SITL/bench command hooks.** `-c <mode>` latches a control mode at startup and
+`-q q0,q1,q2,q3` sets the inertial-hold target, the §8.5 equivalents of the
+estimator's `-M`/`-A`. Both dispatch the real opcodes through the component's own
+command port; only the uplink is skipped. The mode is *retried* each cycle until
+the estimate can support it, because at setup no measurement has arrived and a
+single attempt would always be refused.

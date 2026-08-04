@@ -481,3 +481,58 @@
   doi     = {10.2514/3.61628},
   note    = {The classical redundancy-management treatment for redundant inertial sensor arrays: failure detection and isolation by parity residuals, and why a failed unit must be isolated rather than blended into the combined output}
 }
+
+@article{avanzini2012,
+  author  = {Avanzini, Giulio and Giulietti, Fabrizio},
+  title   = {Magnetic Detumbling of a Rigid Spacecraft},
+  journal = {Journal of Guidance, Control, and Dynamics},
+  volume  = {35},
+  number  = {4},
+  pages   = {1326--1334},
+  year    = {2012},
+  doi     = {10.2514/1.53074},
+  note    = {The B-dot law in its field-strength-normalised form m = -(k/||B||^2) dB/dt, its Lyapunov proof of exponential rate decay, and the gain floor k >= 2 omega_o (1 + sin xi) J_min relating the control gain to orbital rate, geomagnetic-field inclination and the smallest principal inertia. The source for lib/gnc/bdot}
+}
+
+@article{wie1989,
+  author  = {Wie, Bong and Weiss, Haim and Arapostathis, Aristotle},
+  title   = {Quaternion Feedback Regulator for Spacecraft Eigenaxis Rotations},
+  journal = {Journal of Guidance, Control, and Dynamics},
+  volume  = {12},
+  number  = {3},
+  pages   = {375--380},
+  year    = {1989},
+  doi     = {10.2514/3.20418},
+  note    = {The quaternion-error proportional-derivative regulator, and \S III on the sign of the error quaternion: without the sgn(dq0) factor the law drives large errors the long way round (unwinding). The source for lib/gnc/attitude_pid}
+}
+
+@book{wie2008,
+  author    = {Wie, Bong},
+  title     = {Space Vehicle Dynamics and Control},
+  edition   = {2nd},
+  publisher = {AIAA},
+  series    = {AIAA Education Series},
+  year      = {2008},
+  isbn      = {978-1-56347-953-3},
+  doi       = {10.2514/4.860119},
+  note      = {\S7.4: reaction-wheel array configurations and the distribution of a commanded body torque across a redundant set, including the pyramid geometry the reference vehicle flies. Read with lib/gnc/rw_allocation}
+}
+
+@book{astrom2008,
+  author    = {{\AA}str{\"o}m, Karl Johan and Murray, Richard M.},
+  title     = {Feedback Systems: An Introduction for Scientists and Engineers},
+  publisher = {Princeton University Press},
+  year      = {2008},
+  isbn      = {978-0-691-13576-2},
+  note      = {\S11.4: integrator windup and the standard remedies --- clamping the integrator state and suspending integration while the actuator is saturated. Both are implemented in lib/gnc/attitude_pid}
+}
+
+@book{jackson1999,
+  author    = {Jackson, John David},
+  title     = {Classical Electrodynamics},
+  edition   = {3rd},
+  publisher = {John Wiley \& Sons},
+  year      = {1999},
+  isbn      = {978-0-471-30932-1},
+  note      = {\S5.6: the static magnetic field of a point dipole, B = (mu_0/4 pi r^3)(3 (m . rhat) rhat - m). The near-field an energised torque rod puts on a body-mounted magnetometer in sim/actuators/magnetorquer, which is what makes a MTQ/MAG interlock violation visible in SITL rather than assumed away (design doc \S7)}
+}

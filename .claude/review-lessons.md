@@ -171,3 +171,81 @@ before starting FDIR, estimator, or requirements work.
 - Stale docs, comments, and PR text are defects, not afterthoughts — every
   claim edited must be re-verified against the tree, and a hygiene change that
   introduces a new stale claim is worse than none.
+
+## Cross-domain interactions (found by closed-loop tests, not by inspection)
+
+- **A downstream monitor must read upstream of the gate that hides its fault**
+  (P54). The §7 stuck-on rod monitor was fed the *voted* magnetometer field, and
+  a stuck rod puts hundreds of microtesla on the sensor — which the §8.2
+  plausibility band rejects as implausible *before* the vote runs. The monitor
+  therefore went blind at exactly the disturbance it exists to name, and the SITL
+  row failed with no event at all. Fixed by publishing the largest **raw**
+  admitted magnitude alongside the voted field, explicitly labelled a diagnostic
+  no estimator reads. General form: when a health monitor and a data-quality gate
+  look at the same signal, being out of band is *evidence* for the monitor and a
+  reason to look away for the gate — so the monitor has to sit upstream.
+- **The vehicle's own actuators are a permanent signal in its own sensors**
+  (P54). Torque rods keep a remanent moment after every de-energise, so there is
+  a static near-field on the magnetometers in *every* quiet window of a healthy
+  vehicle. A placeholder catalog residual (0.5 A·m² on a 15 A·m² rod) put ~9 µT
+  on a sensor 0.18 m away — above the plausibility band's low-field edge and
+  above any sensible stuck-on threshold. Every FDIR threshold that compares a
+  sensor against a model has to be derived from the vehicle's own static
+  signature first and the fault second; a threshold set from the fault alone
+  declares a healthy vehicle faulty.
+- **Redundant sensors must be close enough that the vehicle's own signature is
+  common-mode between them** (P54). With the two magnetometers spread across the
+  bus, the rods' remanent field differed by ~5 µT between them — which the
+  pairwise redundancy vote cannot distinguish from a sensor fault. It reported
+  `MagVoteAmbiguous`, dropped the magnetic pair, and detumble starved, because
+  B-dot's only input *is* the magnetic pair. Redundancy geometry is a
+  requirement, not a layout convenience.
+- **A guarded handler must not invoke another guarded port on the same
+  component** (P54). The controller's startup mode latch re-dispatched
+  `CTRL_MODE_SET` through `cmdIn` from inside the guarded `run` handler; F´
+  component mutexes are not recursive, so the deployment aborted on
+  `Os/Mutex.cpp` the first time it fired. Share the *guards* as a private method
+  both entry points call; never re-enter through the port.
+- **Write the requirement from what the physics does, not from what the phase
+  plan hoped** (P54). The first REQ-ACTL-001 draft asked for 5 deg/s → 0.5 deg/s
+  in 500 s. B-dot damps only the rate perpendicular to the field; the residual
+  spin about the field line unwinds as the field direction turns over the
+  *orbit*, so the vehicle reaches 2.97 deg/s in 200 s and then decays ~1 % per
+  500 s. Measuring first and then writing the requirement on the phase the
+  physics actually delivers — with the rest declared owed — is the honest order;
+  writing the number first would have produced a permanently red gate or a
+  quietly weakened one.
+
+## Gates that swallow their own release conditions (P54, review)
+
+- **An exclusion whose clearing evidence flows through the gate it closes can
+  never be revoked.** The §7 stuck-on latch published `interlockHealthy = false`;
+  the estimator's magnetometer gate returned false unconditionally on that; the
+  raw magnitude the monitor needs was recorded *after* that gate; so the monitor
+  saw nothing, the clear streak never advanced, and `MtqStuckCleared` was
+  unreachable — a life sentence written by the same push that cites the
+  criterion-matched-re-admission rule. The re-admission criterion being *correct*
+  is not enough: trace the clearing signal through the **integrated topology**,
+  from the sensor to the counter, and check it does not pass through the gate the
+  latch closes. A component test cannot find this, because the harness hands the
+  monitor the very data the flight gate withholds — if a test supplies an input
+  that a real gate would suppress, it is testing the harness.
+- **An inert or unconfigured publisher whose product is a gate must publish
+  permissive or publish nothing — never a zero-valued product.** The
+  unconfigured controller emitted a duty-cycle schedule with
+  `quietStart == quietEnd == now`; a magnetometer time tag is never bit-exactly
+  the cycle epoch, so every sample was rejected and a controller doing nothing
+  disabled the estimator. Silence was already the permissive state (the consumer
+  reads "no schedule" as "nothing has ever driven a rod"), so the fix was to not
+  publish. Ask what a *default-constructed* product means to the consumer before
+  emitting one.
+- **A test harness that restates catalog values instead of reading them drifts
+  toward passing.** The SITL suites transcribed `config/hardware/**` into C++
+  maps. The rod settle time drifted 5x from the committed YAML while
+  REQ-ACTL-004 was being verified against the transcription, and the GNSS
+  receiver's `cold_start_s` was dropped entirely — so the rows flew a vehicle
+  strictly better than the one that ships, and a real precondition of detumble
+  (no position, no modelled field, no voted field, no B-dot) stayed invisible.
+  The suites already ran the config compiler; the fix was to build the vehicle
+  from its `sim_setup.json` output. Transcription is a copy, and every copy is a
+  place for the two to disagree in the direction that passes.

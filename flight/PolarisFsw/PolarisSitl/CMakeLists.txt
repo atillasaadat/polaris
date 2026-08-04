@@ -22,7 +22,6 @@ register_fprime_module(
         flight_PolarisFsw_PolarisSitl_PolarisSitlConfig
         flight_PolarisFsw_SitlBridge
         flight_PolarisFsw_SitlPorts
-        flight_PolarisFsw_ScriptedCmdSource
         Svc_PassiveRateGroup
         Svc_ComStub
         Svc_FrameAccumulator

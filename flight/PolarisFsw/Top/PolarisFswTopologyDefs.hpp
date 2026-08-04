@@ -75,10 +75,14 @@ namespace flight {
  * definition of the project. This deployment uses subtopologies.
  */
 struct TopologyState {
-  const char* hostname;               //!< Hostname for GDS TCP communication
-  U16 port;                           //!< Port for GDS TCP communication
+  const char* hostname;  //!< Hostname for GDS TCP communication
+  U16 port;              //!< Port for GDS TCP communication
+  //! SITL/bench only: control mode to latch at startup (0 = leave IDLE), and the
+  //! inertial-hold target that goes with it. On a flight vehicle both come from
+  //! the ground or, from Phase 7, from the mode manager (design doc §8.5, §10).
+  U32 ctrlMode;
+  F64 ctrlTargetQ[4];
   U16 sitlPort;                       //!< SITL lockstep port (0 = SITL disabled, §2.2)
-  bool scriptedCommands;              //!< SITL only: enable the ScriptedCmdSource profile (§2.4)
   const char* onboardEopPath;         //!< Onboard IERS EOP table file (§11.3, §22)
   const char* onboardEphemPath;       //!< Onboard Chebyshev ephemeris fixture (§11.3, §22)
   const char* onboardIgrfPath;        //!< Onboard IAGA IGRF-14 coefficients (§6.2, §8.1)

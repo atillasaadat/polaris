@@ -15,3 +15,13 @@ params:
   residual_dipole_am2: 0.1      # not in datasheet — representative remanence
   linearity: 0.02               # ±2% control accuracy at the design dipole
   power_max_w: 13.2             # 13200 mW at peak dipole (drive electronics incl.)
+  # Field-settling time after the drive is removed [s] (design doc §7). This is
+  # what sizes the MTQ/MAG interlock's quiet window, so it is derived rather than
+  # guessed: the rod's field decays as the coil current does, with time constant
+  # L/R. A smallsat rod of this class is ~10^3 turns on a ferrite core — order
+  # 0.1-1 H of inductance against 10-100 ohm of winding plus drive resistance,
+  # i.e. L/R of a few milliseconds — and the core's own relaxation is well under
+  # that. 10 ms is a conservative representative of the 5-20 ms band COTS rods
+  # sit in, and the model treats it as the time by which ~95% of the transient
+  # is gone (tau = settle_time_s/3). Refine from the unit's measured decay.
+  settle_time_s: 0.01

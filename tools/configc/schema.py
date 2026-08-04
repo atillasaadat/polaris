@@ -95,6 +95,29 @@ class MountedUnit(_Strict):
             "matrix (design doc §7). Ignored for sensors, which use mounting_dcm"
         ),
     )
+    dipole_axis: Vec3 | None = Field(
+        default=None,
+        description=(
+            "magnetorquer rod dipole axis in the body frame (need not be unit — it "
+            "is normalised). The rod analogue of spin_axis: a torque rod has one "
+            "direction and no meaningful roll about it, so a full mounting would "
+            "be six numbers of which three are arbitrary. The flight controller's "
+            "MtqAxesBody parameter is checked against these (design doc §7/§8.5). "
+            "Ignored for anything that is not a magnetorquer"
+        ),
+    )
+    mounting_position_m: Vec3 | None = Field(
+        default=None,
+        description=(
+            "unit origin in the body frame [m]; the body origin if omitted. Carried "
+            "for the effects that depend on *where* a unit is rather than which way "
+            "it points — today the §7 MTQ/MAG interlock, whose near-field coupling "
+            "goes as 1/r^3 between an energised rod and a magnetometer, so the "
+            "separation is the whole model. A zero default is honest here: it is "
+            "the worst case (co-located), so an uncharacterised layout errs toward "
+            "showing the interlock violation rather than hiding it"
+        ),
+    )
     noise_enabled: bool | None = Field(
         default=None,
         description=(

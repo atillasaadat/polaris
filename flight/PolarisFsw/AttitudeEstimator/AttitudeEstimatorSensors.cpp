@@ -387,13 +387,72 @@ bool AttitudeEstimator ::voteMagField(I64 nowTaiNs, const pm::Vec3<Body>& magRef
     if (!m.get_valid() || !fresh(nowTaiNs, m.get_timeTagNs(), this->max_meas_age_s_)) {
       continue;
     }
+    // §7 MTQ/MAG duty-cycle interlock, layer 2, applied at the **one** place
+    // magnetometer data enters the vehicle. The gate is in two halves, and the
+    // order of them is load-bearing.
+    //
+    // First the **timing** half: a sample taken while a rod was energised, or
+    // before its field had settled, is not a measurement of the geomagnetic field
+    // at all and there is nothing to be learned from it.
+    if (!this->magSampleInQuietWindow(m.get_timeTagNs())) {
+      ++this->mag_interlock_rejects_;
+      continue;
+    }
+
+    // Raw magnitude, recorded here — **upstream of the §8.2 plausibility band,
+    // upstream of the vote, and upstream of the interlock's own health verdict**
+    // — for the §9 stuck-on monitor (see
+    // GncPorts.AttitudeEstimate.magRawMagnitudeT). A rod stuck on puts hundreds
+    // of microtesla on the sensor, which the magnitude gate below rejects as
+    // implausible, so a monitor fed the voted field goes blind at exactly the
+    // disturbance it names. The health verdict has to be upstream of it for the
+    // same reason *inverted*: once the monitor latches, this is the only path
+    // its clearing evidence can travel, and gating it on `interlockHealthy`
+    // would make the latch unrevocable — an exclusion whose release test flows
+    // through the gate the exclusion closes. The *largest* across units, because
+    // one corrupted unit is enough evidence and an average would let a healthy
+    // one hide it.
+    const Eigen::Vector3d raw(m.get_fieldTesla()[0], m.get_fieldTesla()[1], m.get_fieldTesla()[2]);
+    const double magnitude = raw.norm();
+    if (std::isfinite(magnitude) && magnitude > this->pub_mag_raw_t_) {
+      this->pub_mag_raw_t_ = magnitude;
+      this->pub_mag_raw_valid_ = true;
+    }
+
+    // Then the **health** half, which is the consumption gate: with a rod
+    // latched stuck-on no window is quiet whatever the clock says. Reported to
+    // the voter as *absence* rather than as implausibility — exactly like the
+    // staleness gate above, and for the same reason: a corrupted window says
+    // nothing about whether the unit is lying, and must not latch an exclusion
+    // the ground then has to reason about.
+    if (!this->magSampleConsumable(m.get_timeTagNs())) {
+      ++this->mag_interlock_rejects_;
+      continue;
+    }
+
     // **Raw**, before any applied hard/soft-iron correction: the vote decides
     // which unit's reading the vehicle believes, and a calibration fitted for one
     // unit must never be used to judge another. The correction is applied to the
     // vote's output, downstream.
-    units[i].field_tesla = pm::Vec3<Body>(
-        Eigen::Vector3d(m.get_fieldTesla()[0], m.get_fieldTesla()[1], m.get_fieldTesla()[2]));
+    units[i].field_tesla = pm::Vec3<Body>(raw);
     units[i].present = true;
+  }
+
+  // The interlock is excluding otherwise-usable samples: an operator-visible
+  // state, since it means the vehicle is flying without a magnetic pair. Edge
+  // gated and then repeated at the shared alert cadence, so a latched rod costs
+  // a bounded event stream rather than one per 10 Hz cycle.
+  const bool excluding = this->have_mtq_schedule_ && !this->mtq_schedule_.get_interlockHealthy();
+  if (excluding) {
+    ++this->mag_interlock_excluding_cycles_;
+    if (this->imu_ambiguity_escalate_cycles_ == 0 || this->mag_interlock_excluding_cycles_ == 1 ||
+        (this->mag_interlock_excluding_cycles_ % this->imu_ambiguity_escalate_cycles_) == 0) {
+      this->log_WARNING_HI_MagInterlockExcluding(this->mag_interlock_rejects_,
+                                                 this->mag_interlock_excluding_cycles_);
+    }
+  } else if (this->mag_interlock_excluding_cycles_ != 0) {
+    this->log_ACTIVITY_HI_MagInterlockRestored(this->mag_interlock_excluding_cycles_);
+    this->mag_interlock_excluding_cycles_ = 0;
   }
 
   polaris::gnc::MagVoteReference reference;
@@ -457,6 +516,7 @@ bool AttitudeEstimator ::voteMagField(I64 nowTaiNs, const pm::Vec3<Body>& magRef
 
   this->tlmWrite_MagContributing(static_cast<U32>(result.contributing));
   this->tlmWrite_MagExclusionMask(result.exclusion_mask);
+  this->tlmWrite_MagInterlockRejects(this->mag_interlock_rejects_);
   this->tlmWrite_MagUnitSelected(
       result.published_index >= 0 ? static_cast<U8>(result.published_index) : kNoUnitIndex);
 

@@ -191,7 +191,7 @@ TEST(SitlHandler, BuildStepReplyZeroesCommandsWhenCallerSuppliesNone) {
   doHello(h, 4, 3);
 
   std::array<std::uint8_t, ps::kMaxStepReplyBytes> out{};
-  const std::size_t reply_len = h.buildStepReply(42, nullptr, nullptr, out.data(), out.size());
+  const std::size_t reply_len = h.buildStepReply(42, nullptr, nullptr, 0.0, out.data(), out.size());
 
   // Header + 4 wheels + 3 MTQs, all zeroed (nullptr command arrays).
   const std::size_t expected = sizeof(ps::StepReplyHeader) + 4 * sizeof(ps::WheelCommandRecord) +
@@ -203,6 +203,9 @@ TEST(SitlHandler, BuildStepReplyZeroesCommandsWhenCallerSuppliesNone) {
   ASSERT_TRUE(ps::readRecord(out.data(), reply_len, off, rhdr));
   EXPECT_TRUE(ps::checkHeader(rhdr.hdr, ps::MsgType::kStepReply));
   EXPECT_EQ(rhdr.macro_step, 42u);
+  // No duty-cycle schedule from the caller means the rods stay off for the whole
+  // step (§7) — the safe reading, not a full-period drive.
+  EXPECT_EQ(rhdr.mtq_on_window_s, 0.0);
   for (int i = 0; i < 4; ++i) {
     ps::WheelCommandRecord w;
     ASSERT_TRUE(ps::readRecord(out.data(), reply_len, off, w));
@@ -235,13 +238,17 @@ TEST(SitlHandler, BuildStepReplyCarriesCallerSuppliedCommands) {
 
   std::array<std::uint8_t, ps::kMaxStepReplyBytes> out{};
   const std::size_t reply_len =
-      h.buildStepReply(7, wheels.data(), mtqs.data(), out.data(), out.size());
+      h.buildStepReply(7, wheels.data(), mtqs.data(), 0.05, out.data(), out.size());
   ASSERT_GT(reply_len, 0u);
 
   std::size_t off = 0;
   ps::StepReplyHeader rhdr;
   ASSERT_TRUE(ps::readRecord(out.data(), reply_len, off, rhdr));
   EXPECT_EQ(rhdr.macro_step, 7u);
+  // The §7 MTQ-on window crosses the wire alongside the dipoles: the plant needs
+  // it to drive the rods over the right fraction of the step and to corrupt any
+  // magnetometer sample landing inside it.
+  EXPECT_EQ(rhdr.mtq_on_window_s, 0.05);
   ps::WheelCommandRecord w0;
   ps::WheelCommandRecord w1;
   ASSERT_TRUE(ps::readRecord(out.data(), reply_len, off, w0));
@@ -261,7 +268,7 @@ TEST(SitlHandler, BuildStepReplyCarriesCallerSuppliedCommands) {
 TEST(SitlHandler, BuildStepReplyBeforeHelloReturnsZero) {
   ps::SitlHandler h;
   std::array<std::uint8_t, ps::kMaxStepReplyBytes> out{};
-  EXPECT_EQ(h.buildStepReply(1, nullptr, nullptr, out.data(), out.size()), 0u);
+  EXPECT_EQ(h.buildStepReply(1, nullptr, nullptr, 0.0, out.data(), out.size()), 0u);
 }
 
 TEST(SitlHandler, ShutdownYieldsNoReply) {
@@ -361,7 +368,7 @@ TEST(SitlHandler, UndersizedReplyBufferFailsSafely) {
   ps::SitlHandler h;
   doHello(h, 4, 3);
   std::array<std::uint8_t, sizeof(ps::StepReplyHeader) + 4> tiny{};  // header fits, records don't
-  EXPECT_EQ(h.buildStepReply(1, nullptr, nullptr, tiny.data(), tiny.size()), 0u);
+  EXPECT_EQ(h.buildStepReply(1, nullptr, nullptr, 0.0, tiny.data(), tiny.size()), 0u);
 }
 
 TEST(SitlHandler, UndersizedHelloAckBufferFailsSafely) {
@@ -392,7 +399,7 @@ TEST(SitlHandler, ReHelloReLatchesCounts) {
   std::array<std::uint8_t, ps::kMaxStepReplyBytes> out{};
   const ps::HandleResult r = h.handle(req.bytes.data(), req.len, out.data(), out.size());
   ASSERT_EQ(r.status, ps::HandleStatus::kStepReq);
-  const std::size_t reply_len = h.buildStepReply(5, nullptr, nullptr, out.data(), out.size());
+  const std::size_t reply_len = h.buildStepReply(5, nullptr, nullptr, 0.0, out.data(), out.size());
   const std::size_t expected = sizeof(ps::StepReplyHeader) + 2 * sizeof(ps::WheelCommandRecord) +
                                1 * sizeof(ps::MtqCommandRecord);
   EXPECT_EQ(reply_len, expected);
@@ -431,7 +438,7 @@ TEST(SitlHandler, BuildStepReplySerializesCallerCommands) {
 
   std::array<std::uint8_t, ps::kMaxStepReplyBytes> out{};
   const std::size_t reply_len =
-      h.buildStepReply(9, wheels.data(), mtqs.data(), out.data(), out.size());
+      h.buildStepReply(9, wheels.data(), mtqs.data(), 0.04, out.data(), out.size());
   const std::size_t expected = sizeof(ps::StepReplyHeader) + 2 * sizeof(ps::WheelCommandRecord) +
                                1 * sizeof(ps::MtqCommandRecord);
   ASSERT_EQ(reply_len, expected);
@@ -440,6 +447,7 @@ TEST(SitlHandler, BuildStepReplySerializesCallerCommands) {
   ps::StepReplyHeader rh;
   ASSERT_TRUE(ps::readRecord(out.data(), reply_len, off, rh));
   EXPECT_EQ(rh.macro_step, 9u);
+  EXPECT_EQ(rh.mtq_on_window_s, 0.04);
   ps::WheelCommandRecord w0, w1;
   ASSERT_TRUE(ps::readRecord(out.data(), reply_len, off, w0));
   ASSERT_TRUE(ps::readRecord(out.data(), reply_len, off, w1));
