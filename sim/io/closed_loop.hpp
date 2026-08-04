@@ -101,8 +101,17 @@ struct WheelCommand {
 /// vector order); short vectors are zero-padded, extras ignored.
 struct FswOutputs {
   std::vector<WheelCommand> wheels;
-  /// Commanded dipole per magnetorquer unit, body frame [A·m²].
+  /// Commanded dipole per magnetorquer unit, body frame [A·m²]. This is the
+  /// **peak** value the rods are driven at during the on-window, not an average
+  /// over the step.
   std::vector<math::Vec3<math::frames::Body>> magnetorquer_dipoles;
+  /// §7 MTQ/MAG duty-cycle on-window [s] measured from the start of the interval
+  /// these commands apply over: the rods carry `magnetorquer_dipoles` for this
+  /// long and are then de-energised, their field decaying over the rod model's
+  /// settle time. Clamped to the macro step by the loop; zero (the default)
+  /// leaves the rods off, so an FSW that never schedules a window produces no
+  /// magnetic torque rather than a full-period one.
+  double mtq_on_window_s{0.0};
 };
 
 /// The flight side of the macro-step handshake. Phase 3's F´ SITL transport

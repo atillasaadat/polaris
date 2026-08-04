@@ -71,6 +71,13 @@ module flight {
   # OnboardTables query ports, and publishes the §8.0 estimate.
   instance attitudeEstimator: flight.AttitudeEstimator base id 0x10030000
 
+  # Attitude controller (design doc §8.5, §7). The estimator's consumer and the
+  # vehicle's actuator commander: B-dot detumble, PID pointing with wheel
+  # allocation, and the MTQ/MAG duty-cycle interlock the estimator gates its
+  # magnetometer samples on. A flight component, like the estimator — only the
+  # destination of its commands is SITL today.
+  instance attitudeController: flight.AttitudeController base id 0x10040000
+
   instance rateGroupDriver: Svc.RateGroupDriver base id 0x10011000
 
   instance systemResources: Svc.SystemResources base id 0x10012000
@@ -83,9 +90,9 @@ module flight {
   # SITL lockstep transport (design doc §2.2, §2.4)
   # ----------------------------------------------------------------------
   #
-  # The plant<->FSW SITL comm stack (sitlBridge, sitlRateGroup, scriptedCmdSource
-  # and their dedicated TcpClient/ComStub/FrameAccumulator/deframer/framer/
-  # bufferManager) now lives in the PolarisSitl subtopology
+  # The plant<->FSW SITL comm stack (sitlBridge, sitlRateGroup and their
+  # dedicated TcpClient/ComStub/FrameAccumulator/deframer/framer/
+  # bufferManager) lives in the PolarisSitl subtopology
   # (flight/PolarisFsw/PolarisSitl/), imported by topology.fpp. Base IDs are
   # preserved there (0x10015000 + offsets) so the dictionary is unchanged.
   #

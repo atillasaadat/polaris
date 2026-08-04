@@ -154,10 +154,31 @@ spacecraft:
     # unattributable disagreement in a degraded mode costs the magnetic pair for
     # that cycle. That is cheaper than the IMU equivalent by design: it loses one
     # of two vector pairs, not the body rate.
+    #
+    # MOUNTING POSITION matters here and nowhere else on this vehicle so far: the
+    # §7 MTQ/MAG interlock's near-field coupling goes as 1/r^3 between an
+    # energised torque rod and the sensor, so the separation *is* the model. Both
+    # units sit on the +Z end of the 6U stack, the rods on the -Z end (below), a
+    # little under 0.2 m away — which puts a driven rod's near field in the
+    # hundreds of microtesla against a ~30 uT ambient. That is the point: the
+    # duty-cycle schedule is what keeps the samples clean, not distance.
+    #
+    # AND THEY SIT 2 cm APART, WHICH IS A REQUIREMENT, NOT A LAYOUT ACCIDENT.
+    # The rods keep a remanent moment after every de-energise, so there is a
+    # permanent near-field at each sensor. Spread the pair across the bus and that
+    # field is *different* at each unit — a few microtesla of differential — which
+    # the §8.2 pairwise vote cannot tell from a sensor fault: it sees two
+    # plausible units disagreeing, reports MagVoteAmbiguous, and drops the
+    # magnetic pair. Detumble then starves, because B-dot's only input is the
+    # magnetic pair. Redundant units have to be close enough that the vehicle's
+    # own magnetic signature is common-mode between them (SITL row
+    # `NominalDutyCycledDetumbleDoesNotTripTheStuckOnMonitor` is what caught this).
     - name: mag_a
       model_id: MAG-GENERIC
+      mounting_position_m: [0.05, 0.05, 0.10]
     - name: mag_b
       model_id: MAG-GENERIC
+      mounting_position_m: [0.03, 0.05, 0.10]
     - name: gps_a                     # GNSS PVT fix -> onboard OD (§8.3)
       model_id: NOVATEL-OEM7600
     - name: imager_a                  # payload: boresight geometry only (§6.3)
@@ -181,18 +202,28 @@ spacecraft:
     - name: rw_4
       model_id: RW-X
       spin_axis: [0.57735, -0.57735, 0.57735]
-    - name: mtq_x                   # 3-axis torque rod set (detumble + desaturation)
+    # Three torque rods, one per body axis (detumble + desaturation). `dipole_axis`
+    # is the rod analogue of the wheels' spin_axis and is what
+    # flight.attitudeController.MtqAxesBody is checked against; the flight
+    # controller resolves its commanded body dipole onto these three and clamps
+    # each rod against its own rating, which is only exact for an orthogonal
+    # triad — so the compiler refuses a set that is not one.
+    - name: mtq_x
       model_id: MTQ-GENERIC
+      dipole_axis: [1.0, 0.0, 0.0]
+      mounting_position_m: [0.0, -0.04, -0.05]
     - name: mtq_y
       model_id: MTQ-GENERIC
+      dipole_axis: [0.0, 1.0, 0.0]
+      mounting_position_m: [-0.04, 0.0, -0.05]
     - name: mtq_z
       model_id: MTQ-GENERIC
-  gains:
-    detumble:
-      k_bdot: 10000.0                # B-dot gain
-    pointing:
-      kp: 0.2                        # proportional (attitude)
-      kd: 0.8                        # derivative (rate)
+      dipole_axis: [0.0, 0.0, 1.0]
+      mounting_position_m: [0.04, 0.04, -0.05]
+  # NOTE: the flight control gains are the `flight.attitudeController.*` entries
+  # in fsw_parameters below — that is the §19.3 path the vehicle actually flies.
+  # The `gains` block that used to sit here carried placeholder numbers no code
+  # read; it was deleted in Push 54 rather than left to be mistaken for tuning.
   # FSW tuning delivered to the F´ ParameterDb (design doc §19.3). Keys are the
   # fully-qualified parameter names in the generated topology dictionary; the
   # config compiler resolves each to its generated ID and writes PrmDb.dat, and
@@ -555,8 +586,14 @@ spacecraft:
     # hard iron plus 1% scale, i.e. ~5% at the low end; 0.5 to 1.6 is roughly ten
     # times that in both directions, which is a fault gate rather than an accuracy
     # gate: it catches a dead sensor (reads ~0), an unpowered one, a saturated one
-    # (MAG-GENERIC rails at 100 uT = 4.5x the low-end field) and — until the §7
-    # MTQ/MAG interlock lands — the grossest magnetorquer-contaminated samples.
+    # (MAG-GENERIC rails at 100 uT = 4.5x the low-end field) and a sample taken
+    # while a torque rod is energised, which the §7 interlock now excludes
+    # upstream anyway. Note what the band must stay clear of: the rods' remanent
+    # near-field is a permanent ~1 uT offset at the sensor (see
+    # MtqStuckResidualT below for the derivation), so it sits comfortably inside
+    # 0.5-1.6 — but a rod catalog with a pessimistic residual would not, and the
+    # symptom would be intermittent MagUnitExcluded(FIELD_MAGNITUDE) events
+    # whenever the ambient field is at its weakest.
     flight.attitudeEstimator.MagMinFieldRatio: 0.5         # [-]
     flight.attitudeEstimator.MagMaxFieldRatio: 1.6         # [-]
     # Pairwise disagreement gate. Two MAG-GENERICs differ by their independent
@@ -695,6 +732,167 @@ spacecraft:
        0.0, -1.0,  0.0,    # 5: ss_ym  (-Y)
        0.0,  0.0,  0.0,    # 6: not installed
        0.0,  0.0,  0.0]    # 7: not installed
+
+    # ==================================================================
+    # Attitude control (design doc §8.5, §7; Push 54)
+    # ==================================================================
+    #
+    # Derived from *this* vehicle: J = diag(0.12, 0.12, 0.10) kg·m², a 500 km SSO
+    # (orbital rate 1.107e-3 rad/s), four RW-X wheels (0.025 N·m each) on the body
+    # diagonals, and three MTQ-GENERIC rods (15 A·m² each). Re-derive whenever the
+    # inertia, the orbit or a model_id changes.
+
+    # The GNC rate-group period. Declared rather than measured: the §7 quiet
+    # window a magnetometer sample is judged against must not move because one
+    # cycle ran late.
+    flight.attitudeController.ControlPeriodSec: 0.1
+    # Five cycles. Acting on an older attitude is driving the vehicle to where it
+    # used to be.
+    flight.attitudeController.MaxEstimateAgeSec: 0.5
+    # Quality floor for POINT [rad]. 0.02 rad = 1.15 deg sits between the coarse
+    # chain's few-degree budget and the MEKF's star-tracker-fused sub-milliradian
+    # one, so POINT engages on a fine solution and refuses on a coarse one —
+    # stated as a bound on the error being closed rather than as a mode name,
+    # because what a pointing law needs is the bound.
+    flight.attitudeController.MaxAttSigmaRad: 0.02
+
+    # --- B-dot detumble ------------------------------------------------
+    # Avanzini & Giulietti's floor for this vehicle is
+    # k >= 2*omega_o*(1 + sin xi)*J_min = 2*1.107e-3*2*0.10 = 4.4e-4 N·m·s
+    # (xi taken at 90 deg, the worst case for a near-polar SSO). The value flown
+    # is ~9x that: the floor guarantees convergence, and everything above it buys
+    # decay rate until the rods saturate, which at 15 A·m² they do only early in a
+    # 5 deg/s tumble. Closed-loop rate time constant while unsaturated is
+    # J/(k*duty) = 0.10/(4.0e-3*0.5) = 50 s.
+    flight.attitudeController.BdotGainNms: 4.0e-3
+    # MTQ-GENERIC rated moment; each rod is clamped to it independently, which is
+    # what keeps a saturated B-dot dissipative (lib/gnc/bdot.hpp).
+    flight.attitudeController.BdotMaxDipoleAm2: 15.0
+    # Derivative sample-spacing band. Below 0.05 s the difference quotient is
+    # mostly magnetometer noise; above 1.0 s the secant is not the tangent and the
+    # law re-acquires from the next pair instead.
+    flight.attitudeController.BdotMinSampleDtSec: 0.05
+    flight.attitudeController.BdotMaxSampleDtSec: 1.0
+    # Tumbling above 2 deg/s; detumble complete below 0.5 deg/s held for 5 s.
+    # Nothing acts on this yet — it is the predicate the Phase-7 mode manager
+    # reads (§10).
+    flight.attitudeController.DetumbleEnterRadps: 0.0349
+    flight.attitudeController.DetumbleExitRadps: 0.0087
+    flight.attitudeController.DetumbleConfirmCycles: 50
+
+    # --- Pointing PID --------------------------------------------------
+    # Placed for a closed-loop natural frequency of 0.2 rad/s at damping 0.7, two
+    # decades below the 10 Hz loop rate: kp = J*wn^2, kd = 2*zeta*wn*J with
+    # J = 0.11 kg·m² (the mean principal moment). Settling ~4/(zeta*wn) = 28 s.
+    flight.attitudeController.PidKpNmPerRad: 4.4e-3
+    # A small integral term to absorb the §5.3 constant disturbance torques
+    # (gravity gradient, residual dipole); the clamp bounds its contribution to
+    # 2.0e-4 * 0.5 = 1.0e-4 N·m, well under the proportional term at a degree of
+    # error, so it trims rather than drives.
+    flight.attitudeController.PidKiNmPerRadS: 2.0e-4
+    flight.attitudeController.PidMaxIntegralRadS: 0.5
+    flight.attitudeController.PidKdNmPerRadps: 3.1e-2
+    # Body-torque limit. The four-wheel pyramid can deliver 4*0.025/sqrt(3) =
+    # 0.058 N·m about a body axis with every wheel at its box; 0.02 N·m is about a
+    # third of that, leaving the allocation margin to spend on off-axis demands.
+    flight.attitudeController.PidMaxTorqueNm: 0.02
+    # Longest step the integrator is advanced over; a larger gap is a dropout and
+    # the PD terms act alone.
+    flight.attitudeController.PidMaxDtSec: 0.5
+
+    # --- Wheel allocation ----------------------------------------------
+    flight.attitudeController.WheelCount: 4
+    # Each wheel's **spin axis**, body frame, in actuator build order — the same
+    # numbers the sim's W matrix is built from, which is what the compiler checks
+    # them against. The controller negates them to get the torque-authority axes
+    # (a wheel's reaction is -I*omega_dot); that sign lives in exactly one place.
+    # Slots past the installed count are the zero vector.
+    flight.attitudeController.WheelAxesBody: [
+       0.57735,  0.57735, 0.57735,   # 0: rw_1
+      -0.57735,  0.57735, 0.57735,   # 1: rw_2
+      -0.57735, -0.57735, 0.57735,   # 2: rw_3
+       0.57735, -0.57735, 0.57735,   # 3: rw_4
+       0.0,      0.0,     0.0,       # 4: not installed
+       0.0,      0.0,     0.0,       # 5: not installed
+       0.0,      0.0,     0.0,       # 6: not installed
+       0.0,      0.0,     0.0]       # 7: not installed
+    # RW-X peak output torque.
+    flight.attitudeController.WheelMaxTorqueNm: 0.025
+    # Three-axis-span gate as lambda_min/lambda_max of A*A^T. The body-diagonal
+    # pyramid is isotropic (ratio exactly 1.0), so 0.05 rejects a collapsed array
+    # without being tuned to this one.
+    flight.attitudeController.AllocMinConditioning: 0.05
+    # 1 = L-infinity (min-max): with four wheels the null space is
+    # one-dimensional and the exact min-max costs a bounded scalar search, so the
+    # array saturates as late as possible. 0 would fly the L2 pseudo-inverse.
+    flight.attitudeController.AllocMethodSel: 1
+
+    # --- MTQ/MAG duty-cycle interlock (§7) -----------------------------
+    flight.attitudeController.MtqCount: 3
+    # Rod dipole axes, body frame, in actuator build order — checked against the
+    # `dipole_axis` entries above. An orthogonal triad, which is what makes the
+    # per-rod projection and clamp exact.
+    flight.attitudeController.MtqAxesBody: [
+      1.0, 0.0, 0.0,   # 0: mtq_x
+      0.0, 1.0, 0.0,   # 1: mtq_y
+      0.0, 0.0, 1.0,   # 2: mtq_z
+      0.0, 0.0, 0.0,   # 3: not installed
+      0.0, 0.0, 0.0,   # 4: not installed
+      0.0, 0.0, 0.0,   # 5: not installed
+      0.0, 0.0, 0.0,   # 6: not installed
+      0.0, 0.0, 0.0]   # 7: not installed
+    # Half the control period driven, the rest left for the field to settle and be
+    # measured: 0.05 s on, 0.03 s settling, a 0.02 s quiet window the 10 Hz
+    # magnetometer read lands at the end of. The average dipole is half the
+    # commanded one, which the B-dot law divides out.
+    flight.attitudeController.MtqDutyFactor: 0.5
+    # Three times the MTQ-GENERIC catalog settle_time_s (0.01 s, itself derived
+    # from the rod's L/R decay — see the catalog entry), i.e. nine e-folds of the
+    # decay: what remains of a ~400 uT near field at the quiet window's opening is
+    # well under the magnetometer's own noise. The margin is deliberate — the
+    # alternative to over-waiting is feeding the estimator a field that is mostly
+    # torque rod.
+    #
+    # THE SCHEDULE HAS TO CLOSE ON THIS NUMBER, and applyParameters refuses the
+    # configuration if it does not: on-window + settle must fit inside the control
+    # period, i.e. 0.5*0.1 + 0.03 = 0.08 s against 0.1 s, leaving a 0.02 s quiet
+    # window. A rod whose field really took 0.05 s to settle would need
+    # MtqSettleSec >= 0.15 s and no 10 Hz / 50%-duty schedule could carry it — the
+    # duty factor or the control period would have to move instead. That is the
+    # trade this line is the output of, not an independent knob.
+    flight.attitudeController.MtqSettleSec: 0.03
+    # Late-sample tolerance on the quiet window's **end** [s]. The rods are off
+    # from the on-window's end until the next period's on-window begins, so a
+    # sample arriving a little after the nominal boundary is still a measurement
+    # of the geomagnetic field; extending the *start* would do the opposite. One
+    # millisecond is 1% of the control period — enough for scheduler jitter and
+    # time-tag rounding on real hardware, far short of the 0.05 s that separates
+    # the boundary from the next drive.
+    flight.attitudeController.MtqWindowToleranceSec: 0.001
+    # Field-magnitude residual against the onboard IGRF that counts as a
+    # disturbance. Two contributions set the floor, and both are the vehicle's own
+    # rather than the fault's:
+    #   * the magnetometer's error budget — ~1 uT hard iron, 1% scale on a ~30 uT
+    #     field, plus onboard-IGRF model error: ~2 uT worst case;
+    #   * **the rods' own remanence**, which is a permanent near-field on the
+    #     sensor: MTQ-GENERIC keeps 0.05 A·m² per rod after the drive is removed,
+    #     and at the 0.18 m rod-to-magnetometer separation that is ~1 uT at the
+    #     sensor after the triad's partial cancellation.
+    # 15 uT is ~5x that combined static signature, and a rod stuck at a fifth of
+    # its rating puts ~100 uT on the sensor — the gate sits in the gap between,
+    # derived from the hardware rather than fitted to either side of it.
+    #
+    # The monitor deliberately works on the **uncalibrated** magnitude the
+    # estimator publishes for it: a calibration fitted while a rod was stuck on
+    # would absorb the fault into the hard-iron term and hide it forever.
+    flight.attitudeController.MtqStuckResidualT: 1.5e-5
+    # Half a second of confirmation before latching, two seconds of clean quiet
+    # windows to clear — the same residual test both ways, which is what keeps an
+    # exclusion from becoming a life sentence.
+    flight.attitudeController.MtqStuckConfirmCycles: 5
+    flight.attitudeController.MtqStuckClearCycles: 20
+    # One event, then one per 10 s while a saturation or refusal persists.
+    flight.attitudeController.AlertCycles: 100
   drag_area_m2: 0.06                 # 6U broadside, ~0.2 x 0.3 m
   drag_cd: 2.2
   srp_area_m2: 0.06

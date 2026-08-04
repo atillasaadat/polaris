@@ -60,7 +60,7 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
       const bool unit_noise = unit.noise_enabled.value_or(noise.sensors);
       if (unit.kind == "imu") {
         out.imus.push_back(
-            {unit.name, unit.model_id, unit.mounting_dcm,
+            {unit.name, unit.model_id, unit.mounting_dcm, unit.mounting_position_m,
              sensors::Imu(sensors::ImuSpec::fromParams(unit.params), seed, stream, unit_noise)});
       } else if (unit.kind == "star_tracker") {
         const auto spec = sensors::StarTrackerSpec::fromParams(unit.params);
@@ -75,7 +75,7 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
                                  "report valid solutions while pointed at the Earth");
         }
         out.star_trackers.push_back(
-            {unit.name, unit.model_id, unit.mounting_dcm,
+            {unit.name, unit.model_id, unit.mounting_dcm, unit.mounting_position_m,
              sensors::StarTracker(spec, unit.mounting_dcm, seed, stream, unit_noise)});
       } else if (unit.kind == "sun_sensor") {
         const auto spec = sensors::SunSensorSpec::fromParams(unit.params);
@@ -99,7 +99,7 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
                                  "' reports a vector but has no accuracy_*_deg_3sigma");
         }
         out.sun_sensors.push_back(
-            {unit.name, unit.model_id, unit.mounting_dcm,
+            {unit.name, unit.model_id, unit.mounting_dcm, unit.mounting_position_m,
              sensors::SunSensor(spec, unit.mounting_dcm, seed, stream, unit_noise)});
       } else if (unit.kind == "payload_sensor") {
         const auto spec = sensors::PayloadSensorSpec::fromParams(unit.params);
@@ -122,6 +122,7 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
         // No noise switch: the model is geometry, which the §6.2 master switch
         // does not govern (the same reason occlusion stays live for every sensor).
         out.payload_sensors.push_back({unit.name, unit.model_id, unit.mounting_dcm,
+                                       unit.mounting_position_m,
                                        sensors::PayloadSensor(spec, unit.mounting_dcm)});
       } else if (unit.kind == "magnetometer") {
         const auto model = sensors::magnetometerErrorFromParams(unit.params, seed, stream);
@@ -129,6 +130,7 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
         // reject here: every term of the error stack is a no-op at zero, and a
         // range of zero simply means "no saturation modelled".
         out.magnetometers.push_back({unit.name, unit.model_id, unit.mounting_dcm,
+                                     unit.mounting_position_m,
                                      sensors::Magnetometer(model, seed, stream, unit_noise)});
       } else if (unit.kind == "gnss") {
         auto spec = sensors::GnssSpec::fromParams(unit.params);
@@ -143,8 +145,8 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
                                  "' has no horizontal_position_rms_m — it would report "
                                  "truth-perfect position fixes");
         }
-        out.gnss_receivers.push_back(
-            {unit.name, unit.model_id, unit.mounting_dcm, sensors::Gnss(spec, seed, stream)});
+        out.gnss_receivers.push_back({unit.name, unit.model_id, unit.mounting_dcm,
+                                      unit.mounting_position_m, sensors::Gnss(spec, seed, stream)});
       } else if (unit.kind == "reaction_wheel") {
         const auto spec = actuators::ReactionWheelSpec::fromParams(unit.params);
         if (!(spec.inertia() > 0.0)) {
@@ -152,8 +154,8 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
                                  "' has no rotor inertia — set rotor_inertia_kg_m2, or "
                                  "max_momentum_nms with max_speed_rpm");
         }
-        out.wheels.push_back(
-            {unit.name, unit.model_id, unit.mounting_dcm, actuators::ReactionWheel(spec)});
+        out.wheels.push_back({unit.name, unit.model_id, unit.mounting_dcm, unit.mounting_position_m,
+                              actuators::ReactionWheel(spec)});
         wheel_axes.push_back(unit.spin_axis.norm() > 0.0 ? unit.spin_axis
                                                          : unit.mounting_dcm.col(2));
       } else if (unit.kind == "magnetorquer") {
@@ -161,8 +163,8 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
         if (!(spec.max_dipole_am2 > 0.0)) {
           return fail(error, "magnetorquer '" + unit.name + "' has no max_dipole_am2");
         }
-        out.magnetorquers.push_back(
-            {unit.name, unit.model_id, unit.mounting_dcm, actuators::Magnetorquer(spec)});
+        out.magnetorquers.push_back({unit.name, unit.model_id, unit.mounting_dcm,
+                                     unit.mounting_position_m, actuators::Magnetorquer(spec)});
       } else {
         out.unmodelled.push_back(unit.name + ":" + unit.kind);
       }

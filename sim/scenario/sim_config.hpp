@@ -71,6 +71,11 @@ struct UnitConfig {
   /// nonzero it defines the wheel's axis (the clean alternative to a full
   /// mounting DCM); the vehicle builder normalises it into the assembly's W.
   Eigen::Vector3d spin_axis{Eigen::Vector3d::Zero()};
+  /// Unit origin in the body frame [m]; zero (the body origin) when the config
+  /// omitted it. Consumed by the effects that depend on *where* a unit sits
+  /// rather than which way it points — today the §7 MTQ/MAG near-field coupling,
+  /// which goes as 1/r^3 between an energised rod and a magnetometer.
+  Eigen::Vector3d mounting_position_m{Eigen::Vector3d::Zero()};
   /// Per-unit override of the scenario sensor-noise switch (§6.2). Unset =
   /// inherit the global `sensor_noise_enabled`; set forces this sensor's noise
   /// on/off regardless. Ignored for actuators (no stochastic noise).

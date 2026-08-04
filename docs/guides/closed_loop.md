@@ -51,7 +51,7 @@ flowchart LR
         subgraph PS ["PolarisSitl subtopology (excludable for a flight build)"]
             TC["Drv.TcpClient +<br/>FrameAccumulator / Deframer / Framer<br/>(dedicated SITL comm stack)"] --> SB["SitlBridge"]
             SB -->|"2 — cycle"| RG["Svc.PassiveRateGroup<br/>(10 Hz, barrier-driven)"]
-            RG -->|run| CS["ScriptedCmdSource<br/>(Phase-4 GNC placeholder)"]
+            RG -->|run| CS["AttitudeController<br/>(§8.5 B-dot / PID + allocation)"]
             CS -->|"3 — wheel τ / MTQ dipoles"| SB
             SB -->|"4 — STEP_REPLY"| TC
         end

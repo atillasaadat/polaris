@@ -360,3 +360,118 @@ TEST(ClosedLoop, PayloadGeometryIsSampledAndStaysSimSide) {
   EXPECT_NEAR(geometry.measurement.occlusion.nadir_angle_rad, M_PI_2, 1e-9);
   EXPECT_LE(geometry.measurement.occlusion.sun_angle_rad, M_PI);
 }
+
+namespace {
+
+/// A magnetorquer rod at @p position with a catalog settle time — the §7 model.
+scenario::UnitConfig rodUnit(const std::string& name, const Eigen::Vector3d& position) {
+  scenario::UnitConfig u;
+  u.name = name;
+  u.model_id = "TEST-MTQ";
+  u.kind = "magnetorquer";
+  u.params = {{"max_dipole_am2", 15.0},
+              {"residual_dipole_am2", 0.0},
+              {"linearity", 0.0},
+              {"settle_time_s", 0.01}};
+  u.mounting_position_m = position;
+  return u;
+}
+
+/// An ideal magnetometer (no noise, no bias) at @p position: the near field is
+/// what is under test, so the sensor must not add anything of its own.
+scenario::UnitConfig magUnit(const std::string& name, const Eigen::Vector3d& position) {
+  scenario::UnitConfig u;
+  u.name = name;
+  u.model_id = "TEST-MAG";
+  u.kind = "magnetometer";
+  u.params = {{"range_ut", 1000.0}};
+  u.mounting_position_m = position;
+  u.noise_enabled = false;
+  return u;
+}
+
+/// Free space with the IGRF field on, which is what a magnetometer needs to
+/// measure and what a torque rod acts against.
+scenario::SimConfig magneticFreeSpace(double duration_s) {
+  scenario::SimConfig c = freeSpace(duration_s);
+  c.environment.magnetic_field = scenario::MagneticModel::kIgrf;
+  return c;
+}
+
+}  // namespace
+
+TEST(ClosedLoop, DutyCycledRodsLeaveTheBoundaryMagnetometerSampleClean) {
+  RecordProperty("verifies", "REQ-ACTL-004");
+  // The §7 interlock, plant side. The magnetometer is read at the macro-step
+  // boundary — the end of the quiet window — so a rod driven over the first half
+  // of each period must have decayed away by then. The comparison is against the
+  // same run with the rods never energised: identical samples mean the duty
+  // cycle really did leave the field alone.
+  const Eigen::Vector3d mag_at(0.05, 0.05, 0.10);
+  const Eigen::Vector3d rod_at(0.0, -0.04, -0.05);
+  const scenario::SimConfig config = magneticFreeSpace(1.0);  // 10 macro steps
+
+  auto run = [&](double on_window_s, bool stuck, std::vector<Eigen::Vector3d>& samples) {
+    scenario::Vehicle vehicle;
+    std::string error;
+    ASSERT_TRUE(scenario::buildVehicle(
+        suite({magUnit("mag_a", mag_at)}, {rodUnit("mtq_x", rod_at)}), 11, vehicle, &error))
+        << error;
+    if (stuck) {
+      // Stated moment, not `setStuckOn(true)`: injected before the run the rod
+      // is off, and "hold the last produced dipole" would latch it at zero — a
+      // dropout, not the fault under test.
+      vehicle.magnetorquers[0].model.injectStuckOnAt(
+          pm::Vec3<pm::frames::Body>(Eigen::Vector3d(12.0, 0.0, 0.0)));
+    }
+    scenario::SimRunner runner;
+    io::ClosedLoop loop(runner, vehicle);
+    ASSERT_TRUE(runner.build(config, goldenPaths(), &error, loop.wrench())) << error;
+
+    samples.clear();
+    auto fsw = [&](const io::FswInputs& in) {
+      samples.push_back(in.magnetometers[0].measurement.field_tesla.eigen());
+      io::FswOutputs out;
+      out.magnetorquer_dipoles.push_back(
+          pm::Vec3<pm::frames::Body>(Eigen::Vector3d(12.0, 0.0, 0.0)));
+      out.mtq_on_window_s = on_window_s;
+      return out;
+    };
+    ASSERT_TRUE(loop.run(fsw, nullptr, &error)) << error;
+  };
+
+  std::vector<Eigen::Vector3d> rods_off;
+  std::vector<Eigen::Vector3d> duty_cycled;
+  std::vector<Eigen::Vector3d> always_on;
+  run(0.0, false, rods_off);
+  run(0.05, false, duty_cycled);  // 50% duty at 10 Hz
+  run(0.1, false, always_on);
+  ASSERT_EQ(rods_off.size(), 10u);
+  ASSERT_EQ(duty_cycled.size(), rods_off.size());
+  ASSERT_EQ(always_on.size(), rods_off.size());
+
+  // The ambient field, for scale: the corruption below is judged against it.
+  const double ambient = rods_off.back().norm();
+  ASSERT_GT(ambient, 1.0e-5);
+
+  for (std::size_t i = 1; i < rods_off.size(); ++i) {
+    // Duty-cycled: the boundary sample is the geomagnetic field to well under a
+    // per-cent of it. (Not bit-identical: the rod's *torque* moves the vehicle
+    // slightly, so the true field in body axes differs a little too.)
+    const double duty_error = (duty_cycled[i] - rods_off[i]).norm();
+    EXPECT_LT(duty_error, 0.01 * ambient) << "step " << i;
+
+    // Driven through the whole period — an interlock violation — and the same
+    // sample is dominated by the rod, an order of magnitude above ambient. That
+    // is what makes a violation *visible* in SITL rather than assumed away.
+    const double violation = (always_on[i] - rods_off[i]).norm();
+    EXPECT_GT(violation, 5.0 * ambient) << "step " << i;
+  }
+
+  // A stuck-on rod defeats the schedule: the sample is corrupted even though the
+  // duty cycle is nominal. This is the fault the §9 monitor exists to name.
+  std::vector<Eigen::Vector3d> stuck;
+  run(0.05, true, stuck);
+  ASSERT_EQ(stuck.size(), rods_off.size());
+  EXPECT_GT((stuck.back() - rods_off.back()).norm(), 5.0 * ambient);
+}

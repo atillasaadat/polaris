@@ -103,7 +103,9 @@ void SitlBridge ::wheelCmdIn_handler(FwIndexType portNum, const flight::WheelTor
   }
 }
 
-void SitlBridge ::mtqCmdIn_handler(FwIndexType portNum, const flight::MtqDipoleSet& cmds) {
+void SitlBridge ::mtqCmdIn_handler(FwIndexType portNum, const flight::MtqDipoleSet& cmds,
+                                   F64 onWindowSec) {
+  this->latest_mtq_on_window_s_ = onWindowSec;
   for (U32 i = 0; i < MtqDipoleSet::SIZE; ++i) {
     this->latest_mtq_[i].dipole_am2[0] = cmds[i][0];
     this->latest_mtq_[i].dipole_am2[1] = cmds[i][1];
@@ -130,9 +132,9 @@ void SitlBridge ::runStepCycle(const polaris::sitl::HandleResult& result,
   // back into wheelCmdIn/mtqCmdIn, updating latest_wheel_/latest_mtq_.
   this->sitlCycleOut_out(0, cycleStart);
 
-  const FwSizeType reply_len =
-      this->handler_.buildStepReply(result.macro_step, this->latest_wheel_, this->latest_mtq_,
-                                    this->reply_, sizeof(this->reply_));
+  const FwSizeType reply_len = this->handler_.buildStepReply(
+      result.macro_step, this->latest_wheel_, this->latest_mtq_, this->latest_mtq_on_window_s_,
+      this->reply_, sizeof(this->reply_));
   if (reply_len == 0) {
     // Reply would overflow the fixed buffer (never in flight sizing) — treat as
     // a malformed exchange rather than sending a truncated frame.

@@ -322,3 +322,122 @@ TEST(MagnetorquerSpec, LibraryParamsBuildTheSpecAndPowerCurve) {
   m.commandDipole(Vec3B(Eigen::Vector3d(10.0, 0.0, 0.0)));
   EXPECT_NEAR(m.busPower(), 1.536, 0.15);
 }
+
+// ----------------------------------------------------------------------
+// §7 MTQ/MAG duty-cycle interlock fidelity (Push 54)
+// ----------------------------------------------------------------------
+
+TEST(MagnetorquerNearField, MatchesTheAnalyticDipoleField) {
+  // Jackson §5.6: B = (mu0/4 pi r^3)(3 (m.rhat) rhat - m). Checked in the two
+  // geometries where the closed form is unambiguous — on the dipole axis, where
+  // the field is +2 mu0 m / 4 pi r^3, and transverse to it, where it is
+  // -mu0 m / 4 pi r^3.
+  const Eigen::Vector3d source = Eigen::Vector3d::Zero();
+  const Vec3B dipole(Eigen::Vector3d(5.0, 0.0, 0.0));  // 5 A·m² along +X
+  const double r = 0.2;
+  constexpr double kMu0Over4Pi = 1.0e-7;
+
+  const Eigen::Vector3d on_axis =
+      act::dipoleNearField(dipole, source, Eigen::Vector3d(r, 0.0, 0.0)).eigen();
+  EXPECT_NEAR(on_axis.x(), 2.0 * kMu0Over4Pi * 5.0 / (r * r * r), 1e-15);
+  EXPECT_NEAR(on_axis.y(), 0.0, 1e-18);
+  EXPECT_NEAR(on_axis.z(), 0.0, 1e-18);
+
+  const Eigen::Vector3d transverse =
+      act::dipoleNearField(dipole, source, Eigen::Vector3d(0.0, r, 0.0)).eigen();
+  EXPECT_NEAR(transverse.x(), -kMu0Over4Pi * 5.0 / (r * r * r), 1e-15);
+  EXPECT_NEAR(transverse.y(), 0.0, 1e-18);
+
+  // 125 uT at 20 cm from a 5 A·m² rod — several times the ~30 uT ambient, from a
+  // rod at a third of the reference vehicle's rating. That is the whole reason
+  // the §7 interlock exists rather than a correction model.
+  EXPECT_GT(on_axis.norm(), 3.0 * 3.0e-5);
+
+  // Co-located source and observer return zero rather than diverging: the dipole
+  // approximation has no meaning inside the source.
+  EXPECT_EQ(act::dipoleNearField(dipole, source, source).eigen(), Eigen::Vector3d::Zero());
+}
+
+TEST(Magnetorquer, SettleTransientDecaysFromTheDrivenMomentToTheRemanentOne) {
+  act::MagnetorquerSpec spec;
+  spec.max_dipole_am2 = 15.0;
+  spec.residual_dipole_am2 = 0.0;  // isolate the transient from the remanence
+  spec.settle_time_s = 0.01;
+  act::Magnetorquer m(spec);
+
+  m.commandDipole(Vec3B(Eigen::Vector3d(10.0, 0.0, 0.0)));
+  const double driven = m.dipole().eigen().x();
+  ASSERT_NEAR(driven, 10.0, 1e-12);
+  m.deenergize();
+
+  // At t = 0 the rod still carries what it was driven at; the field does not
+  // vanish the instant the drive does.
+  EXPECT_NEAR(m.settlingDipole(0.0).eigen().x(), driven, 1e-12);
+  // tau = settle/3, so ~95% is gone at the catalog settle time...
+  EXPECT_NEAR(m.settlingDipole(spec.settle_time_s).eigen().x(), driven * std::exp(-3.0), 1e-12);
+  // ...and the flight quiet window, opened at three settle times
+  // (MtqSettleSec = 3 x the catalog value), sees exp(-9) = 1.2e-4 of the driven
+  // moment. That margin is what makes a duty-cycled magnetometer sample a
+  // measurement of the geomagnetic field rather than of a torque rod.
+  EXPECT_LT(m.settlingDipole(3.0 * spec.settle_time_s).eigen().x(), 2.0e-4 * driven);
+  // Monotone all the way down.
+  double previous = driven;
+  for (int k = 1; k <= 60; ++k) {
+    const double now = m.settlingDipole(0.001 * k).eigen().x();
+    EXPECT_LE(now, previous + 1e-15);
+    previous = now;
+  }
+}
+
+TEST(Magnetorquer, SettleTransientDecaysTowardTheRemanentMomentNotZero) {
+  // The remanence is what the core keeps indefinitely, so it is the value the
+  // transient decays *toward* — folding it into the transient would model a rod
+  // that demagnetises itself.
+  act::MagnetorquerSpec spec;
+  spec.max_dipole_am2 = 15.0;
+  spec.residual_dipole_am2 = 0.5;
+  spec.settle_time_s = 0.01;
+  act::Magnetorquer m(spec);
+
+  m.commandDipole(Vec3B(Eigen::Vector3d(10.0, 0.0, 0.0)));
+  // The play operator's half-width is the remanence, so a rod driven from rest
+  // reaches command minus residual — the driven moment is 9.5, not 10.
+  const double driven = m.dipole().eigen().x();
+  EXPECT_NEAR(driven, 9.5, 1e-12);
+  m.deenergize();
+  const double remanent = m.dipole().eigen().x();
+  EXPECT_NEAR(remanent, 0.5, 1e-12);
+  EXPECT_NEAR(m.settlingDipole(0.0).eigen().x(), driven, 1e-12);
+  EXPECT_NEAR(m.settlingDipole(100.0 * spec.settle_time_s).eigen().x(), remanent, 1e-12);
+}
+
+TEST(Magnetorquer, StuckOnRodIgnoresDeenergiseAndKeepsItsMoment) {
+  // The fault the §9 interlock monitor exists to catch: the drive is removed and
+  // the moment does not go away, so the "quiet" window is not quiet.
+  act::MagnetorquerSpec spec;
+  spec.max_dipole_am2 = 15.0;
+  spec.settle_time_s = 0.01;
+  act::Magnetorquer m(spec);
+
+  m.commandDipole(Vec3B(Eigen::Vector3d(8.0, 0.0, 0.0)));
+  m.setStuckOn(true);
+  m.deenergize();
+  EXPECT_NEAR(m.dipole().eigen().x(), 8.0, 1e-12);
+  EXPECT_NEAR(m.settlingDipole(10.0 * spec.settle_time_s).eigen().x(), 8.0, 1e-12);
+}
+
+TEST(MagnetorquerSpec, SettleTimeComesFromTheCatalog) {
+  const auto spec = act::MagnetorquerSpec::fromParams({
+      {"max_dipole_am2", 15.0},
+      {"settle_time_s", 0.01},
+  });
+  EXPECT_DOUBLE_EQ(spec.settle_time_s, 0.01);
+  // Absent, the transient is a step — the pre-Push-54 behaviour, which a catalog
+  // entry that has not been updated must degrade to rather than to garbage.
+  const auto legacy = act::MagnetorquerSpec::fromParams({{"max_dipole_am2", 15.0}});
+  EXPECT_DOUBLE_EQ(legacy.settle_time_s, 0.0);
+  act::Magnetorquer m(legacy);
+  m.commandDipole(Vec3B(Eigen::Vector3d(5.0, 0.0, 0.0)));
+  m.deenergize();
+  EXPECT_NEAR(m.settlingDipole(1.0e-9).eigen().x(), 0.0, 1e-12);
+}

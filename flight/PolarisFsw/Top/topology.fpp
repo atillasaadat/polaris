@@ -29,6 +29,7 @@ module flight {
     instance sitlTime
     instance onboardTables
     instance attitudeEstimator
+    instance attitudeController
     instance rateGroup1
     instance rateGroup2
     instance rateGroup3
@@ -144,9 +145,13 @@ module flight {
       attitudeEstimator.getBodyPosition -> onboardTables.getBodyPosition
       attitudeEstimator.getEopAt        -> onboardTables.getEopAt
 
-      # attitudeEstimator.estimateOut has no consumer yet: guidance and control
-      # (§8.2, §12) are later pushes. The component guards the call on
-      # isConnected, so an unconnected product port is inert, not an assert.
+      # The §8.0 estimate to its consumer, and the §7 duty-cycle schedule back:
+      # a cycle within the rate group, closed deliberately. The estimator runs
+      # first and reads the schedule the controller published *last* cycle, which
+      # is the period this cycle's magnetometer sample was taken in — the correct
+      # pairing, not a staleness bug (see GncPorts.MtqActuation).
+      attitudeEstimator.estimateOut       -> attitudeController.estimateIn
+      attitudeController.mtqActuationOut  -> attitudeEstimator.mtqActuationIn
     }
 
     # ----------------------------------------------------------------------
@@ -168,6 +173,12 @@ module flight {
       # subtopology is dropped and this connection becomes a wall-clock 10 Hz
       # rate group instead (recipe: PolarisFsw/README.md).
       PolarisSitl.sitlRateGroup.RateGroupMemberOut[0] -> attitudeEstimator.run
+      # Member 1 is the controller: it acts on the solution member 0 just
+      # published, in the same cycle, and its commands ride the STEP_REPLY the
+      # bridge builds after the group returns (§2.4 step 4).
+      PolarisSitl.sitlRateGroup.RateGroupMemberOut[1] -> attitudeController.run
+      attitudeController.wheelCmdOut -> PolarisSitl.sitlBridge.wheelCmdIn
+      attitudeController.mtqCmdOut   -> PolarisSitl.sitlBridge.mtqCmdIn
 
       # Sensor measurements, SITL end of the GncPorts seam. One line per installed
       # unit, in the order config/spacecraft/leo_smallsat.yaml declares them —

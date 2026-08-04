@@ -104,10 +104,13 @@ inline int compileConfig(const std::string& out_dir, const std::string& err_path
 /// parameter file, logging its event stream to @p log_path.
 /// @p magCalSamples > 0 additionally commands MAG_CAL_START for that many
 /// samples at startup (`-M`), which is how the calibration test gets a command
-/// into a deployment with no ground link attached.
+/// into a deployment with no ground link attached. @p ctrlMode (`-c`) and
+/// @p ctrlTargetQ (`-q`) are the §8.5 equivalent for the attitude controller:
+/// 1 = DETUMBLE, 2 = POINT, 0 = leave it in IDLE.
 inline pid_t spawnFsw(const std::string& bin, std::uint16_t port, const std::string& prm_path,
                       const std::string& log_path, unsigned magCalSamples = 0,
-                      unsigned stAlignPairs = 0, unsigned stAlignUnit = 1) {
+                      unsigned stAlignPairs = 0, unsigned stAlignUnit = 1, unsigned ctrlMode = 0,
+                      const double* ctrlTargetQ = nullptr) {
   const pid_t pid = ::fork();
   if (pid == 0) {
     ::freopen(log_path.c_str(), "w", stdout);
@@ -115,9 +118,18 @@ inline pid_t spawnFsw(const std::string& bin, std::uint16_t port, const std::str
     const std::string port_str = std::to_string(port);
     const std::string cal_str = std::to_string(magCalSamples);
     const std::string align_str = std::to_string(stAlignUnit) + "," + std::to_string(stAlignPairs);
+    const std::string ctrl_str = std::to_string(ctrlMode);
+    std::ostringstream target;
+    if (ctrlTargetQ != nullptr) {
+      target << ctrlTargetQ[0] << "," << ctrlTargetQ[1] << "," << ctrlTargetQ[2] << ","
+             << ctrlTargetQ[3];
+    } else {
+      target << "0,0,0,0";
+    }
+    const std::string target_str = target.str();
     ::execl(bin.c_str(), bin.c_str(), "-s", port_str.c_str(), "-P", prm_path.c_str(), "-Y",
-            kEpochDecimalYear, "-M", cal_str.c_str(), "-A", align_str.c_str(),
-            static_cast<char*>(nullptr));
+            kEpochDecimalYear, "-M", cal_str.c_str(), "-A", align_str.c_str(), "-c",
+            ctrl_str.c_str(), "-q", target_str.c_str(), static_cast<char*>(nullptr));
     _exit(127);  // exec failed
   }
   return pid;
@@ -509,6 +521,47 @@ inline MatrixGeometry matrixGeometry() {
 /// all-sources-available attitude, inertially fixed so the trackers stay inside
 /// their 2 °/s acquisition envelope from the first cycle and the geometry above
 /// holds for the whole arc (nadir moves ~0.06 °/s).
+/// Port index of each actuator, which is the index the §8.5 commands and the §9
+/// interlock events name — `config/spacecraft/leo_smallsat.yaml` build order.
+constexpr unsigned kMtqX = 0;
+constexpr unsigned kMtqY = 1;
+constexpr unsigned kMtqZ = 2;
+
+/// The reference vehicle's suite for the §8.5 control rows, **read from the
+/// compiled config** at @p simSetupPath rather than transcribed.
+///
+/// Every other suite in this header restates the catalog by hand, and that is
+/// exactly how the rod settle time drifted 5x from the committed YAML while
+/// REQ-ACTL-004 was being verified against the transcription. The control rows
+/// already run `configc`, which resolves `config/hardware/**` into
+/// `sim_setup.json`, so the honest suite is the one that file describes — the
+/// reference vehicle, its mountings, its mounting *positions* (which the §7
+/// near-field model needs, since the coupling goes as 1/r^3) and its catalog
+/// values, by construction and not by copy.
+///
+/// **Ceiling, stated:** the rods' `dipole_axis` does not reach the truth side at
+/// all — `sim::actuators::Magnetorquer` takes a body-frame dipole vector, so the
+/// axis is purely a *flight* fact (which rod the controller resolves which
+/// component onto, via `MtqAxesBody`). A wrong `MtqAxesBody` is therefore
+/// invisible in SITL; the config compiler's cross-check against `dipole_axis` is
+/// what catches it, and that check is where the coverage lives.
+inline bool controlSuite(const std::string& simSetupPath, scenario::SpacecraftConfig& out,
+                         std::string* error) {
+  scenario::SimConfig compiled;
+  if (!scenario::loadSimConfig(simSetupPath, pt::LeapSecondTable::historical(), compiled, error)) {
+    return false;
+  }
+  out = compiled.spacecraft;
+  return true;
+}
+
+inline io::SitlServer::Counts controlCounts() {
+  io::SitlServer::Counts counts = faultMatrixCounts();
+  counts.wheel = 4;
+  counts.mtq = 3;
+  return counts;
+}
+
 inline scenario::SimConfig faultMatrixOrbit(double durationS, const char* name) {
   scenario::SimConfig c = estimationOrbit(durationS);
   c.scenario_name = name;

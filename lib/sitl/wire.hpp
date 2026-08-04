@@ -194,9 +194,16 @@ static_assert(sizeof(MtqCommandRecord) == 24);
 struct StepReplyHeader {
   MsgHeader hdr{kMagic, kVersion, static_cast<std::uint16_t>(MsgType::kStepReply)};
   std::uint64_t macro_step = 0;
+  /// §7 MTQ/MAG duty-cycle on-window [s]: how long, from the start of the next
+  /// macro step, the rods are energised at the commanded dipole. One value for
+  /// the set rather than one per rod, because the schedule is owned by the
+  /// controller as a whole — a per-rod window would be three chances for the
+  /// quiet window the magnetometer is judged against to disagree with itself.
+  /// Zero or negative leaves the rods off for the whole step.
+  double mtq_on_window_s = 0.0;
 };
 
-static_assert(sizeof(StepReplyHeader) == 16);
+static_assert(sizeof(StepReplyHeader) == 24);
 
 /// Largest possible STEP_REQ payload — sizes receive buffers on both ends.
 inline constexpr std::size_t kMaxStepReqBytes =

@@ -66,10 +66,18 @@ def test_compiles_template_and_emits_three_artifacts(tmp_path):
     resolved = compile_config(_TEMPLATE, _HARDWARE, tmp_path)
     names = {"fprime_params.json", "sim_setup.json", "analysis_inputs.json"}
     assert {p.name for p in tmp_path.iterdir()} == names
-    # F´ params carry the vehicle mass and a resolved per-mode gain.
-    fparams = json.loads((tmp_path / "fprime_params.json").read_text())["parameters"]
+    # F´ params carry the vehicle mass properties. The `gains` map is empty for
+    # this vehicle and deliberately so since Push 54: the flight control gains
+    # are real ParameterDb parameters under `fsw_parameters`
+    # (flight.attitudeController.*), and the placeholder `gains` block that used
+    # to sit beside them carried numbers no code read.
+    emitted = json.loads((tmp_path / "fprime_params.json").read_text())
+    fparams = emitted["parameters"]
     assert fparams["sc.mass_kg"] == 12.0
-    assert fparams["gains.pointing.kp"] == 0.2
+    assert not [k for k in fparams if k.startswith("gains.")]
+    assert (
+        emitted["fsw_parameters"]["flight.attitudeController.PidKpNmPerRad"] == 4.4e-3
+    )
     assert resolved["provenance"]["config_hash"]
     # The GNSS jamming KML path and fault controls are carried through for the sim.
     setup = json.loads((tmp_path / "sim_setup.json").read_text())

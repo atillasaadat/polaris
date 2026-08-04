@@ -135,6 +135,32 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! Safe-mode floor — but the MEKF's finest rung is built from it.
   void starTrackerIn_handler(FwIndexType portNum, const StarTrackerMeas& meas) override;
 
+  //! Latch the controller's magnetorquer duty-cycle schedule (§7). Consumed by
+  //! `magSampleInQuietWindow` on the next cycle, which is the period the schedule
+  //! describes.
+  void mtqActuationIn_handler(FwIndexType portNum, const MtqActuation& state) override;
+
+  //! True when a magnetometer sample time-tagged @p timeTagNs falls inside the
+  //! controller's published quiet window (§7) — a **timing** question only.
+  //!
+  //! With no schedule ever received nothing on this vehicle drives the rods, so
+  //! every sample is inside. Otherwise the tag must fall in `[quietStartTaiNs,
+  //! quietEndTaiNs]`; a stale schedule fails that by construction (its window is
+  //! in the past), so no separate staleness gate is needed.
+  //!
+  //! Deliberately **not** the consumption gate: the §9 stuck-on monitor's input
+  //! is recorded for every sample that passes *this* test, including while the
+  //! interlock is latched unhealthy. Folding the health verdict in here is what
+  //! makes the latch unclearable — the evidence that would clear it flows through
+  //! the gate the latch closes.
+  bool magSampleInQuietWindow(I64 timeTagNs) const;
+
+  //! True when a sample passing @ref magSampleInQuietWindow may also be
+  //! *consumed* — by the estimators, the vote, or the §8.1 calibration
+  //! accumulator. Adds the one thing the timing test deliberately leaves out: a
+  //! rod latched stuck-on means no window is quiet, whatever the clock says.
+  bool magSampleConsumable(I64 timeTagNs) const;
+
   // ----------------------------------------------------------------------
   // Command and parameter handlers
   // ----------------------------------------------------------------------
@@ -644,6 +670,35 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   MagnetometerMeas mag_[NUM_MAGNETOMETERIN_INPUT_PORTS]{};
   GnssMeas gnss_[NUM_GNSSIN_INPUT_PORTS]{};
   StarTrackerMeas star_[NUM_STARTRACKERIN_INPUT_PORTS]{};
+
+  //! Latest magnetorquer duty-cycle schedule (§7). `have_mtq_schedule_` stays
+  //! false in a topology where nothing drives the rods, and every magnetometer
+  //! sample is then admitted — the absence of a schedule means no rod has ever
+  //! been commanded, not that the gate is disabled.
+  MtqActuation mtq_schedule_{};
+  bool have_mtq_schedule_{false};
+
+  //! Samples excluded by the interlock since start (telemetry MagInterlockRejects).
+  U32 mag_interlock_rejects_{0};
+
+  //! Consecutive cycles the interlock has been excluding otherwise-usable
+  //! samples because a rod is latched stuck-on. Drives the bounded-cadence
+  //! MagInterlockExcluding warning and its MagInterlockRestored recovery edge.
+  U32 mag_interlock_excluding_cycles_{0};
+
+  //! This cycle's accepted magnetic block, staged for the published estimate:
+  //! the calibrated voted field, its sample time tag, and the attitude-free
+  //! modelled magnitude. Cleared at the top of every cycle so a refused cycle
+  //! cannot publish the previous one's field behind a cleared validity flag.
+  polaris::math::Vec3<polaris::math::frames::Body> pub_mag_field_{};
+  I64 pub_mag_time_ns_{0};
+  F64 pub_mag_model_t_{0.0};
+  //! Largest raw magnitude the §7 interlock admitted this cycle, before the
+  //! plausibility band and the vote — the §9 stuck-on monitor's input.
+  F64 pub_mag_raw_t_{0.0};
+  bool pub_mag_valid_{false};
+  bool pub_mag_model_valid_{false};
+  bool pub_mag_raw_valid_{false};
 
   //! Applied inter-tracker alignment, per unit. Default-constructed means
   //! `valid == false`, and `applyStAlignment` then passes the reading through

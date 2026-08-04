@@ -231,6 +231,26 @@ bool readUnits(const json& parent, const char* key, const std::string& role,
       }
     }
 
+    // Mounting position is optional and emitted null when unset; the body origin
+    // is the default, which for the near-field coupling is the worst case
+    // (co-located rod and magnetometer) rather than a flattering one.
+    const auto position = entry.find("mounting_position_m");
+    if (position != entry.end() && !position->is_null()) {
+      if (!position->is_array() || position->size() != 3) {
+        return fail(error,
+                    role + " '" + unit.name + "' mounting_position_m must be a 3-element array");
+      }
+      for (std::size_t i = 0; i < 3; ++i) {
+        if (!(*position)[i].is_number()) {
+          return fail(error, role + " '" + unit.name + "' mounting_position_m is non-numeric");
+        }
+        unit.mounting_position_m(static_cast<Eigen::Index>(i)) = (*position)[i].get<double>();
+      }
+      if (!unit.mounting_position_m.allFinite()) {
+        return fail(error, role + " '" + unit.name + "' mounting_position_m is not finite");
+      }
+    }
+
     // Per-unit noise override is optional and emitted null when unset.
     const auto noise = entry.find("noise_enabled");
     if (noise != entry.end() && !noise->is_null()) {

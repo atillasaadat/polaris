@@ -266,6 +266,23 @@ module flight {
     @ tracker-independent to remain the Safe-mode floor (§10).
     sync input port starTrackerIn: [GncMaxUnits] StarTrackerMeasPort
 
+    @ The magnetorquer duty-cycle schedule from the controller that owns it
+    @ (design doc §7, interlock layer 2). A magnetometer sample whose time tag
+    @ does not fall inside the published quiet window is **not a measurement of
+    @ the geomagnetic field** — an energised rod puts a near-field on the sensor
+    @ far above the ~30 uT ambient, and the core's hysteresis outlives the drive —
+    @ so it is excluded here, at the vehicle's single gate on magnetometer data,
+    @ and therefore reaches neither the estimators nor the §8.1 calibration
+    @ accumulator.
+    @
+    @ Written on the rate-group thread by a member that runs *after* this one, so
+    @ each cycle reads the schedule of the period its sample was taken in — the
+    @ correct pairing (see `MtqActuation`). A topology with no magnetorquer
+    @ control never calls it, and the estimator then admits every sample: the
+    @ absence of a schedule means no rod has ever been commanded, which is the
+    @ honest reading of a vehicle whose rods nothing drives.
+    sync input port mtqActuationIn: MtqActuationPort
+
     # ----------------------------------------------------------------------
     # Reference queries and product output
     # ----------------------------------------------------------------------
@@ -1091,6 +1108,13 @@ module flight {
     @ shows up here first.
     telemetry MagUnitSelected: U8
 
+    @ Magnetometer samples excluded by the §7 MTQ/MAG duty-cycle interlock since
+    @ start: the sample's time tag fell outside the controller's published quiet
+    @ window, or a rod is latched stuck-on and no window is quiet. A steadily
+    @ climbing count with the rods nominally off is the signature the §9 stuck-on
+    @ monitor exists to name.
+    telemetry MagInterlockRejects: U32
+
     @ Angle [rad] between the selected sun sensor's measured direction and the one
     @ the fine solution predicts, on cycles where a star tracker is fused and the
     @ sun pair is therefore a **monitor** rather than a measurement (§8.2). NaN when
@@ -1501,6 +1525,22 @@ module flight {
     event MagUnitReadmitted(unit: U8) \
       severity activity high \
       format "Magnetometer {} re-admitted to the voted field"
+
+    @ The §7 interlock is excluding otherwise-usable magnetometer samples because
+    @ the controller reports a rod latched stuck-on: no window is quiet, whatever
+    @ the clock says. Operator-visible because the vehicle is flying without a
+    @ magnetic pair — in a tracker-fused mode that costs nothing, in Safe mode it
+    @ costs the attitude. Edge-gated and then repeated at the shared alert
+    @ cadence (MonitorAlertCycles' twin, ImuAmbiguityEscalateCycles).
+    event MagInterlockExcluding(rejected: U32, cycles: U32) \
+      severity warning high \
+      format "MTQ/MAG interlock excluding magnetometer samples: {} rejected in total, {} cycles"
+
+    @ The interlock stopped excluding samples — the controller cleared its
+    @ stuck-on latch and the magnetic pair is available again.
+    event MagInterlockRestored(cycles: U32) \
+      severity activity high \
+      format "MTQ/MAG interlock restored after {} cycles: magnetometer samples usable again"
 
     @ Two plausible magnetometers disagree beyond MagDisagreementT and nothing can
     @ attribute it: either no attitude solution exists, or its sigma is above

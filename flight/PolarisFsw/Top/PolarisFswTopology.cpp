@@ -155,12 +155,11 @@ void setupTopology(const TopologyState& state) {
   // buffer size is sufficient.
   if (state.sitlPort != 0) {
     PolarisSitl::comDriverSitl.configure("127.0.0.1", state.sitlPort);
-    // Switch the time source to sim time and arm the placeholder commander. Both
-    // are inert with SITL off (sitlTime stays on the wall clock; the scripted
-    // source only runs when the barrier cycles the SITL rate group), so this is
-    // the one place SITL changes clock/command behavior.
+    // Switch the time source to sim time. Inert with SITL off (sitlTime stays on
+    // the wall clock), so this is the one place SITL changes clock behaviour.
+    // Actuator commanding is the GNC AttitudeController's in every build; there
+    // is no SITL-only command source since Push 54 retired the placeholder.
     sitlTime.setSitlActive();
-    PolarisSitl::scriptedCmdSource.setEnabled(state.scriptedCommands);
   }
   // Onboard tables: load leap/EOP/ephemeris from the configured (or default)
   // paths (design doc §11.3, §22). A load failure emits a warning EVR and leaves
@@ -208,6 +207,12 @@ void setupTopology(const TopologyState& state) {
   // rather than from the estimator's per-cycle cache, so it does not need the
   // rate group to have run once.
   attitudeEstimator.commandStAlignCalAtStartup(state.stAlignUnit, state.stAlignSamples);
+  // The §8.5 equivalent for the controller: latch a control mode (and the
+  // inertial-hold target it needs) at startup for SITL/bench runs. Same rule and
+  // same reason — it dispatches the flight opcodes through the component's own
+  // command port, and it must follow loadParameters() because an unconfigured
+  // controller refuses every mode but IDLE.
+  attitudeController.commandModeAtStartup(state.ctrlMode, state.ctrlTargetQ);
   // Autocoded task kick-off (active components). Function provided by autocoder.
   startTasks(state);
   // Initialize socket communication if and only if there is a valid specification

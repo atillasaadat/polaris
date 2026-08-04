@@ -3,16 +3,23 @@
 /// Spawns the real `flight_PolarisFsw` binary, runs the truth sim's closed loop
 /// against it over the F´ TCP transport, and requires the resulting truth trace
 /// to be **bitwise identical** to the same run with an equivalent in-process
-/// callback. Two gates:
-///   1. `-s <port>` (scripted source disabled): the bridge answers zero
-///      commands, matching the in-process zero-command callback. Any difference
-///      is a transport defect — a dropped barrier, a mis-framed message, or
-///      nondeterminism leaking in through the socket path.
-///   2. `-s <port> -c` (Push 35, scripted source enabled): the FSW's rate group
-///      commands actuators from the shared deterministic profile
-///      (lib/sitl/scripted_profile.hpp); the same profile applied by an
-///      in-process callback must yield the same trace — the §2.4 rate-group
-///      cycle and the command path add nothing nondeterministic.
+/// callback: with no `-P` parameter file the GNC chain refuses every cycle and
+/// commands zero, so the bridge answers zero commands and must match the
+/// in-process zero-command callback exactly. Any difference is a transport
+/// defect — a dropped barrier, a mis-framed message, or nondeterminism leaking
+/// in through the socket path.
+///
+/// **What used to be here.** Push 35 added a second case that ran the deployment
+/// with `-c`, enabling the placeholder `ScriptedCmdSource`, and compared it
+/// against an in-process twin applying the same profile. Push 54 deleted that
+/// component along with `lib/sitl/scripted_profile.hpp` — the real
+/// `AttitudeController` took over the rate group's command seat — and with it the
+/// second case, because an in-process twin of a real control law would have to
+/// reimplement the estimator and the controller, which is a copy of the flight
+/// software rather than a check on it. The stronger statement now lives in
+/// `sitl_attitude_control_test.cpp`: real control commands cross this same wire
+/// and are asserted on *behaviour* (the vehicle detumbles, the pointing error
+/// converges), which a byte comparison against a stub never demonstrated.
 ///
 /// Skips (never fails) when the flight binary is absent — CI's unit-test job
 /// builds only the native-ut tree. Set `POLARIS_FSW_BIN` to override the
@@ -37,7 +44,6 @@
 #include "scenario/sim_config.hpp"
 #include "scenario/sim_runner.hpp"
 #include "scenario/vehicle.hpp"
-#include "sitl/scripted_profile.hpp"
 
 namespace {
 
@@ -137,19 +143,16 @@ io::SitlServer::Counts sitlCounts() {
   return counts;
 }
 
-/// Fork + exec `flight_PolarisFsw -s <port>` (and `-c` when @p scripted), stdio
-/// silenced. Returns the child pid.
-pid_t spawnFsw(const std::string& bin, std::uint16_t port, bool scripted) {
+/// Fork + exec `flight_PolarisFsw -s <port>`, stdio silenced. Returns the child
+/// pid. No `-P`: the GNC components come up without parameters and refuse every
+/// cycle, which is what makes the commands deterministically zero.
+pid_t spawnFsw(const std::string& bin, std::uint16_t port) {
   const pid_t pid = ::fork();
   if (pid == 0) {
     ::freopen("/dev/null", "w", stdout);
     ::freopen("/dev/null", "w", stderr);
     const std::string port_str = std::to_string(port);
-    if (scripted) {
-      ::execl(bin.c_str(), bin.c_str(), "-s", port_str.c_str(), "-c", static_cast<char*>(nullptr));
-    } else {
-      ::execl(bin.c_str(), bin.c_str(), "-s", port_str.c_str(), static_cast<char*>(nullptr));
-    }
+    ::execl(bin.c_str(), bin.c_str(), "-s", port_str.c_str(), static_cast<char*>(nullptr));
     _exit(127);  // exec failed
   }
   return pid;
@@ -167,33 +170,6 @@ void reapFsw(pid_t pid) {
       ::waitpid(pid, &status, 0);
     }
   }
-}
-
-/// In-process callback applying the same shared scripted profile the FSW's
-/// ScriptedCmdSource emits, keyed off the macro-step sim epoch — the reference
-/// the two-process scripted run must match bit for bit.
-io::FswCallback scriptedCallback(const io::SitlServer::Counts& counts) {
-  return [counts](const io::FswInputs& in) {
-    io::FswOutputs out;
-    // Mirror the flight datapath exactly: ScriptedCmdSource reconstructs the
-    // epoch from Fw::Time (whole seconds + whole microseconds), so the
-    // reference truncates to microseconds too. On the 10 Hz grid this is a
-    // no-op, but at any non-whole-us cadence this is what keeps the comparison
-    // honest about what the flight side actually computes.
-    const std::int64_t ns = (in.epoch.nanosecondsSinceEpoch() / 1000) * 1000;
-    out.wheels.resize(counts.wheel);
-    for (std::uint32_t i = 0; i < counts.wheel; ++i) {
-      out.wheels[i].mode = io::WheelCommand::Mode::kTorque;
-      out.wheels[i].value = polaris::sitl::scriptedWheelTorque(ns, i);
-    }
-    out.magnetorquer_dipoles.resize(counts.mtq);
-    for (std::uint32_t i = 0; i < counts.mtq; ++i) {
-      double d[3];
-      polaris::sitl::scriptedMtqDipole(ns, i, d);
-      out.magnetorquer_dipoles[i] = pm::Vec3<pm::frames::Body>(Eigen::Vector3d(d[0], d[1], d[2]));
-    }
-    return out;
-  };
 }
 
 /// Bitwise trace comparison: the transport/rate-group path must add nothing.
@@ -221,50 +197,16 @@ TEST(SitlLockstep, TwoProcessTraceIsBitIdenticalToInProcessZeroCommands) {
   const scenario::SimConfig config = transportOrbit(10.0);  // 100 barriers at 10 Hz
 
   // Reference: in-process default callback (open loop, zero commands). The
-  // deployed FSW without -c runs its scripted source disabled (also zero).
+  // deployed FSW, started without a parameter file, has an unconfigured
+  // estimator and controller, so it commands zero too — deliberately, not by
+  // accident: the controller's inert path commands zero on every actuator
+  // rather than leaving the last command latched.
   const std::vector<io::MacroSample> ref = runLoop(config, io::FswCallback{});
 
   io::SitlServer server(sitlCounts(), 100'000'000LL);
   ASSERT_TRUE(server.start(0)) << server.lastError();
 
-  const pid_t pid = spawnFsw(bin, server.port(), /*scripted=*/false);
-  ASSERT_GE(pid, 0);
-
-  const std::vector<io::MacroSample> sitl = runLoop(config, server.callback());
-  EXPECT_TRUE(server.healthy()) << server.lastError();
-  EXPECT_EQ(server.stepsExchanged(), 100u);
-  server.stop();  // sends SHUTDOWN
-  reapFsw(pid);
-
-  expectBitIdentical(sitl, ref);
-}
-
-TEST(SitlLockstep, TwoProcessScriptedProfileIsBitIdenticalToInProcessProfile) {
-  const std::string bin = fswBinaryPath();
-  if (::access(bin.c_str(), X_OK) != 0) {
-    GTEST_SKIP() << "flight binary not built at " << bin
-                 << " (run `uv run fprime-util build`, or set POLARIS_FSW_BIN)";
-  }
-
-  const scenario::SimConfig config = transportOrbit(10.0);  // 100 barriers at 10 Hz
-  const io::SitlServer::Counts counts = sitlCounts();
-
-  // Reference: in-process callback applying the same profile the FSW will emit.
-  const std::vector<io::MacroSample> ref = runLoop(config, scriptedCallback(counts));
-
-  // Sanity: the profile actually moves the plant, so this is not the zero case
-  // in disguise — the scripted trace must differ from an open-loop trace.
-  const std::vector<io::MacroSample> zero = runLoop(config, io::FswCallback{});
-  ASSERT_EQ(ref.size(), zero.size());
-  ASSERT_FALSE(ref.back().state.body_rate.eigen() == zero.back().state.body_rate.eigen())
-      << "scripted profile produced no observable effect";
-
-  // SITL: the real FSW computes the profile on its rate group (-c) and the
-  // commands travel back over the wire.
-  io::SitlServer server(counts, 100'000'000LL);
-  ASSERT_TRUE(server.start(0)) << server.lastError();
-
-  const pid_t pid = spawnFsw(bin, server.port(), /*scripted=*/true);
+  const pid_t pid = spawnFsw(bin, server.port());
   ASSERT_GE(pid, 0);
 
   const std::vector<io::MacroSample> sitl = runLoop(config, server.callback());

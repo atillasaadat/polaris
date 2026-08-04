@@ -52,8 +52,10 @@ class SitlBridge final : public SitlBridgeComponentBase {
   //! Invoked synchronously during sitlCycleOut, on this same task.
   void wheelCmdIn_handler(FwIndexType portNum, const flight::WheelTorqueSet& cmds) override;
 
-  //! Latch the rate group's magnetorquer dipole commands for the next reply.
-  void mtqCmdIn_handler(FwIndexType portNum, const flight::MtqDipoleSet& cmds) override;
+  //! Latch the rate group's magnetorquer dipole commands and the §7 duty-cycle
+  //! on-window for the next reply.
+  void mtqCmdIn_handler(FwIndexType portNum, const flight::MtqDipoleSet& cmds,
+                        F64 onWindowSec) override;
 
   // ----------------------------------------------------------------------
   // Helpers
@@ -89,6 +91,10 @@ class SitlBridge final : public SitlBridgeComponentBase {
   //! the STEP_REPLY. Fixed-size (kMaxUnits); zero until the rate group commands.
   polaris::sitl::WheelCommandRecord latest_wheel_[polaris::sitl::kMaxUnits] = {};
   polaris::sitl::MtqCommandRecord latest_mtq_[polaris::sitl::kMaxUnits] = {};
+
+  //! §7 MTQ-on window [s] for the next step, latched with the dipoles. Zero
+  //! until the rate group commands, which is the rods-off schedule.
+  F64 latest_mtq_on_window_s_ = 0.0;
 
   //! Fixed reply buffer; largest possible STEP_REPLY (no heap). Reused each
   //! step: the framer copies out synchronously before we are re-entered.

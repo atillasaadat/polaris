@@ -982,6 +982,26 @@ void AttitudeEstimator ::gnssIn_handler(FwIndexType portNum, const GnssMeas& mea
   this->gnss_[portNum] = meas;
 }
 
+void AttitudeEstimator ::mtqActuationIn_handler(FwIndexType portNum, const MtqActuation& state) {
+  this->mtq_schedule_ = state;
+  this->have_mtq_schedule_ = true;
+}
+
+bool AttitudeEstimator ::magSampleInQuietWindow(I64 timeTagNs) const {
+  if (!this->have_mtq_schedule_) {
+    return true;
+  }
+  return timeTagNs >= this->mtq_schedule_.get_quietStartTaiNs() &&
+         timeTagNs <= this->mtq_schedule_.get_quietEndTaiNs();
+}
+
+bool AttitudeEstimator ::magSampleConsumable(I64 timeTagNs) const {
+  if (!this->magSampleInQuietWindow(timeTagNs)) {
+    return false;
+  }
+  return !this->have_mtq_schedule_ || this->mtq_schedule_.get_interlockHealthy();
+}
+
 void AttitudeEstimator ::starTrackerIn_handler(FwIndexType portNum, const StarTrackerMeas& meas) {
   this->star_[portNum] = meas;
   // A raw arrival count, kept as it always was: it says a tracker is delivering
@@ -1001,6 +1021,17 @@ void AttitudeEstimator ::starTrackerIn_handler(FwIndexType portNum, const StarTr
 
 void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
   const I64 nowNs = this->currentTaiNs();
+
+  // Clear the published magnetic block before any of the cycle's early returns.
+  // A refused cycle must not publish the previous cycle's field behind a flag
+  // that reads valid — the same rule the attitude product follows.
+  this->pub_mag_field_ = polaris::math::Vec3<polaris::math::frames::Body>{};
+  this->pub_mag_time_ns_ = 0;
+  this->pub_mag_model_t_ = 0.0;
+  this->pub_mag_raw_t_ = 0.0;
+  this->pub_mag_valid_ = false;
+  this->pub_mag_model_valid_ = false;
+  this->pub_mag_raw_valid_ = false;
 
   // A collection window is counted in *accepted* samples, so an outage stalls it
   // rather than ending it. Age it here, at the top and before any of the cycle's
@@ -1307,23 +1338,17 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
   if (have_mag_measurement) {
     const pm::Vec3<Body> m_raw = voted_field;
 
-    // §7 MTQ/MAG duty-cycle interlock gate point. An energised torque rod puts a
-    // field on the sensor orders of magnitude above the ~30 uT ambient, and the
-    // core's hysteresis outlives the drive, so such a sample is not a
-    // measurement of the geomagnetic field and must never reach the calibration
-    // fit. No magnetorquer actuation state reaches this component today — the
-    // interlock lands with the §8.5 control push that first drives MTQs and this
-    // magnetometer in the same loop — so every selected sample is clean by
-    // construction. When that state arrives it is anded in here, and nothing
-    // else on this path changes.
-    const bool mag_sample_clean = true;
-    if (mag_sample_clean) {
-      // The fit is fed the **raw** reading against the modelled field magnitude:
-      // an accumulator fed its own correction would refit the identity. A cycle
-      // with no position has no modelled field and so contributes no sample
-      // rather than a fabricated one — which is what have_mag_ref above gates.
-      this->collectMagSample(m_raw, mag_ref.eigen().norm());
-    }
+    // §7 MTQ/MAG duty-cycle interlock (Push 54). The gate itself is applied one
+    // level up, in `voteMagField`'s staging loop, so a rod-corrupted sample never
+    // reaches the vote — and therefore reaches neither the estimators below nor
+    // the calibration accumulator here. Anything arriving at this line has
+    // already been shown to sit inside the controller's published quiet window
+    // with the interlock healthy; the fit is fed the **raw** reading against the
+    // modelled field magnitude, because an accumulator fed its own correction
+    // would refit the identity. A cycle with no position has no modelled field
+    // and so contributes no sample rather than a fabricated one — which is what
+    // have_mag_ref above gates.
+    this->collectMagSample(m_raw, mag_ref.eigen().norm());
 
     // **The one application point.** Everything downstream of unit selection —
     // the coarse chain, the MEKF update, and the future B-dot law — reads
@@ -1334,6 +1359,22 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
     in.mag_body = polaris::gnc::applyMagCalibration(this->mag_cal_, m_raw);
     in.mag_ref = mag_ref;
     in.mag_valid = in.mag_body.isFinite();
+
+    // Stage the magnetic block of the published product (§8.0). The controller's
+    // B-dot law reads *this* field rather than the raw port array, so there is
+    // one answer on the vehicle to "which magnetometer, corrected how, and was
+    // the sample admissible" — and it is this component's, which is the only one
+    // that votes, calibrates and gates.
+    this->pub_mag_field_ = in.mag_body;
+    this->pub_mag_time_ns_ = this->mag_[mag_index].get_timeTagNs();
+    this->pub_mag_valid_ = in.mag_valid;
+  }
+  if (have_mag_ref) {
+    // Attitude-free, so it is published whenever a position gave a modelled
+    // field — including on cycles the vote produced nothing, which is exactly
+    // when a consumer needs a reference to explain the absence with.
+    this->pub_mag_model_t_ = mag_ref.eigen().norm();
+    this->pub_mag_model_valid_ = std::isfinite(this->pub_mag_model_t_);
   }
 
   // --- Star trackers (§8.2) -------------------------------------------------
@@ -1527,9 +1568,16 @@ void AttitudeEstimator ::emitEstimate(const Eigen::Matrix3d& cov, double age_s) 
   estimate.set_bodyRateRadps(rate);
   estimate.set_attCovDiagRad2(cov_diag);
   estimate.set_ageSec(age_s);
+  estimate.set_magFieldBody(toVec3F64(this->pub_mag_field_.eigen()));
+  estimate.set_magFieldTimeTagNs(this->pub_mag_time_ns_);
+  estimate.set_magModelMagnitudeT(this->pub_mag_model_t_);
+  estimate.set_magRawMagnitudeT(this->pub_mag_raw_t_);
   estimate.set_mode(toEstimationMode(this->state_.mode));
   estimate.set_attitudeValid(this->state_.valid.attitude);
   estimate.set_rateValid(this->state_.valid.body_rate);
+  estimate.set_magFieldValid(this->pub_mag_valid_);
+  estimate.set_magModelValid(this->pub_mag_model_valid_);
+  estimate.set_magRawValid(this->pub_mag_raw_valid_);
   if (this->isConnected_estimateOut_OutputPort(0)) {
     this->estimateOut_out(0, estimate);
   }
