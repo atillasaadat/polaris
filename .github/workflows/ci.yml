@@ -31,6 +31,17 @@ jobs:
   build:
     name: build + unit tests (F´)
     runs-on: ubuntu-latest
+    env:
+      # ccache in front of every compiler (C, C++, and gfortran for NRLMSIS).
+      # CMake reads these environment variables at configure time and stamps
+      # them into the build; the cache itself persists across runs via
+      # actions/cache below. ~1300 targets rebuild from scratch without this,
+      # and between pushes almost none of them changed.
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      CMAKE_Fortran_COMPILER_LAUNCHER: ccache
+      CCACHE_DIR: /home/runner/.ccache
+      CCACHE_MAXSIZE: 2G
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,8 +52,18 @@ jobs:
           enable-cache: true
       - name: Install F´ toolchain (cmake + ninja arrive as wheels)
         run: uv sync                     # default groups: fprime + dev
-      - name: Install gfortran (NRLMSIS 2.1 is Fortran; see THIRD_PARTY_NOTICES.md)
-        run: sudo apt-get update && sudo apt-get install -y gfortran
+      - name: Install gfortran (NRLMSIS 2.1 is Fortran; see THIRD_PARTY_NOTICES.md) + ccache
+        run: sudo apt-get update && sudo apt-get install -y gfortran ccache
+      # The compiler cache is what makes a warm CI build fast (~90 %+ hit rate on
+      # a typical push: F´ core and most of Polaris are unchanged). Keyed per
+      # run so the updated cache is always saved; restored from the most recent
+      # prior run via the prefix.
+      - name: Cache compiler output (ccache)
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.ccache
+          key: ccache-${{ github.run_id }}
+          restore-keys: ccache-
       # map.nrl.navy.mil has real outages; without this cache every build is
       # hostage to it at CMake configure time. The tarball is cached keyed on
       # its SHA256 (the same hash cmake/Dependencies.cmake verifies), fetched
@@ -69,11 +90,22 @@ jobs:
         run: |
           uv run fprime-util generate
           uv run fprime-util build
-      - name: Build + run lib unit tests (GoogleTest via ctest)
+      - name: Build unit-test tree (GoogleTest)
         run: |
           uv run fprime-util generate --ut
           uv run fprime-util build --ut
-          uv run fprime-util check
+      # Direct ctest instead of `fprime-util check`, for the -j: check runs the
+      # suite serially, which is the difference between the sum of all 684 tests
+      # (~74 min on this runner) and roughly the longest single SITL row. The
+      # suite is parallel-safe — the local recipe has always been `ctest -j8`
+      # (PROGRESS.md § Build & verify locally).
+      - name: Run test suites (ctest, parallel)
+        run: |
+          uv run ctest --test-dir build-fprime-automatic-native-ut \
+            -j "$(nproc)" --output-on-failure --no-tests=error
+      - name: ccache statistics (hit rate this run)
+        if: always()
+        run: ccache -s
 
   # The Python suite: config compiler + PrmDb emitter, GMAT harness, space weather,
   # orbit, and the analysis/control linear-analysis package (REQ-ACTL-006/007/008).
