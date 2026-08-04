@@ -536,3 +536,46 @@
   isbn      = {978-0-471-30932-1},
   note      = {\S5.6: the static magnetic field of a point dipole, B = (mu_0/4 pi r^3)(3 (m . rhat) rhat - m). The near-field an energised torque rod puts on a body-mounted magnetometer in sim/actuators/magnetorquer, which is what makes a MTQ/MAG interlock violation visible in SITL rather than assumed away (design doc \S7)}
 }
+
+@book{sidi1997,
+  author    = {Sidi, Marcel J.},
+  title     = {Spacecraft Dynamics and Control: A Practical Engineering Approach},
+  publisher = {Cambridge University Press},
+  series    = {Cambridge Aerospace Series},
+  year      = {1997},
+  isbn      = {978-0-521-78780-2},
+  doi       = {10.1017/CBO9780511815652},
+  note      = {Ch.\ 6 and Ch.\ 7: frequency-domain design of spacecraft attitude control loops, and the gain- and phase-margin practice those chapters design to --- the 6 dB / 30 deg pair REQ-ACTL-006 is written on. The margin reference for analysis/control/margins}
+}
+
+@article{seiler2020,
+  author  = {Seiler, Peter and Packard, Andrew and Gahinet, Pascal},
+  title   = {An Introduction to Disk Margins},
+  journal = {IEEE Control Systems Magazine},
+  volume  = {40},
+  number  = {5},
+  pages   = {78--95},
+  year    = {2020},
+  doi     = {10.1109/MCS.2020.3005277},
+  note    = {The disk margin as a bound on simultaneous gain and phase variation, the skew-0 form alpha = 1/||S - 1/2||_inf, and the guaranteed margins (2+alpha)/(2-alpha) in gain and 2 arctan(alpha/2) in phase. Why a loop meeting 6 dB and 45 deg separately can still be fragile to a combined perturbation; computed in analysis/control/margins}
+}
+
+@book{ogata2010,
+  author    = {Ogata, Katsuhiko},
+  title     = {Modern Control Engineering},
+  edition   = {5th},
+  publisher = {Prentice Hall},
+  year      = {2010},
+  isbn      = {978-0-13-615673-4},
+  note      = {Ch.\ 7: frequency-response analysis --- the definitions of gain and phase margin from the open-loop response, and the third-order example L(s) = K/[s(s+1)(s+2)] whose gain margin is exactly 6 (15.563 dB) at omega = sqrt(2). Polaris owns its margin extraction (analysis/control/margins), so that example is one of the closed-form cases the extractor is validated against before it is pointed at the vehicle}
+}
+
+@book{franklin1998,
+  author    = {Franklin, Gene F. and Powell, J. David and Workman, Michael L.},
+  title     = {Digital Control of Dynamic Systems},
+  edition   = {3rd},
+  publisher = {Addison-Wesley},
+  year      = {1998},
+  isbn      = {978-0-201-82054-6},
+  note      = {\S4--\S6: zero-order-hold equivalence of a continuous plant, the sampled-data loop transfer function, and the phase the hold costs near crossover. The basis for analysing the 10 Hz Polaris pointing loop as a discrete loop rather than as a continuous one with an assumed delay (analysis/control/plant)}
+}

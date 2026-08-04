@@ -96,3 +96,27 @@ config = [
     "pydantic>=2.11,<3",
     "pyyaml>=6,<7",
 ]
+
+# Linear control analysis (design doc §8.5, §13; analysis/control/). Classical
+# stability margins, controllability and observability of the as-flown
+# configuration, computed from the same `config/` YAML the FSW loads — so the
+# `config` group above is a prerequisite, not an optional extra (repeated here
+# so the group is self-describing; both are default groups anyway).
+#
+# **No control-systems library.** A loop is a pair of polynomials evaluated with
+# numpy, discretised with scipy.signal.cont2discrete; the margin extraction, the
+# disk margin and the Gramians are ours, and are validated against closed-form
+# cases in tests/analysis/. numpy is pinned at >= 2.0 for `np.trapezoid` (the
+# `trapz` spelling it replaced is removed in numpy 2).
+#
+# NOT a default group: this is a ground-side analysis lane, never CI-critical
+# build tooling. It is not optional for the test suite though — the margin
+# requirements are verified by the Python suite, so CI runs
+# `uv run --group analysis pytest`.
+analysis = [
+    "matplotlib>=3.9,<4",
+    "numpy>=2.0,<3",
+    "scipy>=1.13,<2",
+    "pydantic>=2.11,<3",
+    "pyyaml>=6,<7",
+]

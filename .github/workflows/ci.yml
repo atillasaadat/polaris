@@ -75,13 +75,17 @@ jobs:
           uv run fprime-util build --ut
           uv run fprime-util check
 
-  # The Python tooling suite: config compiler + PrmDb emitter, GMAT harness, space
-  # weather, orbit. `tools/` is pure Python, so this lane needs no compile step and no
-  # submodules — `uv run` provisions the default groups (fprime + dev + config) from
-  # uv.lock and runs. GMAT-dependent cases skip themselves when GMAT is absent (it is
-  # a ~300 MB desktop install, deliberately confined to golden.yml).
+  # The Python suite: config compiler + PrmDb emitter, GMAT harness, space weather,
+  # orbit, and the analysis/control linear-analysis package (REQ-ACTL-006/007/008).
+  # Both trees are pure Python, so this lane needs no compile step and no submodules —
+  # `uv run` provisions the default groups (fprime + dev + config) from uv.lock, plus
+  # `analysis` for numpy/scipy/matplotlib, and runs. The analysis group is not a
+  # default group (it is a ground-side lane, not build tooling) but it is not optional
+  # here: without it the tests/analysis/ cases fail to import rather than skipping.
+  # GMAT-dependent cases skip themselves when GMAT is absent (it is a ~300 MB desktop
+  # install, deliberately confined to golden.yml).
   python-tests:
-    name: python tests (tools/)
+    name: python tests (tools/ + analysis/)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -90,7 +94,8 @@ jobs:
         with:
           enable-cache: true
       - name: Run pytest
-        run: uv run --frozen pytest   # fail if uv.lock is stale rather than silently re-resolving
+        # --frozen: fail if uv.lock is stale rather than silently re-resolving
+        run: uv run --frozen --group analysis pytest
 
   # ── Remaining §23.2 stages — not yet wired ───────────────────────────────────
   #   static-analysis:  clang-tidy + cppcheck as their own lane (.clang-tidy exists;
