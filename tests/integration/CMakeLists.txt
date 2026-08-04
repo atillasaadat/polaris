@@ -31,5 +31,11 @@ target_link_libraries(polaris_integration_tests
 # `GTEST_SKIP()` when it is not found. Under ctest the default working directory
 # is the binary dir, so all seven SITL tests skipped silently — green, and
 # testing nothing. Running them from the source root is what makes them execute.
+# TIMEOUT is sized for CI hardware, not local. The SITL rows integrate whole
+# closed-loop mission segments (a detumble row is >200 s of sim time in
+# micro-stepped lockstep); on a GitHub runner the long rows measure 300–1500+ s
+# against ctest's 1500 s default, which fails the suite on runner speed rather
+# than on behaviour.
 gtest_discover_tests(polaris_integration_tests
-  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  PROPERTIES TIMEOUT 3600)
