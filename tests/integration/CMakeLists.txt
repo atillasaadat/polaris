@@ -23,4 +23,11 @@ target_link_libraries(polaris_integration_tests
     polaris_test_flags
     GTest::gtest_main)
 
-gtest_discover_tests(polaris_integration_tests)
+# WORKING_DIRECTORY is load-bearing, not tidiness. The SITL cases resolve the
+# flight binary, the config compiler, the interpreter and the topology dictionary
+# through **repo-relative** paths, and every one of them is behind a
+# `GTEST_SKIP()` when it is not found. Under ctest the default working directory
+# is the binary dir, so all seven SITL tests skipped silently — green, and
+# testing nothing. Running them from the source root is what makes them execute.
+gtest_discover_tests(polaris_integration_tests
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")

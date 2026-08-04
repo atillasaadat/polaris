@@ -63,9 +63,10 @@ Eigen::Vector3d rotationVector(const math::Quaternion& q) {
 bool MekfConfig::isValid() const {
   const bool finite = std::isfinite(arw_rad_per_sqrt_s) &&
                       std::isfinite(rrw_rad_per_s_per_sqrt_s) && std::isfinite(nis_gate) &&
-                      std::isfinite(max_coast_s) && std::isfinite(max_dt_s);
+                      std::isfinite(attitude_nis_gate) && std::isfinite(max_coast_s) &&
+                      std::isfinite(max_dt_s);
   return finite && arw_rad_per_sqrt_s > 0.0 && rrw_rad_per_s_per_sqrt_s >= 0.0 && nis_gate > 0.0 &&
-         max_coast_s > 0.0 && max_dt_s > 0.0;
+         attitude_nis_gate > 0.0 && max_coast_s > 0.0 && max_dt_s > 0.0;
 }
 
 Mekf::Mekf(const MekfConfig& config) : cfg_(config), configured_(config.isValid()) {}
@@ -293,6 +294,103 @@ bool Mekf::update(const math::Vec3<math::frames::Body>& body_meas,
   // small-angle [1, δθ/2], so a large correction (re-acquisition after a coast)
   // stays a proper rotation. The error state is zero by construction afterwards
   // — it is never stored.
+  const Eigen::Vector3d dtheta = dx.head<3>();
+  const double dtheta_norm = dtheta.norm();
+  if (dtheta_norm > kMinRotationAngleRad) {
+    const math::Quaternion dq = math::Quaternion::FromAxisAngle(dtheta / dtheta_norm, dtheta_norm);
+    math::Quaternion corrected = dq * attitude_;
+    if (!corrected.normalize()) {
+      dropSolution();
+      out = MekfUpdate{};
+      return false;
+    }
+    attitude_ = corrected.canonical();
+  }
+  bias_ += dx.tail<3>();
+
+  if (!attitude_.isFinite() || !bias_.allFinite() || !p_.allFinite()) {
+    dropSolution();
+    out = MekfUpdate{};
+    return false;
+  }
+
+  age_s_ = 0.0;
+  out.accepted = true;
+  return true;
+}
+
+bool Mekf::updateAttitude(const math::Quat<math::frames::Body, math::frames::ECI>& measured,
+                          const Eigen::Matrix3d& noise_cov, MekfUpdate& out) {
+  out = MekfUpdate{};
+  if (!configured_ || !initialised_) {
+    return false;
+  }
+  math::Quaternion q_meas = measured.core();
+  if (!q_meas.isFinite() || !q_meas.normalize()) {
+    return false;
+  }
+  if (!noise_cov.allFinite()) {
+    return false;
+  }
+  // R is a trust boundary for the same reason the seed covariance is: an
+  // indefinite R makes S indefinite, and the NIS could then come back negative
+  // and sail through a one-sided gate. Symmetrised first because a caller
+  // building `A D Aᵀ` gets a matrix symmetric in exact arithmetic and not
+  // bitwise, then required positive-definite by a successful Cholesky.
+  const Eigen::Matrix3d r_cov = 0.5 * (noise_cov + noise_cov.transpose());
+  const Eigen::LLT<Eigen::Matrix3d> r_llt(r_cov);
+  if (r_llt.info() != Eigen::Success) {
+    return false;
+  }
+
+  // --- Innovation ----------------------------------------------------------
+  // z = δθ of q_meas = δq ⊗ q̂, the *exact* rotation vector taken the short way
+  // round rather than 2·vec(δq). At acquisition — a tracker returning after a
+  // coast — the two differ by enough to matter, and the exact form is the same
+  // reduction `nees` uses, so the innovation is in the filter's own error
+  // coordinates by construction rather than by a linearisation that happens to
+  // agree for small angles.
+  const Eigen::Vector3d z = rotationVector(q_meas * attitude_.inverse());
+  // H = [I₃ 0₃]: the measurement *is* the attitude, so it sees the attitude
+  // error directly and the gyro bias not at all.
+  Eigen::Matrix<double, 3, kDim> h = Eigen::Matrix<double, 3, kDim>::Zero();
+  h.block<3, 3>(0, kAttitude) = Eigen::Matrix3d::Identity();
+
+  const Eigen::Matrix3d s = p_.block<3, 3>(kAttitude, kAttitude) + r_cov;
+  const Eigen::Matrix3d s_inv = s.inverse();
+  if (!s_inv.allFinite() || !z.allFinite()) {
+    return false;
+  }
+
+  const double nis = z.dot(s_inv * z);
+  if (!std::isfinite(nis)) {
+    return false;
+  }
+  out.innovation = z;
+  out.innovation_cov = s;
+  out.nis = nis;
+
+  // --- Divergence guard, on **3** degrees of freedom -----------------------
+  // Unlike a vector update, none of the three components is degenerate: a
+  // tracker constrains the rotation about its boresight too, just far more
+  // loosely. So this gate is χ²₃ and carries its own configured threshold.
+  // Same accept-range form, for the same reason (a negative NIS must not pass).
+  if (!(nis >= 0.0 && nis <= cfg_.attitude_nis_gate)) {
+    ++rejected_;
+    return false;
+  }
+
+  // --- Gain, Joseph-form covariance, multiplicative reset ------------------
+  const Eigen::Matrix<double, kDim, 3> k_gain = p_ * h.transpose() * s_inv;
+  const Eigen::Matrix<double, kDim, 1> dx = k_gain * z;
+  if (!k_gain.allFinite() || !dx.allFinite()) {
+    return false;
+  }
+
+  const Covariance ikh = Covariance::Identity() - k_gain * h;
+  p_ = ikh * p_ * ikh.transpose() + k_gain * r_cov * k_gain.transpose();
+  symmetrise(p_);
+
   const Eigen::Vector3d dtheta = dx.head<3>();
   const double dtheta_norm = dtheta.norm();
   if (dtheta_norm > kMinRotationAngleRad) {

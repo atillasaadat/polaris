@@ -174,7 +174,7 @@ TEST(ImuVoting, RailedUnitIsGatedAndCostsNothing) {
   ASSERT_TRUE(voter.vote(units, 3, nullptr, out));
   EXPECT_EQ(gnc::ImuVoteStatus::kPair, out.status);
   EXPECT_EQ(2, out.contributing);
-  EXPECT_EQ(gnc::ImuVoteReason::kRateLimit, out.reason[2]);
+  EXPECT_EQ(gnc::ImuVoteReason::kOutOfRange, out.reason[2]);
   EXPECT_TRUE(out.newly_excluded[2]);
   EXPECT_EQ(1u << 2, out.exclusion_mask);
   EXPECT_TRUE(voter.isExcluded(2));
@@ -527,7 +527,7 @@ TEST(ImuVoting, SingleUnitPassesThroughGated) {
   // ...but still gated: a railed single unit is refused, not published.
   units[0] = present(Eigen::Vector3d(1.745, 0.0, 0.0));
   EXPECT_FALSE(voter.vote(units, 1, nullptr, out));
-  EXPECT_EQ(gnc::ImuVoteStatus::kNoRate, out.status);
+  EXPECT_EQ(gnc::ImuVoteStatus::kNoValue, out.status);
   EXPECT_TRUE(out.newly_excluded[0]);
 }
 
@@ -539,7 +539,7 @@ TEST(ImuVoting, EveryUnitFailingLeavesNoRate) {
   }
   gnc::ImuVoteResult out;
   EXPECT_FALSE(voter.vote(units, 3, nullptr, out));
-  EXPECT_EQ(gnc::ImuVoteStatus::kNoRate, out.status);
+  EXPECT_EQ(gnc::ImuVoteStatus::kNoValue, out.status);
   EXPECT_EQ(0, out.contributing);
   EXPECT_EQ(0x7u, out.exclusion_mask);
 }
@@ -560,10 +560,10 @@ TEST(ImuVoting, MalformedCallIsRefusedWithoutSideEffects) {
   EXPECT_FALSE(voter.isExcluded(gnc::kMaxImuUnits));
 
   // Zero units is a well-formed call with nothing to combine — reported as
-  // kNoRate rather than as a malformed one, so a vehicle whose whole IMU set has
+  // kNoValue rather than as a malformed one, so a vehicle whose whole IMU set has
   // dropped out is distinguishable from a caller bug.
   EXPECT_FALSE(voter.vote(units, 0, nullptr, out));
-  EXPECT_EQ(gnc::ImuVoteStatus::kNoRate, out.status);
+  EXPECT_EQ(gnc::ImuVoteStatus::kNoValue, out.status);
   EXPECT_FALSE(out.valid);
 }
 

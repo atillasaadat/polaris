@@ -36,8 +36,47 @@ spacecraft:
       model_id: STIM300
     - name: imu_b
       model_id: STIM300
-    - name: st_a
-      model_id: ST-16
+    # --- Star trackers: two units, non-parallel, king-referenced (§8.2) -------
+    # TWO, AND WHY. On the error-norm metric a single tracker is dominated by its
+    # about-boresight axis — the AURIGA's Z terms are ~6x its cross-boresight ones,
+    # because a rotation about the boresight barely moves the identified stars. Two
+    # units whose boresights are 90 deg apart each cover the other's weak axis, and
+    # that is what buys the 0.02 deg-class knowledge REQ-ADET-007 is aimed at. Two
+    # *parallel* units would buy sqrt(2) of noise averaging on the axes that were
+    # already good and nothing at all on the one that was not.
+    #
+    # KING. st_a is the **king**: its mounting DEFINES the body frame (§8.2,
+    # lib/gnc/st_alignment.hpp), so no alignment is estimated for it and
+    # ST_ALIGN_CAL refuses it. st_b is calibrated against it on orbit. Two trackers
+    # on a structure observe only their *relative* rotation, so naming a king
+    # removes an unobservable degree of freedom rather than hiding one. Note what
+    # this does NOT do: the king's own bias is not removed by anything — it is the
+    # frame — so it stays in the vehicle's absolute knowledge error.
+    #
+    # GEOMETRY, AND THE KEEP-OUTS IT IS CHOSEN AGAINST. Both boresights sit in the
+    # X-Z plane at 45 deg from body -Z, i.e. at (-/+1, 0, -1)/sqrt(2):
+    #
+    #   * exactly 90 deg apart  (cos = -1/2 + 1/2 = 0), the separation above;
+    #   * 135 deg from body +Z. +Z is the payload boresight (nadir when Earth-
+    #     pointing) and the solar-array normal (sunward in Sun-Point and Safe), so
+    #     it is the one face a tracker must not look along. The AURIGA's Earth
+    #     exclusion is 22 deg and the Earth's angular radius from this 500 km orbit
+    #     is asin(6378/6878) = 68 deg, so a boresight needs > 90 deg from nadir to
+    #     stay clear: 135 deg leaves 45 deg of margin. Against the 35 deg sun
+    #     exclusion in Sun-Point, 135 deg from the Sun leaves 100 deg.
+    #   * tilted toward -Z (deep space when Earth-pointing) rather than laid in the
+    #     X-Y plane. A boresight perpendicular to nadir would sit 22 deg from the
+    #     Earth limb — exactly on the exclusion angle, i.e. no margin at all.
+    #
+    # The mounting quaternions below are rotations about +/-Y by 135 deg, which is
+    # what carries the sensor's own +Z onto each of those directions. They must
+    # match StBoresightsBody in fsw_parameters; the config compiler cross-checks it.
+    - name: st_a                      # KING — boresight (-1,0,-1)/sqrt(2)
+      model_id: AURIGA
+      mounting_quaternion_wxyz: [0.3826834323650898, 0.0, 0.9238795325112867, 0.0]
+    - name: st_b                      # boresight (+1,0,-1)/sqrt(2), 90 deg from st_a
+      model_id: AURIGA
+      mounting_quaternion_wxyz: [0.3826834323650898, 0.0, -0.9238795325112867, 0.0]
     # --- Sun-sensor suite: six units on the six faces (§8.2) ----------------
     # Sun sensor + magnetometer = coarse attitude (§8.1), and the sun pair is the
     # primary TRIAD vector — so losing the Sun from every field of view costs the
@@ -100,7 +139,24 @@ spacecraft:
     - name: ss_ym                     # boresight body -Y  (-90 deg about X)
       model_id: GS-NANOSENSE-FSS
       mounting_quaternion_wxyz: [0.7071067811865476, -0.7071067811865476, 0.0, 0.0]
+    # --- Magnetometers: two units, voted (§8.2) ------------------------------
+    # Two rather than one, and combined by the same fault-tolerant ladder the IMUs
+    # use (lib/gnc/mag_voting.hpp) — never averaged, because the mean's breakdown
+    # point is zero whatever it is averaging. Identically mounted (no
+    # mounting_quaternion_wxyz -> identity): they are redundant units, not a
+    # skewed array.
+    #
+    # What the pair buys and what it does not: two units can *detect* a
+    # disagreement and cannot attribute one on their own, so identification comes
+    # from the third information source the vehicle already has — the onboard IGRF
+    # field rotated through the current attitude. That reference is only usable
+    # while the attitude is good enough (MagMaxAttSigmaRad below), so an
+    # unattributable disagreement in a degraded mode costs the magnetic pair for
+    # that cycle. That is cheaper than the IMU equivalent by design: it loses one
+    # of two vector pairs, not the body rate.
     - name: mag_a
+      model_id: MAG-GENERIC
+    - name: mag_b
       model_id: MAG-GENERIC
     - name: gps_a                     # GNSS PVT fix -> onboard OD (§8.3)
       model_id: NOVATEL-OEM7600
@@ -285,6 +341,15 @@ spacecraft:
     # 99.9% = 13.82. One rejection in a thousand good measurements is the price
     # of a guard that stops an outlier dragging the reference attitude.
     flight.attitudeEstimator.MekfNisGate: 13.82           # [-]
+    # NIS gate for one STAR-TRACKER update: chi-square on THREE degrees of freedom,
+    # at 99.9% = 16.27. A tracker reports a complete attitude, so its innovation is
+    # a full rotation with no degenerate direction — unlike the transverse
+    # innovation between two unit vectors, which is why this is a separate value
+    # and not a reuse of the line above. Reusing 13.82 would gate a 3-DOF statistic
+    # at ~99.0% instead of ~99.9%, i.e. ten times the false-rejection rate, on the
+    # one source the finest mode is built around — and a rejection streak there
+    # demotes the mode.
+    flight.attitudeEstimator.MekfAttNisGate: 16.27        # [-]
     # Fine coast horizon: 300 s without an accepted update. Much shorter than the
     # coarse 2400 s, and deliberately so — the two horizons answer different
     # questions. Eclipse alone does not trigger it (the magnetic pair still
@@ -398,6 +463,33 @@ spacecraft:
     # that learned nothing — and refusing there is the point: a calibration that
     # makes the magnetometer worse is the outcome guarded hardest against.
     flight.attitudeEstimator.MagCalMinImprovement: 2.0     # [-]
+    # --- Commanded inter-star-tracker alignment calibration (§8.2) ---------
+    # Gates on the fit ST_ALIGN_CAL_START runs, estimating st_b's constant rotation
+    # relative to the king st_a. Read at ST_ALIGN_CAL_START only, on the same rule
+    # as the MagCal set: a missing value here refuses the *command* and costs the
+    # vehicle nothing else.
+    #
+    # 100 simultaneous pairs = 10 s of a 10 Hz window with both trackers solving.
+    # Unlike the magnetometer fit there is NO geometry requirement and therefore no
+    # coverage gate: one attitude pair already determines all three parameters, at
+    # any attitude, so the window does not need the vehicle to tumble. What more
+    # pairs buy is averaging down the two units' per-sample noise, which is the
+    # only reason the floor is above the algebraic minimum of two.
+    flight.attitudeEstimator.StAlignMinSamples: 100        # [pairs]
+    # Largest accepted RMS residual. The pair's combined per-sample noise is
+    # dominated by the two about-boresight terms: sqrt(2) * 31.5 arcsec = 45 arcsec
+    # = 2.2e-4 rad worst case. 5.0e-4 (103 arcsec) is ~2x that, so the gate refuses
+    # pairs that are not describing one fixed rotation without refusing an honest
+    # fit taken through a noisy stretch.
+    flight.attitudeEstimator.StAlignMaxResidualRad: 5.0e-4 # [rad]
+    # Smallest accepted normalised eigen-gap of the quaternion-average moment
+    # matrix. At the residual above the gap sits within 1e-7 of 1.0, so 0.9 is
+    # enormously loose against a healthy fit and still collapses the moment a unit
+    # stops delivering solutions at a fixed rotation from the other's. NOT a
+    # geometry gate — attitude pairs have no degenerate geometry — but a fault
+    # detector: a mis-identified star field, a unit reporting stale or another
+    # unit's solution, a mounting that is moving.
+    flight.attitudeEstimator.StAlignMinEigenGap: 0.9       # [-]
     # --- Multi-IMU voting (§8.2, §9.2) -------------------------------------
     # This vehicle's TWO STIM300s are combined by pairwise disagreement detection
     # with the MEKF's propagated rate identifying the offender — never by an
@@ -451,6 +543,122 @@ spacecraft:
     # disagreement never escalates and short enough that a real one is on the
     # ground's console within a pass.
     flight.attitudeEstimator.ImuAmbiguityEscalateCycles: 600  # [cycles]
+    # --- Multi-magnetometer voting (§8.2, §9.2) ----------------------------
+    # This vehicle's TWO MAG-GENERICs are combined by the same ladder the IMUs
+    # use, with the physical gate that a magnetometer has and a gyro does not: the
+    # measured magnitude against the onboard IGRF model, which the vehicle already
+    # evaluates every cycle to build the magnetic reference.
+    #
+    # Field-magnitude band, as a RATIO of the modelled |B| rather than an absolute
+    # pair, so it does not need re-deriving when the orbit changes. The IGRF
+    # magnitude runs ~22-52 uT over this orbit. The installed error is ~1 uT of
+    # hard iron plus 1% scale, i.e. ~5% at the low end; 0.5 to 1.6 is roughly ten
+    # times that in both directions, which is a fault gate rather than an accuracy
+    # gate: it catches a dead sensor (reads ~0), an unpowered one, a saturated one
+    # (MAG-GENERIC rails at 100 uT = 4.5x the low-end field) and — until the §7
+    # MTQ/MAG interlock lands — the grossest magnetorquer-contaminated samples.
+    flight.attitudeEstimator.MagMinFieldRatio: 0.5         # [-]
+    flight.attitudeEstimator.MagMaxFieldRatio: 1.6         # [-]
+    # Pairwise disagreement gate. Two MAG-GENERICs differ by their independent
+    # hard-iron draws (1 uT 1-sigma per axis each, so ~2.4 uT 1-sigma on the vector
+    # difference) plus noise; 5 uT is about 2x that, so it fires on faults and not
+    # on a pair that is merely out of family. Set deliberately loose: a false
+    # disagreement costs the magnetic pair for that cycle, since two units cannot
+    # say which of them is wrong.
+    flight.attitudeEstimator.MagDisagreementT: 5.0e-6      # [T]
+    # Attitude-quality gate on the identification reference. The rotated modelled
+    # field is wrong by sigma_att * |B|, so at 0.02 rad (1.15 deg) on a 30 uT field
+    # the reference is off by 0.6 uT — an eighth of the disagreement gate above,
+    # which is the margin that makes the reference decisive rather than a
+    # tie-breaker between two badly-rotated predictions. Reachable in fine mode
+    # (measured 0.6 deg converged) and at the *good* end of coarse (1.0 deg median
+    # post-calibration), so a coarse-mode disagreement is often — correctly —
+    # unattributable.
+    flight.attitudeEstimator.MagMaxAttSigmaRad: 0.02       # [rad]
+    # Same policy, same values and same reasoning as the IMU pair above: 10 cycles
+    # (1 s) of passing the criterion that excluded it to re-admit, 5 cycles (0.5 s)
+    # of losing the identification to latch out. The ambiguity escalation horizon
+    # is shared with the IMU vote rather than duplicated — how long the ground
+    # should wait before a persistent refusal reaches a console is a property of
+    # the operations concept, not of the sensor.
+    flight.attitudeEstimator.MagReadmitCycles: 10          # [cycles]
+    flight.attitudeEstimator.MagIdentifyConfirmCycles: 5   # [cycles]
+    # --- Star-tracker fusion (§8.2) ----------------------------------------
+    # King tracker: index 0 = st_a, the first star tracker in build order. Its
+    # mounting DEFINES the body frame, so this is a vehicle-integration decision
+    # rather than a tuning knob — changing it redefines every mounting quaternion,
+    # control gain axis and payload boresight on the vehicle. It is a parameter
+    # only because a hardcoded index would be a vehicle constant in code (§19.4).
+    flight.attitudeEstimator.StKingUnit: 0                 # [-] port index of st_a
+    # AURIGA measurement sigmas, per axis, INFLATED for the systematic terms the
+    # filter's white-R model cannot represent. Derived from
+    # config/hardware/star_tracker/sodern_auriga.yaml (end-of-life worst case):
+    #
+    #   cross-boresight (XY), 3-sigma: LF spatial 9.0, HF spatial 6.6, temporal
+    #     11.0 arcsec -> RSS 15.7 arcsec 3-sigma = 5.2 arcsec 1-sigma
+    #   about-boresight (Z), 3-sigma: 51, 38, 70 arcsec -> RSS 94.6 = 31.5 1-sigma
+    #
+    # plus two terms common to both axes and NOT averaged down by anything:
+    #
+    #   bias, bias_deg = 0.017 deg = 61.2 arcsec. This is a *bound*, realised as an
+    #     isotropic direction with magnitude uniform in [0, B], so the per-axis RMS
+    #     is sqrt(E[m^2]/3) = (B/sqrt(3))/sqrt(3) = B/3 = 20.4 arcsec.
+    #   thermo-elastic, 1.5 arcsec/degC at an assumed 5 degC from calibration =
+    #     7.5 arcsec on one axis, 4.3 arcsec per axis.
+    #
+    #   sigma_xy = sqrt(5.2^2 + 20.4^2 + 4.3^2) = 21.5 arcsec = 1.042e-4 rad
+    #   sigma_z  = sqrt(31.5^2 + 20.4^2 + 4.3^2) = 37.8 arcsec = 1.832e-4 rad
+    #
+    # WORTH READING TWICE: the datasheet's XY/Z asymmetry is ~6x on the noise
+    # terms, but the isotropic bias dominates the cross-boresight budget and
+    # compresses the ratio to 1.8x. So the second tracker's covering of the first's
+    # weak axis is worth real accuracy but not the factor of six a noise-only
+    # reading suggests — and the residual floor is the KING'S OWN BIAS, which no
+    # calibration removes because it is what defines the frame.
+    flight.attitudeEstimator.StSigmaXyRad: 1.042e-4        # [rad] cross-boresight
+    flight.attitudeEstimator.StSigmaZRad: 1.832e-4         # [rad] about-boresight
+    # Per-unit boresights, body frame, in starTrackerIn port-array order (= the
+    # order the star trackers are declared above, §19.4 build order). Eight slots,
+    # three components each, flat — same shape and same conventions as
+    # SunAlbedoBoresightsBody, including the zero vector for "not installed". These
+    # must match the mounting_quaternion_wxyz entries above (each is that
+    # quaternion applied to the sensor's +Z); the config compiler cross-checks it,
+    # because a wrong boresight does not fail — it points the loose axis of the
+    # measurement covariance in the wrong direction and quietly gives back what the
+    # second, non-parallel tracker was carried for.
+    flight.attitudeEstimator.StBoresightsBody: [
+      -0.7071067811865476, 0.0, -0.7071067811865476,   # 0: st_a (KING)
+       0.7071067811865476, 0.0, -0.7071067811865476,   # 1: st_b
+       0.0, 0.0, 0.0,    # 2: not installed
+       0.0, 0.0, 0.0,    # 3: not installed
+       0.0, 0.0, 0.0,    # 4: not installed
+       0.0, 0.0, 0.0,    # 5: not installed
+       0.0, 0.0, 0.0,    # 6: not installed
+       0.0, 0.0, 0.0]    # 7: not installed
+    # --- Residual monitors on the demoted sources (§8.2, §9.2) -------------
+    # While a tracker is fused the sun and magnetic pairs are NOT folded into the
+    # filter: they are two orders of magnitude wider, and the filter's white-R
+    # model has no way to represent the systematic floor that makes them wide. They
+    # become cross-checks instead, which is a strictly better use of them — a sun
+    # sensor that has drifted is then *observable* rather than merely down-weighted.
+    #
+    # These are FDIR thresholds, not accuracy budgets. Each is ~3x the source's own
+    # 3-sigma so it fires on a fault and not on a bad day.
+    #   sun: post-correction total sigma 0.0175 rad -> 3-sigma 0.052 -> 0.15
+    #   mag: uncalibrated total sigma 0.0337 rad -> 3-sigma 0.101 -> 0.2, and wider
+    #        than the sun threshold on purpose, because the IGRF model error is part
+    #        of what this residual measures and it is not a fault
+    #   sun cross-unit: two units of the same part, so the same 0.15
+    flight.attitudeEstimator.MonitorSunResidualRad: 0.15   # [rad] ~8.6 deg
+    flight.attitudeEstimator.MonitorMagResidualRad: 0.2    # [rad] ~11.5 deg
+    flight.attitudeEstimator.MonitorSunCrossUnitRad: 0.15  # [rad] ~8.6 deg
+    # Consecutive cycles over threshold before a monitor alerts, and the period it
+    # re-reports at: 50 = 5 s at the 10 Hz GNC rate. Long enough that a glint, a
+    # partial occultation or a single bad frame never raises it; short enough that
+    # a real drift is on the ground's console within a pass. One value for all
+    # three monitors — they answer the same operational question, and three tunings
+    # for one question is three chances to set two of them wrong.
+    flight.attitudeEstimator.MonitorAlertCycles: 50        # [cycles]
     # --- Earth-albedo correction of the sun vector (§8.1) ------------------
     # Not a commanded calibration: a model, always on wherever the geometry
     # supports it. The peak and the field of view describe the GS-NANOSENSE-FSS

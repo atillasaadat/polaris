@@ -102,10 +102,11 @@ add_library(polaris::onboard ALIAS polaris_onboard)
 # (§8.1, §10), joined by the fine mode: Davenport's q-method (N-vector
 # cold-start/re-init) and the 6-state attitude/gyro-bias MEKF, plus the
 # attitude-free magnetometer hard/soft-iron calibration the on-orbit MAG_CAL
-# flow runs, the always-on Earth-albedo correction of the sun vector, and the
-# fault-tolerant multi-IMU voter that combines a redundant gyro set (§8.2). Pure
-# math on the canonical state — no F´ types, no I/O; the F´ AttitudeEstimator
-# component wraps it.
+# flow runs, the always-on Earth-albedo correction of the sun vector, the shared
+# redundancy-vote policy with its multi-IMU and multi-magnetometer wrappers, and
+# the commanded inter-star-tracker alignment calibration (§8.2). Pure math on the
+# canonical state — no F´ types, no I/O; the F´ AttitudeEstimator component wraps
+# it.
 add_library(polaris_gnc
   gnc/triad.cpp
   gnc/davenport.cpp
@@ -113,7 +114,10 @@ add_library(polaris_gnc
   gnc/mekf.cpp
   gnc/mag_calibration.cpp
   gnc/albedo_correction.cpp
-  gnc/imu_voting.cpp)
+  gnc/unit_voting.cpp
+  gnc/imu_voting.cpp
+  gnc/mag_voting.cpp
+  gnc/st_alignment.cpp)
 target_include_directories(polaris_gnc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_gnc
   PUBLIC Eigen3::Eigen polaris_math polaris_time polaris_state polaris_constants

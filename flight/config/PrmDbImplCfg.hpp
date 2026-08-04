@@ -13,13 +13,20 @@
  * longer than this limit, which is what turns the failure into a build error;
  * that module's MAX_ENTRIES must stay equal to PRMDB_NUM_DB_ENTRIES below.
  *
- * **Why 64.** The reference vehicle reached 26 parameters at Push 46 (twelve
- * coarse-attitude, seven fine-mode, seven magnetometer-calibration) against the
- * framework default of 25, and Phase 4-6 still owe control, orbit determination
- * and FDIR tuning. 64 is the next power of two with room for those without
- * revisiting this file each push; the cost is a `Fw::ArrayMap` of 64 parameter
- * buffers, statically allocated, which is comfortably inside the deployment's
- * memory budget.
+ * **Why 64, and how much of it is left.** The reference vehicle reached 26
+ * parameters at Push 46 against the framework default of 25, which is what forced
+ * this file; Push 51 took it to 37 and Push 52's star-tracker fusion, mode-ladder
+ * monitors, magnetometer voting and alignment calibration take it to **55 of 64**.
+ * The cost is a `Fw::ArrayMap` of 64 parameter buffers, statically allocated,
+ * comfortably inside the deployment's memory budget.
+ *
+ * So the honest headroom is **nine parameters**, not the comfortable margin the
+ * original note implied — and Phases 5-10 still owe control, orbit determination,
+ * FDIR, CFDP and sequencing tuning, any one of which will exceed it. The next
+ * push that adds a parameter set should raise this to 128 rather than shaving
+ * against the limit. Only this number needs changing: `tools/configc/prmdb.py`
+ * parses it out of this file, and refuses to emit a longer one — so overflowing
+ * it is a build error rather than a partially-loaded database in flight.
  */
 
 #ifndef PRMDB_PRMDBLIMPLCFG_HPP_

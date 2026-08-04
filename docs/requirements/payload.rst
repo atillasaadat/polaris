@@ -99,10 +99,38 @@ separately from :ref:`the vehicle-level error norm <adet-knowledge-metric>`:
       as such rather than left open. What remains outstanding is verification,
       not the rule.
 
-      Not yet verifiable: the §8.2 fusion layer that makes fine+ST reachable is
-      unbuilt, so this requirement is held at ``reviewed`` and carries no
-      verifying artifact, exactly as REQ-ADET-007 is. The push that lands the
-      fusion layer verifies both, per sensor, in the same campaign.
+      **Verified (Push 52).** The §8.2 tracker-fusion layer landed and made
+      fine+ST reachable, so this requirement and REQ-ADET-007 are verified in the
+      same campaign — ``PayloadCrossBoresightWithStarTrackers`` in
+      ``tests/unit/attitude_accuracy_mc_test.cpp``, 800 runs on the reference
+      vehicle's two-AURIGA suite with the inter-tracker alignment calibration
+      flown through the real ``gnc::StAlignmentAccumulator`` first. Measured for
+      the generic imager mounted along body +Z: **3σ bound 0.019° against the 0.8°
+      threshold, 98% margin**, median 0.007°.
+
+      That margin is enormous, and it should be read as what it is: the threshold
+      is a *fraction of this instrument's field*, and this instrument's field is
+      wide against arcsecond-class knowledge. It is the guard against a
+      mis-specified suite it was written to be, not a stretch target — an
+      instrument with a 0.2° field would sit at 50% margin on the same knowledge,
+      which is the case the fractional form exists to carry without re-derivation.
+
+      Two properties are asserted alongside the bound rather than assumed. The
+      cross-boresight error is checked **run by run** never to exceed the total
+      error norm it is a component of — a projection that came out larger would be
+      wrong in a way no aggregate bound catches. And the same campaign is re-flown
+      against a deliberately canted mounting (35° about the body diagonal), which
+      must give the same bound to within sampling noise: a mounting-dependent
+      result would mean the campaign has a preferred body axis, and would
+      invalidate the vehicle-level numbers too. Measured 0.020° canted against
+      0.019° nadir.
+
+      The status stays ``reviewed`` rather than moving to ``approved`` for the
+      repository-wide reason recorded in ``adcs_determination.rst``: the docs job
+      that runs the traceability gate does not execute the C++ suites, so an
+      ``approved`` requirement would fail the gate on a run where its test never
+      ran. Promoting the baseline is a CI-pipeline change owed to every
+      requirement at once.
 
       **This is a knowledge requirement, not a pointing one.** It bounds how
       well the vehicle *knows* where the boresight is, not how well it holds it

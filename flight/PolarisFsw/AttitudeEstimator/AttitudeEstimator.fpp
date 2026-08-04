@@ -47,6 +47,69 @@ module flight {
     OUTVOTED = 2 @< the disagreeing unit of a pair, identified by the MEKF propagated rate
   }
 
+  @ Why one magnetometer is not contributing to the voted field (design doc §8.2,
+  @ §9.2; REQ-ADET-011). Mirrors `polaris::gnc::MagVoteReason`. A separate
+  @ enumeration from ImuExclusionReason because the middle gate is a different
+  @ physical test and an operator reading "RATE_LIMIT" on a magnetometer would be
+  @ reading a lie: the magnetometer's plausibility gate is its magnitude against
+  @ the onboard IGRF model, which tracks the field over an orbit instead of
+  @ admitting everything below saturation.
+  enum MagExclusionReason : U8 {
+    NOT_FINITE = 0 @< NaN or Inf in the reported field
+    FIELD_MAGNITUDE = 1 @< |m| outside [MagMinFieldRatio, MagMaxFieldRatio] x |B_IGRF|
+    OUTVOTED = 2 @< the disagreeing unit of a pair, identified by the modelled field
+  }
+
+  @ Which measurement source the fine (MEKF) solution is currently being updated
+  @ from — the §8.2 mode ladder, telemetered because "fine mode" no longer means
+  @ one thing (design doc §8.1, §8.2; REQ-ADET-004, REQ-ADET-012).
+  @
+  @ The ladder is ST+IMU, then SS+MAG+IMU, then the coarse TRIAD chain, and the
+  @ **finest rung fuses star trackers only**: with at least one valid tracker the
+  @ sun and magnetic pairs are not folded into the filter at all. They are two
+  @ orders of magnitude wider than a tracker, so folding them in can only pull the
+  @ solution away from it, and the filter's white-R model has no way to represent
+  @ the systematic floor that makes them wide. They are not discarded either —
+  @ they demote to FDIR-monitored residuals against the tracker solution
+  @ (ResidualMonitorAlert), which is a strictly better use of them: a sun sensor
+  @ that has drifted is now *observable* instead of merely down-weighted.
+  enum FineSource : U8 {
+    NONE = 0 @< fine mode is not engaged; the coarse chain is the published product
+    SUN_MAG = 1 @< MEKF updated from the sun and magnetic vector pairs (no tracker available)
+    STAR_TRACKER = 2 @< MEKF updated from one or more star trackers; SS/MAG are monitors only
+  }
+
+  @ Which cross-check raised a ResidualMonitorAlert (design doc §8.2, §9.2;
+  @ REQ-ADET-012). Each is a measurement the fine solution is **not** using this
+  @ cycle, compared against the solution to see whether it still agrees.
+  enum ResidualMonitor : U8 {
+    SUN = 0 @< selected sun sensor vs the tracker-derived sun direction
+    MAGNETOMETER = 1 @< voted field vs the tracker-derived modelled field
+    SUN_CROSS_UNIT = 2 @< the selected sun sensor vs the runner-up unit of the suite
+  }
+
+  @ Where the commanded inter-star-tracker alignment calibration is in its
+  @ lifecycle (design doc §8.2; REQ-ADET-013). Derived state, not a stored one,
+  @ exactly as MagCalState is: COLLECTING while a window is open, else APPLIED
+  @ while at least one non-king tracker carries a fitted correction, else IDLE.
+  enum StAlignState : U8 {
+    IDLE = 0 @< no window open, no alignment applied: every tracker reads as mounted
+    COLLECTING = 1 @< a ST_ALIGN_CAL_START window is accumulating simultaneous pairs
+    APPLIED = 2 @< a fitted correction is being applied to at least one tracker
+  }
+
+  @ Which gate refused an inter-tracker alignment fit (design doc §8.2). Carried
+  @ on StAlignRejected so the ground knows whether to re-fly the window, suspect a
+  @ unit, or fix the command.
+  enum StAlignRejectReason : U8 {
+    SAMPLES = 0 @< fewer simultaneous pairs than StAlignMinSamples — collect longer, or a tracker kept dropping out
+    DEGENERATE = 1 @< the pairs do not share one fixed rotation (eigen-gap below StAlignMinEigenGap) — suspect a unit
+    DISPERSION = 2 @< the fitted residual exceeds StAlignMaxResidualRad
+    NUMERICAL = 3 @< the eigensolve failed or the average was unusable
+    CONFIG = 4 @< the alignment parameters are missing or out of range in ParameterDb
+    UNIT = 5 @< the commanded unit index is the king tracker, out of range, or has no configured boresight
+  }
+
   @ Attitude estimator — coarse chain plus MEKF fine mode with arbitration
   @ (design doc §8.1, §10; REQ-ADET-002, REQ-ADET-003, REQ-ADET-004).
   @
@@ -187,11 +250,19 @@ module flight {
     @ that) and does not consume the velocity.
     sync input port gnssIn: [GncMaxUnits] GnssMeasPort
 
-    @ Star-tracker attitude solutions, one port per unit. TODO(§8.2): the fusion
-    @ layer feeds these to the MEKF as a third measurement source; declared now
-    @ so that push adds a handler body rather than reworking the port interface.
-    @ Counted for health telemetry only — the solutions themselves are not even
-    @ stored, and nothing is fused into the coarse attitude, which must stay
+    @ Star-tracker attitude solutions, one port per unit — the finest rung of the
+    @ §8.2 mode ladder, fused into the MEKF as **attitude** measurements
+    @ (`Mekf::updateAttitude`, `H = [I 0]`) rather than as vector pairs.
+    @
+    @ One unit — StKingUnit — is the **king**: its mounting defines the body frame,
+    @ so its reading is taken as the frame itself and no alignment is ever
+    @ estimated for it. Every other unit is stated in the king's frame by the
+    @ correction from the commanded ST_ALIGN_CAL flow before it reaches the filter.
+    @ Two trackers on a structure observe only their *relative* rotation, so
+    @ naming a king removes an unobservable degree of freedom rather than hiding
+    @ one (see lib/gnc/st_alignment.hpp).
+    @
+    @ Nothing here is fused into the **coarse** attitude, which stays
     @ tracker-independent to remain the Safe-mode floor (§10).
     sync input port starTrackerIn: [GncMaxUnits] StarTrackerMeasPort
 
@@ -280,6 +351,58 @@ module flight {
     @ simply no MagCalComplete after a reset, and the vehicle flies uncalibrated
     @ until the window is re-flown.
     guarded command MAG_CAL_CLEAR
+
+    @ Open an inter-star-tracker alignment calibration window on @p unit against
+    @ the king tracker, of @p sampleCount **simultaneous solution pairs** (design
+    @ doc §8.2; REQ-ADET-013). Same commanded shape as MAG_CAL_START, deliberately:
+    @ start / abort / clear, a window counted in accepted samples, one application
+    @ point, quality telemetered, parameters read at command time.
+    @
+    @ **Pairs, not samples.** A pair enters only on a cycle where the king *and*
+    @ @p unit both delivered a fresh, valid solution — so an Earth or Sun keep-out
+    @ on either unit costs pairs without costing wall-clock, exactly as a GNSS
+    @ outage costs the magnetometer window its samples. Simultaneity is what makes
+    @ the estimate an alignment rather than a smear: at 0.1 deg/s a one-cycle skew
+    @ is already 36 arcsec, comparable to what is being measured.
+    @
+    @ The window closes itself after ten cycles per pair asked for, so a tracker
+    @ that stops solving cannot leave the vehicle telemetering COLLECTING forever.
+    @ The fit is attempted on what was collected; too little and
+    @ StAlignRejected(SAMPLES) is the honest report.
+    @
+    @ **Collection does not disturb the estimator.** It is a tap: the fit runs on
+    @ **uncorrected** readings so an applied alignment never refits itself, and the
+    @ published attitude changes only when a fit is applied or cleared.
+    @
+    @ Rejected (EXECUTION_ERROR, no window opened) when the alignment parameters
+    @ are missing or out of range — StAlignRejected(CONFIG) — when @p unit is the
+    @ king, out of range, or has no configured boresight — StAlignRejected(UNIT) —
+    @ or when @p sampleCount is below StAlignMinSamples or above the component's
+    @ fixed ceiling (AttitudeEstimator::kMaxCalSamples). Starting a window while
+    @ one is open restarts it, on whichever unit the new command names.
+    guarded command ST_ALIGN_CAL_START(
+                                unit: U8 @< starTrackerIn port index to calibrate against the king
+                                sampleCount: U32 @< simultaneous pairs to collect before fitting
+                              )
+
+    @ Close an alignment collection window without fitting; any previously applied
+    @ alignment is left exactly as it was. A no-op (with OK) when no window is
+    @ open, so an abort is always safe to send.
+    guarded command ST_ALIGN_CAL_ABORT
+
+    @ Drop the applied alignment for @p unit; that tracker reverts to its
+    @ as-mounted reading. Leaves a collection window in progress alone — clearing
+    @ the applied correction and re-fitting are separate decisions, and the fit
+    @ runs on uncorrected readings either way. A no-op (with OK) when nothing is
+    @ applied to that unit; EXECUTION_ERROR for an out-of-range index.
+    @
+    @ **The applied alignment does not survive a reboot**, on the same deferral as
+    @ the magnetometer calibration: it lives in component state and nothing is
+    @ written to ParameterDb (§23.6 owns non-volatile state). A vehicle whose event
+    @ log carries no StAlignComplete is fusing its second tracker as mounted.
+    guarded command ST_ALIGN_CAL_CLEAR(
+                                unit: U8 @< starTrackerIn port index to revert to as-mounted
+                              )
 
     # ----------------------------------------------------------------------
     # Parameters (mission configuration, §19.3 — no defaults on purpose)
@@ -452,6 +575,186 @@ module flight {
     param ImuAmbiguityEscalateCycles: U32
 
     # ----------------------------------------------------------------------
+    # Multi-magnetometer voting (§8.2, §9.2; REQ-ADET-011)
+    # ----------------------------------------------------------------------
+    #
+    # These ride in the **coarse** validity gate, on the same reasoning the IMU
+    # voting values do: without a voted field there is no magnetic pair, hence no
+    # TRIAD and no coarse attitude, so a missing value costs the whole estimator
+    # and a separate gate would imply a degraded-but-flying state that does not
+    # exist.
+    #
+    # The vote combines the **raw** readings. A commanded hard/soft-iron
+    # calibration is applied *after* it, because the vote decides which unit's
+    # reading the vehicle believes and a correction fitted for one unit must never
+    # be used to judge another.
+
+    @ Lower and upper bounds of the accepted |m| / |B_IGRF| ratio [-], the
+    @ magnetometer's plausibility gate. This is the natural physical test for a
+    @ magnetometer and it costs nothing new: the vehicle already evaluates IGRF-14
+    @ at its own position every cycle to build the magnetic reference, and the
+    @ measured magnitude has to sit in a band around the modelled one whatever the
+    @ attitude is. A fixed full-scale check would admit everything below
+    @ saturation; this tracks the field from ~22 to ~52 uT over an orbit.
+    @
+    @ Must satisfy 0 < Min < 1 < Max: a band excluding the modelled magnitude
+    @ itself would reject every healthy unit on every cycle. Size them from the
+    @ installed hard-iron and scale error with margin — it is a fault gate, not an
+    @ accuracy gate.
+    param MagMinFieldRatio: F64
+
+    @ Upper bound of the accepted |m| / |B_IGRF| ratio [-]. See MagMinFieldRatio.
+    param MagMaxFieldRatio: F64
+
+    @ Pairwise disagreement gate on the field difference magnitude [T], used only
+    @ when the surviving set is exactly two units. Above the pair's combined noise
+    @ and installed hard-iron spread by a comfortable factor: a false disagreement
+    @ costs the magnetic pair for that cycle. Must be finite and positive.
+    param MagDisagreementT: F64
+
+    @ Largest attitude-error 1-sigma [rad] at which the modelled field rotated into
+    @ body axes is still trusted to attribute a two-magnetometer disagreement.
+    @
+    @ A **quality** gate, not a validity flag, and the distinction is the whole
+    @ point: a validity flag cannot tell a 0.5 deg solution from a 10 deg one, and a
+    @ 10 deg attitude error moves the predicted field by sigma*|B| — several uT on
+    @ a 30 uT field, which is many times any sane MagDisagreementT. Identifying on
+    @ that would hand the verdict to whichever unit happened to sit nearer a badly
+    @ rotated prediction. Derive it so that sigma*|B| stays comfortably inside
+    @ MagDisagreementT. Must be finite and positive.
+    param MagMaxAttSigmaRad: F64
+
+    @ Consecutive cycles passing **the criterion that excluded it** that re-admit a
+    @ magnetometer. Same policy and same reasoning as ImuReadmitCycles. Must be
+    @ non-zero.
+    param MagReadmitCycles: U32
+
+    @ Consecutive cycles the same magnetometer must lose the pairwise
+    @ identification before it is latched out. Same policy and same reasoning as
+    @ ImuIdentifyConfirmCycles. Must be non-zero.
+    @
+    @ The ambiguity escalation horizon is shared with the IMU vote
+    @ (ImuAmbiguityEscalateCycles) rather than duplicated: it is a statement about
+    @ how long the ground should wait before a persistent refusal is worth a
+    @ console alert, which is a property of the operations concept and not of the
+    @ sensor. What differs is the *cost* of the refusal — the IMU case loses the
+    @ body rate, this one loses only the magnetic pair — and that difference is in
+    @ the severity of what happens next, not in the horizon.
+    param MagIdentifyConfirmCycles: U32
+
+    # ----------------------------------------------------------------------
+    # Star-tracker fusion (§8.2) — a fourth, independent validity gate
+    # ----------------------------------------------------------------------
+    #
+    # Validated separately from the coarse, fine and albedo sets, and the cost
+    # structure is why. A missing value here costs **tracker fusion**: the
+    # component emits StConfigInvalid, the mode ladder cannot reach its finest
+    # rung, and the vehicle flies the SS+MAG+IMU fine mode it flew before trackers
+    # were fused — a fully flyable state, and not one to refuse the estimator over.
+    #
+    # MekfAttNisGate is the exception and rides in the *fine* set instead: it is
+    # part of `MekfConfig::isValid`, so the filter cannot be built without it.
+
+    @ Which starTrackerIn port index is the **king** tracker — the unit whose
+    @ mounting *defines* the body frame (design doc §8.2). Its reading is taken as
+    @ the frame itself: no alignment is estimated for it, ST_ALIGN_CAL refuses it,
+    @ and every other tracker is stated in its frame before reaching the filter.
+    @
+    @ This is a vehicle-integration decision, not a runtime one. Changing it in
+    @ flight redefines the body frame and therefore every mounting quaternion,
+    @ every control gain axis and every payload boresight on the vehicle; it is a
+    @ parameter only because a hardcoded index would be a vehicle constant in code
+    @ (§19.4). Must be inside the port array.
+    param StKingUnit: U32
+
+    @ Cross-boresight and about-boresight 1-sigma of a star-tracker solution [rad],
+    @ used to build each unit's measurement covariance
+    @ R = sigma_xy^2 (I - b b') + sigma_z^2 b b' in body axes, with b the unit's
+    @ boresight from StBoresightsBody.
+    @
+    @ **Carrying the anisotropy is the entire reason two trackers beat one.** A
+    @ tracker barely constrains rotation about its own boresight — the identified
+    @ stars hardly move — so sigma_z runs several times sigma_xy (about 6x for the
+    @ reference vehicle's AURIGA). With two non-parallel boresights each unit's
+    @ tight directions cover the other's weak one, and an isotropic sigma^2 I would
+    @ throw exactly that away and report a covariance the geometry does not
+    @ support.
+    @
+    @ Both are **inflated** figures, not the datasheet noise: the filter treats R
+    @ as white, and a tracker's fixed bias and its low-frequency spatial term do
+    @ not average down. Root-sum-square the datasheet's white and systematic terms
+    @ per axis. One value each rather than per unit because they describe the
+    @ *part*; a mixed suite would need them per unit, which is another parameter of
+    @ the same shape rather than a redesign. Must be finite and positive.
+    param StSigmaXyRad: F64
+
+    @ About-boresight 1-sigma of a star-tracker solution [rad]. See StSigmaXyRad.
+    @ Must be finite, positive, and >= StSigmaXyRad — a tracker tighter about its
+    @ boresight than across it is a configuration error, and flying it would report
+    @ a covariance tighter than the truth in the one direction that is weakest.
+    param StSigmaZRad: F64
+
+    @ Per-unit star-tracker boresights in body axes, flattened three at a time in
+    @ **starTrackerIn port order** (§19.4 build order). Same shape and same
+    @ conventions as SunAlbedoBoresightsBody: a slot for a unit that is not
+    @ installed, or whose mounting has not been characterised, is written as the
+    @ **zero vector**, and that unit is then not fused at all rather than fused
+    @ with a guessed R.
+    @
+    @ These must match the mounting_quaternion_wxyz entries in the vehicle config —
+    @ each is that quaternion applied to the sensor's +Z. The config compiler
+    @ cross-checks them, as it does the sun-sensor set.
+    @
+    @ Non-parallel boresights are what the second tracker is *for* (§8.1): two
+    @ units looking the same way share a weak axis and buy noise averaging on the
+    @ strong ones, which is the smaller half of what a tracker costs.
+    param StBoresightsBody: Vec3F64PerUnit
+
+    # --- Residual monitors on the demoted sources (§8.2, §9.2) ---------------
+    #
+    # While a tracker is fused the sun and magnetic pairs are **not** folded into
+    # the filter (see the FineSource enum). They are cross-checked against it
+    # instead, which is a strictly better use of them: a sun sensor that has
+    # drifted becomes observable rather than merely down-weighted. These three
+    # thresholds are what "has drifted" means.
+    #
+    # They are FDIR thresholds, not accuracy budgets: set each several times the
+    # source's own 3-sigma so the monitor fires on a fault and not on a bad day.
+
+    @ Largest accepted angle [rad] between the selected sun sensor's measured
+    @ direction and the tracker-derived one. Must be finite and positive.
+    param MonitorSunResidualRad: F64
+
+    @ Largest accepted angle [rad] between the voted magnetic field direction and
+    @ the tracker-derived modelled one. Must be finite and positive. Wider than the
+    @ sun threshold on any real vehicle: the IGRF model error is part of what this
+    @ residual measures, and it is not a fault.
+    param MonitorMagResidualRad: F64
+
+    @ Largest accepted angle [rad] between the **selected** sun sensor's direction
+    @ and the runner-up unit's, on the 47% of the sky where two or more units see
+    @ the Sun (design doc §8.2).
+    @
+    @ This closes the gap the sigma-ordered selector leaves open: the selector
+    @ takes the smallest *reported* sigma, and a unit that is confidently wrong
+    @ reports a small sigma and wins. Nothing else checks it. On a persistent
+    @ disagreement the estimator emits ResidualMonitorAlert(SUN_CROSS_UNIT) and, if
+    @ it has a fine solution to judge with, switches to whichever of the two agrees
+    @ better with it (SunUnitOverridden). Must be finite and positive.
+    param MonitorSunCrossUnitRad: F64
+
+    @ Consecutive cycles a residual monitor must be over its threshold before it
+    @ alerts, and the period at which the alert is re-reported while the condition
+    @ persists. Must be non-zero.
+    @
+    @ One parameter for all three monitors: they answer the same operational
+    @ question — "has this been wrong long enough to be a fault rather than a
+    @ transient?" — and three tunings for one question is three chances to set two
+    @ of them wrong. Per-monitor persistence is what a mixed suite would need, and
+    @ is another parameter of the same shape rather than a redesign.
+    param MonitorAlertCycles: U32
+
+    # ----------------------------------------------------------------------
     # Fine-mode (MEKF) parameters — a second, independent validity gate
     # ----------------------------------------------------------------------
     #
@@ -477,6 +780,19 @@ module flight {
     @ between two unit vectors is transverse by construction (chi2_2 at 99.9% =
     @ 13.82). Must be positive.
     param MekfNisGate: F64
+
+    @ NIS rejection threshold [dimensionless] for one **attitude** update — a star
+    @ tracker's complete solution. A chi-square quantile on **3** degrees of
+    @ freedom, not 2 (chi2_3 at 99.9% = 16.27): a tracker's innovation is a full
+    @ rotation with no degenerate direction, unlike the transverse innovation
+    @ between two unit vectors. Must be positive.
+    @
+    @ Kept as its own value rather than reusing MekfNisGate because the two gate
+    @ different statistics: a 2-DOF threshold applied to a 3-DOF NIS gates at about
+    @ 99.0% instead of 99.9%, i.e. ten times the false-rejection rate, on the one
+    @ measurement source the finest mode is built around — and a rejection streak
+    @ there demotes the mode.
+    param MekfAttNisGate: F64
 
     @ Longest interval without an accepted fine update before the fine solution
     @ is given up and the published product falls back to coarse [s]. Distinct
@@ -561,8 +877,47 @@ module flight {
     @ against.
     param MagCalMinImprovement: F64
 
+    # --- Inter-star-tracker alignment calibration (§8.2) ---------------------
+    #
+    # Read at ST_ALIGN_CAL_START only, on the same reasoning the MagCal set is: a
+    # missing value costs the ability to *start* an alignment calibration, so it is
+    # a command-time refusal — StAlignRejected(CONFIG) — and never a flight event
+    # on a vehicle that is otherwise entirely healthy.
+
+    @ Fewest simultaneous solution pairs that may be fitted. At least 2: one pair
+    @ determines all three parameters exactly and reports a zero residual whatever
+    @ the truth, so the quality gates below only mean something on a
+    @ well-overdetermined window. Also the floor on ST_ALIGN_CAL_START's
+    @ sampleCount.
+    @
+    @ Unlike the magnetometer fit there is **no geometry requirement** to satisfy
+    @ and therefore no coverage gate: an attitude pair determines the relative
+    @ rotation at any attitude, so a window does not need the vehicle to tumble.
+    @ What more pairs buy is averaging down the trackers' own noise, which is the
+    @ only reason the floor is above two.
+    param StAlignMinSamples: U32
+
+    @ Largest accepted RMS residual of the fitted alignment [rad]. Size it from the
+    @ two trackers' combined per-sample noise with margin: above it the pairs are
+    @ not describing one fixed rotation, and the correction would be an average of
+    @ something that is not constant. Must be finite and positive.
+    param StAlignMaxResidualRad: F64
+
+    @ Smallest accepted normalised eigen-gap (lambda_max - lambda_2)/N of the
+    @ quaternion-average moment matrix [dimensionless], in (0, 1). Near 1 when
+    @ every pair agrees on one rotation.
+    @
+    @ Worth being precise about what this catches, because it is **not** a geometry
+    @ gate — attitude pairs have no degenerate geometry, so there is no analogue of
+    @ TRIAD's near-parallel refusal here. It detects a *fault*: one tracker
+    @ delivering solutions that do not sit at a fixed rotation from the other's — a
+    @ mis-identified star field, a unit reporting stale or another unit's solution,
+    @ a mounting that is moving. Refusing there is refusing to average a rotation
+    @ that does not exist.
+    param StAlignMinEigenGap: F64
+
     # ----------------------------------------------------------------------
-    # Earth-albedo correction parameters — a fourth, independent validity gate
+    # Earth-albedo correction parameters — a fifth, independent validity gate
     # ----------------------------------------------------------------------
     #
     # Validated separately again, and for the same reason the fine set is: a
@@ -688,9 +1043,98 @@ module flight {
     @ no magnetic reference, so the estimator coasts on the gyro.
     telemetry PositionValid: bool
 
-    @ Star-tracker solutions received since start. Counted for health only —
-    @ nothing fuses them until the §8.2 layer.
+    @ Star-tracker solutions received since start, across every unit. A raw
+    @ arrival count, not a fusion count: it rises whether or not the solution was
+    @ fresh, whether or not the unit had a configured boresight, and whether or not
+    @ the filter accepted it. StContributing is the fusion count.
     telemetry StarTrackerCount: U32
+
+    @ Star trackers whose solution was **accepted into the filter** this cycle
+    @ (§8.2). The redundancy margin that matters for REQ-ADET-007: 2 is the healthy
+    @ reference vehicle and the configuration the 0.02 deg-class figure rests on,
+    @ since each unit covers the other's weak about-boresight axis; 1 is a working
+    @ but boresight-limited solution; 0 means the ladder has fallen to SS+MAG or
+    @ coarse.
+    telemetry StContributing: U32
+
+    @ Bit i set means star tracker i delivered a valid, fresh, boresight-configured
+    @ solution this cycle. Read against StContributing, this separates "the unit
+    @ stopped solving" (Earth or Sun in the baffle, a slew past the tracking
+    @ envelope) from "the filter rejected what it sent" — different faults with
+    @ different responses.
+    telemetry StValidMask: U32
+
+    @ **Largest** NIS of this cycle's star-tracker updates [dimensionless],
+    @ accepted or rejected. ~chi2_**3** when the filter is consistent, unlike
+    @ MekfNis which is chi2_2: a tracker's innovation is a full rotation. Kept as
+    @ its own channel for exactly that reason — one channel carrying two different
+    @ null distributions is a channel nobody can set an alarm on. NaN on a cycle
+    @ with no tracker update.
+    telemetry StNis: F64
+
+    @ Which measurement source the fine solution is being updated from — the §8.2
+    @ mode ladder. NONE while the coarse chain is the published product.
+    telemetry FineSource: FineSource
+
+    @ Magnetometers contributing to this cycle's voted field (§8.2). Same reading
+    @ as ImuContributing: 2 is the healthy reference vehicle, 1 has lost detection,
+    @ 0 means no magnetic pair this cycle.
+    telemetry MagContributing: U32
+
+    @ Bit i set means magnetometer i is latched out of the vote (§9.2). The
+    @ transitions are MagUnitExcluded / MagUnitReadmitted.
+    telemetry MagExclusionMask: U32
+
+    @ Port index of the magnetometer whose reading the vote published this cycle —
+    @ the lowest-indexed contributing unit. 255 when none contributed. It is what
+    @ picks the per-unit calibration applied downstream, so a handoff between units
+    @ shows up here first.
+    telemetry MagUnitSelected: U8
+
+    @ Angle [rad] between the selected sun sensor's measured direction and the one
+    @ the fine solution predicts, on cycles where a star tracker is fused and the
+    @ sun pair is therefore a **monitor** rather than a measurement (§8.2). NaN when
+    @ not computed. This is the channel that makes a drifting sun sensor visible
+    @ instead of merely down-weighted.
+    telemetry SunResidualRad: F64
+
+    @ Angle [rad] between the voted magnetic field direction and the one the fine
+    @ solution predicts, on the same cycles and for the same reason. NaN when not
+    @ computed. Expect it to sit at the IGRF model error, which is not a fault —
+    @ MonitorMagResidualRad is set well above it.
+    telemetry MagResidualRad: F64
+
+    @ Angle [rad] between the selected sun sensor's direction and the runner-up
+    @ unit's, on the 47% of the sky where two or more units see the Sun. NaN when
+    @ fewer than two units are selectable. Independent of the fine mode: it is a
+    @ sensor-versus-sensor check and needs no attitude at all, which is what makes
+    @ it the one cross-check available in Safe mode.
+    telemetry SunCrossUnitRad: F64
+
+    @ Where the commanded inter-tracker alignment calibration is (§8.2). Derived,
+    @ not stored: COLLECTING outranks APPLIED because a window opened over an
+    @ applied alignment is the condition worth seeing.
+    telemetry StAlignState: StAlignState
+
+    @ Simultaneous pairs accepted by the open alignment window, 0 when none is
+    @ open. Watching it rise is how the ground tells a window that is collecting
+    @ from one whose tracker has stopped solving — the latter stalls here while the
+    @ self-close deadline runs down.
+    telemetry StAlignSamples: U32
+
+    @ RMS residual of the applied alignment [rad], NaN when none is applied. The
+    @ number the ground grades a calibration on before deciding to keep it.
+    telemetry StAlignResidualRad: F64
+
+    @ Total misalignment angle the applied correction removes [rad], NaN when none
+    @ is applied. Read against the mounting drawing: a correction far larger than
+    @ the integration tolerance is a mounting or a boresight-parameter error, not a
+    @ calibration success.
+    telemetry StAlignAngleRad: F64
+
+    @ Bit i set means star tracker i is being read through a fitted alignment
+    @ correction. The king's bit is never set — its mounting *is* the body frame.
+    telemetry StAlignMask: U32
 
     @ **Largest** NIS of this cycle's fine-mode updates [dimensionless], accepted
     @ or rejected. ~chi2_2 when the filter is consistent, so a channel that sits
@@ -808,7 +1252,29 @@ module flight {
     @ be surfaced to FDIR.
     event FineModeEngaged(seedCovTraceRad2: F64) \
       severity activity high \
-      format "Fine mode engaged: MEKF seeded from Davenport, seed cov trace={} rad^2"
+      format "Fine mode engaged: MEKF seeded, seed cov trace={} rad^2"
+
+    @ The fine solution changed which measurement source it is updated from — the
+    @ §8.2 mode ladder moving a rung while fine mode stays engaged (design doc
+    @ §8.1, §8.2; REQ-ADET-004, REQ-ADET-012). SUN_MAG -> STAR_TRACKER when a
+    @ tracker becomes available, at which point the sun and magnetic pairs stop
+    @ being folded in and become monitors; STAR_TRACKER -> SUN_MAG when every
+    @ tracker drops out (Earth or Sun in the baffle, a slew past the tracking
+    @ envelope, a unit fault).
+    @
+    @ Deliberately **not** an AttitudeLost or a demotion: the filter keeps its
+    @ state and its covariance across the change, and the published solution stays
+    @ valid throughout — what changes is how fast the covariance grows from here.
+    @ Losing the trackers costs about two orders of magnitude of accuracy, so a
+    @ consumer with a knowledge requirement (a payload, REQ-PAY-001) gates on this
+    @ channel and not merely on AttitudeValid.
+    @ Action: none on a transition that clears within a few minutes — tracker
+    @ outages are geometry. A vehicle that never reaches STAR_TRACKER with trackers
+    @ installed means StBoresightsBody, StKingUnit or the keep-out geometry is
+    @ wrong.
+    event FineSourceChanged(from: FineSource, to: FineSource, trackers: U32) \
+      severity activity high \
+      format "Fine-mode source changed {} -> {} ({} tracker(s) fused)"
 
     @ Fine mode given up; the published solution falls back to the coarse chain,
     @ which has been running underneath all along. The filter state is dropped —
@@ -855,6 +1321,18 @@ module flight {
     event AlbedoConfigInvalid(detail: string size 80) \
       severity warning high \
       format "Albedo correction configuration invalid, running uncorrected: {}"
+
+    @ A star-tracker-fusion parameter is missing from ParameterDb or outside its
+    @ valid range. Not fatal and not mode-limiting below the top rung: the ladder
+    @ simply cannot reach STAR_TRACKER, and the vehicle flies the SS+MAG+IMU fine
+    @ mode it flew before trackers were fused. Edge-gated to the transition into
+    @ the invalid state.
+    @ Action: uplink the missing/corrected parameter (PRM_SET + PRM_SAVE). The
+    @ vehicle is flyable meanwhile, at REQ-ADET-006 accuracy rather than
+    @ REQ-ADET-007 — which is a real loss for a payload but not for safety.
+    event StConfigInvalid(detail: string size 80) \
+      severity warning high \
+      format "Star-tracker fusion configuration invalid, no tracker fused: {}"
 
     @ A **coarse-chain** parameter is missing from ParameterDb or outside its
     @ valid range, so the estimator refuses to run at all: there are no flight
@@ -945,6 +1423,176 @@ module flight {
     event ImuVoteAmbiguousPersistent(durationSec: F64, cyclesWithoutRate: U32) \
       severity warning high \
       format "IMU disagreement unattributable for {} s ({} cycles without a body rate): ground intervention required"
+
+    @ One magnetometer is latched out of the voted field, with the gate that closed
+    @ it (design doc §8.2, §9.2; REQ-ADET-011). Reported once, on the transition,
+    @ so a permanently dead unit costs one event rather than ten a second. The
+    @ magnetic pair survives on the remaining unit — unlike the IMU case, where
+    @ losing the pair costs the body rate.
+    @ Action: FIELD_MAGNITUDE on a unit that recovers is a transient (the automatic
+    @ policy re-admits it); one that stays out is a dead, unpowered or saturated
+    @ sensor. OUTVOTED means the modelled field attributed a two-unit disagreement
+    @ — the losing unit's hard-iron signature has changed, and a MAG_CAL_START
+    @ window is the response once the healthy unit is confirmed.
+    event MagUnitExcluded(unit: U8, reason: MagExclusionReason) \
+      severity warning high \
+      format "Magnetometer {} excluded from the voted field: {}"
+
+    @ A previously excluded magnetometer passed the criterion that excluded it for
+    @ MagReadmitCycles consecutive cycles and is contributing again.
+    @ Action: none; informational. A unit that flaps between this and
+    @ MagUnitExcluded is marginal — widen its gate or exclude it by command.
+    event MagUnitReadmitted(unit: U8) \
+      severity activity high \
+      format "Magnetometer {} re-admitted to the voted field"
+
+    @ Two plausible magnetometers disagree beyond MagDisagreementT and nothing can
+    @ attribute it: either no attitude solution exists, or its sigma is above
+    @ MagMaxAttSigmaRad so the rotated reference is not worth believing. **No
+    @ magnetic pair this cycle** — the coarse chain refuses TRIAD and the MEKF skips
+    @ the magnetic update, which is the estimator's existing dropout behaviour.
+    @ Edge-gated.
+    @
+    @ Cheaper than the IMU equivalent by design: this costs one of two vector
+    @ pairs, not the body rate, so the vehicle keeps propagating and — with the Sun
+    @ in view — keeps acquiring.
+    @ Action: as ImuVoteAmbiguous. The onboard response is refusal plus the
+    @ persistence escalation below; choosing between two disagreeing units without
+    @ evidence is what the refusal exists to avoid. Recovery is a ground action.
+    event MagVoteAmbiguous(fieldDifferenceTesla: F64) \
+      severity warning high \
+      format "Two magnetometers disagree by {} T and nothing can attribute it: no magnetic pair"
+
+    @ The unattributable magnetometer disagreement above has persisted for
+    @ ImuAmbiguityEscalateCycles. Re-emitted at the same period while it continues.
+    @ Shares that horizon with the IMU escalation deliberately: how long the ground
+    @ should wait before a persistent refusal reaches a console is a property of the
+    @ operations concept, not of the sensor.
+    @ Action: as ImuVoteAmbiguousPersistent — disambiguate from telemetry, then
+    @ RESET_ESTIMATOR once the faulty unit is known, or widen MagDisagreementT if
+    @ the pair is merely out of family. An autonomous FDIR mode response is
+    @ deferred to the §9 FDIR push.
+    event MagVoteAmbiguousPersistent(durationSec: F64, cyclesWithoutPair: U32) \
+      severity warning high \
+      format "Magnetometer disagreement unattributable for {} s ({} cycles without a magnetic pair): ground intervention required"
+
+    @ A measurement the fine solution is **not** using has disagreed with it past
+    @ its threshold for MonitorAlertCycles consecutive cycles (design doc §8.2,
+    @ §9.2; REQ-ADET-012). Re-emitted at that same period while the condition
+    @ lasts, so a permanent fault stays visible without becoming per-cycle noise.
+    @
+    @ This is what the mode ladder buys beyond accuracy. With a tracker fused the
+    @ sun and magnetic pairs are no longer folded in, so instead of being silently
+    @ down-weighted they are checked — and a sensor that has drifted becomes
+    @ *observable*. SUN_CROSS_UNIT is the one monitor that needs no fine solution at
+    @ all: it compares two sun sensors against each other, so it runs in Safe mode
+    @ too.
+    @ Action: SUN means the selected sun sensor disagrees with the tracker solution
+    @ — suspect that unit's mounting or a contaminated field of view, and check
+    @ SunUnitSelected. MAGNETOMETER usually means the hard-iron signature has moved
+    @ (MAG_CAL_START) or the IGRF snapshot is stale (MagneticReferenceStale).
+    @ SUN_CROSS_UNIT names two disagreeing units without saying which is wrong; the
+    @ estimator resolves it against the fine solution where it can
+    @ (SunUnitOverridden) and otherwise leaves it to the ground.
+    event ResidualMonitorAlert(monitor: ResidualMonitor, residualRad: F64, thresholdRad: F64) \
+      severity warning high \
+      format "Residual monitor {}: {} rad against a {} rad threshold"
+
+    @ A residual monitor that had alerted came back inside its threshold. The
+    @ recovery edge, so the ground can close the condition without waiting to
+    @ notice that the alerts stopped.
+    @ Action: none; informational.
+    event ResidualMonitorCleared(monitor: ResidualMonitor) \
+      severity activity high \
+      format "Residual monitor {} back within threshold"
+
+    @ The sun-sensor cross-check found the **selected** unit disagreeing with the
+    @ runner-up, and the fine solution agreed better with the runner-up — so the
+    @ estimator used the runner-up instead for this cycle (design doc §8.2).
+    @
+    @ Only ever emitted once the SUN_CROSS_UNIT monitor has already alerted, i.e.
+    @ after MonitorAlertCycles of persistent disagreement, so a single noisy sample
+    @ never moves the selection. The sigma-ordered selector is what makes this
+    @ necessary: it takes the smallest *reported* sigma, and a unit that is
+    @ confidently wrong reports a small sigma and wins.
+    @ Action: the overridden unit is a calibration or mounting suspect. Nothing is
+    @ latched — the override is re-decided every cycle from the current evidence —
+    @ so a unit that recovers simply stops being overridden.
+    event SunUnitOverridden(selected: U8, used: U8, angleRad: F64) \
+      severity warning low \
+      format "Sun sensor {} disagrees with the fine solution; using unit {} instead ({} rad apart)"
+
+    @ One star tracker has been latched out of the fusion: the filter's chi-square
+    @ gate rejected its solutions on @p nisStreak consecutive cycles (design doc
+    @ §8.2; REQ-ADET-012). The **mode is not demoted** — that is the point of a
+    @ per-unit streak. A cycle-global one would demote the fine mode for a
+    @ single bad unit, drop the filter, re-promote off the same bad unit and flap
+    @ at the streak period; isolating the unit keeps the solution running on the
+    @ trackers that are still believed.
+    @ Action: the unit's solutions disagree with an attitude the *other* trackers
+    @ built, so suspect that unit — a mis-identified star field, a stale or
+    @ cross-wired solution, or a mounting that has moved. It is re-admitted
+    @ automatically once it agrees with the fine solution again
+    @ (StUnitReadmitted); a unit that never does needs ground investigation, and
+    @ RESET_ESTIMATOR is the commanded path back.
+    event StUnitExcluded(unit: U8, nisStreak: U32) \
+      severity warning high \
+      format "Star tracker {} excluded from the fusion after {} consecutive NIS rejections"
+
+    @ A latched-out star tracker agreed with the fine solution for MonitorAlertCycles
+    @ consecutive cycles and is contributing again.
+    @ Action: none; informational. A unit that flaps between this and
+    @ StUnitExcluded is marginal — investigate rather than leaving it cycling.
+    event StUnitReadmitted(unit: U8) \
+      severity activity high \
+      format "Star tracker {} re-admitted to the fusion"
+
+    @ An inter-star-tracker alignment collection window opened (design doc §8.2).
+    @ The estimator keeps running normally: collection is a tap on the tracker
+    @ path, not a mode.
+    @ Action: watch StAlignSamples rise. A window whose count stalls has lost one of
+    @ the two trackers to a keep-out or a fault; ST_ALIGN_CAL_ABORT and re-fly it
+    @ when both are solving.
+    event StAlignStarted(unit: U8, targetSamples: U32) \
+      severity activity high \
+      format "Inter-tracker alignment collection started on unit {}: {} pairs"
+
+    @ An alignment fit succeeded and is now applied to that tracker: its solutions
+    @ reach the filter stated in the king's frame.
+    @ Action: grade it. residualRad is the fit quality — it should sit at the two
+    @ units' combined per-sample noise. misalignRad is what was found, and it should
+    @ match the mounting tolerance; far larger means a mounting or a
+    @ StBoresightsBody error rather than a calibration success. **Nothing is written
+    @ to ParameterDb**: the correction does not survive a reboot (§23.6 owns
+    @ non-volatile state), so the window must be re-flown after one.
+    event StAlignComplete(unit: U8, residualRad: F64, misalignRad: F64, samples: U32) \
+      severity activity high \
+      format "Inter-tracker alignment fitted on unit {}: residual={} rad, misalignment={} rad, {} pairs"
+
+    @ An alignment fit was refused; nothing is applied and any previously applied
+    @ alignment for that unit is **retained** — a failed later window is no
+    @ information about the correction already flying.
+    @ Action: named by the reason. SAMPLES means collect longer, or both trackers
+    @ were not solving together. DEGENERATE means the pairs do not describe one
+    @ fixed rotation, which is a unit fault rather than a collection problem — do
+    @ not simply re-fly it. DISPERSION means they do, but too loosely. CONFIG and
+    @ UNIT are command/parameter errors and cost the vehicle nothing.
+    event StAlignRejected(unit: U8, reason: StAlignRejectReason, samples: U32) \
+      severity warning high \
+      format "Inter-tracker alignment on unit {} rejected: {} after {} pairs"
+
+    @ An alignment collection window was closed without fitting.
+    @ Action: none; informational.
+    event StAlignAborted(unit: U8, samples: U32) \
+      severity activity high \
+      format "Inter-tracker alignment collection on unit {} aborted after {} pairs"
+
+    @ An applied alignment was dropped; that tracker reverts to its as-mounted
+    @ reading.
+    @ Action: none; informational. Re-fly ST_ALIGN_CAL_START to replace it.
+    event StAlignCleared(unit: U8) \
+      severity activity high \
+      format "Inter-tracker alignment cleared on unit {}"
 
     @ No valid GNSS position was available, so the geomagnetic reference could
     @ not be evaluated and the magnetic pair was excluded this cycle. With no

@@ -193,9 +193,19 @@ module flight {
       PolarisSitl.sitlBridge.sunSensorOut[3]     -> attitudeEstimator.sunSensorIn[3]
       PolarisSitl.sitlBridge.sunSensorOut[4]     -> attitudeEstimator.sunSensorIn[4]
       PolarisSitl.sitlBridge.sunSensorOut[5]     -> attitudeEstimator.sunSensorIn[5]
+      # Two magnetometers, voted rather than averaged (§8.2): the field is gated
+      # per unit against the onboard IGRF magnitude and a two-unit disagreement is
+      # attributed by the modelled field, never split down the middle.
       PolarisSitl.sitlBridge.magnetometerOut[0]  -> attitudeEstimator.magnetometerIn[0]
+      PolarisSitl.sitlBridge.magnetometerOut[1]  -> attitudeEstimator.magnetometerIn[1]
       PolarisSitl.sitlBridge.gnssOut[0]          -> attitudeEstimator.gnssIn[0]
+      # Two star trackers, king-referenced (§8.2). Unit 0 is st_a, the **king**:
+      # its mounting defines the body frame, so it is the one index here that is a
+      # vehicle-integration decision rather than a wiring choice — StKingUnit must
+      # name it. Unit 1 is stated in the king's frame by the ST_ALIGN_CAL
+      # correction before it reaches the filter.
       PolarisSitl.sitlBridge.starTrackerOut[0]   -> attitudeEstimator.starTrackerIn[0]
+      PolarisSitl.sitlBridge.starTrackerOut[1]   -> attitudeEstimator.starTrackerIn[1]
     }
 
   }

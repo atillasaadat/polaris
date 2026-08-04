@@ -25,6 +25,7 @@
 // ======================================================================
 
 #include <cmath>
+#include <limits>
 
 #include "flight/PolarisFsw/AttitudeEstimator/AttitudeEstimator.hpp"
 
@@ -56,7 +57,7 @@ bool fresh(I64 nowTaiNs, I64 timeTagNs, F64 maxAgeS) {
 //! contributing or absent unit) and are filtered by the caller before this runs.
 ImuExclusionReason::T toExclusionReason(polaris::gnc::ImuVoteReason why) {
   switch (why) {
-    case polaris::gnc::ImuVoteReason::kRateLimit:
+    case polaris::gnc::ImuVoteReason::kOutOfRange:
       return ImuExclusionReason::RATE_LIMIT;
     case polaris::gnc::ImuVoteReason::kOutvoted:
       return ImuExclusionReason::OUTVOTED;
@@ -66,6 +67,33 @@ ImuExclusionReason::T toExclusionReason(polaris::gnc::ImuVoteReason why) {
       // would lose the exclusion entirely.
       return ImuExclusionReason::NOT_FINITE;
   }
+}
+
+//! The same mapping for the magnetometer vote. A separate enumeration on the wire
+//! because the middle gate is a different physical test — "RATE_LIMIT" on a
+//! magnetometer would be a lie in telemetry the ground acts on.
+MagExclusionReason::T toMagExclusionReason(polaris::gnc::MagVoteReason why) {
+  switch (why) {
+    case polaris::gnc::MagVoteReason::kOutOfRange:
+      return MagExclusionReason::FIELD_MAGNITUDE;
+    case polaris::gnc::MagVoteReason::kOutvoted:
+      return MagExclusionReason::OUTVOTED;
+    default:
+      return MagExclusionReason::NOT_FINITE;
+  }
+}
+
+//! Not a value, for telemetry channels with nothing to report this cycle.
+const double kNoValueSensors = std::numeric_limits<double>::quiet_NaN();
+
+//! Telemetered unit index when nothing was selected this cycle, for **any** unit
+//! type. 255 rather than 0, which is a perfectly good port index.
+constexpr U8 kNoUnitIndex = 255;
+
+//! Angle between two directions, from the cross/dot form rather than an acos of
+//! the dot product (§3.5, lib/README.md).
+double angleBetween(const Eigen::Vector3d& a, const Eigen::Vector3d& b) {
+  return std::atan2(a.cross(b).norm(), a.dot(b));
 }
 
 }  // namespace
@@ -188,7 +216,8 @@ bool AttitudeEstimator ::voteImuRate(I64 nowTaiNs, pm::Vec3<Body>& rate) {
 // Sun sensors: selection of the best-illuminated unit (§8.2)
 // ----------------------------------------------------------------------
 
-const SunSensorMeas* AttitudeEstimator ::selectSunSensor(I64 nowTaiNs, FwIndexType& index) const {
+const SunSensorMeas* AttitudeEstimator ::selectSunSensor(I64 nowTaiNs, FwIndexType& index,
+                                                         FwIndexType& runnerUp) const {
   // **Selection, not a weighted combination**, and the reason is the budget
   // rather than the algebra: the sun measurements' error is dominated by a
   // *shared* systematic — the albedo residual and the ephemeris term are common
@@ -204,6 +233,8 @@ const SunSensorMeas* AttitudeEstimator ::selectSunSensor(I64 nowTaiNs, FwIndexTy
   // which raw incidence would not.
   const SunSensorMeas* best = nullptr;
   double best_sigma = 0.0;
+  double runner_sigma = 0.0;
+  runnerUp = -1;
 
   for (FwIndexType i = 0; i < NUM_SUNSENSORIN_INPUT_PORTS; ++i) {
     const SunSensorMeas& m = this->sun_[i];
@@ -224,12 +255,95 @@ const SunSensorMeas* AttitudeEstimator ::selectSunSensor(I64 nowTaiNs, FwIndexTy
     // deterministic in vehicle build order, and index 0 is the solar-array
     // normal, the unit the accuracy budget was measured on.
     if (best == nullptr || sigma < best_sigma) {
+      // The displaced leader becomes the runner-up, which keeps the second slot
+      // ordered by the same rule as the first rather than by scan order.
+      if (best != nullptr) {
+        runnerUp = index;
+        runner_sigma = best_sigma;
+      }
       best = &this->sun_[i];
       best_sigma = sigma;
       index = i;
+    } else if (runnerUp < 0 || sigma < runner_sigma) {
+      runnerUp = i;
+      runner_sigma = sigma;
     }
   }
   return best;
+}
+
+const SunSensorMeas* AttitudeEstimator ::crossCheckSunUnit(FwIndexType& index, FwIndexType runnerUp,
+                                                           const pm::Vec3<Body>& reference,
+                                                           bool haveReference) {
+  if (index < 0 || index >= NUM_SUNSENSORIN_INPUT_PORTS) {
+    return nullptr;
+  }
+  const SunSensorMeas* selected = &this->sun_[index];
+  if (runnerUp < 0 || runnerUp >= NUM_SUNSENSORIN_INPUT_PORTS) {
+    // One unit in view: nothing to cross-check against, which is a geometry fact
+    // and not a fault. NaN and a streak reset, never a cleared alert — see
+    // noteMonitorResidual.
+    this->tlmWrite_SunCrossUnitRad(kNoValueSensors);
+    this->noteMonitorResidual(ResidualMonitor::SUN_CROSS_UNIT, kNoValueSensors,
+                              this->monitor_threshold_rad_[ResidualMonitor::SUN_CROSS_UNIT]);
+    return selected;
+  }
+
+  const SunSensorMeas* runner = &this->sun_[runnerUp];
+  const Eigen::Vector3d a(selected->get_dirBody()[0], selected->get_dirBody()[1],
+                          selected->get_dirBody()[2]);
+  const Eigen::Vector3d b(runner->get_dirBody()[0], runner->get_dirBody()[1],
+                          runner->get_dirBody()[2]);
+  // Wire data, so it is gated before it is compared: a non-finite or zero-length
+  // reading would give a meaningless angle that would then latch a monitor.
+  if (!a.allFinite() || !b.allFinite() || !(a.norm() > 0.0) || !(b.norm() > 0.0)) {
+    this->tlmWrite_SunCrossUnitRad(kNoValueSensors);
+    this->noteMonitorResidual(ResidualMonitor::SUN_CROSS_UNIT, kNoValueSensors,
+                              this->monitor_threshold_rad_[ResidualMonitor::SUN_CROSS_UNIT]);
+    return selected;
+  }
+
+  const double separation = angleBetween(a, b);
+  this->tlmWrite_SunCrossUnitRad(separation);
+  const double threshold = this->monitor_threshold_rad_[ResidualMonitor::SUN_CROSS_UNIT];
+  this->noteMonitorResidual(ResidualMonitor::SUN_CROSS_UNIT, separation, threshold);
+
+  // **Detection needs no attitude; resolution does.** Two units disagreeing is a
+  // sensor-versus-sensor fact, which is what makes this the one cross-check
+  // available in Safe mode — but it says only that one of them is wrong. Choosing
+  // between them needs the third information source, exactly as the two-unit IMU
+  // and magnetometer votes do, and here that is the fine solution's own predicted
+  // sun direction.
+  //
+  // Gated on the monitor having *already alerted*, so a single noisy sample can
+  // never move the selection: the disagreement has to have persisted for
+  // MonitorAlertCycles first. Nothing is latched either way — the override is
+  // re-decided every cycle from the current evidence, so a unit that recovers
+  // simply stops being overridden, and there is no exclusion for the ground to
+  // reason about on a condition the vehicle resolved on its own.
+  if (!haveReference ||
+      !this->monitor_alerted_[static_cast<int>(ResidualMonitor::SUN_CROSS_UNIT)]) {
+    return selected;
+  }
+  const Eigen::Vector3d predicted = reference.eigen();
+  if (!predicted.allFinite() || !(predicted.norm() > 0.0)) {
+    return selected;
+  }
+  // **Decisive margin, not mere ordering** — the same rule the two-unit votes
+  // apply, and for the same reason: ordering alone is a coin flip whenever the
+  // two residuals are close, which is exactly the common-mode case. The reference
+  // has to agree with the runner-up (inside the threshold) *and* disagree with the
+  // incumbent (outside it) before the selection moves.
+  const double selected_residual = angleBetween(a, predicted);
+  const double runner_residual = angleBetween(b, predicted);
+  const bool decisive = selected_residual > threshold && runner_residual <= threshold;
+  if (decisive) {
+    this->log_WARNING_LO_SunUnitOverridden(static_cast<U8>(index), static_cast<U8>(runnerUp),
+                                           separation);
+    index = runnerUp;
+    return runner;
+  }
+  return selected;
 }
 
 bool AttitudeEstimator ::sunBoresightFor(FwIndexType index, pm::Vec3<Body>& out) const {
@@ -255,14 +369,103 @@ bool AttitudeEstimator ::sunBoresightFor(FwIndexType index, pm::Vec3<Body>& out)
 // Magnetometer and GNSS: first valid, fresh unit
 // ----------------------------------------------------------------------
 
-const MagnetometerMeas* AttitudeEstimator ::selectMagnetometer(I64 nowTaiNs) const {
+bool AttitudeEstimator ::voteMagField(I64 nowTaiNs, const pm::Vec3<Body>& magRefBody,
+                                      bool haveAttitude, double attitudeSigmaRad,
+                                      double modelledMagnitudeT, pm::Vec3<Body>& field,
+                                      FwIndexType& index) {
+  // Stage the port array into the voter's input form. The two gates that need the
+  // component's context — the unit's own validity flag and staleness against the
+  // master clock — are applied here, and are reported to the voter as *absence*
+  // rather than as implausibility: a dropout says nothing about whether the unit
+  // is lying, and must not latch an exclusion the ground then has to reason about.
+  polaris::gnc::MagVoteInput units[NUM_MAGNETOMETERIN_INPUT_PORTS];
+  static_assert(NUM_MAGNETOMETERIN_INPUT_PORTS <= polaris::gnc::kMaxMagUnits,
+                "the magnetometer port array is wider than the voter can carry");
+
   for (FwIndexType i = 0; i < NUM_MAGNETOMETERIN_INPUT_PORTS; ++i) {
     const MagnetometerMeas& m = this->mag_[i];
-    if (m.get_valid() && fresh(nowTaiNs, m.get_timeTagNs(), this->max_meas_age_s_)) {
-      return &this->mag_[i];
+    if (!m.get_valid() || !fresh(nowTaiNs, m.get_timeTagNs(), this->max_meas_age_s_)) {
+      continue;
+    }
+    // **Raw**, before any applied hard/soft-iron correction: the vote decides
+    // which unit's reading the vehicle believes, and a calibration fitted for one
+    // unit must never be used to judge another. The correction is applied to the
+    // vote's output, downstream.
+    units[i].field_tesla = pm::Vec3<Body>(
+        Eigen::Vector3d(m.get_fieldTesla()[0], m.get_fieldTesla()[1], m.get_fieldTesla()[2]));
+    units[i].present = true;
+  }
+
+  polaris::gnc::MagVoteReference reference;
+  reference.field_tesla = magRefBody;
+  reference.attitude_valid = haveAttitude;
+  reference.attitude_sigma_rad = attitudeSigmaRad;
+
+  polaris::gnc::MagVoteResult result;
+  const bool ok = this->mag_voter_.vote(units, NUM_MAGNETOMETERIN_INPUT_PORTS, modelledMagnitudeT,
+                                        &reference, result);
+
+  // FDIR edges, reported on the transition so a permanently dead unit costs one
+  // event rather than one per 10 Hz cycle.
+  for (FwIndexType i = 0; i < NUM_MAGNETOMETERIN_INPUT_PORTS; ++i) {
+    if (result.newly_excluded[i]) {
+      this->log_WARNING_HI_MagUnitExcluded(static_cast<U8>(i),
+                                           toMagExclusionReason(result.reason[i]));
+    }
+    if (result.newly_readmitted[i]) {
+      this->log_ACTIVITY_HI_MagUnitReadmitted(static_cast<U8>(i));
     }
   }
-  return nullptr;
+
+  // Two plausible units disagreeing with nothing to attribute it. Edge-gated with
+  // the same persistence escalation the IMU vote carries and on the same shared
+  // horizon — but the *cost* is smaller and deliberately so: this loses one of two
+  // vector pairs, where the IMU case loses the body rate. The vehicle keeps
+  // propagating and, with the Sun in view, keeps acquiring.
+  if (result.status == polaris::gnc::MagVoteStatus::kAmbiguous) {
+    if (this->mag_ambiguous_cycles_ == 0) {
+      this->mag_ambiguous_start_ns_ = nowTaiNs;
+    }
+    ++this->mag_ambiguous_cycles_;
+    if (this->imu_ambiguity_escalate_cycles_ > 0 &&
+        (this->mag_ambiguous_cycles_ % this->imu_ambiguity_escalate_cycles_) == 0) {
+      const double elapsed_s =
+          static_cast<double>(nowTaiNs - this->mag_ambiguous_start_ns_) / 1.0e9;
+      this->log_WARNING_HI_MagVoteAmbiguousPersistent(elapsed_s, this->mag_ambiguous_cycles_);
+    }
+    if (!this->mag_ambiguous_flagged_) {
+      double worst = 0.0;
+      for (FwIndexType i = 0; i < NUM_MAGNETOMETERIN_INPUT_PORTS; ++i) {
+        for (FwIndexType j = static_cast<FwIndexType>(i + 1); j < NUM_MAGNETOMETERIN_INPUT_PORTS;
+             ++j) {
+          if (result.reason[i] != polaris::gnc::MagVoteReason::kContributing ||
+              result.reason[j] != polaris::gnc::MagVoteReason::kContributing) {
+            continue;
+          }
+          const double difference =
+              (units[i].field_tesla.eigen() - units[j].field_tesla.eigen()).norm();
+          worst = (difference > worst) ? difference : worst;
+        }
+      }
+      this->log_WARNING_HI_MagVoteAmbiguous(worst);
+      this->mag_ambiguous_flagged_ = true;
+    }
+  } else {
+    this->mag_ambiguous_flagged_ = false;
+    this->mag_ambiguous_cycles_ = 0;
+  }
+
+  this->tlmWrite_MagContributing(static_cast<U32>(result.contributing));
+  this->tlmWrite_MagExclusionMask(result.exclusion_mask);
+  this->tlmWrite_MagUnitSelected(
+      result.published_index >= 0 ? static_cast<U8>(result.published_index) : kNoUnitIndex);
+
+  if (!ok) {
+    return false;
+  }
+  field = result.field_tesla;
+  index = static_cast<FwIndexType>(result.published_index);
+  return true;
 }
 
 const GnssMeas* AttitudeEstimator ::selectGnss(I64 nowTaiNs) const {

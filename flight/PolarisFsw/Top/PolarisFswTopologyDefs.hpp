@@ -90,6 +90,12 @@ struct TopologyState {
                                       //!< a command to arrive with no ground link attached; this
                                       //!< is that hook, and it dispatches the real opcode through
                                       //!< the component's own command port.
+  U8 stAlignUnit;                     //!< SITL/bench only: starTrackerIn index the startup
+                                      //!< ST_ALIGN_CAL_START names (ignored when the count is 0)
+  U32 stAlignSamples;                 //!< SITL/bench only: simultaneous-pair count to command
+                                      //!< ST_ALIGN_CAL_START with at startup (0 = do not command
+                                      //!< an alignment calibration). The §8.2 twin of
+                                      //!< magCalSamples, and there for the same reason.
   const char* prmDbPath;              //!< ParameterDb file emitted by the config compiler
                                       //!< (§19.3); nullptr = the FileHandling default "PrmDb.dat"
   CdhCore::SubtopologyState cdhCore;  //!< Subtopology state for CdhCore

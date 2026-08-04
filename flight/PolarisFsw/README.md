@@ -476,6 +476,96 @@ parameter change**: the estimator starts using the tighter term on the first
 cycle the tables answer at `PRECISE`. That is the reason the two are separate
 parameters rather than one pre-composed sun systematic.
 
+### The estimation mode ladder (§8.2)
+
+"Fine mode" no longer means one thing. The estimator picks its measurement
+sources by a fixed ladder, and the active rung is on `FineSource`:
+
+| Rung | Sources | Accuracy |
+|---|---|---|
+| `STAR_TRACKER` | star trackers **only**; IMU propagates | REQ-ADET-007, measured 0.020° 3σ |
+| `SUN_MAG` | sun + magnetic vector pairs; IMU propagates | REQ-ADET-006, 2.25° |
+| (fine mode off) | the coarse TRIAD chain | REQ-ADET-005, 2.48° |
+
+With at least one valid tracker the **sun and magnetic pairs are not fused at
+all**. They are two orders of magnitude wider, so folding them in can only pull
+the solution away from the trackers, and the filter treats `R` as white so it
+cannot represent the systematic floor that makes them wide. They are not
+discarded: they become monitors (`SunResidualRad`, `MagResidualRad`), which is a
+strictly better use of them — a source the filter is *updating from* cannot be
+checked against the filter, because the residual is small precisely because the
+update made it small. Demoted, a sun sensor that has drifted becomes a
+`ResidualMonitorAlert` instead of a slightly worse solution.
+
+**A rung change is not a demotion.** `FineSourceChanged` is `ACTIVITY_HI`, the
+filter keeps its state and covariance across it, the published solution stays
+valid, and no `AttitudeLost` is emitted. What changes is how fast the covariance
+grows — about two orders of magnitude — so **a consumer with a knowledge
+requirement gates on `FineSource`, not on `attitudeValid`**. Watch it alongside
+`StContributing` (trackers accepted into the filter) and `StValidMask` (trackers
+that delivered a usable solution): the two differ exactly when the filter is
+rejecting what a unit sent, which is a different fault from a unit that stopped
+solving.
+
+A third monitor, `SunCrossUnitRad`, compares the **selected** sun sensor against
+the runner-up wherever two units see the Sun. It needs no attitude, so it runs in
+Safe mode too. It exists because the selector orders on *reported* σ, so a unit
+that is confidently wrong wins and nothing else would notice; on a persistent
+disagreement the estimator emits `SunUnitOverridden` and uses whichever unit
+agrees better with the fine solution. Nothing is latched — the override is
+re-decided each cycle, so a recovering unit simply stops being overridden.
+
+### Inter-star-tracker alignment: the ops procedure (§8.2)
+
+The vehicle flies two star trackers. **`StKingUnit` names the king**, whose
+mounting *defines* the body frame: no alignment is estimated for it, and
+`ST_ALIGN_CAL_START` refuses it. Every other tracker is stated in the king's
+frame by a fitted correction before it reaches the filter. Two trackers on a
+structure observe only their *relative* rotation, so naming a king removes an
+unobservable degree of freedom rather than hiding one — but note what it does not
+do: the king's own bias is not removed by anything, and it is the floor
+REQ-ADET-007 measures.
+
+| Command | Effect |
+|---|---|
+| `ST_ALIGN_CAL_START(unit, sampleCount)` | Opens a window of `sampleCount` **simultaneous solution pairs** on `unit` against the king. Restarts an open window, on whichever unit the new command names. Refuses the king, an out-of-range or uncharacterised unit (`UNIT`), missing tuning (`CONFIG`), or a count below `StAlignMinSamples` (`SAMPLES`). |
+| `ST_ALIGN_CAL_ABORT` | Closes a window without fitting. Keeps any applied alignment. Idempotent. |
+| `ST_ALIGN_CAL_CLEAR(unit)` | Drops that unit's alignment; it reverts to as-mounted. Leaves an open window alone. Idempotent. |
+| `RESET_ESTIMATOR` | Does **both**, for every unit. |
+
+Same shape as the magnetometer calibration throughout, deliberately: a window
+counted in accepted pairs with a ten-cycles-per-pair self-close deadline, a fit
+on **uncorrected** readings so an applied correction never refits itself, one
+application point, parameters read at command time, and nothing written to
+`ParameterDb` — **the correction does not survive a reboot** (§23.6 owns
+non-volatile state). A vehicle whose event log carries no `StAlignComplete` is
+fusing its second tracker as mounted.
+
+*Pairs*, not samples, and simultaneity is the measurement: a pair enters only on
+a cycle where the king **and** the commanded unit both delivered a fresh valid
+solution, because at 0.1 °/s a one-cycle skew is already 36 arcsec — comparable to
+the misalignment being measured. A keep-out on either unit costs pairs, not
+correctness.
+
+**Flying one.**
+
+1. Command `ST_ALIGN_CAL_START(unit, pairs)` with both trackers solving
+   (`StValidMask` = 0x3 on the reference vehicle). 100 pairs is 10 s at 10 Hz.
+2. Watch `StAlignSamples` rise. A count that **stalls** means one of the two
+   trackers has stopped solving — a keep-out or a fault — and the window will
+   close on its deadline with `StAlignRejected(SAMPLES)`. Abort and re-fly when
+   both are solving.
+3. Grade `StAlignComplete`. `residualRad` is the fit quality and should sit at the
+   two units' combined per-sample noise (measured ~32 arcsec in SITL, ~46 arcsec
+   on the accuracy campaign's budget, against the shipped 103 arcsec gate).
+   `misalignRad` is what was *found*, and should match the integration tolerance —
+   far larger means a mounting or `StBoresightsBody` error, not a calibration
+   success.
+4. `StAlignRejected(DEGENERATE)` is the one **not** to simply re-fly: it means the
+   pairs do not describe one fixed rotation, which is a unit fault (a
+   mis-identified star field, a stale or cross-wired solution, a moving mounting)
+   rather than a collection problem.
+
 ### Magnetometer calibration: the ops procedure (§8.1)
 
 Hard/soft-iron calibration is **commanded, executed and assessed on orbit**. The

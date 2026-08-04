@@ -94,6 +94,7 @@ constexpr F64 kSigmaSunEphemPrecise = 5.0e-5;
 //! consistency depends on.
 constexpr F64 kMekfRrw = 4.7e-7;
 constexpr F64 kMekfNisGate = 13.82;
+constexpr F64 kMekfAttNisGate = 16.27;  // chi-square(3) at 99.9%
 constexpr F64 kMekfMaxCoastSec = 2.0;
 constexpr F64 kMekfBiasSigmaInit = 1.0e-3;
 constexpr U32 kMekfRefusalStreak = 5;
@@ -112,6 +113,38 @@ constexpr U32 kMagCalMinSamples = 100;
 constexpr F64 kMagCalMinCoverage = 0.35;
 constexpr F64 kMagCalMaxCondition = 1.0e6;
 constexpr F64 kMagCalMinImprovement = 2.0;
+
+//! Multi-magnetometer voting gates (§8.2). The band is the reference vehicle's;
+//! the disagreement gate is 5 uT, likewise. Re-admission and identification
+//! confirmation are shortened to 3 and 2 for the same reason the IMU pair are:
+//! the *policy* is under test here, not the number.
+constexpr F64 kMagMinFieldRatio = 0.5;
+constexpr F64 kMagMaxFieldRatio = 1.6;
+constexpr F64 kMagDisagreementT = 5.0e-6;
+constexpr F64 kMagMaxAttSigmaRad = 0.02;
+constexpr U32 kMagReadmitCycles = 3;
+constexpr U32 kMagIdentifyConfirmCycles = 2;
+
+//! Star-tracker fusion tuning (§8.2). The two sigmas are the reference vehicle's
+//! AURIGA figures; the king is unit 0. The monitor thresholds are the flight
+//! values, because what is under test is whether a drifted source is caught, and
+//! moving the gate would stop the harness testing the one that ships. The
+//! persistence is **3** rather than the flight 50 so a case can walk the alert
+//! edge in three cycles.
+constexpr U32 kStKingUnit = 0;
+constexpr F64 kStSigmaXyRad = 1.042e-4;
+constexpr F64 kStSigmaZRad = 1.832e-4;
+constexpr F64 kMonitorSunResidualRad = 0.15;
+constexpr F64 kMonitorMagResidualRad = 0.2;
+constexpr F64 kMonitorSunCrossUnitRad = 0.15;
+constexpr U32 kMonitorAlertCycles = 3;
+
+//! Inter-tracker alignment gates. The sample floor is 20 rather than the flight
+//! 100 so a window closes inside a short harness run; the residual and eigen-gap
+//! gates are the flight values.
+constexpr U32 kStAlignMinSamples = 20;
+constexpr F64 kStAlignMaxResidualRad = 5.0e-4;
+constexpr F64 kStAlignMinEigenGap = 0.9;
 
 //! Hard iron injected by the calibration tests [T, Body]: 1.37 uT total against
 //! a ~30 uT field, the reference vehicle's MAG-GENERIC 1 uT class. Uncorrected
@@ -160,6 +193,9 @@ AttitudeEstimatorTester ::AttitudeEstimatorTester()
     : AttitudeEstimatorGTestBase("Tester", MAX_HISTORY_SIZE), component("AttitudeEstimator") {
   this->initComponents();
   this->connectPorts();
+  for (FwIndexType i = 0; i < AttitudeEstimator::NUM_STARTRACKERIN_INPUT_PORTS; ++i) {
+    this->star_error_[i].setZero();
+  }
 }
 
 AttitudeEstimatorTester ::~AttitudeEstimatorTester() {}
@@ -196,7 +232,8 @@ void AttitudeEstimatorTester ::from_estimateOut_handler(FwIndexType portNum,
 // Helpers
 // ----------------------------------------------------------------------
 
-void AttitudeEstimatorTester ::setValidParameters(bool withFine, bool withAlbedo) {
+void AttitudeEstimatorTester ::setValidParameters(bool withFine, bool withAlbedo,
+                                                  bool withStarTracker) {
   this->paramSet_SigmaSunWhiteRad(kSigmaSunWhite, Fw::ParamValid::VALID);
   this->paramSet_SigmaSunAlbedoRad(kSigmaSunAlbedoCorr, Fw::ParamValid::VALID);
   this->paramSet_SigmaMagWhiteRad(kSigmaMagWhite, Fw::ParamValid::VALID);
@@ -219,6 +256,28 @@ void AttitudeEstimatorTester ::setValidParameters(bool withFine, bool withAlbedo
   this->paramSet_ImuReadmitCycles(kImuReadmitCycles, Fw::ParamValid::VALID);
   this->paramSet_ImuIdentifyConfirmCycles(kImuIdentifyConfirmCycles, Fw::ParamValid::VALID);
   this->paramSet_ImuAmbiguityEscalateCycles(kImuAmbiguityEscalateCycles, Fw::ParamValid::VALID);
+  // The §8.2 magnetometer-voting gates ride in the same set and for the same
+  // reason: without a voted field there is no TRIAD and hence no coarse attitude.
+  this->paramSet_MagMinFieldRatio(kMagMinFieldRatio, Fw::ParamValid::VALID);
+  this->paramSet_MagMaxFieldRatio(kMagMaxFieldRatio, Fw::ParamValid::VALID);
+  this->paramSet_MagDisagreementT(kMagDisagreementT, Fw::ParamValid::VALID);
+  this->paramSet_MagMaxAttSigmaRad(kMagMaxAttSigmaRad, Fw::ParamValid::VALID);
+  this->paramSet_MagReadmitCycles(kMagReadmitCycles, Fw::ParamValid::VALID);
+  this->paramSet_MagIdentifyConfirmCycles(kMagIdentifyConfirmCycles, Fw::ParamValid::VALID);
+  if (withStarTracker) {
+    this->paramSet_StKingUnit(kStKingUnit, Fw::ParamValid::VALID);
+    this->paramSet_StSigmaXyRad(kStSigmaXyRad, Fw::ParamValid::VALID);
+    this->paramSet_StSigmaZRad(kStSigmaZRad, Fw::ParamValid::VALID);
+    this->paramSet_MonitorSunResidualRad(kMonitorSunResidualRad, Fw::ParamValid::VALID);
+    this->paramSet_MonitorMagResidualRad(kMonitorMagResidualRad, Fw::ParamValid::VALID);
+    this->paramSet_MonitorSunCrossUnitRad(kMonitorSunCrossUnitRad, Fw::ParamValid::VALID);
+    this->paramSet_MonitorAlertCycles(kMonitorAlertCycles, Fw::ParamValid::VALID);
+    Vec3F64PerUnit boresights;
+    for (FwIndexType i = 0; i < static_cast<FwIndexType>(this->st_boresights_.size()); ++i) {
+      boresights[i] = this->st_boresights_[static_cast<std::size_t>(i)];
+    }
+    this->paramSet_StBoresightsBody(boresights, Fw::ParamValid::VALID);
+  }
   if (withAlbedo) {
     this->paramSet_SunAlbedoPeakRad(kSunAlbedoPeakRad, Fw::ParamValid::VALID);
     this->paramSet_SunAlbedoHalfFovRad(kSunAlbedoHalfFovRad, Fw::ParamValid::VALID);
@@ -231,6 +290,7 @@ void AttitudeEstimatorTester ::setValidParameters(bool withFine, bool withAlbedo
   if (withFine) {
     this->paramSet_MekfRrw(kMekfRrw, Fw::ParamValid::VALID);
     this->paramSet_MekfNisGate(kMekfNisGate, Fw::ParamValid::VALID);
+    this->paramSet_MekfAttNisGate(kMekfAttNisGate, Fw::ParamValid::VALID);
     this->paramSet_MekfMaxCoastSec(kMekfMaxCoastSec, Fw::ParamValid::VALID);
     this->paramSet_MekfBiasSigmaInit(kMekfBiasSigmaInit, Fw::ParamValid::VALID);
     this->paramSet_MekfRefusalStreak(kMekfRefusalStreak, Fw::ParamValid::VALID);
@@ -239,6 +299,13 @@ void AttitudeEstimatorTester ::setValidParameters(bool withFine, bool withAlbedo
   }
   // paramSet_* only stages values in the harness's table; the component caches
   // them at load, exactly as the topology does after ParameterDb is up.
+  this->component.loadParameters();
+}
+
+void AttitudeEstimatorTester ::setStAlignParameters() {
+  this->paramSet_StAlignMinSamples(kStAlignMinSamples, Fw::ParamValid::VALID);
+  this->paramSet_StAlignMaxResidualRad(kStAlignMaxResidualRad, Fw::ParamValid::VALID);
+  this->paramSet_StAlignMinEigenGap(kStAlignMinEigenGap, Fw::ParamValid::VALID);
   this->component.loadParameters();
 }
 
@@ -416,7 +483,8 @@ void AttitudeEstimatorTester ::feedMeasurements(I64 taiNs, const QuatBI& q_bi,
   }
 
   SunSensorMeas sun;
-  Eigen::Vector3d sun_body = q_bi.rotate(this->expectedSunRef(taiNs)).eigen();
+  const Eigen::Vector3d sun_body_truth = q_bi.rotate(this->expectedSunRef(taiNs)).eigen();
+  Eigen::Vector3d sun_body = sun_body_truth;
   if (this->sun_body_error_rad_ != 0.0) {
     sun_body = Eigen::AngleAxisd(this->sun_body_error_rad_, perpendicularTo(sun_body)) * sun_body;
   }
@@ -439,18 +507,57 @@ void AttitudeEstimatorTester ::feedMeasurements(I64 taiNs, const QuatBI& q_bi,
     // the discriminator the component selects on.
     SunSensorMeas other = sun;
     other.set_sigmaRad(this->sun_extra_.sigma_rad);
+    if (this->sun_extra_truthful_) {
+      other.set_dirBody(toVec3F64(sun_body_truth));
+    }
     this->invoke_to_sunSensorIn(this->sun_extra_.index, other);
   }
 
-  MagnetometerMeas mag;
-  // The sensor model the ellipsoid fit inverts: m = S·B_body + b. With the
-  // defaults (identity S, zero b) this is a perfect magnetometer, so every test
-  // that predates the calibration sees exactly what it saw before.
+  // The magnetometer suite (§8.2). Every unit reports the same field — identical
+  // readings combine to themselves, so a healthy pair behaves exactly as the
+  // single unit did — unless mag_fault_index_ names one to offset.
   const Eigen::Vector3d b_body = q_bi.rotate(this->expectedMagRef(taiNs)).eigen();
-  mag.set_fieldTesla(toVec3F64(this->mag_soft_iron_ * b_body + this->mag_hard_iron_t_));
-  mag.set_timeTagNs(tag);
-  mag.set_valid(true);
-  this->invoke_to_magnetometerIn(0, mag);
+  for (FwIndexType unit = 0; unit < this->mag_unit_count_; ++unit) {
+    MagnetometerMeas mag;
+    // The sensor model the ellipsoid fit inverts: m = S·B_body + b. With the
+    // defaults (identity S, zero b) this is a perfect magnetometer, so every test
+    // that predates the calibration sees exactly what it saw before.
+    Eigen::Vector3d field = this->mag_soft_iron_ * b_body + this->mag_hard_iron_t_;
+    if (unit == this->mag_fault_index_) {
+      field = this->mag_fault_scale_ * field + this->mag_fault_offset_t_;
+    }
+    mag.set_fieldTesla(toVec3F64(field));
+    mag.set_timeTagNs(tag);
+    mag.set_valid(true);
+    this->invoke_to_magnetometerIn(unit, mag);
+  }
+
+  // The star-tracker suite (§8.2). Each unit reports the truth attitude composed
+  // with its own fixed small-angle error — slot 0 standing in for the king's own
+  // bias, which nothing removes because it *is* the frame, and slot 1 for the
+  // second unit's mounting misalignment, which is what ST_ALIGN_CAL estimates.
+  for (FwIndexType unit = 0; unit < this->star_unit_count_; ++unit) {
+    StarTrackerMeas st;
+    polaris::math::Quaternion measured = q_bi.core();
+    const Eigen::Vector3d& theta = this->star_error_[unit];
+    const double angle = theta.norm();
+    if (angle > 0.0) {
+      // δq(θ) ⊗ q_true, the same composition the sim's tracker model uses, so a
+      // harness error and a truth-model error are the same kind of thing.
+      measured = polaris::math::Quaternion::FromAxisAngle(theta / angle, angle) * measured;
+    }
+    (void)measured.normalize();
+    measured = measured.canonical();
+    QuatF64 q;
+    q[0] = measured.w();
+    q[1] = measured.x();
+    q[2] = measured.y();
+    q[3] = measured.z();
+    st.set_qBodyEci(q);
+    st.set_timeTagNs(tag);
+    st.set_valid(this->star_valid_[unit]);
+    this->invoke_to_starTrackerIn(unit, st);
+  }
 
   GnssMeas gnss;
   gnss.set_posEcefM(toVec3F64(this->position_override_.has_value() ? *this->position_override_
@@ -1990,6 +2097,779 @@ void AttitudeEstimatorTester ::testMissingAlbedoTuningLeavesTheEstimatorRunning(
     EXPECT_TRUE(std::isnan(this->tlmHistory_SunAlbedoCorrection->at(i).arg))
         << "cycle " << i << " corrected on tuning it does not have";
   }
+}
+
+// ----------------------------------------------------------------------
+// §8.2 star-tracker fusion, the mode ladder, and the residual monitors
+// ----------------------------------------------------------------------
+
+void AttitudeEstimatorTester ::testStarTrackerTakesTheLadderToItsTopRung() {
+  this->loadIgrf();
+  this->setValidParameters(/*withFine=*/true, /*withAlbedo=*/false, /*withStarTracker=*/true);
+  this->setStAlignParameters();
+  this->star_unit_count_ = 2;
+
+  const QuatBI truth(
+      polaris::math::Quaternion::FromAxisAngle(Eigen::Vector3d(0.3, -0.4, 0.9).normalized(), 1.1));
+
+  I64 t = kStartTaiNs;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  // A tracker seeds the filter directly — no Davenport solve — and the engaging
+  // cycle still publishes coarse, on the same one-cycle rule promotion has always
+  // followed.
+  ASSERT_EVENTS_FineModeEngaged_SIZE(1);
+  ASSERT_EVENTS_StConfigInvalid_SIZE(0);
+
+  // Calibrate the second unit against the king: an uncalibrated non-king tracker
+  // is deliberately *not* fused (its as-mounted reading carries the two units'
+  // bias difference), so without this the vehicle would fly king-only — which is
+  // what testUncalibratedSecondTrackerIsNotFused pins.
+  this->sendCmd_ST_ALIGN_CAL_START(0, 0, 1, kStAlignMinSamples);
+  for (U32 i = 0; i <= kStAlignMinSamples; ++i) {
+    t += kNsPerSecond / 10;
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+  }
+
+  // The promotion cycle publishes coarse and does not step the filter, so the
+  // fine-mode channels are written from the *next* cycle on. Cleared here so the
+  // assertions below read that cycle rather than counting history entries.
+  this->clearHistory();
+  t += kNsPerSecond / 10;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+
+  // The top rung: both trackers accepted, and the transition reported as a
+  // **source change** rather than a demotion — the filter kept its state and the
+  // published solution never went invalid.
+  ASSERT_TLM_FineSource(0, FineSource::STAR_TRACKER);
+  ASSERT_TLM_StContributing(0, 2);
+  ASSERT_TLM_StValidMask(0, 0x3u);
+  ASSERT_EVENTS_FineModeDemoted_SIZE(0);
+  ASSERT_EVENTS_AttitudeLost_SIZE(0);
+  ASSERT_TRUE(this->last_estimate_.get_attitudeValid());
+
+  // **The sun and magnetic pairs are not fused, they are monitored.** Both are
+  // present and healthy this cycle, so the monitors run and report residuals —
+  // which is the observable difference between "demoted" and "discarded".
+  ASSERT_TLM_SunValid(0, true);
+  ASSERT_TLM_MagValid(0, true);
+  ASSERT_TRUE(std::isfinite(this->tlmHistory_SunResidualRad->at(0).arg));
+  ASSERT_TRUE(std::isfinite(this->tlmHistory_MagResidualRad->at(0).arg));
+  // Healthy sources must not alert.
+  ASSERT_EVENTS_ResidualMonitorAlert_SIZE(0);
+
+  // The covariance a tracker buys, against what the vector pairs buy. Both units
+  // are arcsecond-class, so a few cycles of tracker updates must put the reported
+  // attitude covariance orders of magnitude below the degree-class SS+MAG one.
+  for (int i = 0; i < 20; ++i) {
+    t += kNsPerSecond / 10;
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    this->clearHistory();
+  }
+  t += kNsPerSecond / 10;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  const F64 star_trace = this->tlmHistory_FineAttCovTrace->at(0).arg;
+  ASSERT_TRUE(std::isfinite(star_trace));
+  // (1 mrad)^2 x 3 is already far looser than two AURIGAs justify; the point is
+  // the order of magnitude against a sun/magnetometer solution, which sits at
+  // ~1e-3 rad^2 (see SunSigmaFollowsTheEphemerisGrade).
+  EXPECT_LT(star_trace, 3.0e-6)
+      << "tracker fusion did not tighten the covariance — is R being built from "
+         "the per-unit boresights?";
+  // And the published attitude is genuinely on the trackers: the harness feeds
+  // them at truth, so the error must be arcsecond-class rather than degree-class.
+  EXPECT_LT(this->publishedErrorRad(truth), 1.0e-4);
+}
+
+void AttitudeEstimatorTester ::testStarTrackerLossFallsBackToSunAndMagnetometer() {
+  this->loadIgrf();
+  this->setValidParameters(true, false, true);
+  this->star_unit_count_ = 2;
+
+  const QuatBI truth(
+      polaris::math::Quaternion::FromAxisAngle(Eigen::Vector3d(1.0, 0.2, -0.3).normalized(), 0.4));
+
+  I64 t = kStartTaiNs;
+  for (int i = 0; i < 5; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+  this->clearHistory();
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  t += kNsPerSecond / 10;
+  ASSERT_TLM_FineSource(0, FineSource::STAR_TRACKER);
+  this->clearHistory();
+
+  // Both trackers lose their solutions — an Earth or Sun keep-out, or a slew past
+  // the tracking envelope. Geometry, not a fault.
+  this->star_valid_[0] = false;
+  this->star_valid_[1] = false;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+
+  // Down one rung, and **nothing else changed**: the filter keeps its state and
+  // its covariance, the published solution stays valid, and this is not a
+  // demotion. A consumer with a knowledge requirement gates on FineSource; a
+  // consumer that only needs *an* attitude sees no event at all.
+  ASSERT_TLM_FineSource(0, FineSource::SUN_MAG);
+  ASSERT_TLM_StContributing(0, 0);
+  ASSERT_TLM_StValidMask(0, 0u);
+  ASSERT_EVENTS_FineSourceChanged_SIZE(1);
+  ASSERT_EVENTS_FineSourceChanged(0, FineSource::STAR_TRACKER, FineSource::SUN_MAG, 0);
+  ASSERT_EVENTS_FineModeDemoted_SIZE(0);
+  ASSERT_EVENTS_AttitudeLost_SIZE(0);
+  ASSERT_TLM_EstMode(0, EstimationMode::FINE);
+  ASSERT_TRUE(this->last_estimate_.get_attitudeValid());
+  // The monitors stop reporting, because monitoring a source the filter is now
+  // *using* would be circular — the residual would be small because the update
+  // made it small.
+  ASSERT_TRUE(std::isnan(this->tlmHistory_SunResidualRad->at(0).arg));
+
+  // And it climbs back when a tracker returns.
+  this->clearHistory();
+  this->star_valid_[0] = true;
+  t += kNsPerSecond / 10;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_TLM_FineSource(0, FineSource::STAR_TRACKER);
+  ASSERT_TLM_StContributing(0, 1);
+  ASSERT_EVENTS_FineSourceChanged_SIZE(1);
+}
+
+void AttitudeEstimatorTester ::testDriftedSunSensorRaisesTheResidualMonitor() {
+  this->loadIgrf();
+  this->setValidParameters(true, false, true);
+  this->star_unit_count_ = 2;
+
+  const QuatBI truth(
+      polaris::math::Quaternion::FromAxisAngle(Eigen::Vector3d(0.1, 1.0, 0.2).normalized(), 0.9));
+
+  I64 t = kStartTaiNs;
+  for (int i = 0; i < 4; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+  this->clearHistory();
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  t += kNsPerSecond / 10;
+  ASSERT_TLM_FineSource(0, FineSource::STAR_TRACKER);
+  this->clearHistory();
+
+  // A sun sensor 20 degrees out — far past the 0.15 rad monitor threshold, and a
+  // fault that in the SS+MAG mode would merely have been down-weighted into the
+  // solution. With a tracker fused it is *observable*, which is the whole
+  // argument for demoting the pair to a monitor rather than discarding it.
+  this->sun_body_error_rad_ = 20.0 * M_PI / 180.0;
+  for (U32 i = 0; i < kMonitorAlertCycles; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+  ASSERT_EVENTS_ResidualMonitorAlert_SIZE(1);
+  EXPECT_EQ(this->eventHistory_ResidualMonitorAlert->at(0).monitor, ResidualMonitor::SUN);
+  // The residual is the injected offset. Compared with a tolerance rather than
+  // for equality: it is a measured angle, not a copied constant.
+  EXPECT_NEAR(this->eventHistory_ResidualMonitorAlert->at(0).residualRad, 20.0 * M_PI / 180.0,
+              1.0e-6);
+  EXPECT_EQ(this->eventHistory_ResidualMonitorAlert->at(0).thresholdRad, kMonitorSunResidualRad);
+  // And the solution is untouched by it: the drifted sensor is not being fused,
+  // so it cannot pull the attitude.
+  EXPECT_LT(this->publishedErrorRad(truth), 1.0e-4);
+  ASSERT_EVENTS_FineModeDemoted_SIZE(0);
+
+  // Recovery closes the condition, so the ground does not have to notice that the
+  // alerts stopped.
+  this->clearHistory();
+  this->sun_body_error_rad_ = 0.0;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_ResidualMonitorCleared_SIZE(1);
+  ASSERT_EVENTS_ResidualMonitorCleared(0, ResidualMonitor::SUN);
+}
+
+void AttitudeEstimatorTester ::testMissingStarTrackerTuningCapsTheLadder() {
+  this->loadIgrf();
+  // Fine tuning present, tracker tuning absent — the fourth independent gate.
+  this->setValidParameters(/*withFine=*/true, /*withAlbedo=*/false, /*withStarTracker=*/false);
+  this->star_unit_count_ = 2;
+
+  const QuatBI truth(polaris::math::Quaternion::FromAxisAngle(Eigen::Vector3d::UnitZ(), 0.3));
+
+  I64 t = kStartTaiNs;
+  for (int i = 0; i < 3; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+  // One alert, edge-gated. Asserted before the history is cleared, since the
+  // alert fired on the first cycle.
+  ASSERT_EVENTS_StConfigInvalid_SIZE(1);
+  ASSERT_EVENTS_ConfigInvalid_SIZE(0);
+  ASSERT_EVENTS_FineConfigInvalid_SIZE(0);
+
+  this->clearHistory();
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+
+  // The vehicle is still flying its SS+MAG fine mode — the accuracy it had before
+  // trackers were fused, which is a working vehicle.
+  ASSERT_TLM_FineSource(0, FineSource::SUN_MAG);
+  ASSERT_TLM_StContributing(0, 0);
+  // No tracker may be gathered without a configured boresight.
+  ASSERT_TLM_StValidMask(0, 0u);
+  ASSERT_TLM_EstMode(0, EstimationMode::FINE);
+  ASSERT_TRUE(this->last_estimate_.get_attitudeValid());
+}
+
+void AttitudeEstimatorTester ::testStarTrackerSeedsFineModeWithoutTheVectorPairs() {
+  this->loadIgrf();
+  this->setValidParameters(true, false, true);
+  this->star_unit_count_ = 1;
+
+  const QuatBI truth(
+      polaris::math::Quaternion::FromAxisAngle(Eigen::Vector3d(0.4, 0.4, 0.8).normalized(), 2.0));
+
+  // Eclipse: no sun pair at all, so there is no Davenport seed to be had and no
+  // coarse attitude to require. This is the case a vector seed structurally cannot
+  // cover, and the reason a tracker promotes on its own.
+  I64 t = kStartTaiNs;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), /*sunInView=*/false);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_FineModeEngaged_SIZE(1);
+  ASSERT_EVENTS_FineInitFailed_SIZE(0);
+
+  this->clearHistory();
+  t += kNsPerSecond / 10;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), false);
+  this->runCycleAt(t);
+  ASSERT_TLM_FineSource(0, FineSource::STAR_TRACKER);
+  ASSERT_TLM_EstMode(0, EstimationMode::FINE);
+  EXPECT_LT(this->publishedErrorRad(truth), 1.0e-4);
+  // The coarse chain never acquired — there was never a sun pair — which is
+  // exactly the state the tracker seed exists to fly out of.
+  ASSERT_TLM_SunValid(0, false);
+}
+
+// ----------------------------------------------------------------------
+// §8.2 commanded inter-tracker alignment
+// ----------------------------------------------------------------------
+
+void AttitudeEstimatorTester ::testInterTrackerAlignmentCollectsFitsAndApplies() {
+  this->loadIgrf();
+  this->setValidParameters(true, false, true);
+  this->setStAlignParameters();
+  this->star_unit_count_ = 2;
+  // The second unit is mounted ~0.06 degrees off the king — a plausible
+  // integration tolerance, and tens of times the units' own noise. The king
+  // carries a bias too, and nothing removes it: its mounting *is* the body frame.
+  const Eigen::Vector3d misalignment(1.0e-3, -4.0e-4, 6.0e-4);
+  this->star_error_[1] = misalignment;
+
+  const QuatBI truth(
+      polaris::math::Quaternion::FromAxisAngle(Eigen::Vector3d(0.2, -0.9, 0.4).normalized(), 1.3));
+
+  I64 t = kStartTaiNs;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_TLM_StAlignState(0, StAlignState::IDLE);
+  this->clearHistory();
+
+  this->sendCmd_ST_ALIGN_CAL_START(0, 0, 1, kStAlignMinSamples);
+  ASSERT_CMD_RESPONSE_SIZE(1);
+  ASSERT_CMD_RESPONSE(0, AttitudeEstimator::OPCODE_ST_ALIGN_CAL_START, 0, Fw::CmdResponse::OK);
+  ASSERT_EVENTS_StAlignStarted_SIZE(1);
+  this->clearHistory();
+
+  // Collection is a **tap**: the estimator keeps running and the published
+  // solution is unaffected until a fit is applied.
+  for (U32 i = 0; i < kStAlignMinSamples; ++i) {
+    t += kNsPerSecond / 10;
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+  }
+
+  t += kNsPerSecond / 10;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_StAlignComplete_SIZE(1);
+  ASSERT_EVENTS_StAlignRejected_SIZE(0);
+  const F64 fitted = this->eventHistory_StAlignComplete->at(0).misalignRad;
+  // What was found must be what was injected: the pairs are noise-free here, so
+  // this is the algebra check — a composition-order error would recover the
+  // inverse rotation, which is still a plausible-looking small angle.
+  EXPECT_NEAR(fitted, misalignment.norm(), 1.0e-9);
+  // Only the second unit carries a correction, and the king's slot is never
+  // fitted — it has no alignment to estimate, its mounting *is* the frame.
+  const FwSizeType last = this->tlmHistory_StAlignMask->size() - 1;
+  EXPECT_EQ(this->tlmHistory_StAlignMask->at(last).arg, 0x2u);
+  EXPECT_EQ(this->tlmHistory_StAlignState->at(last).arg, StAlignState::APPLIED);
+  EXPECT_LT(this->tlmHistory_StAlignResidualRad->at(last).arg, 1.0e-7);
+
+  // And the correction is actually applied: with both units now stated in the
+  // king's frame, the solution follows the king rather than splitting the
+  // difference with a unit 0.06 degrees away.
+  this->clearHistory();
+  for (int i = 0; i < 20; ++i) {
+    t += kNsPerSecond / 10;
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    this->clearHistory();
+  }
+  t += kNsPerSecond / 10;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  EXPECT_LT(this->publishedErrorRad(truth), 0.1 * misalignment.norm())
+      << "the fitted alignment is not being applied to the second tracker";
+}
+
+void AttitudeEstimatorTester ::testInterTrackerAlignmentRefusesTheKingAndBadCommands() {
+  this->loadIgrf();
+  this->setValidParameters(true, false, true);
+  this->star_unit_count_ = 2;
+  // One cycle first: the tracker tuning is read on the rate-group cycle (it is a
+  // per-cycle gate), so a command sent before the estimator has ever run would see
+  // an unconfigured tracker set and refuse with UNIT for the wrong reason. On the
+  // vehicle the rate group has been running since boot.
+  const QuatBI settle(polaris::math::Quaternion::Identity());
+  this->feedMeasurements(kStartTaiNs, settle, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(kStartTaiNs);
+  this->clearHistory();
+
+  // (a) No StAlign* tuning yet: a command-time refusal that costs the vehicle
+  //     nothing, because calibration is a commanded activity rather than a flight
+  //     function.
+  this->sendCmd_ST_ALIGN_CAL_START(0, 0, 1, kStAlignMinSamples);
+  ASSERT_CMD_RESPONSE(0, AttitudeEstimator::OPCODE_ST_ALIGN_CAL_START, 0,
+                      Fw::CmdResponse::EXECUTION_ERROR);
+  ASSERT_EVENTS_StAlignRejected_SIZE(1);
+  ASSERT_EVENTS_StAlignRejected(0, 1, StAlignRejectReason::CONFIG, 0);
+
+  this->setStAlignParameters();
+  this->clearHistory();
+
+  // (b) The **king**. Not an error of degree: it is a request to estimate a
+  //     rotation that is zero by definition, because that unit's mounting is the
+  //     body frame.
+  this->sendCmd_ST_ALIGN_CAL_START(0, 0, 0, kStAlignMinSamples);
+  ASSERT_CMD_RESPONSE(0, AttitudeEstimator::OPCODE_ST_ALIGN_CAL_START, 0,
+                      Fw::CmdResponse::EXECUTION_ERROR);
+  ASSERT_EVENTS_StAlignRejected_SIZE(1);
+  ASSERT_EVENTS_StAlignRejected(0, 0, StAlignRejectReason::UNIT, 0);
+  this->clearHistory();
+
+  // (c) A unit with no configured boresight — "not installed" — which cannot be
+  //     fused either, so calibrating it would fit a correction nothing applies.
+  this->sendCmd_ST_ALIGN_CAL_START(0, 0, 5, kStAlignMinSamples);
+  ASSERT_EVENTS_StAlignRejected(0, 5, StAlignRejectReason::UNIT, 0);
+  this->clearHistory();
+
+  // (d) A sample count below the configured floor. Saying so now costs the
+  //     operator the command rather than the whole collection window.
+  this->sendCmd_ST_ALIGN_CAL_START(0, 0, 1, kStAlignMinSamples - 1);
+  ASSERT_CMD_RESPONSE(0, AttitudeEstimator::OPCODE_ST_ALIGN_CAL_START, 0,
+                      Fw::CmdResponse::EXECUTION_ERROR);
+  ASSERT_EVENTS_StAlignRejected_SIZE(1);
+  EXPECT_EQ(this->eventHistory_StAlignRejected->at(0).unit, 1);
+  EXPECT_EQ(this->eventHistory_StAlignRejected->at(0).reason, StAlignRejectReason::SAMPLES);
+
+  // Through all four, no window ever opened and nothing was applied.
+  this->clearHistory();
+  this->feedMeasurements(kStartTaiNs + kNsPerSecond / 10, settle, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(kStartTaiNs + kNsPerSecond / 10);
+  ASSERT_TLM_StAlignState(0, StAlignState::IDLE);
+  ASSERT_TLM_StAlignMask(0, 0u);
+}
+
+void AttitudeEstimatorTester ::testInterTrackerAlignmentAbortAndClear() {
+  this->loadIgrf();
+  this->setValidParameters(true, false, true);
+  this->setStAlignParameters();
+  this->star_unit_count_ = 2;
+  this->star_error_[1] = Eigen::Vector3d(8.0e-4, 0.0, 0.0);
+
+  const QuatBI truth(polaris::math::Quaternion::FromAxisAngle(Eigen::Vector3d::UnitX(), 0.5));
+  I64 t = kStartTaiNs;
+  // One cycle first, so the tracker tuning has been read (see the refusal case).
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  t += kNsPerSecond / 10;
+  this->clearHistory();
+
+  // --- Abort discards the window without fitting --------------------------
+  this->sendCmd_ST_ALIGN_CAL_START(0, 0, 1, kStAlignMinSamples);
+  for (U32 i = 0; i < kStAlignMinSamples / 2; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+    this->clearHistory();
+  }
+  this->sendCmd_ST_ALIGN_CAL_ABORT(0, 0);
+  ASSERT_EVENTS_StAlignAborted_SIZE(1);
+  ASSERT_EVENTS_StAlignComplete_SIZE(0);
+  this->clearHistory();
+
+  // Idempotent: aborting with nothing open is an operator making sure.
+  this->sendCmd_ST_ALIGN_CAL_ABORT(0, 0);
+  ASSERT_CMD_RESPONSE(0, AttitudeEstimator::OPCODE_ST_ALIGN_CAL_ABORT, 0, Fw::CmdResponse::OK);
+  ASSERT_EVENTS_StAlignAborted_SIZE(0);
+  this->clearHistory();
+
+  // --- Fit, then clear ----------------------------------------------------
+  this->sendCmd_ST_ALIGN_CAL_START(0, 0, 1, kStAlignMinSamples);
+  for (U32 i = 0; i <= kStAlignMinSamples; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+    this->clearHistory();
+  }
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_TLM_StAlignMask(0, 0x2u);
+  this->clearHistory();
+
+  this->sendCmd_ST_ALIGN_CAL_CLEAR(0, 0, 1);
+  ASSERT_CMD_RESPONSE(0, AttitudeEstimator::OPCODE_ST_ALIGN_CAL_CLEAR, 0, Fw::CmdResponse::OK);
+  ASSERT_EVENTS_StAlignCleared_SIZE(1);
+  this->clearHistory();
+  t += kNsPerSecond / 10;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_TLM_StAlignMask(0, 0u);
+  ASSERT_TLM_StAlignState(0, StAlignState::IDLE);
+
+  // An out-of-range index is refused rather than silently ignored.
+  this->clearHistory();
+  this->sendCmd_ST_ALIGN_CAL_CLEAR(0, 0, 99);
+  ASSERT_CMD_RESPONSE(0, AttitudeEstimator::OPCODE_ST_ALIGN_CAL_CLEAR, 0,
+                      Fw::CmdResponse::EXECUTION_ERROR);
+
+  // --- RESET_ESTIMATOR does both, on the same "the solution is suspect" rule
+  //     the magnetometer calibration follows.
+  this->clearHistory();
+  this->sendCmd_ST_ALIGN_CAL_START(0, 0, 1, kStAlignMinSamples);
+  for (U32 i = 0; i <= kStAlignMinSamples; ++i) {
+    t += kNsPerSecond / 10;
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    this->clearHistory();
+  }
+  t += kNsPerSecond / 10;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_TLM_StAlignMask(0, 0x2u);
+
+  this->clearHistory();
+  this->sendCmd_RESET_ESTIMATOR(0, 0);
+  ASSERT_EVENTS_StAlignCleared_SIZE(1);
+  t += kNsPerSecond / 10;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_TLM_StAlignMask(0, 0u);
+}
+
+// ----------------------------------------------------------------------
+// §8.2 multi-magnetometer voting and the sun cross-unit check
+// ----------------------------------------------------------------------
+
+void AttitudeEstimatorTester ::testImplausibleMagnetometerIsExcludedAndCostsNothing() {
+  this->loadIgrf();
+  this->setValidParameters();
+  const QuatBI truth(
+      polaris::math::Quaternion::FromAxisAngle(Eigen::Vector3d(1.0, 1.0, 0.0).normalized(), 0.6));
+
+  // Settle on two healthy units. The truth attitude is fixed and there is no gyro
+  // bias, so the coarse blend converges and the published error stops moving —
+  // which is what makes the comparison below a statement about the vote rather
+  // than about the transient.
+  I64 t = kStartTaiNs;
+  for (int i = 0; i < 40; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+    this->clearHistory();
+  }
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  t += kNsPerSecond / 10;
+  const double healthy_error = this->publishedErrorRad(truth);
+  ASSERT_TLM_MagContributing(0, 2);
+  ASSERT_TLM_MagUnitSelected(0, 0);
+  this->clearHistory();
+
+  // Unit 1 dies: it reads near zero, which the IGRF-magnitude band catches before
+  // any combination — the reading a mean would have split the difference with,
+  // and the one a fixed full-scale check would have waved through.
+  this->mag_fault_index_ = 1;
+  this->mag_fault_scale_ = 0.05;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+
+  ASSERT_EVENTS_MagUnitExcluded_SIZE(1);
+  ASSERT_EVENTS_MagUnitExcluded(0, 1, MagExclusionReason::FIELD_MAGNITUDE);
+  // The surviving unit carries the pair, and the attitude is untouched: a
+  // single-unit fault must cost accuracy nothing at all, which is the whole
+  // property the second magnetometer is carried for.
+  ASSERT_TLM_MagValid(0, true);
+  ASSERT_TLM_MagContributing(0, 1);
+  ASSERT_TLM_MagExclusionMask(0, 0x2u);
+  ASSERT_TLM_MagUnitSelected(0, 0);
+  EXPECT_NEAR(this->publishedErrorRad(truth), healthy_error, 1.0e-9)
+      << "an excluded magnetometer moved the published attitude";
+
+  // Latched, not re-entering on its next plausible sample; then re-admitted after
+  // the configured consecutive count.
+  this->clearHistory();
+  this->mag_fault_index_ = -1;
+  this->mag_fault_scale_ = 1.0;
+  for (U32 i = 0; i < kMagReadmitCycles - 1; ++i) {
+    t += kNsPerSecond / 10;
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    // Latched: a plausible sample alone must not re-admit it.
+    ASSERT_TLM_MagContributing(i, 1);
+  }
+  t += kNsPerSecond / 10;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_MagUnitReadmitted_SIZE(1);
+  ASSERT_EVENTS_MagUnitReadmitted(0, 1);
+}
+
+void AttitudeEstimatorTester ::testTwoMagnetometerDisagreementLeavesNoMagneticPair() {
+  this->loadIgrf();
+  // No fine tuning, so there is no filter solution and — more to the point — no
+  // attitude good enough to rotate the modelled field with. Two plausible units
+  // disagreeing then has nothing to attribute it, which is the honest outcome.
+  this->setValidParameters();
+  this->mag_fault_index_ = 1;
+  // 10 uT: twice the disagreement gate, comfortably inside the magnitude band, so
+  // **no per-unit gate can see it** and only the comparison can.
+  this->mag_fault_offset_t_ = Eigen::Vector3d(0.0, 10.0e-6, 0.0);
+
+  const QuatBI truth(polaris::math::Quaternion::Identity());
+  I64 t = kStartTaiNs;
+  for (int i = 0; i < 4; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+
+  // Reported once, on the edge, and nothing latched: detection is not
+  // attribution, and excluding a unit on a guess would spend the remaining
+  // redundancy.
+  ASSERT_EVENTS_MagVoteAmbiguous_SIZE(1);
+  ASSERT_EVENTS_MagUnitExcluded_SIZE(0);
+  ASSERT_TLM_MagExclusionMask(3, 0u);
+  ASSERT_TLM_MagContributing(3, 0);
+  // The cost is bounded to the magnetic pair — cheaper than the IMU equivalent,
+  // which loses the body rate. The gyro still propagates and the rate still flows.
+  ASSERT_TLM_MagValid(3, false);
+  ASSERT_TLM_GyroValid(3, true);
+  ASSERT_TRUE(this->last_estimate_.get_rateValid());
+
+  // Recovery clears the condition and the pair comes back.
+  this->clearHistory();
+  this->mag_fault_index_ = -1;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_TLM_MagValid(0, true);
+  ASSERT_TLM_MagContributing(0, 2);
+}
+
+void AttitudeEstimatorTester ::testSunCrossUnitCheckAlertsAndOverrides() {
+  this->loadIgrf();
+  this->setValidParameters(true, false, true);
+  this->star_unit_count_ = 1;
+
+  const QuatBI truth(
+      polaris::math::Quaternion::FromAxisAngle(Eigen::Vector3d(0.5, 0.5, 0.7).normalized(), 0.8));
+
+  // Two units see the Sun. The **selected** one is the confidently-wrong one: it
+  // reports the smaller sigma, so the σ-ordered selector takes it, and nothing
+  // else on the vehicle would notice. This is the gap the cross-check closes.
+  this->sun_extra_.index = 1;
+  this->sun_extra_.sigma_rad = 10.0 * kSigmaSunWhite;  // the runner-up, honest but wider
+  this->sun_body_error_rad_ = 20.0 * M_PI / 180.0;     // injected into the *selected* unit only
+  this->sun_extra_truthful_ = true;
+
+  I64 t = kStartTaiNs;
+  for (int i = 0; i < 4; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+  // Detection needs no attitude: it is a sensor-versus-sensor comparison, which
+  // is what makes it the one cross-check available in Safe mode.
+  ASSERT_TRUE(std::isfinite(this->tlmHistory_SunCrossUnitRad->at(0).arg));
+  ASSERT_EVENTS_ResidualMonitorAlert_SIZE(1);
+  EXPECT_EQ(this->eventHistory_ResidualMonitorAlert->at(0).monitor,
+            ResidualMonitor::SUN_CROSS_UNIT);
+  EXPECT_NEAR(this->eventHistory_ResidualMonitorAlert->at(0).residualRad, 20.0 * M_PI / 180.0,
+              1.0e-6);
+  EXPECT_EQ(this->eventHistory_ResidualMonitorAlert->at(0).thresholdRad, kMonitorSunCrossUnitRad);
+
+  // Resolution needs one, and it has one: with the tracker fused, the runner-up
+  // agrees with the solution and the selected unit does not, so the estimator
+  // uses the runner-up. Nothing is latched — the override is re-decided every
+  // cycle from the current evidence.
+  this->clearHistory();
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_SunUnitOverridden_SIZE(1);
+  EXPECT_EQ(this->eventHistory_SunUnitOverridden->at(0).selected, 0);
+  EXPECT_EQ(this->eventHistory_SunUnitOverridden->at(0).used, 1);
+  EXPECT_NEAR(this->eventHistory_SunUnitOverridden->at(0).angleRad, 20.0 * M_PI / 180.0, 1.0e-6);
+  ASSERT_TLM_SunUnitSelected(0, 1);
+
+  // The unit recovering simply stops it, with no command and no re-admission
+  // policy to serve out.
+  this->clearHistory();
+  this->sun_body_error_rad_ = 0.0;
+  t += kNsPerSecond / 10;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_SunUnitOverridden_SIZE(0);
+  ASSERT_TLM_SunUnitSelected(0, 0);
+  ASSERT_EVENTS_ResidualMonitorCleared_SIZE(1);
+}
+
+void AttitudeEstimatorTester ::testBadStarTrackerIsIsolatedWithoutDemotingTheMode() {
+  this->loadIgrf();
+  this->setValidParameters(true, false, true);
+  this->setStAlignParameters();
+  this->star_unit_count_ = 2;
+
+  const QuatBI truth(
+      polaris::math::Quaternion::FromAxisAngle(Eigen::Vector3d(0.6, 0.1, 0.8).normalized(), 1.0));
+  I64 t = kStartTaiNs;
+
+  // Calibrate unit 1 first, so it is *fused* and can then go bad — otherwise it
+  // would simply never be gathered (the C2 rule) and this would test nothing.
+  this->sendCmd_ST_ALIGN_CAL_START(0, 0, 1, kStAlignMinSamples);
+  for (U32 i = 0; i <= kStAlignMinSamples; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+    this->clearHistory();
+  }
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  t += kNsPerSecond / 10;
+  ASSERT_TLM_StContributing(0, 2);
+  this->clearHistory();
+
+  // Unit 1 goes 5 degrees out — far past the chi-square(3) gate against an
+  // arcsecond-class R, so every one of its updates is rejected while the king's
+  // are accepted.
+  this->star_error_[1] = Eigen::Vector3d(0.0, 5.0 * M_PI / 180.0, 0.0);
+  for (U32 i = 0; i < kMekfNisStreak + 2; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+
+  // **The unit is isolated; the mode is not.** This is the whole point of a
+  // per-unit streak: a cycle-global one would have demoted here, dropped the
+  // filter, re-promoted off the same bad unit and flapped at the streak period.
+  ASSERT_EVENTS_StUnitExcluded_SIZE(1);
+  EXPECT_EQ(this->eventHistory_StUnitExcluded->at(0).unit, 1);
+  ASSERT_EVENTS_FineModeDemoted_SIZE(0);
+  ASSERT_EVENTS_AttitudeLost_SIZE(0);
+  this->clearHistory();
+
+  // Still on the top rung, now on the king alone, and still accurate — the king
+  // is at truth, so the solution must be too.
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  t += kNsPerSecond / 10;
+  ASSERT_TLM_FineSource(0, FineSource::STAR_TRACKER);
+  ASSERT_TLM_StContributing(0, 1);
+  EXPECT_LT(this->publishedErrorRad(truth), 1.0e-3);
+  // Edge-gated: a permanently bad unit costs one event, not one per cycle.
+  ASSERT_EVENTS_StUnitExcluded_SIZE(0);
+
+  // Recovery is automatic and judged on the criterion that excluded it —
+  // agreement with the solution the *other* tracker built.
+  this->clearHistory();
+  this->star_error_[1].setZero();
+  for (U32 i = 0; i <= kMonitorAlertCycles; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+  ASSERT_EVENTS_StUnitReadmitted_SIZE(1);
+  EXPECT_EQ(this->eventHistory_StUnitReadmitted->at(0).unit, 1);
+  this->clearHistory();
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_TLM_StContributing(0, 2);
+}
+
+void AttitudeEstimatorTester ::testUncalibratedSecondTrackerIsNotFused() {
+  this->loadIgrf();
+  this->setValidParameters(true, false, true);
+  this->setStAlignParameters();
+  this->star_unit_count_ = 2;
+  // A plausible integration tolerance on the second unit. Uncalibrated, this is a
+  // *systematic* the configured 21.5 arcsec sigma does not cover.
+  this->star_error_[1] = Eigen::Vector3d(1.0e-3, -4.0e-4, 6.0e-4);
+
+  const QuatBI truth(
+      polaris::math::Quaternion::FromAxisAngle(Eigen::Vector3d(0.2, 0.9, 0.3).normalized(), 0.8));
+  I64 t = kStartTaiNs;
+  for (int i = 0; i < 4; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+  }
+  this->clearHistory();
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  t += kNsPerSecond / 10;
+
+  // **King only.** Both units are delivering valid solutions — StValidMask says so
+  // — but the uncalibrated one is not fused, so the vehicle flies the launch state
+  // honestly rather than fusing a systematic at a white-noise sigma.
+  // Both units *solved* — StValidMask says so — but only the king is fused. That
+  // gap between the two channels is exactly what the ground reads to tell "the
+  // unit stopped solving" from "the unit is not trusted yet".
+  ASSERT_TLM_StValidMask(0, 0x3u);
+  ASSERT_TLM_StContributing(0, 1);
+  ASSERT_TLM_FineSource(0, FineSource::STAR_TRACKER);
+  EXPECT_LT(this->publishedErrorRad(truth), 1.0e-4);
+
+  // Calibrate it, and it joins.
+  this->clearHistory();
+  this->sendCmd_ST_ALIGN_CAL_START(0, 0, 1, kStAlignMinSamples);
+  for (U32 i = 0; i <= kStAlignMinSamples; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+    this->clearHistory();
+  }
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  t += kNsPerSecond / 10;
+  ASSERT_TLM_StValidMask(0, 0x3u);
+  ASSERT_TLM_StContributing(0, 2);
+
+  // And clearing the calibration drops it again, which is what makes
+  // ST_ALIGN_CAL_CLEAR a safe command rather than one that silently degrades the
+  // solution to an uncalibrated pair.
+  this->clearHistory();
+  this->sendCmd_ST_ALIGN_CAL_CLEAR(0, 0, 1);
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_TLM_StContributing(0, 1);
+  ASSERT_TLM_StValidMask(0, 0x3u);
 }
 
 }  // namespace flight

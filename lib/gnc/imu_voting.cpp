@@ -1,3 +1,9 @@
+/// @file
+/// @brief Multi-IMU rate vote: the gyro-specific gates over the shared
+/// redundancy-vote policy in gnc/unit_voting (design doc §8.2, §9.2;
+/// REQ-ADET-008, REQ-ADET-009). See imu_voting.hpp for what is gyro-specific and
+/// unit_voting.hpp for the policy itself.
+
 #include "gnc/imu_voting.hpp"
 
 #include <cmath>
@@ -9,44 +15,27 @@ namespace {
 namespace pm = polaris::math;
 using Body = pm::frames::Body;
 
-/// Insertion sort of at most @ref kMaxImuUnits doubles, in place. Bounded loops,
-/// no allocation, no recursion.
-void sortSmall(double* values, int count) {
-  for (int i = 1; i < count; ++i) {
-    const double key = values[i];
-    int j = i - 1;
-    while (j >= 0 && values[j] > key) {
-      values[j + 1] = values[j];
-      --j;
-    }
-    values[j + 1] = key;
-  }
-}
-
 }  // namespace
 
 bool ImuVoteConfig::isValid() const {
-  return std::isfinite(max_rate_radps) && max_rate_radps > 0.0 &&
-         std::isfinite(disagreement_radps) && disagreement_radps > 0.0 && readmit_cycles > 0 &&
-         identify_confirm_cycles > 0;
+  UnitVoteConfig core{};
+  core.disagreement = disagreement_radps;
+  core.readmit_cycles = readmit_cycles;
+  core.identify_confirm_cycles = identify_confirm_cycles;
+  return std::isfinite(max_rate_radps) && max_rate_radps > 0.0 && core.isValid();
 }
 
 bool medianRate(const pm::Vec3<Body>* rates, int count, pm::Vec3<Body>& out) {
   if (rates == nullptr || count < 1 || count > kMaxImuUnits) {
     return false;
   }
-  Eigen::Vector3d median = Eigen::Vector3d::Zero();
-  for (int axis = 0; axis < 3; ++axis) {
-    double column[kMaxImuUnits] = {};
-    for (int i = 0; i < count; ++i) {
-      column[i] = rates[i].eigen()[axis];
-    }
-    sortSmall(column, count);
-    // Odd count: the central order statistic. Even count: the mean of the two
-    // central ones — the standard definition, continuous in the data, and with
-    // the same breakdown point as the lower median.
-    median[axis] =
-        (count % 2 == 1) ? column[count / 2] : 0.5 * (column[count / 2 - 1] + column[count / 2]);
+  Eigen::Vector3d values[kMaxImuUnits];
+  for (int i = 0; i < count; ++i) {
+    values[i] = rates[i].eigen();
+  }
+  Eigen::Vector3d median;
+  if (!medianVector(values, count, median)) {
+    return false;
   }
   out = pm::Vec3<Body>(median);
   return true;
@@ -55,284 +44,58 @@ bool medianRate(const pm::Vec3<Body>* rates, int count, pm::Vec3<Body>& out) {
 ImuVoter::ImuVoter(const ImuVoteConfig& config) {
   if (config.isValid()) {
     config_ = config;
-    configured_ = true;
+    UnitVoteConfig core{};
+    core.disagreement = config.disagreement_radps;
+    core.readmit_cycles = config.readmit_cycles;
+    core.identify_confirm_cycles = config.identify_confirm_cycles;
+    core_ = UnitVoter(core);
   }
-}
-
-void ImuVoter::clearExclusions() {
-  for (int i = 0; i < kMaxImuUnits; ++i) {
-    excluded_[i] = false;
-    exclusion_reason_[i] = ImuVoteReason::kContributing;
-    plausible_streak_[i] = 0;
-    identify_streak_[i] = 0;
-  }
-}
-
-std::uint32_t ImuVoter::exclusionMask() const {
-  std::uint32_t mask = 0;
-  for (int i = 0; i < kMaxImuUnits; ++i) {
-    if (excluded_[i]) {
-      mask |= (1u << i);
-    }
-  }
-  return mask;
-}
-
-bool ImuVoter::referenceUsable(const pm::Vec3<Body>* reference_rate) const {
-  // A reference is wire-adjacent data like any other: it comes from the
-  // estimator's own published state, which a fault upstream can corrupt. An
-  // unchecked one is worse than none, because an absurd reference makes *both*
-  // residuals enormous and hands the identification to whichever unit happens to
-  // be nearer to nonsense — latching out the healthy unit. It therefore passes
-  // the same plausibility gate the measurements do; failing it means no
-  // reference, which is the honest ambiguous outcome.
-  return reference_rate != nullptr && reference_rate->isFinite() &&
-         reference_rate->norm() <= config_.max_rate_radps;
-}
-
-bool ImuVoter::isExcluded(int index) const {
-  if (index < 0 || index >= kMaxImuUnits) {
-    return false;
-  }
-  return excluded_[index];
 }
 
 bool ImuVoter::vote(const ImuVoteInput* units, int count, const pm::Vec3<Body>* reference_rate,
                     ImuVoteResult& out) {
   out = ImuVoteResult{};
-  if (!configured_ || units == nullptr || count < 0 || count > kMaxImuUnits) {
-    // A refusal, not a fault of the units: nothing is latched and no edge is
-    // reported, so a mis-called vote cannot manufacture an FDIR event.
+  if (!core_.isConfigured() || units == nullptr || count < 0 || count > kMaxImuUnits) {
     return false;
   }
 
-  // --- Stage 1: per-unit plausibility gates --------------------------------
-  // Applied before any combination, so the robust step never has to absorb a
-  // value orders of magnitude out of family. A unit that fails a gate is
-  // latched out; a unit that passes accumulates towards re-admission.
-  //
-  // **Re-admission is judged against the criterion that excluded the unit.**
-  // A gate failure is undone by passing that gate; an *identification*
-  // (kOutvoted) is not, because a unit outvoted by the reference was plausible
-  // by construction — it passed every per-unit gate and lost a comparison.
-  // Advancing its streak on plausibility alone would re-admit it unconditionally
-  // and it would be outvoted again on the next cycle: a permanent
-  // exclude/re-admit flap at the re-admission period, and one FDIR event per
-  // flap. Those units are held here and judged in stage 3 against the
-  // combination, which is the criterion that put them out.
-  pm::Vec3<Body> survivor_rate[kMaxImuUnits];
-  int survivor_index[kMaxImuUnits] = {};
-  int survivors = 0;
-  int probation[kMaxImuUnits] = {};  // excluded kOutvoted units, plausible this cycle
-  int probation_count = 0;
-
+  // The gyro-specific plausibility gate: magnitude against the *vehicle's*
+  // credible rate, not the gyro's measurement range. Finiteness is the core's, so
+  // a non-finite reading must not be run through `norm()` here first — an
+  // `in_range` computed from a NaN is meaningless either way, and the core reports
+  // it as kNotFinite, which is the more actionable gate name.
+  UnitVoteInput staged[kMaxVoteUnits];
   for (int i = 0; i < count; ++i) {
-    const ImuVoteInput& unit = units[i];
-    if (!unit.present) {
-      // Absence is not implausibility. A dropout says nothing about whether the
-      // unit is lying, so it neither latches an exclusion nor advances the
-      // re-admission streak — an excluded unit cannot serve out its sentence by
-      // going quiet.
-      out.reason[i] = ImuVoteReason::kAbsent;
-      continue;
-    }
-
-    ImuVoteReason gate = ImuVoteReason::kContributing;
-    if (!unit.rate.isFinite()) {
-      gate = ImuVoteReason::kNotFinite;
-    } else if (unit.rate.norm() > config_.max_rate_radps) {
-      gate = ImuVoteReason::kRateLimit;
-    }
-
-    if (gate != ImuVoteReason::kContributing) {
-      out.reason[i] = gate;
-      plausible_streak_[i] = 0;
-      if (!excluded_[i]) {
-        excluded_[i] = true;
-        exclusion_reason_[i] = gate;
-        out.newly_excluded[i] = true;
-      }
-      continue;
-    }
-
-    // Plausible this cycle. An excluded unit still has to earn its way back, on
-    // the criterion that excluded it.
-    if (excluded_[i]) {
-      if (exclusion_reason_[i] == ImuVoteReason::kOutvoted) {
-        out.reason[i] = ImuVoteReason::kExcluded;
-        probation[probation_count] = i;
-        ++probation_count;
-        continue;
-      }
-      ++plausible_streak_[i];
-      if (plausible_streak_[i] < config_.readmit_cycles) {
-        out.reason[i] = ImuVoteReason::kExcluded;
-        continue;
-      }
-      excluded_[i] = false;
-      plausible_streak_[i] = 0;
-      out.newly_readmitted[i] = true;
-    }
-
-    out.reason[i] = ImuVoteReason::kContributing;
-    survivor_rate[survivors] = unit.rate;
-    survivor_index[survivors] = i;
-    ++survivors;
+    staged[i].value = units[i].rate.eigen();
+    staged[i].present = units[i].present;
+    staged[i].in_range = units[i].rate.isFinite() && units[i].rate.norm() <= config_.max_rate_radps;
   }
 
-  // --- Stage 2: robust combination -----------------------------------------
-  out.contributing = survivors;
-  if (survivors == 0) {
-    out.status = ImuVoteStatus::kNoRate;
-    out.exclusion_mask = exclusionMask();
-    return false;
+  // The reference is wire-adjacent data like any other: it comes from the
+  // estimator's own published state, which a fault upstream can corrupt. It
+  // therefore passes the same plausibility gate the measurements do; failing it
+  // means no reference, which is the honest ambiguous outcome (imu_voting.hpp).
+  Eigen::Vector3d reference;
+  const bool reference_usable = reference_rate != nullptr && reference_rate->isFinite() &&
+                                reference_rate->norm() <= config_.max_rate_radps;
+  if (reference_usable) {
+    reference = reference_rate->eigen();
   }
 
-  if (survivors == 1) {
-    // No redundancy left, so no cross-check is possible — the reading has
-    // already passed the plausibility gates and that is all the evidence there
-    // is. Passing it through is right: a single unit is the vehicle's only
-    // knowledge of its rate, and refusing it would cost the Safe-mode rate
-    // damping on no evidence of a fault.
-    out.status = ImuVoteStatus::kSingle;
-    out.rate = survivor_rate[0];
-  } else if (survivors == 2) {
-    const Eigen::Vector3d difference = survivor_rate[0].eigen() - survivor_rate[1].eigen();
-    if (difference.norm() <= config_.disagreement_radps) {
-      // Agreeing pair: their mean. Averaging is safe *here* and nowhere else —
-      // both readings have passed the gates and each other, so there is no
-      // unbounded value left for the mean to be dragged by.
-      out.status = ImuVoteStatus::kPair;
-      out.rate = pm::Vec3<Body>(
-          Eigen::Vector3d(0.5 * (survivor_rate[0].eigen() + survivor_rate[1].eigen())));
-    } else if (referenceUsable(reference_rate)) {
-      // Detected, and identified by a third information source: the filter's own
-      // propagated rate. The unit the dynamics disbelieve loses — but only on a
-      // *decisive* comparison, and only after the same verdict has repeated.
-      const double residual0 = (survivor_rate[0].eigen() - reference_rate->eigen()).norm();
-      const double residual1 = (survivor_rate[1].eigen() - reference_rate->eigen()).norm();
-      const int winner = (residual0 <= residual1) ? 0 : 1;
-      const int loser = 1 - winner;
-      const double winner_residual = (winner == 0) ? residual0 : residual1;
-      const double loser_residual = (winner == 0) ? residual1 : residual0;
+  UnitVoteResult core_out;
+  const bool ok = core_.vote(staged, count, reference_usable ? &reference : nullptr, core_out);
 
-      // **Margin, not just ordering.** Comparing the two residuals alone makes
-      // the verdict a coin flip whenever they are close — and they are close in
-      // exactly the case that matters, a slow common-mode drift where both units
-      // are wrong by similar amounts. Requiring the loser to be *outside* the
-      // disagreement gate while the winner is *inside* it means the reference
-      // agrees with one reading and disagrees with the other, which is what
-      // "identified" should mean. It also disposes of the exact tie for free:
-      // equal residuals can never satisfy both halves.
-      const bool decisive = loser_residual > config_.disagreement_radps &&
-                            winner_residual <= config_.disagreement_radps;
-      if (!decisive) {
-        out.status = ImuVoteStatus::kAmbiguous;
-        out.contributing = 0;
-        identify_streak_[survivor_index[0]] = 0;
-        identify_streak_[survivor_index[1]] = 0;
-        out.exclusion_mask = exclusionMask();
-        return false;
-      }
-
-      // **Confirmation.** A latch is permanent until re-admission earns it back,
-      // so one sample must not buy one. The same unit has to lose on
-      // `identify_confirm_cycles` consecutive cycles; a verdict that flips
-      // between units resets both counts and never confirms, which is the
-      // correct outcome for a drift the reference cannot resolve.
-      //
-      // The winner is published *during* confirmation rather than withheld, and
-      // that is load-bearing rather than lenient: the reference is the estimator's
-      // own published rate, so withholding it would starve the next cycle of the
-      // reference this branch needs and the streak could never accumulate. The
-      // margin gate above has already established that the reference agrees with
-      // the published reading and disagrees with the withheld one.
-      identify_streak_[survivor_index[winner]] = 0;
-      ++identify_streak_[survivor_index[loser]];
-
-      out.status = ImuVoteStatus::kIdentified;
-      out.rate = survivor_rate[winner];
-      out.contributing = 1;
-      out.reason[survivor_index[loser]] = ImuVoteReason::kOutvoted;
-
-      if (identify_streak_[survivor_index[loser]] >= config_.identify_confirm_cycles &&
-          !excluded_[survivor_index[loser]]) {
-        // Confirmed. The loser is latched like any other failed unit, so the FDIR
-        // event, the validity flag and the re-admission policy are the same
-        // however the fault was found.
-        excluded_[survivor_index[loser]] = true;
-        exclusion_reason_[survivor_index[loser]] = ImuVoteReason::kOutvoted;
-        plausible_streak_[survivor_index[loser]] = 0;
-        out.newly_excluded[survivor_index[loser]] = true;
-        // A unit re-admitted earlier in *this* cycle and immediately outvoted
-        // never really came back; reporting both edges would be an incoherent
-        // pair for the ground to reconcile.
-        out.newly_readmitted[survivor_index[loser]] = false;
-      }
-    } else {
-      // Detected but not identified, and nothing to break the tie. **No rate.**
-      // The pair is positive evidence that one of the two is lying, and there is
-      // no basis to choose; publishing either would propagate a possibly-railed
-      // rate into the attitude solution, whereas withholding it lands the
-      // estimator in the dropout behaviour it is designed for — attitude held,
-      // covariance growing, invalid past the coast horizon (§8.1). That is the
-      // §9.2 conservative response for an unattributable disagreement, and it is
-      // a reachable *flight* state on a two-IMU vehicle rather than an
-      // off-nominal one, so it is chosen rather than fallen into. Note the
-      // deliberate non-monotonicity against the single-unit case above: one unit
-      // carries no evidence of a fault, two disagreeing units carry evidence and
-      // no attribution.
-      out.status = ImuVoteStatus::kAmbiguous;
-      out.contributing = 0;
-      out.exclusion_mask = exclusionMask();
-      return false;
-    }
-  } else {
-    out.status = ImuVoteStatus::kMedian;
-    if (!medianRate(survivor_rate, survivors, out.rate)) {
-      out.status = ImuVoteStatus::kNoRate;
-      out.contributing = 0;
-      out.exclusion_mask = exclusionMask();
-      return false;
-    }
+  out.rate = pm::Vec3<Body>(core_out.value);
+  out.valid = core_out.valid;
+  out.status = core_out.status;
+  out.contributing = core_out.contributing;
+  out.exclusion_mask = core_out.exclusion_mask;
+  for (int i = 0; i < kMaxImuUnits; ++i) {
+    out.reason[i] = core_out.reason[i];
+    out.newly_excluded[i] = core_out.newly_excluded[i];
+    out.newly_readmitted[i] = core_out.newly_readmitted[i];
   }
-
-  // Output finiteness guard. It cannot trip on finite inputs — every survivor
-  // passed the finiteness gate — and it is here because an estimator handed a
-  // NaN rate does not fail loudly, it propagates a NaN quaternion behind a
-  // validity flag that still reads true.
-  if (!out.rate.isFinite()) {
-    out.rate = pm::Vec3<Body>{};
-    out.status = ImuVoteStatus::kNoRate;
-    out.contributing = 0;
-    out.exclusion_mask = exclusionMask();
-    return false;
-  }
-
-  // --- Stage 3: probation for units excluded by identification -------------
-  // A kOutvoted unit is re-admitted on **agreement**, not on plausibility: the
-  // criterion that put it out was disagreement with the combination, so that is
-  // the criterion it has to pass. Judged here rather than in stage 1 because the
-  // combination it is compared against does not exist until stage 2.
-  for (int p = 0; p < probation_count; ++p) {
-    const int i = probation[p];
-    if ((units[i].rate.eigen() - out.rate.eigen()).norm() <= config_.disagreement_radps) {
-      ++plausible_streak_[i];
-      if (plausible_streak_[i] >= config_.readmit_cycles) {
-        excluded_[i] = false;
-        exclusion_reason_[i] = ImuVoteReason::kContributing;
-        plausible_streak_[i] = 0;
-        identify_streak_[i] = 0;
-        out.newly_readmitted[i] = true;
-      }
-    } else {
-      plausible_streak_[i] = 0;
-    }
-  }
-
-  out.exclusion_mask = exclusionMask();
-  out.valid = true;
-  return true;
+  return ok;
 }
 
 }  // namespace polaris::gnc
