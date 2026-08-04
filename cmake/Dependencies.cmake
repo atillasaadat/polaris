@@ -70,12 +70,28 @@ unset(_erfa_sources)
 # ERFA we populate the source and compile it ourselves. msis2.1_test.F90 is
 # upstream's test program (its own main()) and is excluded.
 if(POLARIS_BUILD_NRLMSIS)
+  # A pre-fetched tarball (POLARIS_NRLMSIS_TARBALL env var) is tried before the
+  # NRL server: map.nrl.navy.mil has real outages and a configure-time download
+  # makes every build hostage to them. CI caches the tarball keyed on the SHA256
+  # below and points this variable at it, so the server only needs to answer on
+  # a cold cache. The hash is verified either way, and the file still never
+  # enters git (the license constraint above is about the tree, not a CI cache).
+  # A local path and a remote URL cannot share ExternalProject's URL list
+  # ("invalid in a list"), so this is a selection, not a fallback chain: the
+  # pre-fetched file wins outright when present, and a corrupt cache fails the
+  # SHA256 check loudly rather than falling through to the network.
+  set(_nrlmsis_url
+      https://map.nrl.navy.mil/map/pub/nrl/NRLMSIS/NRLMSIS2.1/nrlmsis2.1.tar.gz)
+  if(DEFINED ENV{POLARIS_NRLMSIS_TARBALL} AND EXISTS "$ENV{POLARIS_NRLMSIS_TARBALL}")
+    set(_nrlmsis_url "$ENV{POLARIS_NRLMSIS_TARBALL}")
+  endif()
   FetchContent_Declare(
     nrlmsis
-    URL https://map.nrl.navy.mil/map/pub/nrl/NRLMSIS/NRLMSIS2.1/nrlmsis2.1.tar.gz
+    URL "${_nrlmsis_url}"
     URL_HASH SHA256=41e47b29f795d36a5cc252b2858aa2a384c4a7323ace3d48d3ea2f2b37a1a6a8
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   )
+  unset(_nrlmsis_url)
   FetchContent_MakeAvailable(nrlmsis)
 
   # Module dependencies force a fixed compile order, so the sources are listed

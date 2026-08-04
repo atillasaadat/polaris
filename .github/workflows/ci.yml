@@ -43,6 +43,28 @@ jobs:
         run: uv sync                     # default groups: fprime + dev
       - name: Install gfortran (NRLMSIS 2.1 is Fortran; see THIRD_PARTY_NOTICES.md)
         run: sudo apt-get update && sudo apt-get install -y gfortran
+      # map.nrl.navy.mil has real outages; without this cache every build is
+      # hostage to it at CMake configure time. The tarball is cached keyed on
+      # its SHA256 (the same hash cmake/Dependencies.cmake verifies), fetched
+      # with retries only on a cold cache, and handed to CMake via
+      # POLARIS_NRLMSIS_TARBALL. Cached artifact only — never committed (see
+      # the license note in cmake/Dependencies.cmake).
+      - name: Cache NRLMSIS 2.1 tarball
+        id: nrlmsis-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/polaris/nrlmsis2.1.tar.gz
+          key: nrlmsis-41e47b29f795d36a5cc252b2858aa2a384c4a7323ace3d48d3ea2f2b37a1a6a8
+      - name: Download NRLMSIS 2.1 (cold cache only)
+        if: steps.nrlmsis-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.cache/polaris
+          curl --fail --location --retry 5 --retry-all-errors --retry-delay 30 \
+            --connect-timeout 60 \
+            -o ~/.cache/polaris/nrlmsis2.1.tar.gz \
+            https://map.nrl.navy.mil/map/pub/nrl/NRLMSIS/NRLMSIS2.1/nrlmsis2.1.tar.gz
+      - name: Point CMake at the cached tarball
+        run: echo "POLARIS_NRLMSIS_TARBALL=$HOME/.cache/polaris/nrlmsis2.1.tar.gz" >> "$GITHUB_ENV"
       - name: Build (F´ core + PolarisFsw deployment)
         run: |
           uv run fprime-util generate
