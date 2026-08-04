@@ -1276,6 +1276,62 @@ module flight {
       severity activity high \
       format "Fine-mode source changed {} -> {} ({} tracker(s) fused)"
 
+    @ The filter was **re-seeded from a star tracker** after persistently
+    @ rejecting it while running on the sun/magnetic pairs (design doc §8.2,
+    @ §9.2; REQ-FDIR-013). This is an arbitration, not a fault report, and the
+    @ event exists so the ground reads it as one — the alternative reading of the
+    @ same telemetry ("the tracker was bad") is exactly backwards.
+    @
+    @ Why it happens: the SS+MAG solution's error is dominated by the
+    @ magnetometer's systematic, which the filter's white-R model averages its
+    @ covariance down through, so the innovation covariance shrinks to a few
+    @ milliradians while the true error stays tens. Every arriving tracker update
+    @ then fails the chi-square gate however good the tracker is. The rejection is
+    @ therefore evidence about the *filter*, not about the unit, and the response
+    @ is to adopt the better source rather than to isolate it.
+    @
+    @ Guarded by a like-for-like comparison first: the tracker must agree with the
+    @ **coarse** solution, whose covariance converges to the systematic floor and
+    @ therefore does not lie, inside the chi-square-3 quantile at 0.999 (16.266).
+    @ @p mahalanobis is that statistic; @p separationRad is the same disagreement
+    @ as a plain angle, for a human reading the log.
+    @ Action: none autonomous, and none expected from the ground — the vehicle has
+    @ just moved to its best available source and FineSourceChanged follows on the
+    @ same cycle. Repeated occurrences on the same unit without an intervening
+    @ tracker outage mean something is pulling the filter back off the tracker;
+    @ capture StNis and the sun/magnetic residual monitors.
+    event FineReseededFromStarTracker(unit: U8, separationRad: F64, mahalanobis: F64) \
+      severity warning low \
+      format "Fine solution re-seeded from star tracker {}: {} rad from the coarse solution (d2={}), so the covariance was wrong, not the tracker"
+
+    @ A star tracker the filter persistently rejects was **not** adopted: it also
+    @ disagrees with the coarse solution, by more than that solution's own
+    @ covariance supports (chi-square-3 at 0.999 = 16.266). Where
+    @ FineReseededFromStarTracker says the filter was wrong, this says the *unit*
+    @ is — it is inconsistent with everything the vector data can support.
+    @
+    @ **Nothing is latched.** The unit is not excluded and stays a candidate every
+    @ cycle, because the criterion that would convict it here (agreement with the
+    @ coarse solution) is not the criterion that would re-admit it (agreement with
+    @ the fine one), and an exclusion whose parole test differs from its
+    @ conviction test is permanent by construction. So the vehicle keeps looking:
+    @ a later cycle with a better reference — a coarse fix on cleaner sun/field
+    @ geometry, or the other tracker seeding the filter — can still adopt it.
+    @
+    @ Emitted at a bounded cadence (MonitorAlertCycles) while the condition lasts,
+    @ and only while the coarse fix is fresh: a coasted covariance grows as a
+    @ stated *lower* bound on the truth, so refusing on one would be an accusation
+    @ built on a number known to be optimistic.
+    @ Action: investigate the unit — a mis-identified star field, a mounting that
+    @ has moved, or a wrong StBoresightsBody entry. The vehicle is meanwhile flying
+    @ its sun/magnetic solution, which is REQ-ADET-006 accuracy and safe, so this
+    @ is a pass-timescale action and not an immediate one. A vehicle showing this
+    @ on *every* tracker points at the coarse chain or the vehicle's own tuning
+    @ rather than at the trackers.
+    event FineTrackerAdoptionRefused(unit: U8, separationRad: F64, mahalanobis: F64) \
+      severity warning high \
+      format "Star tracker {} not adopted: {} rad from the coarse solution (d2={}) is more than that solution supports"
+
     @ Fine mode given up; the published solution falls back to the coarse chain,
     @ which has been running underneath all along. The filter state is dropped —
     @ re-promotion goes through a fresh Davenport seed, never a resumed filter.

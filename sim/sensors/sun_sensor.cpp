@@ -169,6 +169,7 @@ void SunSensor::failDiode(int index, bool failed) {
 void SunSensor::clearFaults() {
   std::fill(diode_failed_.begin(), diode_failed_.end(), false);
   fault_dropout_ = false;
+  fault_rotvec_.setZero();
 }
 
 SunSensorMeasurement SunSensor::sample(const time::Tai& epoch, const SunSensorInput& input) {
@@ -312,8 +313,17 @@ SunSensorMeasurement SunSensor::sample(const time::Tai& epoch, const SunSensorIn
       seed[smallest] = 1.0;
       const Eigen::Vector3d e1 = reported.cross(seed).normalized();
       const Eigen::Vector3d e2 = reported.cross(e1).normalized();
-      m.sun_dir_body =
-          math::Vec3<math::frames::Body>((reported + sigma * (g1 * e1 + g2 * e2)).normalized());
+      Eigen::Vector3d measured = (reported + sigma * (g1 * e1 + g2 * e2)).normalized();
+
+      // Injected calibration shift (§9), last: it is a fault in the unit's own
+      // processing, downstream of every physical term, and it deliberately leaves
+      // `sun_present`, `valid` and the reported σ alone — a unit that is
+      // confidently wrong is exactly the case no per-unit gate can see.
+      const double fault_angle = fault_rotvec_.norm();
+      if (fault_angle > 0.0) {
+        measured = Eigen::AngleAxisd(fault_angle, fault_rotvec_ / fault_angle) * measured;
+      }
+      m.sun_dir_body = math::Vec3<math::frames::Body>(measured);
       any_illuminated = true;
     }
 

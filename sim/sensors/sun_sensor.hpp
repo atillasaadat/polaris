@@ -368,6 +368,25 @@ class SunSensor {
   /// Force every reading invalid (loss of the sensor) until cleared.
   void setDropout(bool dropped) { fault_dropout_ = dropped; }
 
+  /// Rotate the **reported** sun direction by the rotation vector @p rotvec_rad
+  /// (axis × angle, body axes) until cleared — a unit whose internal calibration
+  /// has shifted.
+  ///
+  /// This is the *confidently wrong* fault, and it is the one a redundant suite
+  /// exists to catch: every per-unit gate still passes (the unit reports valid,
+  /// the Sun present, and its datasheet σ), so nothing but a comparison against
+  /// another unit can see it. A dropout, by contrast, removes the unit and is
+  /// detected by its own validity flag.
+  ///
+  /// Applies to the **vector-output** path only (`SunSensorOutput::kSunVector`),
+  /// which is what a digital part like the GomSpace FSS presents and what the FSW
+  /// consumes today. An analogue part reports counts and has no reported
+  /// direction to rotate; the equivalent fault there is @ref failDiode, which is
+  /// what physically degrades its reconstruction.
+  void injectDirectionBias(const math::Vec3<math::frames::Body>& rotvec_rad) {
+    fault_rotvec_ = rotvec_rad.eigen();
+  }
+
   void clearFaults();
 
  private:
@@ -390,6 +409,7 @@ class SunSensor {
   double albedo_cross_dispersion_ = 0.0;
   std::vector<bool> diode_failed_;
   bool fault_dropout_ = false;
+  Eigen::Vector3d fault_rotvec_ = Eigen::Vector3d::Zero();
 
   // Sample-period gating: the last genuinely new reading, and when it was taken.
   SunSensorMeasurement last_measurement_{};

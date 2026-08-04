@@ -26,6 +26,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <Eigen/Cholesky>
 #include <limits>
 
 #include "flight/PolarisFsw/AttitudeEstimator/AttitudeEstimator.hpp"
@@ -43,6 +44,14 @@ constexpr I64 kNsPerSecond = 1000000000LL;
 
 //! Not a value, for telemetry channels with nothing to report this cycle.
 const double kNoValueSt = std::numeric_limits<double>::quiet_NaN();
+
+//! Containment the coarse-agreement test admits a star tracker at: the χ²
+//! quantile for **3** degrees of freedom at 0.999. Three because an attitude
+//! error is three-axis; 0.999 because this decides whether to adopt a better
+//! source, so the cost of admitting one that did not belong is one re-seed while
+//! the cost of refusing one that did is the vehicle's finest rung — the errors
+//! are not symmetric and the gate is set on the permissive side deliberately.
+constexpr double kCoarseAgreementGate = 16.266;
 
 //! True if @p timeTagNs is within @p maxAgeS of @p nowTaiNs (§9.1). Duplicated
 //! from the other two translation units deliberately: it is four lines, and a
@@ -336,7 +345,16 @@ double AttitudeEstimator ::fuseStarTrackers(const StarTrackerSample* samples, in
       if (gate_rejected) {
         ++this->st_nis_streak_[unit];
         this->st_accepted_streak_[unit] = 0;
-        if (this->st_nis_streak_[unit] >= this->nis_streak_limit_ && !this->st_excluded_[unit]) {
+        // **And the streak only *convicts* while the solution is tracker-sourced**
+        // (Push 53). Rejection against a SS+MAG solution is not evidence about the
+        // tracker: that solution's error is the magnetometer's systematic, which
+        // the white-`R` model has averaged the covariance down through, so the gate
+        // rejects any tracker however good — and the exclusion is then permanent,
+        // because @ref readmitStarTrackers judges against the same solution. The
+        // streak still runs; what it *means* off the tracker rung is decided by
+        // @ref arbitrateRejectedTrackers against the coarse covariance instead.
+        if (this->fine_source_ == FineSource::STAR_TRACKER &&
+            this->st_nis_streak_[unit] >= this->nis_streak_limit_ && !this->st_excluded_[unit]) {
           this->st_excluded_[unit] = true;
           this->log_WARNING_HI_StUnitExcluded(static_cast<U8>(unit), this->st_nis_streak_[unit]);
         }
@@ -352,6 +370,108 @@ double AttitudeEstimator ::fuseStarTrackers(const StarTrackerSample* samples, in
     }
   }
   return worst_nis;
+}
+
+bool AttitudeEstimator ::arbitrateRejectedTrackers(const polaris::time::Tai& epoch,
+                                                   const polaris::gnc::CoarseAttitudeOutput& coarse,
+                                                   const StarTrackerSample* samples, int count) {
+  if (samples == nullptr || !coarse.attitude_valid) {
+    return false;  // no honest reference this cycle, so no verdict either way
+  }
+  // The coarse chain's covariance is the one attitude uncertainty on the vehicle
+  // that is not optimistic: it is blended with a **systematic floor** and
+  // converges to it rather than to zero (§8.1), which is exactly the property the
+  // filter's own covariance lacks and the reason this comparison exists.
+  //
+  // Compared in the **Mahalanobis** metric rather than against an isotropic
+  // multiple of the trace. The coarse covariance is not isotropic — the roll
+  // about the sun line is the loose axis and grows as `1/sin²θ` with the sun/field
+  // separation — so a trace-derived radius is simultaneously too tight across it
+  // and too loose along it, i.e. wrong in both directions at once. It also makes
+  // the gate self-correcting through a coast: the covariance grows, so the gate
+  // widens with the honest uncertainty instead of holding a fixed radius.
+  //
+  // The factorisation is also the positive-definiteness check the metric needs
+  // (an indefinite `P` makes `d²` meaningless, not merely large), so the two are
+  // one call.
+  const Eigen::LDLT<Eigen::Matrix3d> ldlt(coarse.covariance);
+  if (ldlt.info() != Eigen::Success || !ldlt.isPositive()) {
+    return false;
+  }
+
+  // A coarse fix this cycle, or one fresh enough to still be a measurement rather
+  // than a propagation. **Only the refusal needs it.** Coast growth is a stated
+  // *lower* bound on the true uncertainty, so a coasted covariance can still be
+  // narrower than the truth — which would make a refusal (and the alert that goes
+  // with it) an accusation built on a number known to be optimistic. Adoption is
+  // allowed on any valid coarse solution because it errs the permissive way: the
+  // worst case is moving to a source the ladder already calls better.
+  const bool coarse_is_fresh = coarse.triad_applied || coarse.age_s <= this->max_meas_age_s_;
+
+  for (int i = 0; i < count; ++i) {
+    const FwIndexType unit = samples[i].index;
+    if (unit < 0 || unit >= NUM_STARTRACKERIN_INPUT_PORTS ||
+        this->st_nis_streak_[unit] < this->nis_streak_limit_) {
+      continue;
+    }
+    // `canonical()` guarantees q0 >= 0, so the atan2 form needs no `fabs`.
+    const pm::Quaternion error =
+        (samples[i].attitude.core() * coarse.attitude.core().inverse()).canonical();
+    const double separation = 2.0 * std::atan2(error.vec().norm(), error.scalar());
+    // Small-angle attitude error the coarse covariance is expressed on:
+    // `δθ = 2·δq_v` to first order, which is the same linearisation the filter's
+    // own error state uses.
+    const Eigen::Vector3d dtheta = 2.0 * error.vec();
+    const double mahalanobis = dtheta.dot(ldlt.solve(dtheta));
+    if (!std::isfinite(mahalanobis)) {
+      continue;
+    }
+
+    if (mahalanobis > kCoarseAgreementGate) {
+      // Outside what the vector data supports. **Nothing is latched.** An
+      // exclusion here would be convicted on agreement with the *coarse* solution
+      // and paroled on agreement with the *fine* one (readmitStarTrackers), and a
+      // criterion mismatch like that is a life sentence — the catalog's first
+      // FDIR rule, and the one this branch used to break. The unit simply is not
+      // adopted this cycle and stays a candidate, so a later cycle with a better
+      // reference (a coarse fix on cleaner geometry, or the other tracker seeding
+      // the filter) can still take it.
+      //
+      // Reported at a bounded cadence rather than once, since a permanent
+      // condition reported once is a warning and then silence for the flight.
+      if (coarse_is_fresh && this->monitor_alert_cycles_ > 0 &&
+          ((this->st_nis_streak_[unit] - this->nis_streak_limit_) % this->monitor_alert_cycles_) ==
+              0) {
+        this->log_WARNING_HI_FineTrackerAdoptionRefused(static_cast<U8>(unit), separation,
+                                                        mahalanobis);
+      }
+      continue;
+    }
+
+    // Inside the gate: the tracker agrees with everything the vector data
+    // supports, so the filter is the outlier. Adopt the better source — the same
+    // seed path a cold promotion takes, bias zeroed at the turn-on sigma for the
+    // same reason (nothing better is known, and inventing a bias is worse).
+    const Eigen::Matrix3d seed_bias_cov =
+        (this->bias_sigma_init_ * this->bias_sigma_init_) * Eigen::Matrix3d::Identity();
+    if (!this->mekf_.initialize(epoch, samples[i].attitude, samples[i].noise_cov,
+                                pm::Vec3<Body>(Eigen::Vector3d::Zero()), seed_bias_cov)) {
+      continue;  // the filter refused the seed; leave the streak standing
+    }
+    // The NIS streaks go with it: nothing has been rejected by the *new* filter,
+    // and leaving them set would let the very next rejection re-fire this at once.
+    // `refusal_streak_` deliberately does **not** — it counts the filter refusing
+    // calls it cannot use (a propagate failure, a malformed measurement), which a
+    // re-seed neither fixes nor is evidence against, and clearing it would hide a
+    // numerics fault behind an unrelated mode transition.
+    this->st_nis_streak_[unit] = 0;
+    this->st_accepted_streak_[unit] = 0;
+    this->nis_streak_ = 0;
+    this->log_WARNING_LO_FineReseededFromStarTracker(static_cast<U8>(unit), separation,
+                                                     mahalanobis);
+    return true;
+  }
+  return false;
 }
 
 // ----------------------------------------------------------------------

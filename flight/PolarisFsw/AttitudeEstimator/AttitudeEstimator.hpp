@@ -393,6 +393,49 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   double fuseStarTrackers(const StarTrackerSample* samples, int count, bool& accepted,
                           bool& refused, bool& nisRejected);
 
+  //! Decide what a **persistently gate-rejected** star tracker means while the
+  //! fine solution is *not* tracker-sourced, and act on it (§8.2, §9.2;
+  //! REQ-FDIR-013).
+  //!
+  //! The rejection carries no information about the tracker on its own. A
+  //! SS+MAG solution's error is dominated by the magnetometer's systematic,
+  //! which the filter's white-`R` model averages its covariance down through, so
+  //! `S = HPHᵀ + R` shrinks to milliradians while the true error stays tens —
+  //! and *every* arriving tracker update fails the χ² gate however good the unit
+  //! is. Latching the unit out there blames the better instrument for the
+  //! filter's overconfidence, and permanently: the re-admission comparison runs
+  //! against the same solution.
+  //!
+  //! So the verdict is taken against the **coarse** solution instead, whose
+  //! covariance converges to the systematic floor rather than to zero (§8.1) and
+  //! therefore does not lie, in the **Mahalanobis** metric (the coarse covariance
+  //! is strongly anisotropic — roll about the sun line grows as `1/sin²θ` — so an
+  //! isotropic radius is too tight across it and too loose along it at once):
+  //!  - `d² ≤ χ²₃(0.999)` — the tracker is consistent with everything the vector
+  //!    data supports, so the filter is the outlier and is **re-seeded from the
+  //!    tracker** (FineReseededFromStarTracker);
+  //!  - above it — the unit is not adopted this cycle and the refusal is reported
+  //!    at a bounded cadence (FineTrackerAdoptionRefused). **Nothing is latched**:
+  //!    a conviction on coarse agreement whose parole test is *fine* agreement
+  //!    (@ref readmitStarTrackers) is permanent by construction, so the unit stays
+  //!    a candidate and a later cycle with a better reference can still take it.
+  //!
+  //! No coarse solution to judge against — invalid, or a covariance that is not
+  //! positive-definite — means no verdict: neither action fires. The refusal
+  //! additionally needs a **fresh** coarse fix, because coast growth is a stated
+  //! lower bound on the true uncertainty and an accusation must not rest on a
+  //! number known to be optimistic; adoption does not, since it errs the
+  //! permissive way.
+  //!
+  //! @param epoch this cycle's epoch, for the re-seed.
+  //! @param coarse this cycle's coarse product — the honest reference.
+  //! @param samples this cycle's tracker samples, @p count of them.
+  //! @return true when the filter was re-seeded, which makes the cycle a
+  //!         tracker-sourced one and suppresses the vector updates below.
+  bool arbitrateRejectedTrackers(const polaris::time::Tai& epoch,
+                                 const polaris::gnc::CoarseAttitudeOutput& coarse,
+                                 const StarTrackerSample* samples, int count);
+
   //! Run the §8.2 residual monitors on the sources the fine solution is **not**
   //! using this cycle, and write their telemetry.
   //!
@@ -481,7 +524,10 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! **The ladder is applied here.** Tracker updates go in first; if any is
   //! accepted the sun and magnetic pairs are skipped as measurements and handed to
   //! @ref updateResidualMonitors instead.
+  //! @param coarse this cycle's coarse product, which @ref arbitrateRejectedTrackers
+  //!        needs as the one attitude reference whose covariance is honest.
   double stepFineMode(const polaris::time::Tai& epoch, const polaris::gnc::CoarseAttitudeInput& in,
+                      const polaris::gnc::CoarseAttitudeOutput& coarse,
                       const StarTrackerSample* stars, int starCount);
 
   //! Try to seed the MEKF: from a star tracker's own solution and covariance when
