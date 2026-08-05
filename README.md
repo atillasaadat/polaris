@@ -18,7 +18,7 @@ to size, validate, and verify the design.
 | **Flight software (FSW)** | `flight/` | F´ (F Prime) / C++ | The deliverable that "flies": sensing → estimation → guidance → control → actuation → FDIR. **No heap, no exceptions** after init. |
 | **Truth / environment sim** | `sim/` | C++ | High-fidelity 6DOF plant (RK89, gravity/drag/SRP/eclipse/IGRF/3-body), sensor & actuator truth models, fault injection. |
 | **Shared library** | `lib/` | C++ | Math, frames, time, canonical state, constants, environment, ephemeris, onboard tables, GNC algorithms, the SITL wire format — used by both FSW and sim. |
-| **Analysis** | `analysis/` | Python (via `bindings/` pybind11) | *Planned (Phase 11).* Momentum/sizing, detumble MC, contacts, link budget, post-processing — exercising the *same* C++ that flies. |
+| **Analysis** | `analysis/` | Python (via `bindings/` pybind11) | *Started (Push 55):* `control/` — stability margins, controllability and observability of the as-flown loop, read from the same committed config the FSW is tuned from. Momentum/sizing, detumble MC, contacts, link budget and post-processing are still planned (Phase 11) and wait on the bindings that let them exercise the *same* C++ that flies. |
 
 Plus `mc/` (Monte Carlo campaign configs — planned, Phase 11), `config/`
 (spacecraft/scenario/hardware config + the committed Claude Code dev-environment
@@ -120,8 +120,12 @@ uv run cmake --build build-fprime-automatic-native-ut \
 # what CI runs, and it drives every suite above through ctest.
 ./build-fprime-automatic-native-ut/bin/Linux/flight_PolarisFsw_AttitudeEstimator_ut_exe
 
-uv run pytest              # 126 Python: config compiler, PrmDb emitter, GMAT harness,
-                           # space weather, orbit (2 skip without a GMAT install)
+uv run --group analysis pytest   # 167 Python: config compiler, PrmDb emitter, GMAT
+                                 # harness, space weather, orbit, and the linear
+                                 # control analysis in tests/analysis/ (2 skip
+                                 # without a GMAT install). The group carries
+                                 # numpy/scipy/matplotlib; without it the
+                                 # tests/analysis/ cases fail to import.
 ```
 
 ### 6. Docs (optional)

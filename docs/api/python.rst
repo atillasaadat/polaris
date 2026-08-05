@@ -40,8 +40,70 @@ turns each test's ``RecordProperty("verifies", "REQ-…")`` into a ``verified by
 back-link in the RVTM. With no input files it writes an empty-but-valid file so
 the docs build still resolves.
 
+Analysis: shared reporting convention
+-------------------------------------
+
+``analysis/common/`` carries the pattern every analysis tool follows (design doc
+§13; ``analysis/CLAUDE.md``). An analysis with a pass/fail criterion produces
+**both** a structured result and plots that state their own verdict:
+
+- ``report`` — ``Criterion`` (requirement ID, threshold, measured value, units,
+  sense) computing its own margin in absolute and percentage terms, and
+  ``AnalysisReport`` gathering them with the configuration provenance and the
+  modelling assumptions in force. ``format_text()``/``write_text()`` render it;
+  tests assert on the structured object, never on parsed text.
+- ``plotting`` — threshold lines, measured-value annotations carrying the number
+  *and* the word PASS or FAIL, and verdict titles. Colour is never load-bearing
+  on its own.
+
+Linear control analysis
+-----------------------
+
+``analysis/control/`` (design doc §8.5, §13) is the first live package under
+``analysis/``. It measures the **as-flown** attitude loop from the same
+committed ``config/spacecraft/*.yaml`` the flight software is tuned from, and
+verifies REQ-ACTL-006/007/008. Built on **numpy and scipy only** — no
+control-systems library; the margin extraction, the disk margin and the Gramians
+are ours, and are validated against closed-form cases before being applied to
+the vehicle.
+
+- ``vehicle`` — resolves inertia, wheel and rod axes, PID gains, the control
+  period, the wheel momentum capacity (from the hardware catalog the
+  ``model_id`` resolves to) and the estimator's noise budget out of the config,
+  through the config compiler's own loader. Nothing is transcribed.
+- ``plant`` — the linearised attitude model: ``Loop`` (a pair of polynomials
+  plus a sample period), the per-axis :math:`1/(J_{ii}s^2)` plant, the coupled
+  six-state form, the shipped PID, the **sampled-data** loop at the GNC period
+  (``scipy.signal.cont2discrete`` ZOH plus the flight code's forward-Euler
+  integrator, realised in state space and converted once), and ``siso_coupling``
+  — the validity check that says when a per-axis model stops describing the
+  vehicle.
+- ``margins`` — gain, phase, sensitivity-peak and disk margins extracted from
+  our own frequency response. Reports the gain margin in **both directions**,
+  because the loop is type 3 and therefore conditionally stable.
+- ``report`` — the per-axis ``MarginReport`` and the shared
+  ``AnalysisReport`` covering all three requirements.
+- ``controllability`` — Kalman rank and finite-horizon Gramians for the wheel
+  pyramid, its 3-of-4 failure subsets, and the magnetorquers (instantaneously
+  rank-deficient; full rank only orbit-averaged).
+- ``observability`` — the (attitude error, gyro bias) model under two vector
+  measurements, on the same information-matrix metric the flight seed gate uses.
+- ``field`` — a tilted dipole parsed from the committed IAGA IGRF-14 table, for
+  the orbit-averaged magnetic case only.
+- ``plots`` — annotated Bode/Nyquist/margin/controllability/geometry figures and
+  the rendered text report, into a caller-supplied directory (default under
+  ``build-artifacts/``, never committed).
+
+Run it with the ``analysis`` dependency group::
+
+   uv run --group analysis pytest tests/analysis
+
 .. note::
 
-   ``analysis/`` and ``bindings/`` (pybind11) have no modules yet; numpydoc /
-   autodoc directives land here with the first analysis code, at which point
-   this page documents the Python-facing API of the same C++ that flies.
+   Like ``tools/``, these modules are documented here in prose rather than by
+   autodoc: pulling SciPy and matplotlib into the docs-only toolchain would
+   double the docs CI job for a rendering convenience. The
+   numpydoc docstrings are still the authority and are written to that standard.
+   ``bindings/`` (pybind11) has no modules yet; autodoc directives land here with
+   it, at which point this page documents the Python-facing API of the same C++
+   that flies.

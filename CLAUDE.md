@@ -158,7 +158,7 @@ uv run fprime-util build                      # F´ core + PolarisFsw deployment
 uv run cmake --build build-fprime-automatic-native-ut \
     --target polaris_unit_tests polaris_integration_tests polaris_golden_tests -j4
 ./build-fprime-automatic-native-ut/bin/Linux/polaris_unit_tests          # and the other two
-uv run pytest                                 # Python tooling suite
+uv run --group analysis pytest                # Python tooling + analysis suite
 uv run --only-group docs bash tools/dev/build_docs.sh    # docs gate (warnings are errors)
 uv run --only-group dev pre-commit run --all-files       # lint (git-add first)
 ```

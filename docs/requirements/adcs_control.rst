@@ -195,3 +195,151 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    **Owed:** resolving a multi-rod ambiguity needs a commanded isolation sweep —
    drive the rods one at a time and watch the residual — which is a recovery
    action for the Phase-7 mode manager (§10.1), not a monitor.
+
+.. req:: Pointing-loop stability margins
+   :id: REQ-ACTL-006
+   :status: reviewed
+   :level: L2
+   :tags: adcs, control, margin
+   :method: Analysis
+   :derived_from: REQ-ACTL-002
+   :allocation: lib/gnc, analysis/control
+   :value_required: GM >= 6 dB, PM >= 30 deg
+   :margin_required: 20 %
+   :refs: sidi1997, astrom2008, seiler2020, franklin1998, ogata2010
+
+   Each body axis of the reaction-wheel pointing loop, evaluated at the
+   committed gains and about a linearised rigid-body attitude model, **shall**
+   hold at least **6 dB of gain margin and 30 degrees of phase margin**, with a
+   sensitivity peak :math:`\|S\|_\infty` no greater than 2.
+
+   The analysis **shall** be performed on the **sampled-data** loop at the
+   configured control period, including the zero-order hold, rather than on a
+   continuous idealisation of it — a 10 Hz loop analysed in continuous time
+   reports a phase margin the vehicle does not have.
+
+   Because the loop is **type 3** (an integrator over a double integrator) it is
+   *conditionally stable*: the phase crosses −180° below the gain crossover, at
+   :math:`|L|>1`. The gain margin **shall** therefore be stated as the smaller
+   of the loop-gain increase and the loop-gain decrease the loop tolerates. A
+   single signed margin, which is what a naive frequency-domain margin call
+   returns, reads −15 dB on this healthy design and would fail a requirement
+   written for the ordinary case.
+
+   The margins **shall** be computed from the same committed configuration the
+   flight software is tuned from, never from a transcription of it, and the
+   modelling assumptions the linear regime rests on — small angle, unsaturated
+   torque, integrator unfrozen — **shall** be stated with the result.
+
+   *Measured on the reference vehicle*, sampled loop at 0.1 s: X and Y hold
+   **59.5°** of phase margin and **15.0 dB** of downward gain margin (37.8 dB
+   upward) at a 0.272 rad/s crossover; Z holds **63.9°** and **16.6 dB**
+   (36.2 dB upward) at 0.321 rad/s. Sensitivity peak is 1.02 on every axis and
+   the symmetric disk margin is 0.94–1.04, i.e. 8.8–10.0 dB of *simultaneous*
+   gain and 50–55° of simultaneous phase variation. The binding threshold is
+   therefore cleared with a factor of 2.5 in gain margin and a factor of 2.0 in
+   phase margin, and the design also clears the preferred 45° target. Adding a
+   pessimistic full cycle of computation delay — which the flight topology does
+   not have, since the estimator and controller run in the same 10 Hz cycle —
+   costs 1.6–1.8° of phase and still passes.
+
+   The margin extraction is Polaris's own — there is no control-systems library
+   behind it — so it **shall** be validated against cases with closed-form
+   answers before being applied to the vehicle. It is: the third-order loop
+   :math:`1/[s(s+1)(s+2)]` whose gain margin is exactly 6 (15.563 dB) at
+   :math:`\omega=\sqrt2` [ogata2010], a PD-controlled double integrator with a
+   closed-form crossover and phase margin, the disk margin's exact value on a
+   constant-gain loop, and the vehicle's own continuous loop against its
+   hand-derived polynomial.
+
+   Verified by ``tests/analysis/test_control_margins.py``
+   (``test_committed_gains_meet_the_margin_requirement``, with the delay case
+   and the conditional-stability characterisation alongside) and, through the
+   shared report shape, by ``tests/analysis/test_analysis_report.py``
+   (``test_control_analysis_report_passes_on_the_committed_configuration``).
+
+   **Owed:** these are margins of the *linear*, **per-axis** loop. A saturated
+   loop has no gain margin, and the describing-function or Monte Carlo
+   characterisation of large-slew behaviour is Phase 11 work. The per-axis form
+   assumes small stored wheel momentum, and the reference vehicle's own
+   configuration exceeds that bound at wheel capacity — see the MIMO roadmap in
+   design doc §8.5; the analysis emits this as a report warning rather than
+   leaving it implicit.
+
+.. req:: Actuator-suite controllability
+   :id: REQ-ACTL-007
+   :status: reviewed
+   :level: L2
+   :tags: adcs, control, actuators, redundancy
+   :method: Analysis
+   :derived_from: REQ-ACTL-002, REQ-ACTL-003
+   :allocation: config/spacecraft, analysis/control
+   :refs: wie2008, avanzini2012, astrom2008
+
+   The reaction-wheel array **shall** render the linearised attitude model
+   controllable **with any one wheel failed**, and the array geometry **shall**
+   satisfy the flight allocator's own three-axis-span gate
+   (``AllocMinConditioning``) in every such subset — a subset the analysis calls
+   controllable but the vehicle would refuse to allocate on is not a redundancy.
+
+   The magnetorquer-only case **shall** be documented as **instantaneously
+   rank-deficient**: the torque :math:`\vec m\times\vec B` has no component
+   along :math:`\hat B`, so no dipole command can rotate the vehicle about the
+   local field line. Controllability from the rods alone **shall** be
+   established only in the time-averaged sense, over the orbit across which the
+   field direction turns.
+
+   *Measured on the reference vehicle.* The four-wheel body-diagonal pyramid is
+   controllable (Kalman rank 6 of 6) with an **isotropic** torque map:
+   :math:`\lambda_{\min}/\lambda_{\max}` of :math:`AA^\top` is 1.000. All four
+   3-of-4 subsets are controllable at a conditioning of **0.250**, five times
+   the committed ``AllocMinConditioning`` of 0.05. The magnetorquers in a frozen
+   field give rank **4 of 6** with a singular Gramian; averaged over one orbit
+   of the tilted-dipole field they reach rank **6 of 6**, at a Gramian condition
+   number of ~41 against ~28 for the wheels — full rank, and two orders slower
+   in its weakest direction, which is why B-dot is an asymptotic law.
+
+   Verified by ``tests/analysis/test_control_controllability.py`` and, through
+   the shared report shape, by ``tests/analysis/test_analysis_report.py``.
+
+.. req:: Attitude-estimator observability
+   :id: REQ-ACTL-008
+   :status: reviewed
+   :level: L2
+   :tags: adcs, determination, observability
+   :method: Analysis
+   :derived_from: REQ-ADET-002
+   :allocation: lib/gnc, analysis/control
+   :refs: lefferts1982, markley2014
+
+   The attitude-error and gyro-bias states **shall** be observable from the
+   vehicle's measurement configuration whenever two **non-parallel** reference
+   directions are available, and the geometry metric the analysis uses **shall**
+   be the same :math:`\lambda_{\min}/\lambda_{\max}` of the information matrix
+   that the flight Davenport seed gate (``SeedMinObservability``) and the coarse
+   chain's ``MinSinAngle`` are written on — an analysis that measured a
+   different quantity from the flight gate could not be used to justify it.
+
+   The degraded geometries **shall** be characterised rather than assumed away:
+   near-parallel reference directions, where roll about the shared direction
+   becomes unobservable, and **eclipse**, where the sun vector is absent
+   altogether.
+
+   *Measured on the reference vehicle* (sun total 1σ 15.7 mrad with the albedo
+   correction and DE440 tables in force, uncalibrated magnetic total 33.7 mrad).
+   With the two directions 90° apart the six-state model is observable, rank 6
+   of 6, at an information ratio of **0.177**. At the committed ``MinSinAngle``
+   gate (:math:`\sin\theta = 0.17`, i.e. 9.8°) the ratio has fallen to
+   **4.2e-3**, a factor of 42, and the analysis reproduces the config's own
+   closed form for it to 1e-9 — the two are the same function, not two
+   implementations of one. In eclipse the model is rank **4 of 6**: rotation
+   about the field direction and the bias component along it are unobservable by
+   construction, which is a property of the measurement set and not a fault to
+   be detected.
+
+   Verified by ``tests/analysis/test_control_observability.py`` and, through the
+   shared report shape, by ``tests/analysis/test_analysis_report.py``.
+
+   **Owed:** this is the deterministic (rank/Gramian) statement. How fast
+   information is *lost* between updates is set by the gyro random walk and
+   belongs to the estimator-consistency campaign (§13), not here.
