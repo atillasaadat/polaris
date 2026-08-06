@@ -18,10 +18,13 @@
 /// a real property worth pinning rather than a tautology.
 
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <Eigen/Core>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -80,9 +83,15 @@ Eigen::Vector3d moonAt(double jd) {
   return p.eigen();
 }
 
-/// Write a temporary fixture body for the parser tests.
+/// Write a temporary fixture body for the parser tests. mkstemps rather than
+/// tmpnam: the name is minted and the file created atomically, so no other
+/// process can claim the path in between (the race the linker warns about).
 std::string writeTemp(const std::string& contents) {
-  const std::string path = std::string(std::tmpnam(nullptr)) + ".cheb";
+  std::string path =
+      (std::filesystem::temp_directory_path() / "polaris_ephem_XXXXXX.cheb").string();
+  const int fd = mkstemps(path.data(), 5);  // 5 = strlen(".cheb")
+  EXPECT_GE(fd, 0) << "mkstemps failed for " << path;
+  ::close(fd);
   std::ofstream out(path);
   out << contents;
   return path;
