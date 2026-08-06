@@ -9,6 +9,12 @@ Subcommands
     interactive FreeFlyer windows — live with ``--follow`` while a sim runs,
     or as a replay of a finished run. ``--pace 10`` replays 10× faster than
     real time; ``--pace 0`` renders as fast as the display draws.
+``panel --stream <file> [--port N] [--host H]``
+    Same replay, but seekable: serves a browser transport control
+    (play/pause, seek slider, jump-to-start/timestamp, pace) on
+    ``http://127.0.0.1:8765`` and drives the FreeFlyer windows from it.
+    The page is a single self-contained document, so a Grafana dashboard
+    can embed it in an iframe panel. Runs until Ctrl-C.
 
 Run with ``PYTHONPATH=tools`` from the repository root (the pytest config
 does the same), or via ``uv run python -m freeflyer …``.
@@ -20,7 +26,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import locate, viz
+from . import locate, panel, viz
 
 
 def _cmd_status(_args: argparse.Namespace) -> int:
@@ -61,6 +67,38 @@ def _cmd_viz(args: argparse.Namespace) -> int:
     return 0 if frames else 1
 
 
+def _cmd_panel(args: argparse.Namespace) -> int:
+    install = locate.find_runnable_licensed()
+    if install is None:
+        print("no runnable licensed FreeFlyer found", file=sys.stderr)
+        return 1
+    stream = Path(args.stream)
+    states = list(viz.replay(stream))
+    if not states:
+        print(f"{stream}: no states to replay", file=sys.stderr)
+        return 1
+    playback = panel.Playback([s["t_s"] for s in states], pace=args.pace)
+    server = panel.serve(playback, host=args.host, port=args.port)
+    print(
+        f"control panel: http://{args.host}:{server.server_address[1]}/  (Ctrl-C to quit)"
+    )
+    try:
+        viz.run_viz_panel(
+            install,
+            states,
+            playback,
+            windowed=not args.headless,
+            max_fps=args.fps,
+            view=args.view,
+        )
+    except KeyboardInterrupt:
+        print("\ninterrupted — engine killed", file=sys.stderr)
+        return 130
+    finally:
+        server.shutdown()
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="python -m freeflyer", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -96,8 +134,38 @@ def main() -> int:
         help="which window(s) to render — one window halves the frame cost",
     )
 
+    p_panel = sub.add_parser(
+        "panel", help="seekable replay driven by a browser control panel"
+    )
+    p_panel.add_argument(
+        "--stream", required=True, help="JSONL file POLARIS_SIM_STREAM wrote"
+    )
+    p_panel.add_argument(
+        "--host", default="127.0.0.1", help="panel bind address (default localhost)"
+    )
+    p_panel.add_argument(
+        "--port", type=int, default=8765, help="panel port (default 8765; 0 = any free)"
+    )
+    p_panel.add_argument(
+        "--pace", type=float, default=1.0, help="initial playback rate (default 1)"
+    )
+    p_panel.add_argument(
+        "--headless", action="store_true", help="no windows (smoke testing)"
+    )
+    p_panel.add_argument(
+        "--fps", type=float, default=2.0, help="render-rate ceiling (default 2)"
+    )
+    p_panel.add_argument(
+        "--view",
+        choices=("orbit", "close", "both"),
+        default="both",
+        help="which window(s) to render — one window halves the frame cost",
+    )
+
     args = parser.parse_args()
-    return {"status": _cmd_status, "viz": _cmd_viz}[args.command](args)
+    return {"status": _cmd_status, "viz": _cmd_viz, "panel": _cmd_panel}[args.command](
+        args
+    )
 
 
 if __name__ == "__main__":

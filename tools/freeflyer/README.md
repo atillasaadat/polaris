@@ -14,12 +14,21 @@ implementation, used two ways:
    `POLARIS_SIM_STREAM=<path>` is set (`sim/io/closed_loop.cpp`); `viz.py`
    renders that stream in interactive FreeFlyer windows, live (`--follow`)
    or replayed. FreeFlyer never propagates here — it is purely the display,
-   so the window cannot disagree with the sim.
+   so the window cannot disagree with the sim. `panel.py` makes the replay
+   *seekable*: `python -m freeflyer panel` serves a browser transport control
+   (play/pause, seek slider, jump-to-start/timestamp, pace) on
+   `http://127.0.0.1:8765` and drives the windows from it — seeking is free
+   because every stream record is a complete truth state, so "seek" is just
+   choosing which record gets pushed next. The page is one self-contained
+   HTML document, built so a Grafana dashboard (§21) can embed it in an
+   iframe panel next to the telemetry charts; the FreeFlyer 3D windows
+   themselves stay native (WSLg).
 
 ```bash
 python -m freeflyer status                       # discovered installs + licenses
 python -m freeflyer viz --stream run.jsonl       # replay at real time
 python -m freeflyer viz --stream run.jsonl --follow   # watch a live run
+python -m freeflyer panel --stream run.jsonl     # seekable replay + browser panel
 uv run --frozen --group analysis pytest tests/freeflyer   # the V&V suite
 ```
 

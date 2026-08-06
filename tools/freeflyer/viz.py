@@ -203,6 +203,55 @@ def follow(
             time.sleep(poll_s)
 
 
+def _push_state(engine, state: dict) -> None:
+    """Write one stream record into the FreeFlyer spacecraft (units per module docstring)."""
+    from aisolutions.freeflyer.runtimeapi.RuntimeApiEngine import (  # noqa: PLC0415 — vendor import after path injection
+        FFTimeSpan,
+    )
+
+    ff_epoch_s = state["tai_ns"] / 1.0e9 - _FF_EPOCH_BASE_UNIX_TAI_S
+    whole = int(ff_epoch_s)
+    frac_ns = int(round((ff_epoch_s - whole) * 1.0e9))
+    engine.setExpressionTimeSpan(
+        "Polaris.Epoch",
+        FFTimeSpan.fromWholeSecondsAndNanoseconds(whole, frac_ns),
+    )
+    engine.setExpressionArray(
+        "Polaris.Position", [x / 1000.0 for x in state["r_eci_m"]]
+    )
+    engine.setExpressionArray(
+        "Polaris.Velocity", [v / 1000.0 for v in state["v_eci_m_s"]]
+    )
+    q0, q1, q2, q3 = state["q_body_eci"]  # JPL scalar-first
+    engine.setExpressionArray("Polaris.Quaternion", [q1, q2, q3, q0])  # FF scalar-last
+
+
+def _execute_frame(engine, frame_no: int, budget_s: float = 300.0) -> None:
+    """Run one window Update (the ``Frame`` stop) behind sliced waits.
+
+    The frame execution is where a wedged renderer shows up, so it runs
+    asynchronously: Ctrl-C lands within a couple of seconds and routes to
+    open_engine's kill path, while legitimate stalls get minutes of patience —
+    the first frame carries window creation, and a user *interacting* with a
+    window (rotating, zooming) parks Update for the duration of the drag,
+    since FreeFlyer has one render thread. A stall past the budget is a dead
+    engine, killed.
+    """
+    started = time.monotonic()
+    engine.executeUntilApiLabelAsync("Frame")
+    if not _synchronize_patiently(engine, budget_s):
+        raise RuntimeError(
+            f"FreeFlyer stopped responding while rendering frame {frame_no} "
+            f"(waited {budget_s:.0f} s); the engine was killed. "
+            "(The Linux build is officially headless — interactive "
+            "windows over WSLg are best-effort. Lower --fps or use "
+            "--view orbit, or replay when the run is done.)"
+        )
+    cost = time.monotonic() - started
+    if cost > 3.0:
+        print(f"[viz] frame {frame_no} took {cost:.1f} s", flush=True)
+
+
 def run_viz(
     install: FreeFlyerInstall,
     states: Iterator[dict],
@@ -237,10 +286,6 @@ def run_viz(
     min_interval = 1.0 / max_fps if max_fps > 0 else 0.0
     last_render = 0.0
     with open_engine(install, windowed=windowed) as engine:
-        from aisolutions.freeflyer.runtimeapi.RuntimeApiEngine import (  # noqa: PLC0415 — vendor import after path injection
-            FFTimeSpan,
-        )
-
         engine.loadMissionPlanFromFile(str(plan))
         engine.prepareMissionPlan()
         # Execute the declarations and park at the first Frame stop; only then
@@ -257,45 +302,47 @@ def run_viz(
             if min_interval > 0.0 and now - last_render < min_interval:
                 continue
             last_render = now
-
-            ff_epoch_s = state["tai_ns"] / 1.0e9 - _FF_EPOCH_BASE_UNIX_TAI_S
-            whole = int(ff_epoch_s)
-            frac_ns = int(round((ff_epoch_s - whole) * 1.0e9))
-            engine.setExpressionTimeSpan(
-                "Polaris.Epoch",
-                FFTimeSpan.fromWholeSecondsAndNanoseconds(whole, frac_ns),
-            )
-            engine.setExpressionArray(
-                "Polaris.Position", [x / 1000.0 for x in state["r_eci_m"]]
-            )
-            engine.setExpressionArray(
-                "Polaris.Velocity", [v / 1000.0 for v in state["v_eci_m_s"]]
-            )
-            q0, q1, q2, q3 = state["q_body_eci"]  # JPL scalar-first
-            engine.setExpressionArray(
-                "Polaris.Quaternion", [q1, q2, q3, q0]
-            )  # FF scalar-last
-            # The frame execution (the window Updates) is where a wedged
-            # renderer shows up, so it runs asynchronously behind sliced
-            # waits: Ctrl-C lands within a couple of seconds and routes to
-            # open_engine's kill path, while legitimate stalls get minutes of
-            # patience — the first frame carries window creation, and a user
-            # *interacting* with a window (rotating, zooming) parks Update
-            # for the duration of the drag, since FreeFlyer has one render
-            # thread. A stall past the budget is a dead engine, killed.
-            budget_s = 300.0
-            started = time.monotonic()
-            engine.executeUntilApiLabelAsync("Frame")
-            if not _synchronize_patiently(engine, budget_s):
-                raise RuntimeError(
-                    f"FreeFlyer stopped responding while rendering frame {frames} "
-                    f"(waited {budget_s:.0f} s); the engine was killed. "
-                    "(The Linux build is officially headless — interactive "
-                    "windows over WSLg are best-effort. Lower --fps or use "
-                    "--view orbit, or replay when the run is done.)"
-                )
-            cost = time.monotonic() - started
-            if cost > 3.0:
-                print(f"[viz] frame {frames} took {cost:.1f} s", flush=True)
+            _push_state(engine, state)
+            _execute_frame(engine, frames)
             frames += 1
+    return frames
+
+
+def run_viz_panel(
+    install: FreeFlyerInstall,
+    states: list[dict],
+    playback,
+    windowed: bool = True,
+    max_fps: float = 2.0,
+    view: str = "both",
+) -> int:
+    """Render *states* under a :class:`freeflyer.panel.Playback` cursor.
+
+    Unlike :func:`run_viz`'s one-way march, this loop is index-driven: each
+    tick asks the cursor which record to draw, so the browser panel's
+    play/pause/seek land here. Pausing renders nothing (the frame on screen is
+    already right), and a seek is just a different index — every stream record
+    is a complete truth state, so there is no propagator to rewind. Runs until
+    Ctrl-C; parking at the final frame keeps the windows alive for seeking
+    back. Returns the frame count.
+    """
+    plan = write_mission_plan(install, _build_script(view), "polaris_viz")
+    frames = 0
+    min_interval = 1.0 / max_fps if max_fps > 0 else 0.05
+    with open_engine(install, windowed=windowed) as engine:
+        engine.loadMissionPlanFromFile(str(plan))
+        engine.prepareMissionPlan()
+        engine.executeUntilApiLabel("Frame")
+        last = time.monotonic()
+        while True:
+            now = time.monotonic()
+            idx = playback.tick(now - last)
+            last = now
+            if idx is None:
+                time.sleep(0.05)  # paused or between frames: no engine work
+                continue
+            _push_state(engine, states[idx])
+            _execute_frame(engine, frames)
+            frames += 1
+            time.sleep(min_interval)  # the renderer's sustainable rate
     return frames
