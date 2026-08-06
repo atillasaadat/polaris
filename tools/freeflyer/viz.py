@@ -47,6 +47,11 @@ ViewWindow orbitView({Polaris});
 orbitView.WindowTitle = "Polaris - orbit (truth)";
 orbitView.SetShowName(Polaris.ObjectId, 1);
 orbitView.SetShowAxis(Polaris.ObjectId, 1);
+// Bounded trajectory trail. Without a bound every Update appends history the
+// software rasteriser must redraw, so frames slow steadily until one exceeds
+// its budget and the window "freezes" — the long-replay failure mode. 900
+// points at the 2 fps default is a comfortable visual arc.
+orbitView.SetTailLength(Polaris.ObjectId, 900);
 
 // Truth geometry vectors, drawn in both windows. All three are FreeFlyer
 // object-bound vectors, so they track the spacecraft state automatically as
@@ -83,6 +88,7 @@ closeView.AddViewpoint(closeUp);
 closeView.ActivateViewpoint(closeUp.ViewpointName);
 closeView.SetShowName(Polaris.ObjectId, 1);
 closeView.SetShowAxis(Polaris.ObjectId, 1);
+closeView.SetTailLength(Polaris.ObjectId, 100);
 closeView.AddObject(sunVec);
 closeView.AddObject(nadirVec);
 closeView.AddObject(velVec);
@@ -229,18 +235,26 @@ def run_viz(
             engine.setExpressionArray(
                 "Polaris.Quaternion", [q1, q2, q3, q0]
             )  # FF scalar-last
-            # The frame execution (two window Updates) is the call that hangs
+            # The frame execution (the window Updates) is the call that hangs
             # when the renderer wedges, so it runs asynchronously with a
-            # timeout: a frame that takes longer than 10 s is a dead engine,
-            # and raising here routes through open_engine's kill path instead
-            # of blocking Ctrl-C forever.
+            # timeout, routing through open_engine's kill path instead of
+            # blocking Ctrl-C forever. The first frame carries window
+            # creation and the first full scene build on a software
+            # rasteriser — measured in tens of seconds under WSLg — so it
+            # gets a far larger budget than the steady state.
+            budget_ms = 180_000 if frames == 0 else 30_000
+            started = time.monotonic()
             engine.executeUntilApiLabelAsync("Frame")
-            if not engine.synchronize(10_000):
+            if not engine.synchronize(budget_ms):
                 raise RuntimeError(
-                    "FreeFlyer stopped responding while rendering a frame; "
-                    "the engine was killed. (The Linux build is officially "
-                    "headless — interactive windows over WSLg are best-effort. "
-                    "Lower --fps, or replay when the run is done.)"
+                    f"FreeFlyer stopped responding while rendering frame {frames} "
+                    f"(waited {budget_ms / 1000:.0f} s); the engine was killed. "
+                    "(The Linux build is officially headless — interactive "
+                    "windows over WSLg are best-effort. Lower --fps, or replay "
+                    "when the run is done.)"
                 )
+            cost = time.monotonic() - started
+            if cost > 2.0:
+                print(f"[viz] frame {frames} took {cost:.1f} s", flush=True)
             frames += 1
     return frames
