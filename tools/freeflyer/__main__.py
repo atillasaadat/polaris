@@ -47,7 +47,12 @@ def _cmd_viz(args: argparse.Namespace) -> int:
     pace = None if args.follow or args.pace == 0 else args.pace
     try:
         frames = viz.run_viz(
-            install, states, pace=pace, windowed=not args.headless, max_fps=args.fps
+            install,
+            states,
+            pace=pace,
+            windowed=not args.headless,
+            max_fps=args.fps,
+            view=args.view,
         )
     except KeyboardInterrupt:
         print("\ninterrupted — engine killed", file=sys.stderr)
@@ -83,6 +88,12 @@ def main() -> int:
         default=2.0,
         help="render-rate ceiling (default 2; the WSLg software renderer "
         "sustains little more — 0 disables)",
+    )
+    p_viz.add_argument(
+        "--view",
+        choices=("orbit", "close", "both"),
+        default="both",
+        help="which window(s) to render — one window halves the frame cost",
     )
 
     args = parser.parse_args()

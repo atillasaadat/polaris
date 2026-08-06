@@ -38,22 +38,11 @@ from .plans import write_mission_plan
 #: so this is plain calendar arithmetic: -10588.5 days.
 _FF_EPOCH_BASE_UNIX_TAI_S = -10588.5 * 86400.0
 
-_VIZ_SCRIPT = """Spacecraft Polaris;
+_VIZ_HEADER = """Spacecraft Polaris;
 Polaris.AttitudeRefFrame = "ICRF";
 Polaris.AttitudeSystem = "Quaternion";
 
-// Whole-Earth 3D orbit view, with the vehicle named and its body axes drawn.
-ViewWindow orbitView({Polaris});
-orbitView.WindowTitle = "Polaris - orbit (truth)";
-orbitView.SetShowName(Polaris.ObjectId, 1);
-orbitView.SetShowAxis(Polaris.ObjectId, 1);
-// Bounded trajectory trail. Without a bound every Update appends history the
-// software rasteriser must redraw, so frames slow steadily until one exceeds
-// its budget and the window "freezes" — the long-replay failure mode. 900
-// points at the 2 fps default is a comfortable visual arc.
-orbitView.SetTailLength(Polaris.ObjectId, 900);
-
-// Truth geometry vectors, drawn in both windows. All three are FreeFlyer
+// Truth geometry vectors, drawn in every window. All three are FreeFlyer
 // object-bound vectors, so they track the spacecraft state automatically as
 // each frame updates it: sun = Object-to-Object (type 9) at the Sun, nadir =
 // Object-to-Object at the Earth, velocity = Body Velocity (type 7).
@@ -66,10 +55,25 @@ nadirVec.Color = ColorTools.Cyan;
 Vector velVec;
 velVec.BuildVector(7, Polaris);
 velVec.Color = ColorTools.Magenta;
+"""
+
+_VIZ_ORBIT = """
+// Whole-Earth 3D orbit view, with the vehicle named and its body axes drawn.
+ViewWindow orbitView({Polaris});
+orbitView.WindowTitle = "Polaris - orbit (truth)";
+orbitView.SetShowName(Polaris.ObjectId, 1);
+orbitView.SetShowAxis(Polaris.ObjectId, 1);
+// Bounded trajectory trail. Without a bound every Update appends history the
+// software rasteriser must redraw, so frames slow steadily until one exceeds
+// its budget and the window "freezes" — the long-replay failure mode. 900
+// points at the 2 fps default is a comfortable visual arc.
+orbitView.SetTailLength(Polaris.ObjectId, 900);
 orbitView.AddObject(sunVec);
 orbitView.AddObject(nadirVec);
 orbitView.AddObject(velVec);
+"""
 
+_VIZ_CLOSE = """
 // Body-fixed close-up: a chase camera parked a few metres off the vehicle,
 // where the drawn body axes make the attitude motion readable. The viewpoint
 // numbers are the ones the reference handlers flew.
@@ -92,13 +96,48 @@ closeView.SetTailLength(Polaris.ObjectId, 100);
 closeView.AddObject(sunVec);
 closeView.AddObject(nadirVec);
 closeView.AddObject(velVec);
-
-While (1);
-	ApiLabel "Frame";
-	Update orbitView;
-	Update closeView;
-End;
 """
+
+
+def _build_script(view: str) -> str:
+    """Assemble the viz script for ``view`` ("orbit", "close", or "both").
+
+    One window is a real performance lever, not a preference: every Update is
+    a full software-rasterised redraw, so two windows are twice the frame
+    cost on exactly the machine that is struggling.
+    """
+    parts = [_VIZ_HEADER]
+    updates = []
+    if view in ("orbit", "both"):
+        parts.append(_VIZ_ORBIT)
+        updates.append("\tUpdate orbitView;")
+    if view in ("close", "both"):
+        parts.append(_VIZ_CLOSE)
+        updates.append("\tUpdate closeView;")
+    if not updates:
+        raise ValueError(f"unknown view {view!r} (orbit, close, or both)")
+    parts.append(
+        '\nWhile (1);\n\tApiLabel "Frame";\n' + "\n".join(updates) + "\nEnd;\n"
+    )
+    return "".join(parts)
+
+
+def _synchronize_patiently(engine, total_s: float, slice_ms: int = 2000) -> bool:
+    """Wait for the engine in short slices so Ctrl-C stays responsive.
+
+    ``synchronize`` blocks inside a C call for its whole timeout, and Python
+    cannot deliver a KeyboardInterrupt mid-call — one long wait is exactly the
+    hung terminal this module exists to prevent. Short slices return control
+    every couple of seconds (where the interrupt fires and routes to the
+    engine-kill path) while still tolerating minutes of legitimate stall —
+    window interaction shares FreeFlyer's one render thread, so a user
+    dragging the view pauses Update for as long as they drag.
+    """
+    deadline = time.monotonic() + total_s
+    while time.monotonic() < deadline:
+        if engine.synchronize(slice_ms):
+            return True
+    return False
 
 
 def replay(stream_path: Path) -> Iterator[dict]:
@@ -170,6 +209,7 @@ def run_viz(
     pace: float | None = 1.0,
     windowed: bool = True,
     max_fps: float = 2.0,
+    view: str = "both",
 ) -> int:
     """Render *states* in interactive FreeFlyer windows; return the frame count.
 
@@ -191,7 +231,7 @@ def run_viz(
         renderer sustains a couple of frames per second; pushing it faster is
         how the window ends up frozen. 0 disables the ceiling.
     """
-    plan = write_mission_plan(install, _VIZ_SCRIPT, "polaris_viz")
+    plan = write_mission_plan(install, _build_script(view), "polaris_viz")
     frames = 0
     last_t: float | None = None
     min_interval = 1.0 / max_fps if max_fps > 0 else 0.0
@@ -235,26 +275,27 @@ def run_viz(
             engine.setExpressionArray(
                 "Polaris.Quaternion", [q1, q2, q3, q0]
             )  # FF scalar-last
-            # The frame execution (the window Updates) is the call that hangs
-            # when the renderer wedges, so it runs asynchronously with a
-            # timeout, routing through open_engine's kill path instead of
-            # blocking Ctrl-C forever. The first frame carries window
-            # creation and the first full scene build on a software
-            # rasteriser — measured in tens of seconds under WSLg — so it
-            # gets a far larger budget than the steady state.
-            budget_ms = 180_000 if frames == 0 else 30_000
+            # The frame execution (the window Updates) is where a wedged
+            # renderer shows up, so it runs asynchronously behind sliced
+            # waits: Ctrl-C lands within a couple of seconds and routes to
+            # open_engine's kill path, while legitimate stalls get minutes of
+            # patience — the first frame carries window creation, and a user
+            # *interacting* with a window (rotating, zooming) parks Update
+            # for the duration of the drag, since FreeFlyer has one render
+            # thread. A stall past the budget is a dead engine, killed.
+            budget_s = 300.0
             started = time.monotonic()
             engine.executeUntilApiLabelAsync("Frame")
-            if not engine.synchronize(budget_ms):
+            if not _synchronize_patiently(engine, budget_s):
                 raise RuntimeError(
                     f"FreeFlyer stopped responding while rendering frame {frames} "
-                    f"(waited {budget_ms / 1000:.0f} s); the engine was killed. "
+                    f"(waited {budget_s:.0f} s); the engine was killed. "
                     "(The Linux build is officially headless — interactive "
-                    "windows over WSLg are best-effort. Lower --fps, or replay "
-                    "when the run is done.)"
+                    "windows over WSLg are best-effort. Lower --fps or use "
+                    "--view orbit, or replay when the run is done.)"
                 )
             cost = time.monotonic() - started
-            if cost > 2.0:
+            if cost > 3.0:
                 print(f"[viz] frame {frames} took {cost:.1f} s", flush=True)
             frames += 1
     return frames
