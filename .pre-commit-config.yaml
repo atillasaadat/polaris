@@ -40,3 +40,17 @@ repos:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+
+  # FreeFlyer cross-validation (REQ-VV-006), pre-push only: runs the V&V suite
+  # against a locally installed, licensed FreeFlyer when one is discoverable
+  # and skips visibly when none is (tests/freeflyer/conftest.py owns the
+  # skip). The full matrix costs ~2 s of engine time on a warm machine.
+  - repo: local
+    hooks:
+      - id: freeflyer-vv
+        name: FreeFlyer V&V cross-check
+        entry: uv run --frozen --group analysis pytest tests/freeflyer -q
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

@@ -1,0 +1,105 @@
+# `tools/freeflyer/` — FreeFlyer V&V cross-check and visualization
+
+FreeFlyer (a.i. solutions) is Polaris's third, fully independent astrodynamics
+implementation, used two ways:
+
+1. **Cross-validation (REQ-VV-006).** `vv.py` replays the GMAT golden
+   propagation cases (`tests/golden/gmat_propagation.json`) through the
+   FreeFlyer Runtime API; `tests/freeflyer/` compares the sampled states.
+   Three-way by construction: the C++ stack verifies against the same fixture
+   in `polaris_golden_tests`, so a disagreement isolates the odd
+   implementation out. Measured on 7.10.1: every case sub-metre (worst 0.27 m,
+   the GEO SRP-flux convention), attitude spinner < 1e-6 deg.
+2. **Visualization.** Any closed-loop run streams truth states as JSONL when
+   `POLARIS_SIM_STREAM=<path>` is set (`sim/io/closed_loop.cpp`); `viz.py`
+   renders that stream in interactive FreeFlyer windows, live (`--follow`)
+   or replayed. FreeFlyer never propagates here — it is purely the display,
+   so the window cannot disagree with the sim.
+
+```bash
+python -m freeflyer status                       # discovered installs + licenses
+python -m freeflyer viz --stream run.jsonl       # replay at real time
+python -m freeflyer viz --stream run.jsonl --follow   # watch a live run
+uv run --frozen --group analysis pytest tests/freeflyer   # the V&V suite
+```
+
+(Every command wants `PYTHONPATH=tools` from the repo root, or `uv run` which
+inherits it from `pytest.ini` for the test lane.)
+
+## Installing FreeFlyer on this machine
+
+The vendor ships Linux FreeFlyer as an el9 (RHEL 8/9) RPM, headless engine
+only (`ff`). Two supported paths:
+
+- **RHEL-family / container:** `sudo FF_ACCEPT_SLA=true yum install
+  ./freeflyer_*.el9.x86_64.rpm`.
+- **Ubuntu / WSL2, no root** (what the dev machine runs):
+
+  ```bash
+  mkdir -p ~/freeflyer-7.10.1/deps && cd ~/freeflyer-7.10.1
+  bsdtar -xf /path/to/freeflyer_7.10.1.*.el9.x86_64.rpm
+  # el9 links sonames Ubuntu doesn't ship; stage them locally:
+  cd deps
+  curl -fsSLO http://ftp.debian.org/debian/pool/main/i/icu/libicu67_67.1-7_amd64.deb
+  curl -fsSLO http://archive.ubuntu.com/ubuntu/pool/universe/libg/libglu/libglu1-mesa_9.0.2-1.1build1_amd64.deb
+  curl -fsSLO http://archive.ubuntu.com/ubuntu/pool/main/libg/libglvnd/libopengl0_1.7.0-1build1_amd64.deb
+  for d in *.deb; do bsdtar -xOf "$d" data.tar.xz | bsdtar -xf - || \
+                     bsdtar -xOf "$d" data.tar.zst | zstd -d | bsdtar -xf -; done
+  ```
+
+  `locate.py` finds the extraction automatically (`~/freeflyer-*` or
+  `POLARIS_FF_DIR`), and `engine.py` preloads the staged sonames — no
+  `LD_LIBRARY_PATH` gymnastics needed by callers.
+
+The installer, license key, and vendor help files live in `/freeflyer/`
+(gitignored, **never committed** — the RPM is 577 MB and the key is a
+credential).
+
+## Licensing (read before touching)
+
+Node-locked, LicenseSpring-backed, CLI-managed:
+
+```bash
+ff -al XXXX-XXXX-XXXX-XXXX   # activate (online)   ff -rli  # report
+ff -dal                      # deactivate — returns the seat
+```
+
+Hard-won facts about this project's single Mission-tier key:
+
+- **One machine at a time** ("Max. Instances: 2" is concurrent engine
+  processes, not machines).
+- **Device transfers are finitely limited**, and the allowance is already
+  exhausted (activate-WSL → deactivate → activate-Windows burned it,
+  2026-08-05; error code 9). The seat currently lives on WSL. Moving it —
+  including to the Windows install or a CI runner — needs a transfer reset
+  from fflicense@ai-solutions.com. Same-device reactivation does *not* count
+  as a transfer.
+- The Runtime API needs the **Mission** tier (we have it; expires
+  2027-01-15).
+- Containers are licensed via a network license server only, per vendor
+  policy; runner VMs activate directly.
+
+The CI job (`freeflyer-vv` in `ci.yml`) stays dormant until the
+`FREEFLYER_CI_ENABLED` repository variable is set — do that only after the
+vendor blesses ephemeral-runner activation, since a hard-killed runner leaks
+the seat until reset.
+
+## FreeFlyer quirks this package encodes (so you don't rediscover them)
+
+- Mission-plan XML cannot be hand-minimised ("could not be converted to the
+  latest version"); `plans.py` reuses the installed vendor scaffold and swaps
+  only the script CDATA.
+- `Spacecraft.Position/Velocity` are **ICRF, km**; quaternions are
+  **vector-first, scalar-last**; `AngularVelocity` is **deg/s**; epochs are
+  **TAI days since 1941-01-05 12:00**.
+- RK89 defaults to **fixed 300 s steps**; condition-targeted `Step … to
+  (== t)` back-solves exactly, but **hangs forever** inside a loop when a
+  kinematic attitude system is active (per-interval `StepSize` + plain `Step`
+  is the workaround), and inequality targets stop a whole step late.
+- Reading state through per-sample `ApiLabel` stops is off-by-one; collect
+  into an FF-side `Matrix` and read once at a final label (`vv.py`).
+- FreeFlyer's internal failure mode is frequently a **hang, not an error** —
+  timeout every engine interaction you script.
+- The engine process (`ff --api-mode`) outlives a killed Python parent;
+  `pkill -f api-mode` cleans up leaked engines (each holds one of the two
+  license instances).

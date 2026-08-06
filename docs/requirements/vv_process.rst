@@ -69,3 +69,29 @@ Firm seeds below.
    A dedicated closed-loop SITL suite **shall** inject faults and assert FDIR
    detects, isolates, and responds correctly (right event, right
    mode/reconfiguration, recovery) within bounded time-to-detect/respond.
+
+.. req:: FreeFlyer independent cross-validation
+   :id: REQ-VV-006
+   :status: reviewed
+   :level: L2
+   :tags: vv, golden, freeflyer
+   :method: Analysis
+   :derived_from: REQ-SYS-010
+   :allocation: tools/freeflyer, tests/freeflyer
+   :refs: gmat2026
+
+   Propagation and attitude-kinematics behaviour **shall** be cross-validated
+   against a third, fully independent astrodynamics implementation (a.i.
+   solutions FreeFlyer) by replaying the GMAT golden propagation cases through
+   the FreeFlyer Runtime API and comparing sampled states within documented
+   per-case tolerance bands. The comparison is three-way by construction: the
+   C++ stack verifies against the golden fixtures in ``polaris_golden_tests``,
+   and FreeFlyer verifies against the same fixtures here, so a disagreement
+   isolates the odd implementation out. The suite runs wherever a licensed
+   FreeFlyer installation is discovered and skips — visibly, never silently
+   passing — where none is.
+
+   Measured on FreeFlyer 7.10.1 (2026-08-05): worst position disagreement
+   across all eight cases is **0.27 m** (geo, SRP-flux convention difference)
+   with every LEO case under 0.25 m, and the attitude spinner agrees to
+   **< 1e-6 deg**. Verified by ``tests/freeflyer/test_propagation_vv.py``.

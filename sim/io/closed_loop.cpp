@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
 
 #include "actuators/magnetorquer.hpp"
 #include "constants/constants.hpp"
@@ -40,6 +42,41 @@ std::int64_t periodNs(double rate_hz, std::int64_t macro_ns) {
 /// EOP capacity for the loop's own table (GNSS ECEF output); same sizing
 /// rationale as the runner's.
 constexpr std::size_t kEopCapacity = 512;
+
+/// Live truth-state tap (§22.3): when `POLARIS_SIM_STREAM` names a path, every
+/// macro-boundary truth sample is appended there as one JSON line and flushed,
+/// so an external viewer (the FreeFlyer visualization client,
+/// `tools/freeflyer/viz.py`) can follow a run while it executes. Pure output —
+/// nothing reads it back, so determinism and the sim-time clock are untouched.
+/// Line-buffered JSONL rather than a socket: a file tail survives the viewer
+/// starting late, stopping, or restarting, none of which may stall the loop.
+class StreamTap {
+ public:
+  StreamTap() {
+    const char* path = std::getenv("POLARIS_SIM_STREAM");
+    if (path != nullptr && path[0] != '\0') {
+      out_.open(path, std::ios::trunc);
+    }
+  }
+
+  void write(double t_s, const state::TruthState& s) {
+    if (!out_.is_open()) {
+      return;
+    }
+    const math::Quaternion& q = s.attitude.core();
+    out_ << "{\"t_s\":" << t_s << ",\"tai_ns\":" << s.epoch.nanosecondsSinceEpoch()
+         << ",\"r_eci_m\":[" << s.position.eigen().x() << ',' << s.position.eigen().y() << ','
+         << s.position.eigen().z() << "],\"v_eci_m_s\":[" << s.velocity.eigen().x() << ','
+         << s.velocity.eigen().y() << ',' << s.velocity.eigen().z() << "],\"q_body_eci\":[" << q.w()
+         << ',' << q.x() << ',' << q.y() << ',' << q.z() << "],\"w_body_radps\":["
+         << s.body_rate.eigen().x() << ',' << s.body_rate.eigen().y() << ','
+         << s.body_rate.eigen().z() << "]}\n";
+    out_.flush();
+  }
+
+ private:
+  std::ofstream out_;
+};
 
 }  // namespace
 
@@ -379,9 +416,11 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
   // --- The march ---------------------------------------------------------------
   const auto macro_count =
       static_cast<std::uint64_t>(std::floor(prop.duration_s * prop.fsw_rate_hz + 1.0e-9));
+  StreamTap stream;
   if (trace != nullptr) {
     trace->push_back({0.0, s});
   }
+  stream.write(0.0, s);
 
   std::int64_t t_ns = 0;
   for (std::uint64_t macro = 0; macro < macro_count; ++macro) {
@@ -480,6 +519,7 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
     if (trace != nullptr) {
       trace->push_back({static_cast<double>(t_ns) / 1.0e9, s});
     }
+    stream.write(static_cast<double>(t_ns) / 1.0e9, s);
   }
   return true;
 }

@@ -129,6 +129,64 @@ jobs:
         # --frozen: fail if uv.lock is stale rather than silently re-resolving
         run: uv run --frozen --group analysis pytest
 
+  # FreeFlyer cross-validation (REQ-VV-006). Dormant until the repository
+  # variable FREEFLYER_CI_ENABLED is set to 'true' AND the secrets exist:
+  # the single node-locked license currently lives on the development machine,
+  # and a.i. solutions must bless ephemeral-runner activation (the key's
+  # device-transfer allowance is finite — see tools/freeflyer/README.md)
+  # before CI may hold a seat. The job body is the same no-root recipe the
+  # dev machine runs: bsdtar-extract the el9 RPM, stage the ICU/GL sonames
+  # Ubuntu lacks, activate, test, and ALWAYS deactivate so the seat returns.
+  freeflyer-vv:
+    name: FreeFlyer cross-validation (V&V)
+    runs-on: ubuntu-latest
+    if: ${{ vars.FREEFLYER_CI_ENABLED == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up uv (provisions Python from .python-version)
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Cache the FreeFlyer RPM + runtime sonames
+        id: ff-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/freeflyer-pkg
+          key: freeflyer-7.10.1.60799527-el9-deps-v1
+      - name: Fetch the FreeFlyer RPM (cold cache)
+        if: steps.ff-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/freeflyer-pkg
+          curl -fsSL --retry 3 -o ~/freeflyer-pkg/freeflyer.rpm "${{ secrets.FREEFLYER_RPM_URL }}"
+          for pkg in \
+            "http://ftp.debian.org/debian/pool/main/i/icu/libicu67_67.1-7_amd64.deb" \
+            "http://archive.ubuntu.com/ubuntu/pool/universe/libg/libglu/libglu1-mesa_9.0.2-1.1build1_amd64.deb" \
+            "http://archive.ubuntu.com/ubuntu/pool/main/libg/libglvnd/libopengl0_1.7.0-1build1_amd64.deb"; do
+            curl -fsSL --retry 3 -O --output-dir ~/freeflyer-pkg "$pkg"
+          done
+      - name: Extract FreeFlyer + dependencies (no root, bsdtar)
+        run: |
+          mkdir -p ~/freeflyer-7.10.1/deps
+          bsdtar -xf ~/freeflyer-pkg/freeflyer.rpm -C ~/freeflyer-7.10.1
+          for deb in ~/freeflyer-pkg/*.deb; do
+            bsdtar -xOf "$deb" data.tar.xz > /tmp/data.tar 2>/dev/null || \
+              bsdtar -xOf "$deb" data.tar.zst | zstd -d > /tmp/data.tar
+            bsdtar -xf /tmp/data.tar -C ~/freeflyer-7.10.1/deps
+          done
+      - name: Activate the FreeFlyer license
+        run: |
+          FF_DIR=$(echo ~/freeflyer-7.10.1/usr/share/a.i.*/FreeFlyer*)
+          export LD_LIBRARY_PATH="$HOME/freeflyer-7.10.1/deps/usr/lib/x86_64-linux-gnu:$FF_DIR"
+          cd "$FF_DIR" && ./ff -al "${{ secrets.FREEFLYER_LICENSE_KEY }}" && ./ff -rli
+      - name: Run the cross-validation suite
+        run: uv run --frozen --group analysis pytest tests/freeflyer -v
+      - name: Deactivate the license (return the seat)
+        if: always()
+        run: |
+          FF_DIR=$(echo ~/freeflyer-7.10.1/usr/share/a.i.*/FreeFlyer*)
+          export LD_LIBRARY_PATH="$HOME/freeflyer-7.10.1/deps/usr/lib/x86_64-linux-gnu:$FF_DIR"
+          cd "$FF_DIR" && ./ff -dal || true
+
   # ── Remaining §23.2 stages — not yet wired ───────────────────────────────────
   #   static-analysis:  clang-tidy + cppcheck as their own lane (.clang-tidy exists;
   #                     ASan/UBSan already run via the `build` job's unit suite)

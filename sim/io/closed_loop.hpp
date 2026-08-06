@@ -180,6 +180,11 @@ class ClosedLoop {
   /// boundary. @p trace receives the truth state at every macro boundary
   /// (cleared first); pass nullptr to discard.
   ///
+  /// When the environment variable `POLARIS_SIM_STREAM` names a file, the same
+  /// per-boundary truth samples are also appended there as line-flushed JSONL
+  /// for an external live viewer (`tools/freeflyer/viz.py`); see
+  /// `sim/io/README.md`. Output-only — determinism is untouched.
+  ///
   /// @return false on a configuration the loop cannot honour (runner not
   ///         ready / wrench not composed / a data product the vehicle needs is
   ///         missing). @p error receives the reason.
