@@ -182,7 +182,14 @@ def build_propagation_fixture(
                 "epoch_utc": EPOCH_UTC_ISO,
                 "gmat_script": f"tools/gmat/scripts/prop_{case['name']}.script",
                 "environment": case["environment"],
-                "spacecraft": SPACECRAFT,
+                # The SRP ballistic properties ride along whenever the case
+                # flies SRP: the Polaris side constructs its force from these
+                # very fields, and a fixture that omits them is how the GEO
+                # case flew for a year with srp_area_m2 defaulting to zero —
+                # SRP silently off, 120 m of "model difference" that was
+                # actually a disabled force (falsified by FreeFlyer ablation,
+                # Push 57).
+                "spacecraft": {**SPACECRAFT, **case.get("spacecraft_srp", {})},
                 "initial_state": {
                     "position_m": [v * KM_TO_M for v in case["position_km"]],
                     "velocity_m_s": [v * KM_TO_M for v in case["velocity_km_s"]],
@@ -381,6 +388,9 @@ PROPAGATION_CASES = (
             "sat.Cr = 1.3;",
             "sat.DryMass = 12.0;",
         ),
+        # Mirrored into the fixture's spacecraft block so the Polaris side
+        # flies the same ballistic properties GMAT did (see the emission site).
+        "spacecraft_srp": {"srp_area_m2": 0.06, "srp_cr": 1.3},
         "force_model_lines": (
             "fm.PrimaryBodies = {Earth};",
             "fm.GravityField.Earth.Degree = 4;",
@@ -403,16 +413,20 @@ PROPAGATION_CASES = (
             "srp_enabled": True,
             "magnetic_field": "none",
         },
-        "position_tolerance_m": 150.0,
-        "velocity_tolerance_m_s": 1.0e-2,
+        "position_tolerance_m": 0.5,
+        "velocity_tolerance_m_s": 5.0e-5,
         "tolerance_rationale": (
-            "A full GEO day is SRP- and third-body-dominated; the residual is the sum "
-            "of the EGM96/EGM2008 field difference, the DE424/DE440 ephemeris "
-            "difference (both ~cm), and — by far the largest term — the two SRP "
-            "models' shadow/flux/area handling over 24 h at GEO (Polaris cannonball "
-            "vs GMAT spherical). Measured GMAT-vs-Polaris separation is 77 m; the "
-            "120 m band gives margin on a model difference, not propagator error, "
-            "and is <3e-6 relative on a 42,000 km radius."
+            "A full GEO day is SRP- and third-body-dominated. With the fixture's "
+            "srp_area_m2/srp_cr flown on both sides (both cannonball, both 1361 W/m2, "
+            "no shadow transits in January), measured GMAT-vs-Polaris separation peaks "
+            "at 0.017 m -- the sum of the EGM96/EGM2008 degree-4 field difference and "
+            "the DE424-vs-DE440-Chebyshev third-body difference. The 0.5 m band carries "
+            "~30x margin. History: this band was 150 m until Push 57, absorbing a "
+            "disabled force -- the fixture omitted the ballistic properties, "
+            "srp_area_m2 defaulted to zero, and the 120 m residual attributed to 'SRP "
+            "model differences' was shown by a FreeFlyer force ablation to be the "
+            "entire SRP signature. Attribution in a rationale must be backed by an "
+            "ablation, not a narrative."
         ),
     },
     {

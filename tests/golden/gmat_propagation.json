@@ -2159,7 +2159,9 @@
           "ixx": 0.12,
           "iyy": 0.12,
           "izz": 0.1
-        }
+        },
+        "srp_area_m2": 0.06,
+        "srp_cr": 1.3
       },
       "initial_state": {
         "position_m": [
@@ -2184,9 +2186,9 @@
           0.0
         ]
       },
-      "position_tolerance_m": 150.0,
-      "velocity_tolerance_m_s": 0.01,
-      "tolerance_rationale": "A full GEO day is SRP- and third-body-dominated; the residual is the sum of the EGM96/EGM2008 field difference, the DE424/DE440 ephemeris difference (both ~cm), and \u2014 by far the largest term \u2014 the two SRP models' shadow/flux/area handling over 24 h at GEO (Polaris cannonball vs GMAT spherical). Measured GMAT-vs-Polaris separation peaks at 120 m; the 150 m band gives margin on a model difference, not propagator error, and is <3e-6 relative on a 42,000 km radius.",
+      "position_tolerance_m": 0.5,
+      "velocity_tolerance_m_s": 5e-05,
+      "tolerance_rationale": "A full GEO day is SRP- and third-body-dominated. With the fixture's srp_area_m2/srp_cr flown on both sides (both cannonball, both 1361 W/m2, no shadow transits in January), measured GMAT-vs-Polaris separation peaks at 0.017 m -- the sum of the EGM96/EGM2008 degree-4 field difference and the DE424-vs-DE440-Chebyshev third-body difference. The 0.5 m band carries ~30x margin. History: this band was 150 m until Push 57, absorbing a disabled force -- the fixture omitted the ballistic properties, srp_area_m2 defaulted to zero, and the 120 m residual attributed to 'SRP model differences' was shown by a FreeFlyer force ablation to be the entire SRP signature. Attribution in a rationale must be backed by an ablation, not a narrative.",
       "samples": [
         {
           "t_s": 0.0,

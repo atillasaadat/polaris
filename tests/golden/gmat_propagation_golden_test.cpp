@@ -80,6 +80,16 @@ scenario::SimConfig configFor(const json& c, const pt::LeapSecondTable& leap) {
   config.environment.gravity_order = env.value("gravity_order", -1);
   config.environment.drag_enabled = env.value("drag_enabled", false);
   config.environment.srp_enabled = env.value("srp_enabled", false);
+  if (config.environment.srp_enabled) {
+    // Required, never defaulted: srp_area_m2 silently defaulting to zero is a
+    // *disabled force*, and the GEO case flew exactly that way — 120 m of
+    // "SRP model difference" in the old rationale that a FreeFlyer ablation
+    // (tools/freeflyer, Push 57) showed was the entire SRP signature. An SRP
+    // case whose fixture omits the ballistic properties must fail loudly here,
+    // not agree loosely.
+    config.spacecraft.srp_area_m2 = sc.at("srp_area_m2").get<double>();
+    config.spacecraft.srp_cr = sc.at("srp_cr").get<double>();
+  }
   config.environment.magnetic_field = scenario::MagneticModel::kNone;
   for (const json& body : env.at("third_bodies")) {
     const std::string name = body.get<std::string>();
@@ -193,6 +203,10 @@ TEST(GmatPropagation, PolarisAgreesWithGmatAcrossForceModels) {
           (trajectory[i].state.velocity.eigen() - vec3(expected.at("velocity_m_s"))).norm();
       worst_position = std::max(worst_position, dr);
       worst_velocity = std::max(worst_velocity, dv);
+      if (std::getenv("POLARIS_GOLDEN_PROFILE") != nullptr) {
+        std::printf("[profile] %s t=%.1f dr=%.4f dv=%.2e\n", name.c_str(), trajectory[i].t_s, dr,
+                    dv);
+      }
       EXPECT_LT(dr, position_tolerance) << "t=" << trajectory[i].t_s << " s";
       EXPECT_LT(dv, velocity_tolerance) << "t=" << trajectory[i].t_s << " s";
     }

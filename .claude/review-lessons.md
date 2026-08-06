@@ -308,3 +308,22 @@ before starting FDIR, estimator, or requirements work.
   downstream monitor, the refusal itself needs a bounded-cadence event naming
   the reason and the unit, plus a latched flag, so the silence of the monitor it
   disabled is attributable.
+
+## Requirements & verification (continued)
+
+- **A tolerance-band attribution must be backed by an ablation, not a
+  narrative** (P57). The GEO golden case carried a 150 m band whose rationale
+  attributed the 120 m residual to "SRP model differences" between two
+  cannonball models — plausible prose that no one had tested. A FreeFlyer
+  force ablation (turn SRP off entirely, measure the divergence from the same
+  golden samples) reproduced the 120 m to two decimal places: the "model
+  difference" was the *entire SRP signature*, because the fixture omitted the
+  ballistic properties and `srp_area_m2` silently defaulted to zero — a
+  disabled force flying under a band wide enough to absorb it. With the force
+  actually on, the two propagators agree to 0.017 m and the band tightened
+  300x. Two generalisations: a struct field whose zero-default silently
+  disables a physical effect must be required, not defaulted, wherever the
+  effect is claimed to be on; and when a rationale names the dominant term of
+  a residual, the review question is "what ablation established that?" — a
+  third independent implementation makes that ablation a two-minute
+  experiment.
