@@ -11,8 +11,19 @@ module flight {
   #
   #   DETUMBLE -> B-dot dipole on the magnetorquers (lib/gnc/bdot.hpp)
   #   POINT    -> quaternion-error PID (lib/gnc/attitude_pid.hpp) allocated
-  #               across the reaction-wheel array (lib/gnc/rw_allocation.hpp)
+  #               across the reaction-wheel array (lib/gnc/rw_allocation.hpp),
+  #               **plus**, concurrently, cross-product desaturation on the rods
+  #               when the wheels are loaded (lib/gnc/momentum.hpp)
   #   IDLE     -> zero on both
+  #
+  # **Desaturation is concurrent with POINT and excluded from DETUMBLE**, which
+  # is the one piece of mode logic worth stating up front: the wheels hold the
+  # attitude while the rods dump the momentum they are holding, so the two laws
+  # run in the same cycle on different actuators — but in DETUMBLE the rods are
+  # B-dot's, and two laws driving one actuator would be two vehicles' worth of
+  # commands on one set of coils. The seam is drawn where the dipole is *formed*:
+  # exactly one law produces a body dipole in any cycle, and `commandActuators`
+  # remains the single owner of the §7 schedule that publication implies.
   #
   # No control math lives here. The laws are in the flight-safe `lib/gnc`, so the
   # component is the wiring, the mode ladder, the §7 duty-cycle schedule and the
@@ -64,6 +75,16 @@ module flight {
     @ instead would be a second opinion about which unit the vehicle believes.
     guarded input port estimateIn: AttitudeEstimatePort
 
+    @ Per-wheel tachometer readings (§8.5 momentum management). Guarded for the
+    @ same reason `estimateIn` is: they are written on the producer's thread and
+    @ read by `run`, and half a guarded pair is no mutual exclusion at all.
+    @
+    @ The wheel **speeds** arrive here, not the momentum: rotor inertia is a
+    @ catalog fact this component carries as `WheelInertiaKgm2`, so the momentum
+    @ the desaturation acts on is computed in exactly one place, from the same
+    @ array geometry the allocation uses.
+    guarded input port wheelSpeedIn: [GncMaxUnits] WheelSpeedMeasPort
+
     # ----------------------------------------------------------------------
     # Outputs
     # ----------------------------------------------------------------------
@@ -112,10 +133,30 @@ module flight {
       FIELD_INTERVAL = 8 @< a field sample arrived but no derivative could be formed from it (first sample of a pair, or a spacing outside the configured band); distinct from NO_FIELD because the causes and the fixes differ
     }
 
+    @ Ground override of the autonomous desaturation decision (§8.5). AUTO is the
+    @ flown state: the controller engages the rods on its own momentum predicate
+    @ inside POINT. FORCE and INHIBIT exist because a ground operator needs to be
+    @ able to dump momentum ahead of a manoeuvre and to keep the rods quiet during
+    @ a magnetically sensitive observation, and neither is a decision the vehicle
+    @ can make for itself.
+    enum DesatOverride : U8 {
+      AUTO = 0 @< the momentum predicate decides
+      FORCE = 1 @< desaturate whenever the mode and the field allow it
+      INHIBIT = 2 @< never desaturate, whatever the momentum
+    }
+
     @ Why the magnetorquer stuck-on monitor could not name a rod.
     enum StuckAttribution : U8 {
       DECISIVE = 0 @< exactly one rod carried a command; the EVR names it
       AMBIGUOUS = 1 @< several rods (or none) were commanded; only the mask is known
+    }
+
+    @ Why the wheel-momentum accounting produced no state this cycle (the FPP
+    @ mirror of gnc::MomentumRefusal, so the EVR can carry the reason).
+    enum MomentumRefusal : U8 {
+      UNCONFIGURED = 0 @< the momentum configuration failed validation
+      WHEEL_INVALID = 1 @< a wheel reported no usable (or no fresh) speed
+      BAD_INPUT = 2 @< a wheel reported a non-finite speed
     }
 
     # ----------------------------------------------------------------------
@@ -151,6 +192,16 @@ module flight {
     @ re-admission path for a rod latched out by the stuck-on monitor.
     guarded command CTRL_RESET \
       opcode 2
+
+    @ Override the autonomous desaturation decision (§8.5). Accepted in every
+    @ mode and at any time — it changes what the *next* cycle does, and a cycle
+    @ that cannot desaturate anyway (wrong mode, no field, no momentum) simply
+    @ does not, so FORCE is a permission and never a command to drive a rod
+    @ blind. INHIBIT takes effect immediately, including mid-desaturation.
+    guarded command CTRL_DESAT(
+                                $action: DesatOverride @< AUTO / FORCE / INHIBIT
+                              ) \
+      opcode 3
 
     # ----------------------------------------------------------------------
     # Parameters (design doc §19.3 — no defaults; a missing value refuses)
@@ -304,6 +355,91 @@ module flight {
     @ life sentence.
     param MtqStuckClearCycles: U32
 
+    # --- Momentum management and desaturation (§8.5) -----------------------
+
+    @ Rotor inertia of one reaction wheel [kg*m^2], from its catalog entry. Turns
+    @ the tachometer reading into stored momentum; one value, because the
+    @ reference vehicle flies four identical wheels (a mixed array needs a
+    @ per-unit array here, as `WheelMaxTorqueNm` does).
+    param WheelInertiaKgm2: F64
+
+    @ Body-frame inertia tensor **diagonal** [kg*m^2]. Needed for two things the
+    @ pointing law alone did not need: the total system momentum
+    @ H = J*omega + h_wheels the disturbance observer differences, and the
+    @ gravity-gradient feedforward. The off-diagonal terms are taken as zero —
+    @ the same principal-axis assumption the §8.5 linear analysis makes, and which
+    @ `analysis.control.vehicle.load_vehicle` refuses a config for if it is false,
+    @ so the two cannot quietly disagree about which vehicle they describe.
+    param InertiaBodyKgm2: Vec3F64
+
+    @ Momentum bias to hold [N*m*s], body frame. Zero for a zero-momentum vehicle.
+    param MomentumTargetBody: Vec3F64
+
+    @ ||h - h_target|| [N*m*s] above which desaturation is required.
+    param MomentumDesatEnterNms: F64
+
+    @ ||h - h_target|| [N*m*s] below which, held for MomentumDesatConfirmCycles,
+    @ the desaturation ends. Must be below MomentumDesatEnterNms: the deadband is
+    @ what stops the rods chattering on and off at the threshold.
+    param MomentumDesatExitNms: F64
+
+    @ Consecutive cycles under MomentumDesatExitNms that end a desaturation.
+    param MomentumDesatConfirmCycles: U32
+
+    @ Stored-momentum ceiling [N*m*s] the §9 envelope monitor watches. **Not** the
+    @ wheels' capacity: it is the bound the vehicle's control margins are analysed
+    @ at (§8.5 SISO validity boundary — above it the gyroscopic coupling makes the
+    @ per-axis margin analysis describe a different vehicle), which is a far
+    @ smaller number and the one worth alarming on. Must be at or above
+    @ MomentumDesatEnterNms.
+    param MomentumEnvelopeNms: F64
+
+    @ Cross-product desaturation gain k_d [1/s] in m = k_d (dh x B)/||B||^2. The
+    @ perpendicular momentum error decays with time constant 1/k_d while the rods
+    @ are unsaturated — the duty division inside the law is what keeps the duty
+    @ factor out of the decay rate.
+    param DesatGainPerSec: F64
+
+    # --- Disturbance feedforward (§8.5 tiers 1-2) --------------------------
+
+    @ Enable the tier-1 model-based feedforward (gravity gradient + residual
+    @ dipole): 0 = off, 1 = on. Separately switchable from the observer because
+    @ they fail differently — a wrong inertia or a wrong residual dipole makes
+    @ tier 1 harmful while tier 2 is still sound, and vice versa.
+    param FeedforwardModelEnable: U8
+
+    @ Enable the tier-2 momentum-based observer's contribution to the feedforward:
+    @ 0 = off, 1 = on. The observer itself **runs regardless**, because it is also
+    @ the §9 momentum-anomaly monitor and a monitor that can be switched off by a
+    @ control-tuning parameter is not a monitor.
+    param FeedforwardObserverEnable: U8
+
+    @ Low-pass time constant [s] of the residual-torque observer. Far above the
+    @ control period, so the momentum difference quotient's noise averages down,
+    @ and far below the orbital period, so a real secular torque is still tracked.
+    param ObserverTauSec: F64
+
+    @ The vehicle's body-fixed residual magnetic moment [A*m^2] for the tier-1
+    @ `m_res x B` feedforward — the magnetic-cleanliness allocation from §19.1,
+    @ not a fitted state. Fitting it from the flight data is §8.5 tier 3.
+    param ResidualDipoleAm2: Vec3F64
+
+    @ Unmodelled secular torque [N*m] above which the §9 momentum anomaly is
+    @ declared. A **budget** value with declared margin over the modelled
+    @ disturbance environment, never a number fitted to a measurement.
+    param DisturbanceBudgetNm: F64
+
+    @ Consecutive observer updates over DisturbanceBudgetNm that latch the
+    @ anomaly, and consecutive updates under DisturbanceClearNm that clear it.
+    param DisturbanceAnomalyCycles: U32
+
+    @ ||tau|| [N*m] below which, held for DisturbanceAnomalyCycles consecutive
+    @ updates, the §9 momentum anomaly clears. Must be at or below
+    @ DisturbanceBudgetNm: the deadband is what stops an estimate parked at the
+    @ budget — which is what a real fault at the margin looks like through the
+    @ observer's low-pass — from cycling the anomaly once per confirmation count.
+    param DisturbanceClearNm: F64
+
     @ Cadence [cycles] for repeatable warnings (saturation, refusals): one event,
     @ then one per this many cycles while the condition persists. A 10 Hz loop
     @ that events every cycle floods the downlink and hides the transition.
@@ -357,6 +493,35 @@ module flight {
     @ quantity MtqStuckResidualT gates. No value when there was no admissible
     @ sample or no modelled field.
     telemetry MagResidualT: F64
+
+    @ Stored wheel-array momentum in body axes [N*m*s]. No value when a wheel
+    @ reported no usable speed — the sum needs every term.
+    telemetry StoredMomentum: Vec3F64
+
+    @ ||h|| [N*m*s], the quantity MomentumEnvelopeNms gates.
+    telemetry StoredMomentumNms: F64
+
+    @ The wheel-momentum accounting produced a usable state this cycle. False
+    @ means desaturation and the §9 envelope and momentum-anomaly monitors are
+    @ all running blind — the condition MomentumUnavailable events on.
+    telemetry MomentumValid: bool
+
+    @ A desaturation is in progress: the rods are being driven to unload the
+    @ wheels while the wheels hold the attitude.
+    telemetry DesatActive: bool
+
+    @ Ground override state of the desaturation decision.
+    telemetry DesatOverrideTlm: DesatOverride
+
+    @ Observed unmodelled secular external torque [N*m], body axes — the §8.5
+    @ tier-2 estimate, which is also what the §9 anomaly monitor gates. No value
+    @ until the observer has accepted its first update.
+    telemetry ResidualTorque: Vec3F64
+
+    @ Feedforward torque [N*m] added to this cycle's demand: minus the modelled
+    @ and observed disturbance, as enabled. Computed in every mode (the observer
+    @ behind it is also the §9 monitor); consumed by POINT.
+    telemetry FeedforwardTorque: Vec3F64
 
     @ Control cycles refused since start (any CtrlRefusal). A climbing count with
     @ the mode stuck at IDLE is the signature of a controller that never engaged.
@@ -448,6 +613,67 @@ module flight {
     event TargetRejected \
       severity warning low \
       format "Inertial hold target rejected: non-finite or null-norm quaternion"
+
+    @ Desaturation engaged: the rods are now unloading the wheels while POINT
+    @ holds the attitude. Both edges are events because a desaturation is a
+    @ magnetic activity an operator correlating a payload anomaly needs to see the
+    @ start and the end of.
+    event DesatEngaged(momentumNms: F64, thresholdNms: F64, forced: bool) \
+      severity activity high \
+      format "Desaturation engaged at {} N*m*s (threshold {}, forced {})"
+
+    @ Desaturation disengaged: the momentum error has been under the exit
+    @ threshold for the confirmation count, or the mode/override withdrew the
+    @ permission.
+    event DesatDisengaged(momentumNms: F64) \
+      severity activity high \
+      format "Desaturation disengaged at {} N*m*s"
+
+    @ Stored momentum is above MomentumEnvelopeNms (§9). Not a wheel-capacity
+    @ alarm — it means the vehicle has left the momentum range its pointing
+    @ margins were analysed over (§8.5 SISO validity boundary), so the loop is no
+    @ longer certified even though every wheel is comfortable.
+    event MomentumEnvelopeExceeded(momentumNms: F64, envelopeNms: F64) \
+      severity warning high \
+      format "Stored momentum {} N*m*s is outside the {} N*m*s envelope"
+
+    @ Stored momentum is back inside the envelope. The recovery edge, on the same
+    @ comparison that raised it.
+    event MomentumEnvelopeRecovered(momentumNms: F64) \
+      severity activity high \
+      format "Stored momentum back inside the envelope at {} N*m*s"
+
+    @ The observed unmodelled secular torque has been outside the modelled
+    @ disturbance budget for DisturbanceAnomalyCycles consecutive updates (§9).
+    @ The signature of a torque source the vehicle does not model — a stuck
+    @ thruster, an unlatched deployment, a residual dipole far past its
+    @ allocation. Reported, not acted on: the response is the Phase-7 state
+    @ machine's, and the honest action here is to name it.
+    event MomentumAnomaly(torqueNm: F64, budgetNm: F64) \
+      severity warning high \
+      format "Momentum anomaly: {} N*m of unmodelled secular torque against a {} N*m budget"
+
+    @ The observed torque fell below DisturbanceClearNm for the same number of
+    @ consecutive updates that latched the anomaly.
+    event MomentumAnomalyCleared(torqueNm: F64) \
+      severity activity high \
+      format "Momentum anomaly cleared at {} N*m"
+
+    @ The wheel-momentum accounting refused this cycle — one dead or stale
+    @ tachometer is enough, since the stored momentum is a sum that needs every
+    @ term. While it persists, desaturation and the §9 envelope and
+    @ momentum-anomaly monitors are all running blind, which is why the refusal
+    @ is an event and not just a NaN on a strip chart: a monitor that loses its
+    @ input has to say so, at the bounded AlertCycles cadence. `wheel` names the
+    @ refusing wheel when the reason is per-wheel, and is -1 otherwise.
+    event MomentumUnavailable(reason: MomentumRefusal, wheel: I32, cycles: U32) \
+      severity warning high \
+      format "Momentum accounting unavailable: {} (wheel {}, {} cycles)"
+
+    @ CTRL_DESAT changed the ground override.
+    event DesatOverrideChanged($action: DesatOverride) \
+      severity activity high \
+      format "Desaturation override set to {}"
 
     @ CTRL_RESET executed.
     event ControllerReset \

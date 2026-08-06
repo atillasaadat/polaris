@@ -89,10 +89,22 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    unless the attitude estimate is fresh, valid, and inside a configured
    attitude-uncertainty bound.
 
-   Holding a commanded inertial attitude under nominal sensing, the steady-state
-   pointing error **shall** be below **1.0 deg**. The reference vehicle measures
-   0.41 deg, so the bound carries a factor of 2.4 in margin; it is stated as a
-   round operational number rather than shaved to the measurement.
+   Holding a commanded inertial attitude under nominal sensing **with the wheel
+   array near its momentum target**, the steady-state pointing error **shall**
+   be below **1.0 deg**. The reference vehicle measures 0.41 deg at that
+   operating point, so the bound carries a factor of 2.4 in margin; it is
+   stated as a round operational number rather than shaved to the measurement.
+
+   The momentum condition is load-bearing, not a caveat: on a **loaded** array
+   the same vehicle measures **2.9°**, and the excess is arithmetically the
+   wheels' Coulomb friction (the pyramid's four ``dry_friction_nm`` reactions
+   sum to 2.3e-4 N·m on the body — more than twice the integrator's whole
+   authority — predicting 3.0° at the committed Kp; see REQ-ACTL-010, whose
+   owed friction-compensation item is what removes the condition). Push 56
+   found this by measuring the requirement at an operating point Push 54 never
+   visited; until the friction feedforward lands, this bound is verified only
+   near zero stored momentum, and the loaded-array behaviour is bounded by
+   REQ-ACTL-010's desaturation rows instead.
 
    Verified by ``tests/integration/sitl_attitude_control_test.cpp``
    (``InertialHoldConvergesUnderThePointingBound``), the allocation properties by
@@ -343,3 +355,196 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    **Owed:** this is the deterministic (rank/Gramian) statement. How fast
    information is *lost* between updates is set by the gyro random walk and
    belongs to the estimator-consistency campaign (§13), not here.
+
+.. req:: Stored-momentum envelope
+   :id: REQ-ACTL-009
+   :status: reviewed
+   :level: L2
+   :tags: adcs, control, momentum, fdir
+   :method: Test
+   :derived_from: REQ-ACTL-006, REQ-ACT-003
+   :allocation: lib/gnc, flight/PolarisFsw/AttitudeController, config/spacecraft
+   :value_required: stored momentum <= MomentumEnvelopeNms (2.0e-3 N.m.s as committed)
+   :margin_required: 10 %
+   :refs: wie2008, camillo1980
+
+   The FSW **shall** compute the wheel array's stored angular momentum
+   :math:`\bar{\mathbf h} = W\,(I_w\boldsymbol\omega_w)` from the wheel
+   tachometers and the configured array geometry, **shall** raise an FDIR event
+   when :math:`\|\bar{\mathbf h}\|` exceeds the configured envelope, and **shall**
+   refuse the computation entirely — rather than understating it — when any wheel
+   reports no usable speed.
+
+   The envelope **shall** be no larger than the stored momentum at which the
+   per-axis (SISO) stability analysis behind REQ-ACTL-006 ceases to be valid,
+   with at least 10 % margin. That coupling is the whole reason the envelope is
+   a *small* number on this vehicle: it is not a wheel-capacity limit but the
+   momentum at which the gyroscopic term :math:`\boldsymbol\omega\times(J
+   \boldsymbol\omega + \bar{\mathbf h})` stops being negligible against the
+   control torque at the loop crossover, past which the margins the vehicle is
+   certified on describe a different system (design doc §8.5, "SISO validity
+   boundary").
+
+   *Measured on the reference vehicle.* The per-axis analysis is valid to
+   **2.72e-3 N·m·s** (the binding X/Y axes, at their 0.272 rad/s crossover); the
+   committed ``MomentumEnvelopeNms`` is **2.0e-3 N·m·s**, i.e. 74 % of the bound
+   and inside the required margin. That is **0.4 %** of one RW-X wheel's 0.5
+   N·m·s capacity — the honest statement of what the shipped linear evidence
+   covers, and the reason the desaturation threshold (1.0e-3 N·m·s) sits far
+   below anything a wheel would notice.
+
+   Verified by ``tests/analysis/test_control_momentum_envelope.py``, which
+   recomputes the bound from the *same committed YAML* through
+   ``analysis.control.plant.siso_coupling`` rather than transcribing it, so the
+   config cannot drift out of the regime its own margin evidence covers; by the
+   component test (``MomentumEnvelopeAndWheelDropout``, which also pins the
+   refusal on a dead tachometer and the recovery edge); and by the ``lib/gnc``
+   unit tests (``MomentumManager.*``).
+
+.. req:: Magnetic desaturation
+   :id: REQ-ACTL-010
+   :status: reviewed
+   :level: L2
+   :tags: adcs, control, momentum, actuators
+   :method: Test
+   :derived_from: REQ-ACT-003, REQ-ACTL-009
+   :allocation: lib/gnc, flight/PolarisFsw/AttitudeController
+   :refs: camillo1980, markley2014, wie2008
+
+   The FSW **shall** unload stored wheel momentum with the magnetorquers using
+   the cross-product law :math:`\mathbf m = k_d(\Delta\mathbf h\times\mathbf
+   B)/\|\mathbf B\|^2`, **concurrently** with reaction-wheel pointing, engaging
+   on a momentum threshold with entry/exit hysteresis and disengaging only after
+   the momentum error has stayed under the exit threshold for a configured
+   number of consecutive cycles.
+
+   The demand **shall** be divided by the §7 duty factor so the average dipole
+   over a control period is the commanded one, and **shall** be clamped per rod
+   rather than scaled, which preserves the sign of every term of
+   :math:`\mathrm{d}\|\Delta\mathbf h\|^2/\mathrm{d}t` and so keeps a saturated
+   desaturation dissipative.
+
+   Desaturation **shall not** run in DETUMBLE: the rods there are B-dot's, and
+   two laws driving one actuator have no schedule that describes either. A
+   ground override (``CTRL_DESAT``) **shall** be able to force or inhibit the
+   decision, and forcing **shall** remain a permission — with no admissible field
+   sample or no momentum estimate, no dipole is commanded.
+
+   *Measured on the reference vehicle*, in closed loop against an unmodelled
+   residual-dipole torque of ~4.5e-5 N·m: the wheels load to the 1.0e-3 N·m·s
+   threshold in ~65 s, the rods engage autonomously at **1.007e-3 N·m·s**, the
+   momentum falls under the 3.0e-4 N·m·s exit threshold in **~10 s** at a peak
+   dipole of ~12 A·m² (of a 15 A·m² rating), and the desaturation disengages
+   13 s after engaging — the dump plus the 5 s confirmation. Stored momentum
+   never approaches the REQ-ACTL-009 envelope, and the cycle repeats every ~82 s
+   under a disturbance that never stops.
+
+   **Pointing during desaturation is asserted, and what it found is a vehicle
+   fact rather than a control-coupling one.** The error falls through every
+   desaturation window and rises while the wheels reload; on a loaded array it
+   reaches 2.9°, against REQ-ACTL-002's 1.0°. The cause is the wheels' Coulomb
+   friction (``dry_friction_nm`` = 1e-4 N·m; the pyramid's four reactions sum to
+   2.3e-4 N·m on the body, more than twice the PID integrator's whole authority),
+   not the rods: at Kp = 4.4e-3 N·m/rad that predicts 3.0° and the run measures
+   2.9°. The row therefore asserts the claim this feature owns — that every
+   desaturation window leaves the pointing **better** than it found it — plus an
+   absolute 3.5° bound, the measurement with 20 % declared margin.
+
+   Verified by ``tests/integration/sitl_attitude_control_test.cpp``
+   (``DesaturationDumpsMomentumWhilePointingHolds`` — the full latch cycle, both
+   edges, with pointing asserted against REQ-ACTL-002 throughout), by the
+   component tests (``DesatEngagesAndDisengagesInPoint``,
+   ``DesatExcludedFromDetumbleAndIdle``, ``DesatGroundOverride``) and by the
+   ``lib/gnc`` unit tests, which pin the dissipativity argument term by term
+   under the per-rod clamp (``MtqDesaturation.*``).
+
+   **Owed (1):** torque-mode wheels on this vehicle have no **friction
+   compensation**. Until the drive-level feedforward (or a speed-mode inner loop)
+   lands, REQ-ACTL-002's 1° is a near-zero-momentum figure and a loaded array
+   holds ~3°. That is a wheel-drive item, not a momentum-management one, and it
+   is recorded here because this is the row that measured it.
+
+   **Owed (2):** the momentum parallel to the field is untouchable at any instant —
+   :math:`\mathbf m\times\mathbf B` has no component along :math:`\hat{\mathbf
+   B}` — so the worst-case unloading time over the orbit's field geometry is a
+   Monte Carlo campaign, as it is for B-dot (REQ-ACTL-001).
+
+.. req:: Disturbance feedforward and the momentum-anomaly monitor
+   :id: REQ-ACTL-011
+   :status: reviewed
+   :level: L2
+   :tags: adcs, control, disturbance, fdir
+   :method: Test
+   :derived_from: REQ-ACTL-002, REQ-FDIR-002
+   :allocation: lib/gnc, flight/PolarisFsw/AttitudeController
+   :value_required: unmodelled secular torque <= DisturbanceBudgetNm (2.0e-5 N.m as committed)
+   :refs: hughes1986, wertz1978, wie2008
+
+   The FSW **shall** feed the modelled environmental torques forward into the
+   pointing demand — gravity gradient :math:`3n^2\,\hat{\mathbf n}\times(J
+   \hat{\mathbf n})` from the onboard attitude and position, and
+   :math:`\mathbf m_{res}\times\mathbf B` from the configured residual moment
+   and the onboard field (tier 1) — and **shall** estimate the *unmodelled*
+   secular external torque from the rate of change of the total system momentum
+   :math:`\mathbf H = J\boldsymbol\omega + \bar{\mathbf h}_w` (tier 2), feeding
+   that forward as well.
+
+   The feedforward **shall** enter the demand ahead of torque saturation and
+   ahead of the integrator's anti-windup decision, and each tier **shall** be
+   independently disable-able.
+
+   The same tier-2 estimate **shall** serve as the §9 **momentum-anomaly
+   monitor**: an observed unmodelled secular torque outside the configured
+   budget for a configured number of consecutive updates raises an FDIR event,
+   and clears below a configured clear threshold at or under the budget — held
+   for the same count — with the latch holding its state between the two
+   thresholds, so an estimate parked at the budget does not cycle the event
+   once per confirmation count. It **shall not** fire on the modelled
+   environment — in particular on the gravity-gradient torque an Earth-pointing
+   vehicle sees at twice the orbital frequency, which tier 1 subtracts before the
+   filter.
+
+   The budget **shall** be derived from the observer's own noise floor at the
+   committed filter length, not from the environment alone: the modelled
+   disturbances on this vehicle total ~2e-7 N·m, far below what a 10 Hz momentum
+   difference can resolve, so a threshold set from the physics alone would alarm
+   on gyro noise. The committed 2.0e-5 N·m is ~5× the filtered floor and ~100×
+   the environment.
+
+   *Measured on the reference vehicle*, flying the **same** vehicle and the same
+   injected 2.4e-4 N·m residual-dipole torque twice, differing only in whether
+   the feedforward tiers are enabled: settled pointing error **3.45°** with
+   feedforward against **3.52°** without, and the §9 anomaly latched **once** in
+   each run — in both, because the observer runs whether or not its estimate is
+   fed forward.
+
+   **What that comparison does and does not establish.** Feedforward buys back
+   the part of a disturbance the feedback loop cannot trim unaided, and at this
+   operating point that part is small: the integrator absorbs up to
+   Ki × clamp = 1.0e-4 N·m per axis on its own, the observer is one time constant
+   into a 200 s filter, and the error budget is dominated by a term feedforward
+   does not address — the wheels' Coulomb friction (REQ-ACTL-010, owed item 1),
+   worth ~3.0° on a loaded array. The row therefore asserts that feedforward
+   does **not degrade** the pointing and records both numbers; asserting the 2 %
+   improvement itself would be a threshold inside its own noise. A decisive
+   measurement of what the feedforward is worth waits on the friction term being
+   removed from the budget it is compared against, and is owed.
+
+   The anomaly monitor's own evidence is stronger and is what this row pins: it
+   fires on the injected torque and, in the nominal inertial-hold row, does not
+   fire at all — and it stays silent through a **full-authority detumble**, where
+   B-dot's own magnetic torque is more than ten times the budget, because the
+   controller subtracts the torque it commanded (the *previous* cycle's, since a
+   command applies over the following interval).
+
+   Verified by ``tests/integration/sitl_attitude_control_test.cpp``
+   (``FeedforwardImprovesPointingAndTheAnomalyMonitorFires``, a paired
+   with/without comparison on one vehicle and one disturbance, plus
+   ``InertialHoldConvergesUnderThePointingBound``, which is the row proving the
+   monitor stays **quiet** on a nominal vehicle) and by the ``lib/gnc`` unit
+   tests (``DisturbanceObserver.*``, including convergence to a known injected
+   torque, the latch and its clearing, and the negative on the modelled
+   gravity-gradient signature).
+
+   **Owed:** tier 3 — fitting the residual dipole and the drag/SRP scale factors
+   from long-arc data — needs the §8.3 orbit filter and is not implemented.

@@ -6,7 +6,7 @@ sensors → FSW → actuators**, sim-time-driven and bit-reproducible from
 
 | File | Role |
 |---|---|
-| `closed_loop.{hpp,cpp}` | The loop: exact integer-ns event grid from each sensor's native rate; micro-steps the plant between events; §2.4 buffers (IMU delta accumulation, latest-valid for discrete sensors); fires `FswCallback` at each macro boundary; holds returned commands for the *next* interval (causality); feeds actuator output into the dynamics (`CommandedWrench`: RW reaction torques through the assembly's W, MTQ m×B); applies the GNSS jamming map + fault schedule at sample time (§9.2) |
+| `closed_loop.{hpp,cpp}` | The loop: exact integer-ns event grid from each sensor's native rate; micro-steps the plant between events; §2.4 buffers (IMU delta accumulation, latest-valid for discrete sensors); reads the wheel tachometers at each macro boundary for the §8.5 momentum management (an actuator that reports state, so it crosses as a measurement); fires `FswCallback` at each macro boundary; holds returned commands for the *next* interval (causality); feeds actuator output into the dynamics (`CommandedWrench`: RW reaction torques through the assembly's W, MTQ m×B); applies the GNSS jamming map + fault schedule at sample time (§9.2) |
 | `sitl_server.{hpp,cpp}` | The two-process barrier (§2.2/§2.4): an `FswCallback` backed by a live `flight_PolarisFsw -s <port>` process. Sim listens on loopback; the FSW's `Drv::TcpClient` connects; payloads are the shared `lib/sitl/wire.hpp` PODs inside standard F´ frames (start word + length + CRC-32, byte-identical to `Svc::FprimeFramer`). The blocking STEP_REQ→STEP_REPLY read *is* the barrier; a protocol failure degrades to open loop (`healthy()` false) rather than crashing the run |
 
 ## The contract, in five tests

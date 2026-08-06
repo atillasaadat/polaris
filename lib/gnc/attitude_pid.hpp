@@ -178,6 +178,27 @@ class AttitudePid {
               const math::Quat<math::frames::Body, math::frames::ECI>& q_ref,
               const math::Vec3<math::frames::Body>& rate_ref, double dt_s, AttitudePidResult& out);
 
+  /// As above, with a **feedforward** body torque added to the demand.
+  ///
+  /// @param feedforward_nm torque [N·m] added to the PID terms *before* the
+  ///        saturation test and therefore before the anti-windup decision. That
+  ///        ordering is the point of putting it here rather than at the caller:
+  ///        feedforward that is added after saturation can command more torque
+  ///        than the vehicle has, and feedforward the integrator cannot see makes
+  ///        the integrator fill against a disturbance the feedforward is already
+  ///        cancelling — the two would fight, and the integrator would win slowly.
+  ///        The §8.5 disturbance feedforward passes **minus** the estimated
+  ///        disturbance (`gnc/disturbance.hpp`), since the demand is the torque
+  ///        the actuators must produce.
+  ///
+  /// The five-argument overload above is this one with zero feedforward.
+  bool update(const math::Quat<math::frames::Body, math::frames::ECI>& q_est,
+              const math::Vec3<math::frames::Body>& rate_est,
+              const math::Quat<math::frames::Body, math::frames::ECI>& q_ref,
+              const math::Vec3<math::frames::Body>& rate_ref,
+              const math::Vec3<math::frames::Body>& feedforward_nm, double dt_s,
+              AttitudePidResult& out);
+
   /// Zero the integrator.
   void reset();
 

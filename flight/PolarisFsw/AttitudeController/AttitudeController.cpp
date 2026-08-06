@@ -8,6 +8,7 @@
 #include <cmath>
 #include <limits>
 
+#include "constants/constants.hpp"
 #include "Fw/Log/LogString.hpp"
 
 namespace flight {
@@ -79,6 +80,13 @@ void AttitudeController ::commandModeAtStartup(U32 mode, const F64 q[4]) {
   this->pending_mode_ = mode;
 }
 
+void AttitudeController ::setFeedforwardAtStartup(bool model, bool observer) {
+  this->feedforward_override_ = true;
+  this->feedforward_model_override_ = model;
+  this->feedforward_observer_override_ = observer;
+  (void)this->applyParameters();
+}
+
 // ----------------------------------------------------------------------
 // Inputs
 // ----------------------------------------------------------------------
@@ -87,6 +95,19 @@ void AttitudeController ::estimateIn_handler(FwIndexType portNum,
                                              const AttitudeEstimate& estimate) {
   this->estimate_ = estimate;
   this->have_estimate_ = true;
+}
+
+void AttitudeController ::wheelSpeedIn_handler(FwIndexType portNum, const WheelSpeedMeas& meas) {
+  const U32 index = static_cast<U32>(portNum);
+  if (index >= static_cast<U32>(polaris::gnc::kMaxWheels)) {
+    return;
+  }
+  this->wheel_speed_radps_[index] = meas.get_speedRadps();
+  this->wheel_speed_time_ns_[index] = meas.get_timeTagNs();
+  // The unit's own validity flag is necessary but not sufficient: a finite-looking
+  // reading is what the momentum sum needs, and an infinite one flagged valid
+  // would poison every term (§9.1).
+  this->wheel_speed_valid_[index] = meas.get_valid() && std::isfinite(meas.get_speedRadps());
 }
 
 I64 AttitudeController ::currentTaiNs() const {
@@ -200,6 +221,10 @@ bool AttitudeController ::applyParameters() {
       // sign-inverted, perfectly plausible controller.
       alloc.axes.col(static_cast<Eigen::Index>(i)) = -spin[i];
       alloc.max_torque_nm[i] = wheel_max_torque;
+      // The momentum side keeps the axes **unnegated**: a wheel spinning along
+      // +a stores momentum along +a while its motor torque reacts on the body
+      // along -a. Two signs, one config read, both stated where they are applied.
+      this->wheel_axes_[i] = spin[i];
     }
   }
   {
@@ -262,6 +287,82 @@ bool AttitudeController ::applyParameters() {
     }
   }
 
+  // --- Momentum management and disturbance feedforward (§8.5) --------------
+  polaris::gnc::MomentumConfig momentum;
+  polaris::gnc::MtqDesatConfig desat;
+  polaris::gnc::DisturbanceObserverConfig observer;
+  POLARIS_GET(this->wheel_inertia_kgm2_, paramGet_WheelInertiaKgm2, "WheelInertiaKgm2");
+  POLARIS_GET(momentum.desat_enter_nms, paramGet_MomentumDesatEnterNms, "MomentumDesatEnterNms");
+  POLARIS_GET(momentum.desat_exit_nms, paramGet_MomentumDesatExitNms, "MomentumDesatExitNms");
+  POLARIS_GET(momentum.envelope_nms, paramGet_MomentumEnvelopeNms, "MomentumEnvelopeNms");
+  POLARIS_GET(desat.gain_per_s, paramGet_DesatGainPerSec, "DesatGainPerSec");
+  POLARIS_GET(observer.tau_s, paramGet_ObserverTauSec, "ObserverTauSec");
+  POLARIS_GET(this->disturbance_budget_nm_, paramGet_DisturbanceBudgetNm, "DisturbanceBudgetNm");
+  POLARIS_GET(observer.anomaly_clear_nm, paramGet_DisturbanceClearNm, "DisturbanceClearNm");
+  {
+    Fw::ParamValid v = Fw::ParamValid::INVALID;
+    momentum.desat_confirm_cycles = this->paramGet_MomentumDesatConfirmCycles(v);
+    if (v != Fw::ParamValid::VALID) {
+      return fail("MomentumDesatConfirmCycles");
+    }
+    observer.anomaly_cycles = this->paramGet_DisturbanceAnomalyCycles(v);
+    if (v != Fw::ParamValid::VALID || observer.anomaly_cycles == 0) {
+      return fail("DisturbanceAnomalyCycles");
+    }
+    const U8 model_enable = this->paramGet_FeedforwardModelEnable(v);
+    if (v != Fw::ParamValid::VALID || model_enable > 1) {
+      return fail("FeedforwardModelEnable");
+    }
+    this->feedforward_model_ = model_enable != 0;
+    const U8 observer_enable = this->paramGet_FeedforwardObserverEnable(v);
+    if (v != Fw::ParamValid::VALID || observer_enable > 1) {
+      return fail("FeedforwardObserverEnable");
+    }
+    this->feedforward_observer_ = observer_enable != 0;
+    // The SITL/bench override (see setFeedforwardAtStartup) is applied *after*
+    // the parameters are read and validated, so a run with feedforward forced off
+    // still refuses a configuration whose feedforward tuning is missing — the
+    // experiment must fly the same vehicle, not a differently-validated one.
+    if (this->feedforward_override_) {
+      this->feedforward_model_ = this->feedforward_model_override_;
+      this->feedforward_observer_ = this->feedforward_observer_override_;
+    }
+
+    const Vec3F64 target = this->paramGet_MomentumTargetBody(v);
+    if (v != Fw::ParamValid::VALID) {
+      return fail("MomentumTargetBody");
+    }
+    momentum.target_nms = Eigen::Vector3d(target[0], target[1], target[2]);
+    const Vec3F64 inertia = this->paramGet_InertiaBodyKgm2(v);
+    if (v != Fw::ParamValid::VALID) {
+      return fail("InertiaBodyKgm2");
+    }
+    this->inertia_diag_kgm2_ = Eigen::Vector3d(inertia[0], inertia[1], inertia[2]);
+    if (!this->inertia_diag_kgm2_.allFinite() || this->inertia_diag_kgm2_.minCoeff() <= 0.0) {
+      return fail("InertiaBodyKgm2 must be positive");
+    }
+    const Vec3F64 residual = this->paramGet_ResidualDipoleAm2(v);
+    if (v != Fw::ParamValid::VALID) {
+      return fail("ResidualDipoleAm2");
+    }
+    this->residual_dipole_am2_ = Eigen::Vector3d(residual[0], residual[1], residual[2]);
+    if (!this->residual_dipole_am2_.allFinite()) {
+      return fail("ResidualDipoleAm2 must be finite");
+    }
+  }
+  momentum.wheel_count = alloc.wheel_count;
+  momentum.rotor_inertia_kgm2 = this->wheel_inertia_kgm2_;
+  for (U32 i = 0; i < this->wheel_count_; ++i) {
+    momentum.spin_axes.col(static_cast<Eigen::Index>(i)) = this->wheel_axes_[i];
+  }
+  // The desaturation runs on the same duty cycle B-dot does — one schedule, one
+  // divisor — and the observer's largest step is the PID's, because both are
+  // asking "how long since the last cycle of this same rate group".
+  desat.duty_factor = this->mtq_duty_factor_;
+  observer.max_dt_s = pid.max_dt_s;
+  observer.anomaly_torque_nm = this->disturbance_budget_nm_;
+  this->momentum_envelope_nms_ = momentum.envelope_nms;
+
 #undef POLARIS_GET
 
   // Range gates that span parameters, and therefore belong here rather than in
@@ -297,12 +398,24 @@ bool AttitudeController ::applyParameters() {
   if (!alloc.isValid()) {
     return fail("Wheel array is degenerate or its limits are out of range");
   }
+  if (!momentum.isValid()) {
+    return fail("Momentum tuning out of range (thresholds, envelope or wheel inertia)");
+  }
+  if (!desat.isValid()) {
+    return fail("DesatGainPerSec out of range");
+  }
+  if (!observer.isValid()) {
+    return fail("Disturbance observer tuning out of range");
+  }
 
   this->pid_max_torque_nm_ = pid.max_torque_nm;
   this->bdot_ = polaris::gnc::BdotController(bdot);
   this->pid_ = polaris::gnc::AttitudePid(pid);
   this->allocator_ = polaris::gnc::RwAllocator(alloc);
   this->rate_hysteresis_ = polaris::gnc::RateHysteresis(hysteresis);
+  this->momentum_ = polaris::gnc::MomentumManager(momentum);
+  this->observer_ = polaris::gnc::DisturbanceObserver(observer);
+  this->desat_config_ = desat;
 
   if (this->alloc_method_ == polaris::gnc::RwAllocationMethod::kMinMax &&
       !this->allocator_.supportsMinMax()) {
@@ -327,6 +440,10 @@ void AttitudeController ::parameterUpdated(FwPrmIdType id) {
   this->pid_.reset();
   this->bdot_.reset();
   this->rate_hysteresis_.reset();
+  this->momentum_.reset();
+  // The observer's history is a filtered torque built under the old inertia and
+  // the old model; a tuning change makes it a number about a different vehicle.
+  this->observer_.reset();
 }
 
 // ----------------------------------------------------------------------
@@ -341,7 +458,11 @@ void AttitudeController ::setMode(CtrlMode::T next) {
   this->mode_ = next;
   // Every mode entry starts from a clean law: an integrator or a stored field
   // sample from the last time this mode ran describes a vehicle that has since
-  // moved.
+  // moved. The momentum manager and the disturbance observer are deliberately
+  // **not** reset: stored wheel momentum and the ambient disturbance torque are
+  // properties of the vehicle and its orbit, not of the mode, and throwing away a
+  // converged torque estimate at every mode change would leave the observer
+  // permanently re-converging on a vehicle that changes mode.
   this->pid_.reset();
   this->bdot_.reset();
   this->rate_hysteresis_.reset();
@@ -407,16 +528,30 @@ void AttitudeController ::CTRL_RESET_cmdHandler(FwOpcodeType opCode, U32 cmdSeq)
   this->pid_.reset();
   this->bdot_.reset();
   this->rate_hysteresis_.reset();
+  this->momentum_.reset();
+  this->observer_.reset();
+  this->desat_active_ = false;
+  this->envelope_alerted_ = false;
+  this->anomaly_alerted_ = false;
   this->stuck_mask_ = 0;
   this->stuck_candidate_mask_ = 0;
   this->stuck_streak_ = 0;
   this->clear_streak_ = 0;
   this->stuck_confirmed_ = false;
   this->refusal_streak_ = 0;
+  this->momentum_refusal_streak_ = 0;
   this->have_last_cycle_ = false;
   this->setMode(CtrlMode::IDLE);
   (void)this->applyParameters();
   this->log_ACTIVITY_HI_ControllerReset();
+  this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
+}
+
+void AttitudeController ::CTRL_DESAT_cmdHandler(FwOpcodeType opCode, U32 cmdSeq,
+                                                DesatOverride action) {
+  this->desat_override_ = action.e;
+  this->log_ACTIVITY_HI_DesatOverrideChanged(DesatOverride(this->desat_override_));
+  this->tlmWrite_DesatOverrideTlm(DesatOverride(this->desat_override_));
   this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
 }
 
@@ -491,17 +626,36 @@ bool AttitudeController ::runDetumble(pm::Vec3<Body>& dipole, CtrlRefusal::T& re
     return false;
   }
 
+  if (!this->clampDipoleToRods(result.dipole_am2, dipole)) {
+    // Distinct from NO_FIELD: a sample arrived and a derivative was formed, and
+    // the arithmetic still produced something uncommandable. That is a numerics
+    // fault, not a sensing one, and the two want different responses.
+    reason = CtrlRefusal::BAD_COMMAND;
+    return false;
+  }
+  this->noteMagneticTorque(dipole, fromVec3F64(this->estimate_.get_magFieldBody()));
+  return true;
+}
+
+bool AttitudeController ::clampDipoleToRods(const pm::Vec3<Body>& demand,
+                                            pm::Vec3<Body>& applied_out) {
   // Resolve the body dipole onto the rod triad, clamp each rod, and re-expand.
-  // **The only clamp on this path**: the law returns an unclamped demand because
-  // a rated moment is a limit in the *rod* basis, and clamping in body axes too
-  // would discard authority the rods still have whenever the triad is not
-  // body-aligned. Componentwise (rather than a direction-preserving scale) is
-  // what keeps a saturated B-dot dissipative — see lib/gnc/bdot.hpp.
+  // **The only clamp on the magnetic path**, and shared by B-dot and
+  // desaturation so the two cannot saturate differently: the laws return an
+  // unclamped demand because a rated moment is a limit in the *rod* basis, and
+  // clamping in body axes too would discard authority the rods still have
+  // whenever the triad is not body-aligned. Componentwise (rather than a
+  // direction-preserving scale) is what keeps both laws dissipative — the sign of
+  // every term of the energy/momentum rate survives it, which is the argument
+  // lib/gnc/bdot.hpp and lib/gnc/momentum.hpp each carry for their own law, and
+  // which holds only because the triad is orthonormal (applyParameters refuses
+  // any other).
+  this->commanded_mask_ = 0;
   Eigen::Vector3d applied = Eigen::Vector3d::Zero();
   bool saturated = false;
   double worst = 0.0;
   for (U32 i = 0; i < kRodCount; ++i) {
-    double strength = result.dipole_am2.eigen().dot(this->rod_axes_[i]);
+    double strength = demand.eigen().dot(this->rod_axes_[i]);
     if (strength > this->bdot_max_dipole_am2_) {
       strength = this->bdot_max_dipole_am2_;
       saturated = true;
@@ -516,10 +670,6 @@ bool AttitudeController ::runDetumble(pm::Vec3<Body>& dipole, CtrlRefusal::T& re
     applied += strength * this->rod_axes_[i];
   }
   if (!applied.allFinite()) {
-    // Distinct from NO_FIELD: a sample arrived and a derivative was formed, and
-    // the arithmetic still produced something uncommandable. That is a numerics
-    // fault, not a sensing one, and the two want different responses.
-    reason = CtrlRefusal::BAD_COMMAND;
     this->commanded_mask_ = 0;
     return false;
   }
@@ -533,7 +683,7 @@ bool AttitudeController ::runDetumble(pm::Vec3<Body>& dipole, CtrlRefusal::T& re
     this->dipole_saturation_streak_ = 0;
   }
 
-  dipole = pm::Vec3<Body>(applied);
+  applied_out = pm::Vec3<Body>(applied);
   return true;
 }
 
@@ -545,10 +695,17 @@ bool AttitudeController ::runPoint(double dtSec, double* wheelTorque, CtrlRefusa
     return false;
   }
 
+  // Disturbance feedforward (§8.5 tiers 1-2), computed earlier this cycle by
+  // `updateDisturbance`, enters the demand *inside* the PID — ahead of the
+  // saturation test and the anti-windup decision. Added afterwards it could
+  // command torque the vehicle does not have; hidden from the integrator it
+  // would fight the integrator that is cancelling the same disturbance.
+  const pm::Vec3<Body>& feedforward = this->feedforward_nm_;
+
   polaris::gnc::AttitudePidResult pid;
   if (!this->pid_.update(polaris::math::Quat<Body, ECI>(estimate),
                          fromVec3F64(this->estimate_.get_bodyRateRadps()), this->target_,
-                         pm::Vec3<Body>(Eigen::Vector3d::Zero()), dtSec, pid)) {
+                         pm::Vec3<Body>(Eigen::Vector3d::Zero()), feedforward, dtSec, pid)) {
     reason = CtrlRefusal::ATTITUDE_INVALID;
     return false;
   }
@@ -805,6 +962,12 @@ void AttitudeController ::run_handler(FwIndexType portNum, U32 context) {
   // the one in which the residual is unambiguous.
   this->runStuckOnMonitor(nowNs);
 
+  // Momentum accounting and the disturbance observer likewise run in every mode:
+  // the §9 envelope and momentum-anomaly monitors are vehicle-level fault
+  // conditions, not POINT diagnostics, and an observer that only ran while
+  // pointing would have to re-converge every time the vehicle did anything else.
+  (void)this->updateMomentum(nowNs);
+
   double wheel_torque[polaris::gnc::kMaxWheels] = {};
   pm::Vec3<Body> dipole(Eigen::Vector3d::Zero());
   bool rods_active = false;
@@ -813,19 +976,48 @@ void AttitudeController ::run_handler(FwIndexType portNum, U32 context) {
 
   if (this->mode_ != CtrlMode::IDLE) {
     ok = this->estimateUsable(nowNs, this->mode_, reason);
-    if (ok && this->mode_ == CtrlMode::DETUMBLE) {
+  }
+
+  // **Desaturation runs concurrently with POINT**: the wheels hold the attitude
+  // and the rods dump what the wheels are holding, in the same cycle on
+  // different actuators. `desatDue` excludes every mode but POINT, so B-dot's
+  // ownership of the rods in DETUMBLE is never contested.
+  //
+  // It is decided **before** the pointing law, and that ordering is load-bearing
+  // rather than tidy: the magnetic torque the rods are about to apply is a
+  // disturbance to the pointing loop, it is known exactly and in advance, and
+  // handing it to the PID as feedforward is the difference between the wheels
+  // being told about it and the wheels discovering it as attitude error. A
+  // desaturation cycle that produces no dipole (a refused law, a clamp that went
+  // non-finite) simply leaves the rods off; it does not refuse the pointing
+  // cycle, because pointing is not what failed.
+  const bool desat_now = ok && this->desatDue();
+  this->magnetic_torque_prev_nm_ = this->magnetic_torque_nm_;
+  this->magnetic_torque_nm_ = pm::Vec3<Body>(Eigen::Vector3d::Zero());
+  if (desat_now && this->runDesat(dipole)) {
+    rods_active = true;
+  } else if (!desat_now && this->mode_ == CtrlMode::POINT) {
+    this->commanded_mask_ = 0;
+  }
+
+  // The disturbance chain, which now has this cycle's magnetic torque to model,
+  // and which runs in every mode: the §9 envelope and momentum-anomaly monitors
+  // are vehicle-level fault conditions, not POINT diagnostics, and an observer
+  // that only ran while pointing would re-converge every time the vehicle did
+  // anything else.
+  this->updateDisturbance(nowNs);
+
+  if (this->mode_ != CtrlMode::IDLE && ok) {
+    if (this->mode_ == CtrlMode::DETUMBLE) {
       ok = this->runDetumble(dipole, reason);
       rods_active = ok;
-    } else if (ok) {
-      if (!this->have_target_) {
-        ok = false;
-        reason = CtrlRefusal::NO_TARGET;
-      } else {
-        const double dt_s = this->have_last_cycle_
-                                ? static_cast<double>(nowNs - this->last_cycle_ns_) / 1.0e9
-                                : 0.0;
-        ok = this->runPoint(dt_s, wheel_torque, reason);
-      }
+    } else if (!this->have_target_) {
+      ok = false;
+      reason = CtrlRefusal::NO_TARGET;
+    } else {
+      const double dt_s =
+          this->have_last_cycle_ ? static_cast<double>(nowNs - this->last_cycle_ns_) / 1.0e9 : 0.0;
+      ok = this->runPoint(dt_s, wheel_torque, reason);
     }
   }
 
@@ -839,6 +1031,12 @@ void AttitudeController ::run_handler(FwIndexType portNum, U32 context) {
     dipole = pm::Vec3<Body>(Eigen::Vector3d::Zero());
     rods_active = false;
     this->commanded_mask_ = 0;
+    // The recorded magnetic torque must describe what `commandActuators`
+    // actually publishes, and this path publishes nothing: a desaturation
+    // decided above and withdrawn here would otherwise still be subtracted from
+    // the observer next cycle, and the §9 anomaly would fire on a torque the
+    // vehicle never applied — its own inaction, sign-reversed.
+    this->magnetic_torque_nm_ = pm::Vec3<Body>(Eigen::Vector3d::Zero());
     ++this->cycles_refused_;
     if (reason == this->refusal_reason_) {
       ++this->refusal_streak_;
@@ -855,6 +1053,27 @@ void AttitudeController ::run_handler(FwIndexType portNum, U32 context) {
     this->last_cycle_ns_ = nowNs;
     this->have_last_cycle_ = true;
   }
+
+  // The desat edge is reported from what is **commanded**, not from what was
+  // decided, which is why it sits below the refusal path: `desat_now` upstream
+  // is a decision, and both a refused desaturation law and a pointing refusal
+  // that zeroes the dipole withdraw the command after the decision. An event
+  // whose purpose is to timestamp magnetic activity for an operator correlating
+  // a payload anomaly must never report a window in which no rod was driven.
+  const bool desat_commanded = rods_active && this->mode_ == CtrlMode::POINT;
+  if (desat_commanded != this->desat_active_) {
+    const double momentum_nms =
+        this->momentum_state_.valid ? this->momentum_state_.error_norm_nms : kNoValue;
+    if (desat_commanded) {
+      this->log_ACTIVITY_HI_DesatEngaged(momentum_nms, this->momentum_.config().desat_enter_nms,
+                                         this->desat_override_ == DesatOverride::FORCE);
+    } else {
+      this->log_ACTIVITY_HI_DesatDisengaged(momentum_nms);
+    }
+    this->desat_active_ = desat_commanded;
+  }
+  this->tlmWrite_DesatActive(this->desat_active_);
+  this->tlmWrite_DesatOverrideTlm(DesatOverride(this->desat_override_));
 
   if (this->mode_ == CtrlMode::IDLE) {
     this->tlmWrite_TorqueCmd(toVec3F64(Eigen::Vector3d::Zero()));

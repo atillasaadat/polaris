@@ -122,7 +122,9 @@ add_library(polaris_gnc
   gnc/st_alignment.cpp
   gnc/bdot.cpp
   gnc/attitude_pid.cpp
-  gnc/rw_allocation.cpp)
+  gnc/rw_allocation.cpp
+  gnc/momentum.cpp
+  gnc/disturbance.cpp)
 target_include_directories(polaris_gnc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_gnc
   PUBLIC Eigen3::Eigen polaris_math polaris_time polaris_state polaris_constants

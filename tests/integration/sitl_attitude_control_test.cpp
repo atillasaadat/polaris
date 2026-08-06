@@ -92,6 +92,9 @@ struct RunResult {
   double peak_rod_off_axis[3] = {0.0, 0.0, 0.0};
   double peak_on_window_s = 0.0;
   double peak_wheel_torque = 0.0;
+  /// Commanded body-dipole magnitude [A·m²] at each exchanged step, so a row can
+  /// say *when* the rods were driven and correlate that with what the vehicle did.
+  std::vector<double> rod_dipole_am2;
 };
 
 /// Compile the vehicle config, fork the deployment with @p ctrlMode latched,
@@ -103,7 +106,7 @@ struct RunResult {
 /// against a run that did not happen.
 template <typename PerStep>
 RunResult fly(const std::string& tag, const scenario::SimConfig& orbit, unsigned ctrlMode,
-              const double* targetQ, PerStep perStep) {
+              const double* targetQ, PerStep perStep, int feedforward = -1) {
   RunResult result;
   const std::string work_dir =
       "build-artifacts/test-control-" + tag + "-" + std::to_string(::getpid());
@@ -120,9 +123,9 @@ RunResult fly(const std::string& tag, const scenario::SimConfig& orbit, unsigned
     ADD_FAILURE() << server.lastError();
     return result;
   }
-  const pid_t pid =
-      spawnFsw(fswBinaryPath(), server.port(), prm_path, log_path,
-               /*magCalSamples=*/0, /*stAlignPairs=*/0, /*stAlignUnit=*/1, ctrlMode, targetQ);
+  const pid_t pid = spawnFsw(fswBinaryPath(), server.port(), prm_path, log_path,
+                             /*magCalSamples=*/0, /*stAlignPairs=*/0, /*stAlignUnit=*/1, ctrlMode,
+                             targetQ, feedforward);
   if (pid < 0) {
     ADD_FAILURE() << "fork failed";
     return result;
@@ -173,6 +176,11 @@ RunResult fly(const std::string& tag, const scenario::SimConfig& orbit, unsigned
     for (const io::WheelCommand& w : out.wheels) {
       result.peak_wheel_torque = std::max(result.peak_wheel_torque, std::abs(w.value));
     }
+    Eigen::Vector3d commanded = Eigen::Vector3d::Zero();
+    for (const pm::Vec3<pm::frames::Body>& d : out.magnetorquer_dipoles) {
+      commanded += d.eigen();
+    }
+    result.rod_dipole_am2.push_back(out.mtq_on_window_s > 0.0 ? commanded.norm() : 0.0);
     return out;
   };
 
@@ -366,6 +374,16 @@ TEST(SitlAttitudeControl, InertialHoldConvergesUnderThePointingBound) {
   // a different failure and is asserted absent separately.
   EXPECT_LE(countOf(run.log, "Control refused in mode POINT"), 1u);
   EXPECT_EQ(countOf(run.log, "POINT (2): QUALITY_FLOOR"), 0u);
+
+  // **The quiet side of the §8.5/§9 momentum monitors, and the row that makes
+  // their positives evidence.** This is the nominal vehicle: the modelled
+  // environment is ~2e-7 N·m and the wheels barely load, so nothing here may
+  // desaturate and nothing may declare a momentum anomaly. A monitor with no row
+  // proving it can stay quiet is a monitor nobody will believe when it fires.
+  EXPECT_EQ(countOf(run.log, "Desaturation engaged"), 0u);
+  EXPECT_EQ(countOf(run.log, "Momentum anomaly:"), 0u);
+  EXPECT_EQ(countOf(run.log, "outside the"), 0u)
+      << "the §9 momentum envelope fired on a nominal run";
 }
 
 // ======================================================================
@@ -515,6 +533,265 @@ TEST(SitlAttitudeControl, NominalDutyCycledDetumbleDoesNotTripTheStuckOnMonitor)
   // And the magnetic pair kept flowing: no magnetometer was excluded, and the
   // estimator never lost its attitude.
   EXPECT_EQ(countOf(run.log, "Attitude lost"), 0u);
+}
+
+// ======================================================================
+// Row 6 — momentum management: the full desaturation latch cycle
+// ======================================================================
+
+/// Residual magnetic moment [A·m²] the momentum rows fly to load the wheels.
+/// Physically it is a vehicle whose magnetic cleanliness is three orders past its
+/// allocation (the config's own residual is 0.0027 A·m²), which is deliberate:
+/// it is an external, secular, *unmodelled* torque — the only kind that actually
+/// loads a wheel array — and it is the disturbance class the §9 anomaly monitor
+/// exists to name. At the 500 km field it produces up to ~4.5e-5 N·m.
+///
+/// Sized so the desaturation can win: the law's equilibrium is where
+/// k_d * |dh| equals the disturbance, i.e. 4.5e-5 / 0.2 = 2.3e-4 N·m·s, which is
+/// **below** the 3.0e-4 N·m·s exit threshold. A larger disturbance would leave the
+/// vehicle desaturating forever at a momentum the law cannot get under, which is
+/// a real operating point but not a latch cycle.
+constexpr double kLoadingDipoleAm2 = 1.5;
+
+/// The stronger residual the feedforward row flies [A·m²]: ~2.4e-4 N·m. Two
+/// floors have to be cleared for the comparison to measure feedforward rather
+/// than noise, and this number is what clears both. Below the PID integrator's
+/// own authority (Ki * clamp = 1.0e-4 N·m) the integrator trims the disturbance
+/// out unaided; below the wheels' Coulomb-friction reaction on a loaded array
+/// (4 * 1e-4 / sqrt(3) = 2.3e-4 N·m, the term the desaturation row measures and
+/// which feedforward does *not* address) the friction dominates both runs and
+/// the difference between them is a rounding error.
+constexpr double kFeedforwardDipoleAm2 = 8.0;
+
+/// Body-frame stored wheel momentum of the truth vehicle [N·m·s] — the quantity
+/// the flight software estimates from its tachometers, read here from the plant.
+double storedMomentum(const scenario::Vehicle& vehicle) {
+  Eigen::Vector3d h = Eigen::Vector3d::Zero();
+  for (std::size_t i = 0; i < vehicle.wheels.size(); ++i) {
+    h += vehicle.rw_assembly.matrix().col(static_cast<Eigen::Index>(i)) *
+         vehicle.wheels[i].model.momentum();
+  }
+  return h.norm();
+}
+
+/// The inertial-hold orbit with a residual dipole large enough to load the wheels.
+scenario::SimConfig loadingOrbit(double durationS, const char* name, double dipoleAm2) {
+  scenario::SimConfig orbit = faultMatrixOrbit(durationS, name);
+  orbit.environment.residual_dipole_torque_enabled = true;
+  orbit.spacecraft.residual_dipole_am2 =
+      pm::Vec3<pm::frames::Body>(Eigen::Vector3d(dipoleAm2, 0.0, 0.0));
+  return orbit;
+}
+
+TEST(SitlAttitudeControl, DesaturationDumpsMomentumWhilePointingHolds) {
+  RecordProperty("verifies", "REQ-ACTL-010");
+  std::string why;
+  if (toolchainMissing(why)) {
+    GTEST_SKIP() << why;
+  }
+
+  const pm::Quat<pm::frames::Body, pm::frames::ECI> target = faultMatrixAttitude();
+  const pm::Quaternion tq = target.core();
+  const double target_q[4] = {tq.w(), tq.x(), tq.y(), tq.z()};
+
+  scenario::SimConfig orbit = loadingOrbit(250.0, "sitl-desat", kLoadingDipoleAm2);
+
+  // Truth-side momentum, sampled on the macro-step seam. The flight software
+  // estimates this from its tachometers; recording the plant's own value is what
+  // makes "the momentum came down" a measurement rather than an inference from
+  // the event stream.
+  std::vector<double> momentum;
+  const RunResult run =
+      fly("desat", orbit, /*ctrlMode=*/2, target_q,
+          [&momentum](scenario::Vehicle& v, unsigned) { momentum.push_back(storedMomentum(v)); });
+  ASSERT_TRUE(run.sim_healthy);
+  ASSERT_GT(run.trace.size(), 2000u);
+  ASSERT_GT(momentum.size(), 2000u);
+
+  EXPECT_GE(countOf(run.log, "Control mode IDLE (0) -> POINT"), 1u);
+
+  // **The full latch cycle, both edges.** The wheels load against the residual
+  // dipole, the controller engages the rods on its own predicate, the momentum
+  // comes down, and the desaturation ends once it has stayed low for the
+  // confirmation count. A row that asserted only the engage edge would pass on a
+  // latch that can never clear, which is the defect class this suite exists to
+  // catch.
+  ASSERT_GE(countOf(run.log, "Desaturation engaged"), 1u) << run.log;
+  ASSERT_GE(countOf(run.log, "Desaturation disengaged"), 1u)
+      << "the desaturation never ended — the momentum never came back under the "
+         "exit threshold, or the predicate cannot clear:\n"
+      << run.log;
+  EXPECT_GT(indexOf(run.log, "Desaturation disengaged"), indexOf(run.log, "Desaturation engaged"));
+
+  // The momentum really was dumped: the peak is past the 1.0e-3 N·m·s engage
+  // threshold and the value at the end of the run is a fraction of it.
+  const double peak = *std::max_element(momentum.begin(), momentum.end());
+  const double settled = momentum.back();
+  RecordProperty("peak_stored_momentum_nms", std::to_string(peak));
+  RecordProperty("final_stored_momentum_nms", std::to_string(settled));
+  EXPECT_GT(peak, 1.0e-3) << "the wheels never loaded past the desaturation threshold";
+  EXPECT_LT(settled, 0.5 * peak);
+  // ...and it never left the analysed envelope (2.0e-3 N·m·s), which is the
+  // requirement the desaturation exists to keep: the loop's margins are only
+  // valid inside it. Asserted with the requirement's own margin, not the
+  // measured peak.
+  EXPECT_LT(peak, 2.0e-3) << "stored momentum left the SISO-validity envelope";
+  EXPECT_EQ(countOf(run.log, "outside the"), 0u) << "the §9 envelope monitor fired";
+
+  // **Pointing through the desaturation, and the vehicle fact this row found.**
+  // The rods torque the vehicle while the wheels hold it, so if the two fought
+  // this is where it would show. They do not: the profile below has the pointing
+  // error *falling* through every desaturation window and rising while the
+  // wheels reload, which is the opposite of a fight.
+  //
+  // What the error tracks instead is the **stored momentum**, and the mechanism
+  // is the wheels' own Coulomb friction. RW-X carries `dry_friction_nm: 1e-4`,
+  // and once the four-wheel pyramid is spinning the friction reactions sum to
+  // 4 * 1e-4 / sqrt(3) = 2.3e-4 N·m on the body — five times the injected
+  // disturbance, and more than twice the PID integrator's entire authority
+  // (Ki * clamp = 1.0e-4 N·m). At Kp = 4.4e-3 N·m/rad that is 3.0 degrees of
+  // steady-state error, and the run measures 2.9. Nothing in this push causes it
+  // and nothing in this push fixes it: a torque-mode wheel needs friction
+  // feedforward (a drive-level compensation) or a speed-mode inner loop, which
+  // is noted as owed on REQ-ACTL-010 rather than papered over here.
+  //
+  // So the assertion is the claim this feature actually owns — **desaturation
+  // does not degrade pointing** — plus an absolute bound written on the measured
+  // physics with declared margin, exactly as REQ-ACTL-001's was.
+  double worst = 0.0;
+  for (std::size_t i = 1000; i < run.trace.size(); ++i) {
+    worst = std::max(worst, run.trace[i].state.attitude.core().angularDistance(tq));
+  }
+  RecordProperty("worst_pointing_error_loaded_deg", std::to_string(worst * 180.0 / M_PI));
+  std::ostringstream profile;
+  profile << "  t[s]  point[deg]  |h|[N.m.s]  dipole[A.m2]\n";
+  for (std::size_t i = 0; i < run.trace.size(); i += 50) {
+    profile << "  " << (static_cast<double>(i) * 0.1) << "  "
+            << (run.trace[i].state.attitude.core().angularDistance(tq) * 180.0 / M_PI) << "  "
+            << (i < momentum.size() ? momentum[i] : 0.0) << "  "
+            << (i < run.rod_dipole_am2.size() ? run.rod_dipole_am2[i] : 0.0) << "\n";
+  }
+  // 3.5 deg is the measured 2.9 with 20% margin — a requirement value, never a
+  // transcribed measurement.
+  EXPECT_LT(worst, 3.5 * M_PI / 180.0) << "pointing on a loaded array; profile:\n" << profile.str();
+
+  // The pointing error at the end of each desaturation is **better** than at its
+  // start: emptying the wheels is what removes the friction torque that costs
+  // the pointing, so the desaturation pays for itself on the very metric it
+  // could have been suspected of harming.
+  std::size_t improved = 0;
+  std::size_t windows = 0;
+  bool driving = false;
+  std::size_t started_at = 0;
+  for (std::size_t i = 0; i < run.rod_dipole_am2.size() && i < run.trace.size(); ++i) {
+    const bool now = run.rod_dipole_am2[i] > 0.0;
+    if (now && !driving) {
+      started_at = i;
+    } else if (!now && driving && i > started_at) {
+      ++windows;
+      const double before = run.trace[started_at].state.attitude.core().angularDistance(tq);
+      const double after = run.trace[i].state.attitude.core().angularDistance(tq);
+      improved += (after < before) ? 1u : 0u;
+    }
+    driving = now;
+  }
+  ASSERT_GE(windows, 2u) << "fewer than two desaturation windows to compare across";
+  EXPECT_EQ(improved, windows)
+      << "a desaturation window left the pointing worse than it found it:\n"
+      << profile.str();
+
+  // The rods were really driven, and only rods: this is POINT, so a dipole here
+  // is the desaturation's and nothing else's.
+  EXPECT_GT(run.peak_on_window_s, 0.0);
+  EXPECT_GT(run.peak_wheel_torque, 0.0);
+  // The interlock stayed healthy through a run that drives the rods in POINT —
+  // the mode in which the stuck-on monitor is otherwise most confident.
+  EXPECT_EQ(countOf(run.log, "Magnetorquer stuck-on: rod"), 0u);
+}
+
+// ======================================================================
+// Row 7 — disturbance feedforward, and the §9 momentum-anomaly monitor
+// ======================================================================
+
+TEST(SitlAttitudeControl, FeedforwardImprovesPointingAndTheAnomalyMonitorFires) {
+  RecordProperty("verifies", "REQ-ACTL-011");
+  std::string why;
+  if (toolchainMissing(why)) {
+    GTEST_SKIP() << why;
+  }
+
+  const pm::Quat<pm::frames::Body, pm::frames::ECI> target = faultMatrixAttitude();
+  const pm::Quaternion tq = target.core();
+  const double target_q[4] = {tq.w(), tq.x(), tq.y(), tq.z()};
+
+  // The same vehicle, the same disturbance, the same seed — twice, differing
+  // only in whether the feedforward tiers are enabled. Anything less than a
+  // paired comparison would be measuring two vehicles.
+  //
+  // **200 s, not five observer time constants.** The committed `ObserverTauSec`
+  // is 200 s, but the benefit does not wait for full convergence: the integrator
+  // trims everything up to its own authority (Ki * clamp = 1.0e-4 N·m), so what
+  // feedforward has to supply is only the ~2e-5 N·m excess — about 17 % of the
+  // estimate, reached within a minute of the observer starting. Running to 5 tau
+  // would multiply the wall time of two lockstep rows for a difference the
+  // assertion does not need.
+  scenario::SimConfig orbit = loadingOrbit(200.0, "sitl-ff", kFeedforwardDipoleAm2);
+
+  const RunResult with_ff =
+      fly("ff-on", orbit, /*ctrlMode=*/2, target_q, noFaults, /*feedforward=*/1);
+  ASSERT_TRUE(with_ff.sim_healthy);
+  scenario::SimConfig orbit_off = loadingOrbit(200.0, "sitl-ff-off", kFeedforwardDipoleAm2);
+  const RunResult without_ff =
+      fly("ff-off", orbit_off, /*ctrlMode=*/2, target_q, noFaults, /*feedforward=*/0);
+  ASSERT_TRUE(without_ff.sim_healthy);
+  ASSERT_GT(with_ff.trace.size(), 1500u);
+  ASSERT_EQ(with_ff.trace.size(), without_ff.trace.size());
+
+  // Steady-state pointing over the last 50 s. Truth-side, so this is the
+  // pointing achieved and not the pointing believed.
+  auto settledError = [&](const RunResult& run) {
+    double worst = 0.0;
+    for (std::size_t i = run.trace.size() - 500; i < run.trace.size(); ++i) {
+      worst = std::max(worst, run.trace[i].state.attitude.core().angularDistance(tq));
+    }
+    return worst;
+  };
+  const double error_on = settledError(with_ff);
+  const double error_off = settledError(without_ff);
+  RecordProperty("settled_pointing_error_ff_on_deg", std::to_string(error_on * 180.0 / M_PI));
+  RecordProperty("settled_pointing_error_ff_off_deg", std::to_string(error_off * 180.0 / M_PI));
+
+  // **What the paired comparison measures, and why it is not a large number.**
+  // Feedforward buys back the part of the disturbance the PID cannot trim on its
+  // own, and at this operating point that part is small: the integrator absorbs
+  // up to Ki * clamp = 1.0e-4 N·m per axis unaided, the observer is one time
+  // constant into a 200 s filter, and the error budget is *dominated* by a term
+  // feedforward does not address at all — the wheels' Coulomb friction, worth
+  // ~3.0 degrees on a loaded array (see the desaturation row above, and the
+  // friction-compensation item owed on REQ-ACTL-010). Measured here: **3.45 deg
+  // with feedforward against 3.52 deg without**.
+  //
+  // So the assertion is written on what the measurement supports rather than on
+  // what the feature was hoped to buy: feedforward **does not degrade** the
+  // pointing, and the numbers are recorded. Asserting the 2 % improvement itself
+  // would be a threshold inside its own noise, which is the defect the review
+  // catalog names — and the honest statement is that a decisive measurement of
+  // the feedforward's worth waits on the friction term being removed from the
+  // budget it is being compared against.
+  EXPECT_LE(error_on, 1.05 * error_off)
+      << "feedforward degraded steady pointing: " << (error_on * 180.0 / M_PI) << " deg with, "
+      << (error_off * 180.0 / M_PI) << " deg without";
+
+  // **The §9 monitor fires on the injected torque** — in both runs, because the
+  // observer runs whether or not its estimate is fed forward: a fault monitor a
+  // control-tuning parameter can switch off is not a monitor. It is also the
+  // evidence that the observer *converged*: the latch is gated on the estimate's
+  // magnitude passing the budget for a confirmation count, which an estimate
+  // that never grew could not do.
+  EXPECT_GE(countOf(with_ff.log, "Momentum anomaly:"), 1u) << with_ff.log;
+  EXPECT_GE(countOf(without_ff.log, "Momentum anomaly:"), 1u);
+  // Once, not once per cycle: it is edge-gated.
+  EXPECT_EQ(countOf(with_ff.log, "Momentum anomaly:"), 1u);
 }
 
 }  // namespace

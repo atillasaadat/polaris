@@ -700,6 +700,14 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   bool pub_mag_model_valid_{false};
   bool pub_mag_raw_valid_{false};
 
+  //! This cycle's position in ECI, staged for the published estimate. It is the
+  //! GNSS fix this component already rotated for its own magnetic reference, not
+  //! an orbit estimate (§8.3 owns that) — published because the §8.5
+  //! gravity-gradient feedforward needs the nadir direction and nothing else on
+  //! the vehicle knows where the vehicle is. Cleared every cycle with the rest.
+  polaris::math::Vec3<polaris::math::frames::ECI> pub_position_eci_{};
+  bool pub_position_valid_{false};
+
   //! Applied inter-tracker alignment, per unit. Default-constructed means
   //! `valid == false`, and `applyStAlignment` then passes the reading through
   //! unchanged — which is why the tracker path calls it unconditionally, and why

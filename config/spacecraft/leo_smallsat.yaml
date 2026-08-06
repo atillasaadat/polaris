@@ -891,6 +891,90 @@ spacecraft:
     # exclusion from becoming a life sentence.
     flight.attitudeController.MtqStuckConfirmCycles: 5
     flight.attitudeController.MtqStuckClearCycles: 20
+    # --- Momentum management and desaturation (§8.5, Push 56) ----------------
+    # RW-X rotor inertia, derived from its catalog entry rather than restated:
+    # I = max_momentum_nms / max_speed = 0.5 / (6000 rpm * 2*pi/60) = 7.9577e-4
+    # kg·m². Re-derive if the wheel model_id changes.
+    flight.attitudeController.WheelInertiaKgm2: 7.9577e-4
+    # Body inertia diagonal, the same tensor as `inertia_kgm2` above. Needed for
+    # the total system momentum H = J*omega + h_wheels and for the
+    # gravity-gradient feedforward; the products of inertia are zero on this
+    # vehicle, which is the assumption both the FSW and the §8.5 linear analysis
+    # state (and which the analysis refuses a config for if it is false).
+    flight.attitudeController.InertiaBodyKgm2: [0.12, 0.12, 0.10]
+    # Zero-momentum vehicle: no bias to hold.
+    flight.attitudeController.MomentumTargetBody: [0.0, 0.0, 0.0]
+    # THE ENVELOPE IS NOT THE WHEELS' CAPACITY, and this is the line that says so.
+    # Four RW-X wheels store 0.5 N·m·s each — 1.15 N·m·s about a body axis with
+    # the pyramid — but the pointing loop's certified margins (REQ-ACTL-006) are
+    # computed by a per-axis SISO analysis whose own validity check fails above
+    # ~2.7e-3 N·m·s of stored momentum: past that the gyroscopic coupling
+    # omega x (J*omega + h) is no longer negligible against the control torque at
+    # crossover, and the margins describe a vehicle this is not (§8.5, "SISO
+    # validity boundary"). The bound is computed, not transcribed —
+    # `tests/analysis/test_control_momentum_envelope.py` recomputes it from this
+    # same file through `analysis.control.plant.siso_coupling` and fails if the
+    # envelope below has drifted outside it.
+    #
+    # 2.0e-3 N·m·s therefore sits inside that bound with ~26% margin, and the
+    # desaturation threshold sits inside the envelope so the vehicle acts before
+    # it alarms: dump at 1.0e-3, stop at 3.0e-4 held for 5 s. Wheel speeds at the
+    # threshold are ~1 rad/s, i.e. ~10 rpm — a vehicle nowhere near its wheels'
+    # limits and already outside its analysed range, which is the honest state of
+    # the design and the reason the ceiling is an FDIR-visible number.
+    flight.attitudeController.MomentumEnvelopeNms: 2.0e-3
+    flight.attitudeController.MomentumDesatEnterNms: 1.0e-3
+    flight.attitudeController.MomentumDesatExitNms: 3.0e-4
+    flight.attitudeController.MomentumDesatConfirmCycles: 50
+    # Cross-product unloading gain k_d [1/s]. The perpendicular momentum error
+    # decays with time constant 1/k_d = 5 s while the rods are unsaturated — the
+    # law divides the dipole by the duty factor precisely so the duty-weighted
+    # *average* torque is what the gain asked for, so the duty factor cancels
+    # out of the decay rate. At the 1.0e-3 N·m·s threshold in a 30 uT field the
+    # on-window demand is k_d*dh/(|B|*duty) = 0.2*1.0e-3/(3.0e-5*0.5) = 13 A·m²,
+    # just inside the 15 A·m² rating — so the law is at full authority when it
+    # engages and backs off as the momentum comes down, which is what makes the
+    # dump quick without spending the whole orbit saturated.
+    flight.attitudeController.DesatGainPerSec: 0.2
+
+    # --- Disturbance feedforward (§8.5 tiers 1-2) ---------------------------
+    flight.attitudeController.FeedforwardModelEnable: 1
+    flight.attitudeController.FeedforwardObserverEnable: 1
+    # Observer low-pass time constant. The input is a 10 Hz difference quotient of
+    # J*omega + h, and the gyro noise in the J*omega term dominates it: with the
+    # STIM300's 0.15 deg/sqrt(hr) ARW the per-sample rate noise is ~1.4e-4 rad/s,
+    # so the unfiltered residual carries ~2e-4 N·m of noise on a disturbance
+    # environment of ~2e-7 N·m. The filter buys sigma/sqrt(dt*tau/...) — 200 s
+    # brings it to the low 1e-6 N·m — while staying an order of magnitude below
+    # the ~5700 s orbit, so a real secular torque is still tracked. That trade is
+    # what this number is, and it is why the anomaly budget below cannot be set
+    # from the environment alone.
+    flight.attitudeController.ObserverTauSec: 200.0
+    # The vehicle's magnetic-cleanliness allocation, the same vector as
+    # `residual_dipole_am2` above. Tier 1 subtracts m_res x B with it; tier 3
+    # (§8.5) would fit it from flight data instead.
+    flight.attitudeController.ResidualDipoleAm2: [0.002, -0.001, 0.0015]
+    # §9 momentum-anomaly budget. Set from the **observer's own noise floor**,
+    # not from the environment: the modelled disturbances here total ~2e-7 N·m
+    # (gravity gradient 7e-8, residual dipole 8e-8, aero 2e-8, SRP 4e-9), far
+    # below what a 10 Hz momentum difference can resolve at any sane filter
+    # length, so a threshold derived from the physics alone would alarm on gyro
+    # noise every cycle. 2.0e-5 N·m is ~5x the filtered floor at the tau above and
+    # ~100x the environment — it names a torque source the vehicle does not model
+    # (a stuck thruster, an unlatched deployment, a residual dipole orders past
+    # its allocation) and nothing quieter. The SITL rows verify both directions:
+    # it fires on an injected 1.5e-4 N·m and stays silent on the nominal vehicle.
+    flight.attitudeController.DisturbanceBudgetNm: 2.0e-5
+    # The anomaly clears below 0.8x the budget, held for the confirmation count:
+    # an estimate parked *at* the budget — which is what a real fault at the
+    # margin looks like through the observer's 200 s low-pass — holds the latch
+    # instead of cycling it once per confirmation count. A tighter ratio than the
+    # momentum thresholds' 0.3 because the observer's low-pass has already
+    # removed the noise the wider deadband exists to ride out.
+    flight.attitudeController.DisturbanceClearNm: 1.6e-5
+    # Ten seconds of confirmation, the same count both ways.
+    flight.attitudeController.DisturbanceAnomalyCycles: 100
+
     # One event, then one per 10 s while a saturation or refusal persists.
     flight.attitudeController.AlertCycles: 100
   drag_area_m2: 0.06                 # 6U broadside, ~0.2 x 0.3 m

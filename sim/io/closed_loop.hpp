@@ -77,6 +77,17 @@ struct Latest {
   bool ever_sampled{false};  ///< false until the sensor's first native sample
 };
 
+/// One reaction wheel's tachometer reading at a macro boundary — the feedback a
+/// real wheel drive reports, and the input the §8.5 momentum management runs on.
+/// A measurement, so it crosses the §2.3 boundary; the rotor inertia that turns
+/// it into stored momentum is a catalog fact the FSW carries itself.
+struct WheelTelemetry {
+  std::string name;  ///< unit instance name
+  double speed_rad_s{0.0};
+  bool valid{true};      ///< false when the drive reports no usable reading
+  time::Tai time_tag{};  ///< the macro boundary the speed was read at
+};
+
 /// Everything the FSW receives at a macro-step boundary. Measurements only —
 /// the §2.3 truth/onboard separation means no `TruthState` crosses this line.
 struct FswInputs {
@@ -87,6 +98,7 @@ struct FswInputs {
   std::vector<Latest<sensors::SunSensorMeasurement>> sun_sensors;
   std::vector<Latest<sensors::MagnetometerMeasurement>> magnetometers;
   std::vector<Latest<sensors::GnssMeasurement>> gnss;
+  std::vector<WheelTelemetry> wheels;
 };
 
 /// One reaction-wheel command: torque mode or speed mode (§7), matching the two

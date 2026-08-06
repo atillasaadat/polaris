@@ -217,6 +217,14 @@ module flight {
       # correction before it reaches the filter.
       PolarisSitl.sitlBridge.starTrackerOut[0]   -> attitudeEstimator.starTrackerIn[0]
       PolarisSitl.sitlBridge.starTrackerOut[1]   -> attitudeEstimator.starTrackerIn[1]
+      # Four wheel tachometers, to the §8.5 momentum management. Every installed
+      # wheel is wired: the stored momentum is a sum over the array, so an
+      # unconnected unit does not degrade the answer — it refuses it, which is the
+      # designed behaviour and a poor way to discover a missing topology line.
+      PolarisSitl.sitlBridge.wheelSpeedOut[0]    -> attitudeController.wheelSpeedIn[0]
+      PolarisSitl.sitlBridge.wheelSpeedOut[1]    -> attitudeController.wheelSpeedIn[1]
+      PolarisSitl.sitlBridge.wheelSpeedOut[2]    -> attitudeController.wheelSpeedIn[2]
+      PolarisSitl.sitlBridge.wheelSpeedOut[3]    -> attitudeController.wheelSpeedIn[3]
     }
 
   }

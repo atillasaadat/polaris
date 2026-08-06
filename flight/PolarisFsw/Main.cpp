@@ -42,7 +42,9 @@ void print_usage(const char* app) {
       "-M\tcommand MAG_CAL_START for N samples at startup (SITL/bench only; "
       "0/absent = no calibration)\n"
       "-A\tcommand ST_ALIGN_CAL_START as unit,pairs at startup (SITL/bench only; "
-      "absent = no alignment calibration)\n",
+      "absent = no alignment calibration)\n"
+      "-F\tdisturbance feedforward tiers as model,observer (0/1 each; SITL/bench "
+      "only; absent = the ParameterDb values)\n",
       app);
 }
 
@@ -84,11 +86,13 @@ int main(int argc, char* argv[]) {
   U32 mag_cal_samples = 0;       // 0 = do not command a calibration at startup
   U8 st_align_unit = 1;          // starTrackerIn index the startup alignment names
   U32 st_align_samples = 0;      // 0 = do not command an alignment calibration at startup
+  I32 ff_model = -1;             // <0 = leave the ParameterDb value alone
+  I32 ff_observer = -1;
 
   Os::init();
 
   // Loop while reading the getopt supplied options
-  while ((option = getopt(argc, argv, "hp:a:s:c:q:E:B:I:Y:P:M:A:")) != -1) {
+  while ((option = getopt(argc, argv, "hp:a:s:c:q:E:B:I:Y:P:M:A:F:")) != -1) {
     switch (option) {
       // Handle the -a argument for address/hostname
       case 'a':
@@ -200,6 +204,20 @@ int main(int argc, char* argv[]) {
         st_align_samples = static_cast<U32>(pairs);
         break;
       }
+      // SITL/bench only: force the §8.5 feedforward tiers on or off, so the same
+      // vehicle can be flown with and without them and the difference measured.
+      case 'F': {
+        int model = 0;
+        int observer = 0;
+        if (::sscanf(optarg, "%d,%d", &model, &observer) != 2 || model < 0 || model > 1 ||
+            observer < 0 || observer > 1) {
+          (void)printf("Invalid feedforward spec '%s' (expected model,observer as 0/1)\n", optarg);
+          return 1;
+        }
+        ff_model = model;
+        ff_observer = observer;
+        break;
+      }
       // Cascade intended: help output
       case 'h':
       // Cascade intended: help output
@@ -226,6 +244,8 @@ int main(int argc, char* argv[]) {
   inputs.magCalSamples = mag_cal_samples;
   inputs.stAlignUnit = st_align_unit;
   inputs.stAlignSamples = st_align_samples;
+  inputs.ffModel = ff_model;
+  inputs.ffObserver = ff_observer;
   inputs.prmDbPath = prm_db_path;
 
   // Setup program shutdown via Ctrl-C

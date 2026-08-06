@@ -249,3 +249,62 @@ before starting FDIR, estimator, or requirements work.
   The suites already ran the config compiler; the fix was to build the vehicle
   from its `sim_setup.json` output. Transcription is a copy, and every copy is a
   place for the two to disagree in the direction that passes.
+
+## Cross-domain interactions (continued)
+
+- **A disturbance the vehicle *commands* must be fed forward, not discovered**
+  (P56). Magnetic desaturation runs concurrently with wheel pointing, so the rods
+  apply a body torque the wheels have to take up. Left to the feedback loop, that
+  torque costs an attitude error of *disturbance over proportional gain* for as
+  long as the unloading lasts — measured at **2.9°** against a 1.0° requirement,
+  on a vehicle whose control authority was never in question. The torque is known
+  exactly and one cycle in advance (it is the vehicle's own command), so the fix
+  is ordering: decide the desaturation *before* the pointing law, feed `−τ_mtq`
+  into the demand ahead of saturation and anti-windup, and subtract the same term
+  from the disturbance observer's input so a commanded action cannot look like an
+  unmodelled fault. General form: when two control laws share a vehicle, the one
+  that acts second should be *told* what the first commanded, never left to infer
+  it from the error it causes.
+- **The actuator's own friction can exceed the control torque, and then the
+  pointing requirement is a momentum-dependent statement** (P56). The reference
+  wheels carry `dry_friction_nm = 1e-4`; once the four-wheel pyramid is spinning
+  the friction reactions sum to 2.3e-4 N·m on the body — five times the injected
+  disturbance the row was studying, and more than twice the PID integrator's
+  entire authority (`Ki × clamp`). The resulting 3.0° of steady-state error was
+  invisible for two pushes because every earlier row flew wheels near zero speed;
+  it appeared the moment a row deliberately loaded them. Two lessons: a
+  requirement verified only at one operating point (here, empty wheels) is
+  silently conditioned on it, and **a closed-loop row that fails should first be
+  explained arithmetically** — the friction sum predicted 3.0° against a measured
+  2.9° before any code was changed, which is what told the push it was looking at
+  a vehicle fact and not at its own new feature.
+
+## FDIR / fault-tolerance state machines (continued)
+
+- **A term recorded as "commanded" must be cleared on every path that does not
+  command it** (P56, review). The rod-torque ordering fix records the magnetic
+  torque at the moment the desaturation is *decided*, then feeds it forward and
+  subtracts it from the observer a cycle later. Every path that abandons the
+  command downstream — a refused pointing law, a failed clamp — must clear the
+  record too, or the observer subtracts a torque the vehicle never applied and
+  the anomaly monitor fires on the vehicle's own inaction. The general form is
+  the mirror of the ordering-fix entry above: when one law tells another what it
+  commanded, the telling has to be retracted when the commanding is. Grep every
+  path that zeroes an actuator command for the bookkeeping that accompanied it.
+- **Report the edge from the command, never from the decision** (P56, review).
+  `DesatEngaged` was emitted on the predicate that *chose* to desaturate,
+  upstream of the refusal path that zeroes the dipole, so an operator
+  correlating a payload anomaly against magnetic activity could be handed a
+  window in which no rod was driven. A decision and a command are two different
+  facts about a cycle; an event whose whole purpose is to timestamp a physical
+  action must be derived from what was published, which means it has to be
+  emitted after every path that can withdraw it.
+- **A refusal that disables a monitor is an event, not a telemetry gap** (P56,
+  review). One dead wheel tachometer correctly refused the momentum sum — and
+  thereby took out both the desaturation and the §9 momentum-anomaly monitor,
+  indefinitely, with nothing in the event stream to say so. A NaN on a strip
+  chart is the right *telemetry* answer and the wrong *FDIR* answer: the refusal
+  is well reasoned locally and invisible globally. Whenever a refusal gates a
+  downstream monitor, the refusal itself needs a bounded-cadence event naming
+  the reason and the unit, plus a latched flag, so the silence of the monitor it
+  disabled is attributable.

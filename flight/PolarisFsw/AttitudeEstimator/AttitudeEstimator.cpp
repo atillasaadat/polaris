@@ -1032,6 +1032,8 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
   this->pub_mag_valid_ = false;
   this->pub_mag_model_valid_ = false;
   this->pub_mag_raw_valid_ = false;
+  this->pub_position_eci_ = polaris::math::Vec3<polaris::math::frames::ECI>{};
+  this->pub_position_valid_ = false;
 
   // A collection window is counted in *accepted* samples, so an outage stalls it
   // rather than ending it. Age it here, at the top and before any of the cycle's
@@ -1190,6 +1192,16 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
         }
       }
     }
+  }
+
+  // Stage the position for the published product (§8.0). Valid only with **both**
+  // a fix and the rotation, since ECEF metres are not an inertial position; a
+  // consumer that took the ECEF vector for an ECI one would have its nadir
+  // direction wrong by the Earth-rotation angle, which is a plausible-looking
+  // error of up to 180 degrees.
+  if (have_position && have_rotation) {
+    this->pub_position_eci_ = q_eci_ecef.rotate(r_ecef);
+    this->pub_position_valid_ = this->pub_position_eci_.isFinite();
   }
 
   // Edge-gated position alert: no position means no field model, hence no TRIAD.
@@ -1572,6 +1584,8 @@ void AttitudeEstimator ::emitEstimate(const Eigen::Matrix3d& cov, double age_s) 
   estimate.set_magFieldTimeTagNs(this->pub_mag_time_ns_);
   estimate.set_magModelMagnitudeT(this->pub_mag_model_t_);
   estimate.set_magRawMagnitudeT(this->pub_mag_raw_t_);
+  estimate.set_posEciM(toVec3F64(this->pub_position_eci_.eigen()));
+  estimate.set_posValid(this->pub_position_valid_);
   estimate.set_mode(toEstimationMode(this->state_.mode));
   estimate.set_attitudeValid(this->state_.valid.attitude);
   estimate.set_rateValid(this->state_.valid.body_rate);

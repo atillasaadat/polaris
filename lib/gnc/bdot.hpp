@@ -239,6 +239,14 @@ class RateHysteresis {
   /// Return to the "tumbling, unconfirmed" state (mode entry).
   void reset();
 
+  /// Return to the **confirmed-below** state: the verdict reads false and one
+  /// sample above `enter_radps` is enough to flip it. `reset` assumes the unsafe
+  /// answer, which is right for detumble — a vehicle of unknown rate is treated
+  /// as tumbling — and wrong for a predicate whose "yes" *starts* an actuation,
+  /// such as the momentum-desaturation demand (`gnc/momentum.hpp`): there, an
+  /// unknown state must not begin by driving the rods.
+  void clear();
+
  private:
   RateHysteresisConfig config_{};
   bool configured_ = false;

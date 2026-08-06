@@ -107,10 +107,14 @@ inline int compileConfig(const std::string& out_dir, const std::string& err_path
 /// into a deployment with no ground link attached. @p ctrlMode (`-c`) and
 /// @p ctrlTargetQ (`-q`) are the §8.5 equivalent for the attitude controller:
 /// 1 = DETUMBLE, 2 = POINT, 0 = leave it in IDLE.
+/// @p feedforward, when non-negative, forces the §8.5 disturbance-feedforward
+/// tiers on (1) or off (0) with `-F model,observer`, so a row can fly the same
+/// vehicle both ways and measure the difference. Negative leaves the committed
+/// ParameterDb values in force, which is what every other row uses.
 inline pid_t spawnFsw(const std::string& bin, std::uint16_t port, const std::string& prm_path,
                       const std::string& log_path, unsigned magCalSamples = 0,
                       unsigned stAlignPairs = 0, unsigned stAlignUnit = 1, unsigned ctrlMode = 0,
-                      const double* ctrlTargetQ = nullptr) {
+                      const double* ctrlTargetQ = nullptr, int feedforward = -1) {
   const pid_t pid = ::fork();
   if (pid == 0) {
     ::freopen(log_path.c_str(), "w", stdout);
@@ -127,9 +131,21 @@ inline pid_t spawnFsw(const std::string& bin, std::uint16_t port, const std::str
       target << "0,0,0,0";
     }
     const std::string target_str = target.str();
-    ::execl(bin.c_str(), bin.c_str(), "-s", port_str.c_str(), "-P", prm_path.c_str(), "-Y",
-            kEpochDecimalYear, "-M", cal_str.c_str(), "-A", align_str.c_str(), "-c",
-            ctrl_str.c_str(), "-q", target_str.c_str(), static_cast<char*>(nullptr));
+    // Both tiers move together: the rows that use this are asking "with or
+    // without feedforward", not "which tier".
+    const std::string ff_str =
+        feedforward < 0 ? std::string("")
+                        : std::to_string(feedforward) + "," + std::to_string(feedforward);
+    if (feedforward < 0) {
+      ::execl(bin.c_str(), bin.c_str(), "-s", port_str.c_str(), "-P", prm_path.c_str(), "-Y",
+              kEpochDecimalYear, "-M", cal_str.c_str(), "-A", align_str.c_str(), "-c",
+              ctrl_str.c_str(), "-q", target_str.c_str(), static_cast<char*>(nullptr));
+    } else {
+      ::execl(bin.c_str(), bin.c_str(), "-s", port_str.c_str(), "-P", prm_path.c_str(), "-Y",
+              kEpochDecimalYear, "-M", cal_str.c_str(), "-A", align_str.c_str(), "-c",
+              ctrl_str.c_str(), "-q", target_str.c_str(), "-F", ff_str.c_str(),
+              static_cast<char*>(nullptr));
+    }
     _exit(127);  // exec failed
   }
   return pid;

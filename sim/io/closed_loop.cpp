@@ -155,6 +155,7 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
   inputs.sun_sensors.resize(vehicle_.sun_sensors.size());
   inputs.magnetometers.resize(vehicle_.magnetometers.size());
   inputs.gnss.resize(vehicle_.gnss_receivers.size());
+  inputs.wheels.resize(vehicle_.wheels.size());
   for (std::size_t i = 0; i < vehicle_.imus.size(); ++i) {
     inputs.imus[i].name = vehicle_.imus[i].name;
   }
@@ -169,6 +170,9 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
   }
   for (std::size_t i = 0; i < vehicle_.gnss_receivers.size(); ++i) {
     inputs.gnss[i].name = vehicle_.gnss_receivers[i].name;
+  }
+  for (std::size_t i = 0; i < vehicle_.wheels.size(); ++i) {
+    inputs.wheels[i].name = vehicle_.wheels[i].name;
   }
 
   // Payload geometry is a sim-side product, so it lives on the loop rather than
@@ -420,6 +424,14 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
     // interval (§2.4 — commands apply on the *next* step).
     inputs.epoch = taiAt(t_ns);
     inputs.macro_step = macro;
+    // Wheel tachometers, read at the boundary the FSW is about to act on. The
+    // wheels have been stepped to here by the micro-step loop, so this is the
+    // rotor speed at this epoch and not the one at the last command.
+    for (std::size_t i = 0; i < vehicle_.wheels.size(); ++i) {
+      inputs.wheels[i].speed_rad_s = vehicle_.wheels[i].model.speed();
+      inputs.wheels[i].valid = std::isfinite(inputs.wheels[i].speed_rad_s);
+      inputs.wheels[i].time_tag = inputs.epoch;
+    }
     commands = fsw ? fsw(inputs) : FswOutputs{};
 
     for (std::size_t i = 0; i < vehicle_.wheels.size(); ++i) {

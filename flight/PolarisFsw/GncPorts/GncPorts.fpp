@@ -108,6 +108,19 @@ module flight {
     valid: bool @< the unit reports a tracking solution (§9.1)
   }
 
+  @ One reaction wheel's tachometer reading (design doc §7, §8.5). A wheel drive
+  @ reports rotor speed as a matter of course — it is what its own speed loop
+  @ closes on — and the §8.5 momentum management runs on it: stored momentum
+  @ `h = W (I_w omega_w)` is the basis of the desaturation demand and of the §9
+  @ momentum envelope. The **speed** is the measurement; the rotor inertia that
+  @ turns it into momentum is a catalog fact carried as an FSW parameter, so a
+  @ recalibrated wheel is a parameter change and not a wire change.
+  struct WheelSpeedMeas {
+    speedRadps: F64 @< rotor speed about the wheel's own spin axis [rad/s]
+    timeTagNs: I64 @< TAI ns of the reading
+    valid: bool @< the drive reports this reading as usable (§9.1)
+  }
+
   @ The magnetorquer duty-cycle schedule for one control period, published by the
   @ controller that owns it and consumed by every magnetometer consumer (design
   @ doc §7, layers 1-2 of the MTQ/MAG interlock).
@@ -140,6 +153,16 @@ module flight {
   @ until the §8.3 orbit filter owns them — publishing zeros for a field nobody
   @ estimates yet is how a consumer ends up trusting one.
   @
+  @ `posEciM` is the **one** exception, and it is one on purpose: it is not an
+  @ estimate but the GNSS fix the estimator is *already* using to place its own
+  @ magnetic reference, rotated ECEF->ECI with the same onboard EOP. The §8.5
+  @ gravity-gradient feedforward needs the nadir direction and nothing else on the
+  @ vehicle knows where the vehicle is. It carries `posValid`, which is false
+  @ whenever there is no fresh fix or no rotation — during the receiver's cold
+  @ start, for instance — and it comes with **no velocity**, because a velocity is
+  @ what a consumer would build a propagation on and there is no propagator yet.
+  @ When §8.3 lands, the orbit block replaces this field rather than joining it.
+  @
   @ The magnetic block is here rather than on a second port because the estimator
   @ is the vehicle's **one** gate on magnetometer data: it votes the units (§8.2),
   @ applies the hard/soft-iron calibration (§8.1) and enforces the §7 quiet-window
@@ -169,12 +192,14 @@ module flight {
     magFieldTimeTagNs: I64 @< TAI ns the accepted magnetometer sample was taken at
     magModelMagnitudeT: F64 @< onboard IGRF field magnitude at the estimated position [T]
     magRawMagnitudeT: F64 @< largest raw magnetometer magnitude admitted by the §7 interlock this cycle [T]
+    posEciM: Vec3F64 @< spacecraft position, ECI [m] — the GNSS fix the estimator already uses, **not** an orbit-filter product (see the note above)
     mode: EstimationMode @< active estimation mode
     attitudeValid: bool @< qBodyEci and attCovDiagRad2 are usable
     rateValid: bool @< bodyRateRadps is usable
     magFieldValid: bool @< magFieldBody/magFieldTimeTagNs are usable this cycle
     magModelValid: bool @< magModelMagnitudeT is usable this cycle
     magRawValid: bool @< magRawMagnitudeT is usable this cycle
+    posValid: bool @< posEciM is usable this cycle (a fresh fix and the ECEF->ECI rotation were both available)
   }
 
   @ IMU increments, sensor source -> estimator.
@@ -197,5 +222,8 @@ module flight {
 
   @ Magnetorquer duty-cycle schedule, controller -> magnetometer consumers (§7).
   port MtqActuationPort($state: MtqActuation)
+
+  @ Wheel tachometer, actuator source -> controller (§8.5 momentum management).
+  port WheelSpeedMeasPort(meas: WheelSpeedMeas)
 
 }

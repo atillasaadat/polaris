@@ -3,7 +3,12 @@
 > **Status: one package implemented, the rest planned.** `control/` is live as of
 > Push 55 — the linear control-analysis toolkit (§8.5, §13): stability margins,
 > controllability and observability of the as-flown configuration, with tests in
-> `tests/analysis/`. Every other subdirectory (`momentum/`, `detumble/`,
+> `tests/analysis/`. Push 56 added its **command-line gate**,
+> `uv run --group analysis python -m analysis.control config/spacecraft/leo_smallsat.yaml`,
+> which writes the figures and the rendered report, prints the report and **exits
+> non-zero on any FAIL** — the pre-simulation design check (`--no-plots` skips the
+> figures, `--out` chooses the directory). Warnings qualify a report and never
+> fail it, per the convention below. Every other subdirectory (`momentum/`, `detumble/`,
 > `contacts/`, `linkbudget/`, `postproc/`) is still a placeholder and waits on
 > `bindings/` exposing the C++ it must reuse (§13/§21.4, Phase 11).
 

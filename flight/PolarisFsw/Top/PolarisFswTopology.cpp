@@ -213,6 +213,11 @@ void setupTopology(const TopologyState& state) {
   // command port, and it must follow loadParameters() because an unconfigured
   // controller refuses every mode but IDLE.
   attitudeController.commandModeAtStartup(state.ctrlMode, state.ctrlTargetQ);
+  // Feedforward override, same rule and same reason: it must follow
+  // loadParameters(), which would otherwise overwrite the values it sets.
+  if (state.ffModel >= 0 && state.ffObserver >= 0) {
+    attitudeController.setFeedforwardAtStartup(state.ffModel != 0, state.ffObserver != 0);
+  }
   // Autocoded task kick-off (active components). Function provided by autocoder.
   startTasks(state);
   // Initialize socket communication if and only if there is a valid specification
