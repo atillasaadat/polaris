@@ -55,7 +55,11 @@ class StreamTap {
   StreamTap() {
     const char* path = std::getenv("POLARIS_SIM_STREAM");
     if (path != nullptr && path[0] != '\0') {
-      out_.open(path, std::ios::trunc);
+      // Append, never truncate: a scenario that runs several ClosedLoop
+      // phases in one process (detumble, then sun acquisition) streams them
+      // as one continuous arc. Freshness is the producer's job — delete the
+      // file before a new run, as every runner and doc here does.
+      out_.open(path, std::ios::app);
     }
   }
 

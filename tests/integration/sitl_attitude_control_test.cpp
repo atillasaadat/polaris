@@ -1,7 +1,7 @@
 /// @file Closed-loop attitude control over the SITL wire (design doc §8.5, §7,
 /// §9; REQ-ACTL-001, -002, -004, -005).
 ///
-/// Five rows, all flying the same vehicle — `config/spacecraft/leo_smallsat.yaml`
+/// Eight rows, all flying the same vehicle — `config/spacecraft/leo_smallsat.yaml`
 /// compiled to `PrmDb.dat`, the real deployment forked, the truth sim on the
 /// other end of the barrier — and differing only in the commanded mode and the
 /// injected fault:
@@ -13,6 +13,9 @@
 ///   one rod stuck on, POINT mode           | interlock monitor fires, estimator survives
 ///   the same rod un-sticking                | the latch clears and the pair comes back
 ///   nominal duty-cycled detumble           | the same monitor does NOT fire
+///   desaturation while pointing            | full latch cycle, pointing held throughout
+///   feedforward on/off pair                | no degradation; the §9 anomaly fires in both
+///   detumble, then sun acquisition         | the safe-mode CONOPS arc, wheels finish the tumble
 ///
 /// **The last row is the point of the third one.** A stuck-on monitor that fires
 /// on a healthy duty cycle would be worse than no monitor: it would invalidate
@@ -37,6 +40,8 @@
 #include "io/closed_loop.hpp"
 #include "scenario/sim_runner.hpp"
 #include "sitl_harness.hpp"
+#include "time/tdb.hpp"
+#include "world/ephemeris_file.hpp"
 
 namespace {
 
@@ -792,6 +797,103 @@ TEST(SitlAttitudeControl, FeedforwardImprovesPointingAndTheAnomalyMonitorFires) 
   EXPECT_GE(countOf(without_ff.log, "Momentum anomaly:"), 1u);
   // Once, not once per cycle: it is edge-gated.
   EXPECT_EQ(countOf(with_ff.log, "Momentum anomaly:"), 1u);
+}
+
+// ======================================================================
+// Row 8 — the safe-mode CONOPS arc: detumble, then sun acquisition
+// ======================================================================
+
+/// The safe-mode hierarchy (§10.1) puts coarse sun pointing as the lowest safe
+/// state, with B-dot above it entered only on high rate or momentum — and the
+/// Phase-7 mode manager will own that transition autonomously. Until it
+/// exists, this row is the CONOPS evidence for the arc itself: phase A
+/// detumbles the 5 deg/s tip-off through B-dot's fast phase, phase B boots the
+/// same vehicle in POINT with a sun-pointing target computed from the
+/// ephemeris at the handover epoch and the handover truth state as its initial
+/// condition, and the assertions say the wheels finish what the rods started
+/// and hold the sun. Two flights rather than one autonomous mode switch — an
+/// honest statement of what exists today, and the row the mode manager will
+/// collapse into a single flight when it lands.
+///
+/// The handover rate is B-dot's fast-phase floor (~3 deg/s about the field
+/// line), not the 0.5 deg/s DetumbleExitRadps — that tail takes orbits (see
+/// row 1). Handing POINT a 3 deg/s vehicle is the realistic entry: the wheels
+/// absorb J·|w| ~ 6e-3 N·m·s, under 2% of one wheel's capacity.
+TEST(SitlAttitudeControl, DetumblesThenAcquiresSunPointing) {
+  RecordProperty("verifies", "REQ-ACTL-001,REQ-ACTL-002");
+  std::string why;
+  if (toolchainMissing(why)) {
+    GTEST_SKIP() << why;
+  }
+
+  // --- Phase A: B-dot through the fast phase --------------------------------
+  scenario::SimConfig orbit_a = faultMatrixOrbit(250.0, "sitl-safemode-detumble");
+  orbit_a.initial_state.body_rate = pm::Vec3<pm::frames::Body>(kTumbleRadps);
+  const RunResult a = fly("safemode-a", orbit_a, /*ctrlMode=*/1, nullptr, noFaults);
+  ASSERT_TRUE(a.sim_healthy);
+  ASSERT_FALSE(a.trace.empty());
+  EXPECT_GE(countOf(a.log, "Control mode IDLE (0) -> DETUMBLE"), 1u);
+  const polaris::state::TruthState handover = a.trace.back().state;
+  const double handover_rate_deg_s = handover.body_rate.eigen().norm() * 180.0 / M_PI;
+  RecordProperty("handover_rate_deg_s", std::to_string(handover_rate_deg_s));
+  // The REQ-ACTL-001 fast-phase bound, which is what makes the handover safe.
+  EXPECT_LT(handover_rate_deg_s, 3.8);
+
+  // --- The sun-pointing target at the handover epoch ------------------------
+  namespace world = polaris::sim::world;
+  world::EphemerisSet ephemeris;
+  std::string error;
+  ASSERT_TRUE(world::loadEphemerisFile(scenario::DataPaths::under(POLARIS_GOLDEN_DIR).ephemeris,
+                                       ephemeris, &error))
+      << error;
+  const world::BodyPositionFn sun_fn = world::bodyPositionFn(ephemeris.sun);
+  pm::Vec3<pm::frames::ECI> sun_eci;
+  ASSERT_TRUE(sun_fn(pt::toTdb(pt::toTt(handover.epoch)), sun_eci));
+  const Eigen::Vector3d sun_dir = (sun_eci.eigen() - handover.position.eigen()).normalized();
+  // Body +X at the sun; the yaw about the sun line is free, fixed here by an
+  // arbitrary orthonormal completion (a guidance law would pick it from power
+  // or thermal constraints — Phase 7's business, not this row's).
+  const Eigen::Vector3d ref =
+      std::abs(sun_dir.z()) < 0.9 ? Eigen::Vector3d::UnitZ() : Eigen::Vector3d::UnitY();
+  const Eigen::Vector3d y_b = ref.cross(sun_dir).normalized();
+  const Eigen::Vector3d z_b = sun_dir.cross(y_b);
+  Eigen::Matrix3d eci_to_body;
+  eci_to_body.row(0) = sun_dir;
+  eci_to_body.row(1) = y_b;
+  eci_to_body.row(2) = z_b;
+  const pm::Quaternion q_target = pm::Quaternion::FromRotationMatrix(eci_to_body);
+  const double target[4] = {q_target.w(), q_target.x(), q_target.y(), q_target.z()};
+
+  // --- Phase B: POINT at the sun from the handover state --------------------
+  scenario::SimConfig orbit_b = faultMatrixOrbit(300.0, "sitl-safemode-sunpoint");
+  orbit_b.initial_state = handover;
+  const RunResult b = fly("safemode-b", orbit_b, /*ctrlMode=*/2, target, noFaults);
+  ASSERT_TRUE(b.sim_healthy);
+  ASSERT_FALSE(b.trace.empty());
+  EXPECT_GE(countOf(b.log, "Control mode IDLE (0) -> POINT"), 1u);
+
+  // Truth sun angle of the body +X axis, which is the claim an operator cares
+  // about — not the quaternion error to the arbitrary-yaw target.
+  const auto sun_angle_deg = [&sun_dir](const polaris::state::TruthState& s) {
+    const Eigen::Vector3d sun_body = s.attitude.rotate(pm::Vec3<pm::frames::ECI>(sun_dir)).eigen();
+    return std::atan2(std::hypot(sun_body.y(), sun_body.z()), sun_body.x()) * 180.0 / M_PI;
+  };
+  // Converged and holding through the last 50 s: the vehicle arrived from a
+  // ~3 deg/s tumble, slewed to the sun, dumped the tip-off momentum into the
+  // wheels, and held. The bound carries margin over the measured hold (the
+  // near-empty-wheel REQ-ACTL-002 figure plus the tip-off residual).
+  double worst_tail_deg = 0.0;
+  const std::size_t tail_start = b.trace.size() - std::min<std::size_t>(500, b.trace.size());
+  for (std::size_t i = tail_start; i < b.trace.size(); ++i) {
+    worst_tail_deg = std::max(worst_tail_deg, sun_angle_deg(b.trace[i].state));
+  }
+  RecordProperty("sun_angle_tail_worst_deg", std::to_string(worst_tail_deg));
+  RecordProperty("sun_angle_final_deg", std::to_string(sun_angle_deg(b.trace.back().state)));
+  EXPECT_LT(worst_tail_deg, 2.0) << "sun acquisition did not converge: worst tail angle "
+                                 << worst_tail_deg << " deg";
+  // The tumble actually died: truth rate at the end is fine-pointing quiet,
+  // far below the handover rate the wheels were given.
+  EXPECT_LT(b.trace.back().state.body_rate.eigen().norm(), 0.2 * M_PI / 180.0);
 }
 
 }  // namespace
