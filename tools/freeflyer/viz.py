@@ -38,19 +38,39 @@ from .plans import write_mission_plan
 #: so this is plain calendar arithmetic: -10588.5 days.
 _FF_EPOCH_BASE_UNIX_TAI_S = -10588.5 * 86400.0
 
-_VIZ_SCRIPT = """Spacecraft s;
-s.AttitudeRefFrame = "ICRF";
-s.AttitudeSystem = "Quaternion";
+_VIZ_SCRIPT = """Spacecraft Polaris;
+Polaris.AttitudeRefFrame = "ICRF";
+Polaris.AttitudeSystem = "Quaternion";
 
-// One whole-Earth 3D view. Deliberately minimal: every decoration (3D model
-// files, viewpoints, star maps, sensor views) layers on top of this loop
-// without changing its shape, and the loop is the part that has to be right.
-ViewWindow orbitView({s});
-orbitView.WindowTitle = "Polaris truth state";
+// Whole-Earth 3D orbit view, with the vehicle named and its body axes drawn.
+ViewWindow orbitView({Polaris});
+orbitView.WindowTitle = "Polaris - orbit (truth)";
+orbitView.SetShowName(Polaris.ObjectId, 1);
+orbitView.SetShowAxis(Polaris.ObjectId, 1);
+
+// Body-fixed close-up: a chase camera parked a few metres off the vehicle,
+// where the drawn body axes make the attitude motion readable. The viewpoint
+// numbers are the ones the reference handlers flew.
+ViewWindow closeView({Polaris});
+closeView.WindowTitle = "Polaris - attitude close-up (truth)";
+Viewpoint closeUp;
+closeUp.ViewpointName = "CloseUp";
+closeUp.ViewpointType = "view";
+closeUp.ThreeDView.ReferenceFrame = "body fixed";
+closeUp.ThreeDView.Source = Polaris.ObjectId;
+closeUp.ThreeDView.Target = Polaris.ObjectId;
+closeUp.ThreeDView.Declination = 105;
+closeUp.ThreeDView.RightAscension = 0.6;
+closeUp.ThreeDView.Radius = 0.002;
+closeView.AddViewpoint(closeUp);
+closeView.ActivateViewpoint(closeUp.ViewpointName);
+closeView.SetShowName(Polaris.ObjectId, 1);
+closeView.SetShowAxis(Polaris.ObjectId, 1);
 
 While (1);
 	ApiLabel "Frame";
 	Update orbitView;
+	Update closeView;
 End;
 """
 
@@ -141,17 +161,18 @@ def run_viz(
             whole = int(ff_epoch_s)
             frac_ns = int(round((ff_epoch_s - whole) * 1.0e9))
             engine.setExpressionTimeSpan(
-                "s.Epoch", FFTimeSpan.fromWholeSecondsAndNanoseconds(whole, frac_ns)
+                "Polaris.Epoch",
+                FFTimeSpan.fromWholeSecondsAndNanoseconds(whole, frac_ns),
             )
             engine.setExpressionArray(
-                "s.Position", [x / 1000.0 for x in state["r_eci_m"]]
+                "Polaris.Position", [x / 1000.0 for x in state["r_eci_m"]]
             )
             engine.setExpressionArray(
-                "s.Velocity", [v / 1000.0 for v in state["v_eci_m_s"]]
+                "Polaris.Velocity", [v / 1000.0 for v in state["v_eci_m_s"]]
             )
             q0, q1, q2, q3 = state["q_body_eci"]  # JPL scalar-first
             engine.setExpressionArray(
-                "s.Quaternion", [q1, q2, q3, q0]
+                "Polaris.Quaternion", [q1, q2, q3, q0]
             )  # FF scalar-last
             engine.executeUntilApiLabel("Frame")
             frames += 1
