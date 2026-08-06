@@ -29,6 +29,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 _PACE_MIN, _PACE_MAX = 0.01, 1000.0
 
 
+def stream_times(states: list[dict]) -> list[float]:
+    """Panel timeline for *states*: seconds since stream start, from ``tai_ns``.
+
+    Not ``t_s``: each ClosedLoop phase counts its own sim time from zero, so a
+    multi-phase arc appended into one stream (detumble, then sun acquisition —
+    the whole point of the tap's append mode) restarts ``t_s`` at every phase
+    boundary. The TAI epoch is continuous across the arc, and it is also the
+    key a Grafana time axis joins on.
+    """
+    t0 = states[0]["tai_ns"]
+    return [(s["tai_ns"] - t0) / 1.0e9 for s in states]
+
+
 class Playback:
     """Thread-safe playback cursor over the stream's sample times.
 

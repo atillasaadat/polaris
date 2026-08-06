@@ -77,7 +77,7 @@ def _cmd_panel(args: argparse.Namespace) -> int:
     if not states:
         print(f"{stream}: no states to replay", file=sys.stderr)
         return 1
-    playback = panel.Playback([s["t_s"] for s in states], pace=args.pace)
+    playback = panel.Playback(panel.stream_times(states), pace=args.pace)
     server = panel.serve(playback, host=args.host, port=args.port)
     print(
         f"control panel: http://{args.host}:{server.server_address[1]}/  (Ctrl-C to quit)"

@@ -13,7 +13,7 @@ import urllib.request
 
 import pytest
 
-from freeflyer.panel import Playback, serve
+from freeflyer.panel import Playback, serve, stream_times
 
 TIMES = [0.0, 10.0, 20.0, 30.0, 40.0]
 
@@ -53,6 +53,18 @@ def test_junk_commands_are_refused():
         pb.command({"action": "seek"})
     with pytest.raises(ValueError):
         Playback([])
+
+
+def test_timeline_is_continuous_across_appended_phases():
+    # Two ClosedLoop phases appended into one stream: t_s restarts at the
+    # boundary, tai_ns does not. The panel timeline must follow tai_ns.
+    states = [
+        {"t_s": 0.0, "tai_ns": 1_000_000_000_000},
+        {"t_s": 250.0, "tai_ns": 1_250_000_000_000},
+        {"t_s": 0.0, "tai_ns": 1_250_000_000_000},  # phase B starts here
+        {"t_s": 300.0, "tai_ns": 1_550_000_000_000},
+    ]
+    assert stream_times(states) == [0.0, 250.0, 250.0, 550.0]
 
 
 def test_http_roundtrip():
