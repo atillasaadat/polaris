@@ -107,9 +107,30 @@ def open_engine(install: FreeFlyerInstall, windowed: bool = False):
         # so a machine with working GPU GL can override with =0.
         os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
     mode = WindowedOutputMode.GenerateOutputWindows if windowed else None
-    with RuntimeApiEngine(
+    engine = RuntimeApiEngine(
         str(install.install_dir),
         consoleOutputProcessingMethod=ConsoleOutputProcessingMethod.RedirectToRuntimeApi,
         windowedOutputMode=mode,
-    ) as engine:
+    )
+    # Manual lifecycle, not the vendor context manager: FreeFlyer's failure
+    # mode is a hang, and a clean destroyEngine() against a wedged engine
+    # blocks forever inside a ctypes call — which is also where a Ctrl-C
+    # (KeyboardInterrupt) gets deferred indefinitely, hanging the terminal.
+    # Any abnormal exit therefore force-kills the engine process instead of
+    # negotiating with it; each kill costs nothing but the engine.
+    try:
         yield engine
+    except BaseException:
+        try:
+            engine.killEngine()
+        except Exception:
+            pass
+        raise
+    else:
+        try:
+            engine.destroyEngine()
+        except Exception:
+            try:
+                engine.killEngine()
+            except Exception:
+                pass

@@ -163,6 +163,7 @@ def run_viz(
     states: Iterator[dict],
     pace: float | None = 1.0,
     windowed: bool = True,
+    max_fps: float = 2.0,
 ) -> int:
     """Render *states* in interactive FreeFlyer windows; return the frame count.
 
@@ -178,10 +179,17 @@ def run_viz(
         producer, so None is the right choice there.
     windowed : bool
         False renders headless (used by the smoke test; nothing to look at).
+    max_fps : float
+        Ceiling on engine render calls. Sim time still advances at *pace* —
+        states between render slots are simply not drawn. The software
+        renderer sustains a couple of frames per second; pushing it faster is
+        how the window ends up frozen. 0 disables the ceiling.
     """
     plan = write_mission_plan(install, _VIZ_SCRIPT, "polaris_viz")
     frames = 0
     last_t: float | None = None
+    min_interval = 1.0 / max_fps if max_fps > 0 else 0.0
+    last_render = 0.0
     with open_engine(install, windowed=windowed) as engine:
         from aisolutions.freeflyer.runtimeapi.RuntimeApiEngine import (  # noqa: PLC0415 — vendor import after path injection
             FFTimeSpan,
@@ -197,6 +205,12 @@ def run_viz(
             if pace is not None and last_t is not None:
                 time.sleep(max(0.0, (state["t_s"] - last_t) / pace))
             last_t = state["t_s"]
+            # Skip states arriving faster than the renderer's sustainable
+            # rate; sim-time pacing above still ran, so the clock is honest.
+            now = time.monotonic()
+            if min_interval > 0.0 and now - last_render < min_interval:
+                continue
+            last_render = now
 
             ff_epoch_s = state["tai_ns"] / 1.0e9 - _FF_EPOCH_BASE_UNIX_TAI_S
             whole = int(ff_epoch_s)
@@ -215,6 +229,18 @@ def run_viz(
             engine.setExpressionArray(
                 "Polaris.Quaternion", [q1, q2, q3, q0]
             )  # FF scalar-last
-            engine.executeUntilApiLabel("Frame")
+            # The frame execution (two window Updates) is the call that hangs
+            # when the renderer wedges, so it runs asynchronously with a
+            # timeout: a frame that takes longer than 10 s is a dead engine,
+            # and raising here routes through open_engine's kill path instead
+            # of blocking Ctrl-C forever.
+            engine.executeUntilApiLabelAsync("Frame")
+            if not engine.synchronize(10_000):
+                raise RuntimeError(
+                    "FreeFlyer stopped responding while rendering a frame; "
+                    "the engine was killed. (The Linux build is officially "
+                    "headless — interactive windows over WSLg are best-effort. "
+                    "Lower --fps, or replay when the run is done.)"
+                )
             frames += 1
     return frames

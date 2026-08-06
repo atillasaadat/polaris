@@ -43,9 +43,15 @@ def _cmd_viz(args: argparse.Namespace) -> int:
         print("no runnable licensed FreeFlyer found", file=sys.stderr)
         return 1
     stream = Path(args.stream)
-    states = viz.follow(stream) if args.follow else viz.replay(stream)
+    states = viz.follow(stream, max_fps=args.fps) if args.follow else viz.replay(stream)
     pace = None if args.follow or args.pace == 0 else args.pace
-    frames = viz.run_viz(install, states, pace=pace, windowed=not args.headless)
+    try:
+        frames = viz.run_viz(
+            install, states, pace=pace, windowed=not args.headless, max_fps=args.fps
+        )
+    except KeyboardInterrupt:
+        print("\ninterrupted — engine killed", file=sys.stderr)
+        return 130
     print(f"rendered {frames} frames from {stream}")
     return 0 if frames else 1
 
@@ -70,6 +76,13 @@ def main() -> int:
     )
     p_viz.add_argument(
         "--headless", action="store_true", help="no windows (smoke testing)"
+    )
+    p_viz.add_argument(
+        "--fps",
+        type=float,
+        default=2.0,
+        help="render-rate ceiling (default 2; the WSLg software renderer "
+        "sustains little more — 0 disables)",
     )
 
     args = parser.parse_args()
