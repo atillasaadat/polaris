@@ -48,6 +48,23 @@ orbitView.WindowTitle = "Polaris - orbit (truth)";
 orbitView.SetShowName(Polaris.ObjectId, 1);
 orbitView.SetShowAxis(Polaris.ObjectId, 1);
 
+// Truth geometry vectors, drawn in both windows. All three are FreeFlyer
+// object-bound vectors, so they track the spacecraft state automatically as
+// each frame updates it: sun = Object-to-Object (type 9) at the Sun, nadir =
+// Object-to-Object at the Earth, velocity = Body Velocity (type 7).
+Vector sunVec;
+sunVec.BuildVector(9, Polaris, Sun);
+sunVec.Color = ColorTools.Yellow;
+Vector nadirVec;
+nadirVec.BuildVector(9, Polaris, Earth);
+nadirVec.Color = ColorTools.Cyan;
+Vector velVec;
+velVec.BuildVector(7, Polaris);
+velVec.Color = ColorTools.Magenta;
+orbitView.AddObject(sunVec);
+orbitView.AddObject(nadirVec);
+orbitView.AddObject(velVec);
+
 // Body-fixed close-up: a chase camera parked a few metres off the vehicle,
 // where the drawn body axes make the attitude motion readable. The viewpoint
 // numbers are the ones the reference handlers flew.
@@ -66,6 +83,9 @@ closeView.AddViewpoint(closeUp);
 closeView.ActivateViewpoint(closeUp.ViewpointName);
 closeView.SetShowName(Polaris.ObjectId, 1);
 closeView.SetShowAxis(Polaris.ObjectId, 1);
+closeView.AddObject(sunVec);
+closeView.AddObject(nadirVec);
+closeView.AddObject(velVec);
 
 While (1);
 	ApiLabel "Frame";
@@ -85,36 +105,57 @@ def replay(stream_path: Path) -> Iterator[dict]:
 
 
 def follow(
-    stream_path: Path, poll_s: float = 0.05, idle_stop_s: float = 30.0
+    stream_path: Path,
+    poll_s: float = 0.05,
+    idle_stop_s: float = 30.0,
+    max_fps: float = 4.0,
 ) -> Iterator[dict]:
-    """Tail *stream_path* live, yielding states as the sim appends them.
+    """Tail *stream_path* live, yielding the **newest** state at most *max_fps*.
 
     Waits **indefinitely** for the file to appear — a SITL run spends minutes
     in configuration and atmosphere setup before its loop starts marching, and
     giving up during that window is how a viewer reports "0 frames" on a
     perfectly healthy run (Ctrl-C to abandon). Once data has flowed, a silence
     of *idle_stop_s* means the run finished, and the tail returns.
+
+    Coalescing is what keeps the display honest: the sim emits ~10 states/s
+    while a software-rendered FreeFlyer frame costs a multiple of that, so a
+    viewer that renders *every* line falls steadily behind until the window
+    looks frozen (and a backlogged engine's failure mode is a hang). Skipping
+    to the newest complete line keeps the window showing *now*, at a frame
+    rate the renderer actually sustains.
     """
     while not stream_path.exists():
         time.sleep(max(poll_s, 0.5))
     deadline = time.monotonic() + idle_stop_s
+    min_interval = 1.0 / max_fps if max_fps > 0 else 0.0
+    last_yield = 0.0
     with stream_path.open() as f:
+        pending: str | None = None
         buffer = ""
         while True:
             chunk = f.readline()
-            if not chunk:
-                if time.monotonic() > deadline:
-                    return
-                time.sleep(poll_s)
+            if chunk:
+                deadline = time.monotonic() + idle_stop_s
+                buffer += chunk
+                if not buffer.endswith("\n"):
+                    continue  # partial line: the producer flushes whole lines, but be safe
+                if buffer.strip():
+                    pending = buffer.strip()  # newest complete line wins
+                buffer = ""
+                continue  # drain everything available before rendering
+            now = time.monotonic()
+            if pending is not None and now - last_yield >= min_interval:
+                last_yield = now
+                state = json.loads(pending)
+                pending = None
+                yield state
                 continue
-            deadline = time.monotonic() + idle_stop_s
-            buffer += chunk
-            if not buffer.endswith("\n"):
-                continue  # partial line: the producer flushes whole lines, but be safe
-            line = buffer.strip()
-            buffer = ""
-            if line:
-                yield json.loads(line)
+            if now > deadline:
+                if pending is not None:  # the run's final state still renders
+                    yield json.loads(pending)
+                return
+            time.sleep(poll_s)
 
 
 def run_viz(
