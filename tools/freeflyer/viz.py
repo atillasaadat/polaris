@@ -89,15 +89,15 @@ def follow(
 ) -> Iterator[dict]:
     """Tail *stream_path* live, yielding states as the sim appends them.
 
-    Starts before the file exists (waits for it), survives the producer being
-    slower than the display, and returns once the producer has been silent for
-    *idle_stop_s* — a finished run, not an error.
+    Waits **indefinitely** for the file to appear — a SITL run spends minutes
+    in configuration and atmosphere setup before its loop starts marching, and
+    giving up during that window is how a viewer reports "0 frames" on a
+    perfectly healthy run (Ctrl-C to abandon). Once data has flowed, a silence
+    of *idle_stop_s* means the run finished, and the tail returns.
     """
-    deadline = time.monotonic() + idle_stop_s
     while not stream_path.exists():
-        if time.monotonic() > deadline:
-            return
-        time.sleep(poll_s)
+        time.sleep(max(poll_s, 0.5))
+    deadline = time.monotonic() + idle_stop_s
     with stream_path.open() as f:
         buffer = ""
         while True:
