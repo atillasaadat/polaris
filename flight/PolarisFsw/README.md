@@ -688,7 +688,8 @@ failure mode to watch for if that ever regresses.
 (design doc §8.5) and the owner of the §7 MTQ/MAG duty-cycle interlock. Like the
 estimator it is a **passive** component and a thin wrapper: the laws are
 `polaris::gnc::BdotController`, `polaris::gnc::AttitudePid` and
-`polaris::gnc::RwAllocator`, and no control math lives in the component.
+`polaris::gnc::RwAllocator`, `polaris::gnc::MomentumManager` and
+`polaris::gnc::DisturbanceObserver`, and no control math lives in the component.
 
 It is **member 1** of the barrier-driven 10 Hz SITL rate group, immediately after
 the estimator (member 0), so it acts on the solution that member just published —
@@ -700,7 +701,8 @@ estimator↔controller connections are already outside the SITL block and need n
 change.
 
 **Modes.** `IDLE` (zero on every actuator), `DETUMBLE` (B-dot on the torque rods)
-and `POINT` (quaternion-error PID allocated across the wheel array), commanded by
+and `POINT` (quaternion-error PID allocated across the wheel array, **plus**
+concurrent magnetic desaturation when the wheels are loaded), commanded by
 `CTRL_MODE_SET`, with a commanded inertial-hold reference from
 `CTRL_SET_TARGET_Q`. `POINT` refuses — with `ModeRefused`, leaving the mode where
 it was — unless the estimate is fresh, valid and inside `MaxAttSigmaRad`. `IDLE`
@@ -733,7 +735,44 @@ the §8.2 plausibility band and the vote — because a disturbance large enough 
 matter is rejected by that band, and a monitor on the voted field would be blind
 to exactly the fault it exists to name.
 
-**Tuning.** Thirty parameters, no defaults (§19.3). A missing or
+**Momentum management (§8.5).** The wheel tachometers arrive on `wheelSpeedIn`
+(`GncPorts.WheelSpeedMeas`, one per installed wheel) and become stored momentum
+`h = W(I_w ω_w)`; a wheel with no usable speed refuses the whole computation
+rather than understating the sum. Above `MomentumDesatEnterNms` the rods
+desaturate **concurrently with POINT** — the wheels hold the attitude while the
+rods dump what the wheels are holding — and stop once the momentum error has
+stayed under the exit threshold for the confirmation count. Desaturation is
+excluded from `DETUMBLE`, where the rods are B-dot's; exactly one law forms a
+body dipole in any cycle, and `commandActuators` stays the single owner of the §7
+schedule. `CTRL_DESAT` is the ground override (`AUTO`/`FORCE`/`INHIBIT`), with
+`FORCE` a permission rather than an instruction: no field, no dipole.
+
+The ordering inside the cycle is load-bearing. The desaturation is decided
+*before* the pointing law so the magnetic torque it is about to apply can be fed
+forward into the wheel demand — the vehicle knows that torque exactly, and a
+pointing loop that only reacts to it carries an error of the disturbance over the
+proportional gain for as long as the unloading lasts (measured: 2.9°, against a
+1.0° requirement). The same term is subtracted from the disturbance observer's
+input, so a desaturation cannot look like an unmodelled external torque.
+
+**Disturbance feedforward and the §9 momentum monitors.** Tier 1 is the modelled
+gravity-gradient and `m_res × B` torques on the estimated states — which is why
+the estimate carries `posEciM`, the GNSS-derived position the estimator was
+already using for its own magnetic reference. Tier 2 differences the total system
+momentum `H = Jω + h_w` and low-passes the residual; it feeds forward *and* is
+the momentum-anomaly monitor, and it runs whether or not its output is fed
+forward, because a fault monitor a control-tuning parameter can switch off is not
+a monitor. `MomentumEnvelopeExceeded` fires when the stored momentum leaves the
+range the pointing margins are analysed over (§8.5 SISO validity boundary), which
+on this vehicle is far below any wheel's capacity. `MomentumAnomaly` latches over
+`DisturbanceBudgetNm` and clears under `DisturbanceClearNm` — a deadband, so an
+estimate parked at the budget holds the latch instead of cycling it. A
+momentum-accounting refusal is itself FDIR-visible: it blinds desaturation and
+both §9 monitors at once, so it raises `MomentumUnavailable` (reason and wheel,
+bounded cadence) and drops the `MomentumValid` channel rather than leaving a
+silent NaN as the only witness.
+
+**Tuning.** Forty-five parameters, no defaults (§19.3). A missing or
 out-of-range value leaves the controller inert in `IDLE` with one `ConfigInvalid`
 and zero on every actuator. The config compiler cross-checks `WheelAxesBody` and
 `MtqAxesBody` against the installed units' `spin_axis`/`dipole_axis` and the
@@ -746,11 +785,15 @@ schedule invariants and the stuck-on monitor's confirmation and re-admission
 edges — with the laws themselves pinned at the `lib/gnc` level in
 `tests/unit/gnc_control_test.cpp`. Closed-loop behaviour is
 `tests/integration/sitl_attitude_control_test.cpp`: detumble, inertial hold, a
-stuck-on rod that the estimator survives, and the negative row that makes the
-third one evidence.
+stuck-on rod that the estimator survives, the negative row that makes the third
+one evidence, the full desaturation latch cycle with pointing asserted
+throughout, and the paired feedforward-on/off comparison that also fires the
+momentum-anomaly monitor.
 
-**SITL/bench command hooks.** `-c <mode>` latches a control mode at startup and
-`-q q0,q1,q2,q3` sets the inertial-hold target, the §8.5 equivalents of the
+**SITL/bench command hooks.** `-c <mode>` latches a control mode at startup,
+`-q q0,q1,q2,q3` sets the inertial-hold target and `-F model,observer` forces the
+§8.5 feedforward tiers on or off (the only way to fly the *same* vehicle both
+ways and measure what feedforward buys), the §8.5 equivalents of the
 estimator's `-M`/`-A`. Both dispatch the real opcodes through the component's own
 command port; only the uplink is skipped. The mode is *retried* each cycle until
 the estimate can support it, because at setup no measurement has arrived and a

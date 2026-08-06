@@ -100,6 +100,16 @@ struct TopologyState {
                                       //!< ST_ALIGN_CAL_START with at startup (0 = do not command
                                       //!< an alignment calibration). The §8.2 twin of
                                       //!< magCalSamples, and there for the same reason.
+  I32 ffModel = -1;                   //!< SITL/bench only: force the §8.5 tier-1 feedforward on
+                                      //!< (1) or off (0); negative leaves the ParameterDb value.
+                                      //!< Exists for one experiment — flying the same vehicle
+                                      //!< with and without feedforward is the only way to measure
+                                      //!< what it buys (design doc §8.5). Defaulted so an entry
+                                      //!< point that never sets it flies the ParameterDb value
+                                      //!< rather than an indeterminate override.
+  I32 ffObserver = -1;                //!< SITL/bench only: the tier-2 twin of ffModel, same
+                                      //!< default for the same reason. The observer still runs
+                                      //!< when this is 0; it is also the §9 anomaly monitor.
   const char* prmDbPath;              //!< ParameterDb file emitted by the config compiler
                                       //!< (§19.3); nullptr = the FileHandling default "PrmDb.dat"
   CdhCore::SubtopologyState cdhCore;  //!< Subtopology state for CdhCore

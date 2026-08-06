@@ -157,8 +157,11 @@ TEST(SitlServer, BarrierMismatchDegradesToOpenLoopNotCrash) {
   server.stop();
 }
 
-TEST(SitlWire, RecordSizesAreTheFrozenV1Layout) {
+TEST(SitlWire, RecordSizesAreTheFrozenLayout) {
   // The wire contract: any change here is a version bump, not a silent edit.
+  // Version 2 (Push 56) added WheelTachRecord to the STEP_REQ; every earlier
+  // record is unchanged, which is what the sizes below pin.
+  EXPECT_EQ(sitl::kVersion, 2);
   EXPECT_EQ(sizeof(sitl::HelloMsg), 48u);
   EXPECT_EQ(sizeof(sitl::ImuRecord), 64u);
   EXPECT_EQ(sizeof(sitl::StarTrackerRecord), 56u);
@@ -167,6 +170,7 @@ TEST(SitlWire, RecordSizesAreTheFrozenV1Layout) {
   EXPECT_EQ(sizeof(sitl::GnssRecord), 104u);
   EXPECT_EQ(sizeof(sitl::WheelCommandRecord), 16u);
   EXPECT_EQ(sizeof(sitl::MtqCommandRecord), 24u);
+  EXPECT_EQ(sizeof(sitl::WheelTachRecord), 24u);
 }
 
 }  // namespace

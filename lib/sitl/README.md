@@ -7,7 +7,7 @@ on and the decode logic that reads it.
 
 | File | Role |
 |---|---|
-| `wire.hpp` | The **frozen v1** message layout: POD records memcpy'd little-endian with static-asserted sizes, carried inside standard F´ `Svc::FprimeProtocol` frames over the dedicated SITL socket (not the GDS ground link). Truth-side diagnostics a real part could not report deliberately do not cross (§2.3, REQ-SIM-004). Frozen by `SitlWire.RecordSizesAreTheFrozenV1Layout` |
+| `wire.hpp` | The **frozen v2** message layout (v1 plus the per-wheel `WheelTachRecord` the §8.5 momentum management reads; both ends are built together, so the version is a mismatch detector rather than a compatibility mechanism): POD records memcpy'd little-endian with static-asserted sizes, carried inside standard F´ `Svc::FprimeProtocol` frames over the dedicated SITL socket (not the GDS ground link). Truth-side diagnostics a real part could not report deliberately do not cross (§2.3, REQ-SIM-004). Frozen by `SitlWire.RecordSizesAreTheFrozenLayout` |
 | `handler.hpp` | `SitlHandler` — the FSW-side validate/decode/reply logic, factored out of `flight::SitlBridge` so the byte protocol is testable without a running topology. STEP is split into decode and `buildStepReply` so the caller runs the rate group *between* the halves: that split is the §2.4 barrier |
 
 Flight-safe (it ships inside the deployment): fixed-size records, no heap, no

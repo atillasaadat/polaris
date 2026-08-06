@@ -38,10 +38,16 @@ Firm seeds below.
    :tags: adcs, actuators, momentum
    :method: Test
    :derived_from: REQ-ACTL-003
-   :allocation: flight/PolarisFsw/MomentumManager
+   :allocation: lib/gnc, flight/PolarisFsw/AttitudeController
 
    The FSW **shall** monitor stored RW momentum and desaturate using magnetorquers
    (and/or thrusters), retaining control authority with margin to wheel saturation.
+
+   Implemented in Push 56 and refined into two testable statements: REQ-ACTL-009
+   (the stored-momentum envelope, which on this vehicle is set by the validity of
+   the pointing loop's own margin analysis rather than by wheel capacity) and
+   REQ-ACTL-010 (the cross-product magnetic desaturation itself). Thruster
+   desaturation remains for the propulsion phase.
 
 .. req:: CMG singularity-robust steering
    :id: REQ-ACT-004

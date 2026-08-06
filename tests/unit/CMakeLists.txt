@@ -50,6 +50,7 @@ add_executable(polaris_unit_tests
   mag_voting_test.cpp
   st_alignment_test.cpp
   gnc_control_test.cpp
+  gnc_momentum_test.cpp
   attitude_accuracy_mc_test.cpp
   sim_vehicle_test.cpp)
 

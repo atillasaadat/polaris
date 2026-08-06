@@ -167,6 +167,8 @@ void SitlBridge ::publishMeasurements(I64 epochTaiNs) {
                 "gnssOut must be >= sitl::kMaxUnits");
   static_assert(NUM_STARTRACKEROUT_OUTPUT_PORTS >= static_cast<FwIndexType>(sitl::kMaxUnits),
                 "starTrackerOut must be >= sitl::kMaxUnits");
+  static_assert(NUM_WHEELSPEEDOUT_OUTPUT_PORTS >= static_cast<FwIndexType>(sitl::kMaxUnits),
+                "wheelSpeedOut must be >= sitl::kMaxUnits");
 
   // The IMU records accumulate since the last FSW read, i.e. over exactly one
   // macro step, so the interval is this epoch minus the previous one. On the
@@ -255,6 +257,20 @@ void SitlBridge ::publishMeasurements(I64 epochTaiNs) {
     meas.set_timeTagNs(rec.time_tag_tai_ns);
     meas.set_valid(rec.valid != 0);
     this->starTrackerOut_out(static_cast<FwIndexType>(i), meas);
+  }
+  // Wheel tachometers (§8.5). `nWheel()` is the same HELLO count that sizes the
+  // reply's command records, so a vehicle's wheels are declared once and the
+  // command and the feedback cannot disagree about how many there are.
+  for (U32 i = 0; i < this->handler_.nWheel(); ++i) {
+    if (!this->isConnected_wheelSpeedOut_OutputPort(static_cast<FwIndexType>(i))) {
+      continue;
+    }
+    const sitl::WheelTachRecord& rec = this->handler_.wheelTach(i);
+    WheelSpeedMeas meas;
+    meas.set_speedRadps(rec.speed_rad_s);
+    meas.set_timeTagNs(rec.time_tag_tai_ns);
+    meas.set_valid(rec.valid != 0);
+    this->wheelSpeedOut_out(static_cast<FwIndexType>(i), meas);
   }
 }
 

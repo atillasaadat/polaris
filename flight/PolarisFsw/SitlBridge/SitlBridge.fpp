@@ -93,6 +93,11 @@ module flight {
     @ MEKF push).
     output port starTrackerOut: [GncMaxUnits] StarTrackerMeasPort
 
+    @ Per-wheel tachometer readings, to the §8.5 momentum management. An actuator
+    @ that reports state, so it arrives on the same seam the sensors do — on
+    @ hardware it is the wheel drive's own telemetry through its Drv component.
+    output port wheelSpeedOut: [GncMaxUnits] WheelSpeedMeasPort
+
     # ----------------------------------------------------------------------
     # Telemetry
     # ----------------------------------------------------------------------

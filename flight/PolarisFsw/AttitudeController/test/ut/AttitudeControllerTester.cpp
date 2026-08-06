@@ -48,6 +48,22 @@ constexpr F64 kWindowToleranceSec = 0.001;
 constexpr U32 kStuckConfirmCycles = 5;
 constexpr U32 kStuckClearCycles = 20;
 constexpr U32 kAlertCycles = 100;
+//! Momentum management (§8.5). RW-X rotor inertia; thresholds shaped like the
+//! reference vehicle's but with a short confirmation count, so the disengage
+//! edge is reachable inside a component test.
+constexpr F64 kWheelInertiaKgm2 = 7.9577e-4;
+constexpr F64 kMomentumEnterNms = 1.0e-3;
+constexpr F64 kMomentumExitNms = 3.0e-4;
+constexpr U32 kMomentumConfirmCycles = 5;
+constexpr F64 kMomentumEnvelopeNms = 2.0e-3;
+constexpr F64 kDesatGainPerSec = 0.2;
+constexpr F64 kObserverTauSec = 200.0;
+constexpr F64 kDisturbanceBudgetNm = 2.0e-5;
+constexpr F64 kDisturbanceClearNm = 1.6e-5;
+//! Default duty factor `setValidParameters` loads, named because the feedforward
+//! check below is written on it.
+constexpr F64 kDutyFactorDefault = 0.5;
+constexpr U32 kDisturbanceAnomalyCycles = 100;
 
 //! Nominal field magnitude the monitor tests compare against [T].
 constexpr F64 kNominalFieldT = 3.0e-5;
@@ -153,6 +169,24 @@ void AttitudeControllerTester ::setValidParameters(F64 dutyFactor, F64 settleSec
   this->paramSet_MtqStuckConfirmCycles(kStuckConfirmCycles, Fw::ParamValid::VALID);
   this->paramSet_MtqStuckClearCycles(kStuckClearCycles, Fw::ParamValid::VALID);
   this->paramSet_AlertCycles(kAlertCycles, Fw::ParamValid::VALID);
+
+  // Momentum management and disturbance feedforward (§8.5).
+  this->paramSet_WheelInertiaKgm2(kWheelInertiaKgm2, Fw::ParamValid::VALID);
+  this->paramSet_InertiaBodyKgm2(toVec3(Eigen::Vector3d(0.12, 0.12, 0.10)), Fw::ParamValid::VALID);
+  this->paramSet_MomentumTargetBody(toVec3(Eigen::Vector3d::Zero()), Fw::ParamValid::VALID);
+  this->paramSet_MomentumDesatEnterNms(kMomentumEnterNms, Fw::ParamValid::VALID);
+  this->paramSet_MomentumDesatExitNms(kMomentumExitNms, Fw::ParamValid::VALID);
+  this->paramSet_MomentumDesatConfirmCycles(kMomentumConfirmCycles, Fw::ParamValid::VALID);
+  this->paramSet_MomentumEnvelopeNms(kMomentumEnvelopeNms, Fw::ParamValid::VALID);
+  this->paramSet_DesatGainPerSec(kDesatGainPerSec, Fw::ParamValid::VALID);
+  this->paramSet_FeedforwardModelEnable(1, Fw::ParamValid::VALID);
+  this->paramSet_FeedforwardObserverEnable(1, Fw::ParamValid::VALID);
+  this->paramSet_ObserverTauSec(kObserverTauSec, Fw::ParamValid::VALID);
+  this->paramSet_ResidualDipoleAm2(toVec3(Eigen::Vector3d(0.002, -0.001, 0.0015)),
+                                   Fw::ParamValid::VALID);
+  this->paramSet_DisturbanceBudgetNm(kDisturbanceBudgetNm, Fw::ParamValid::VALID);
+  this->paramSet_DisturbanceClearNm(kDisturbanceClearNm, Fw::ParamValid::VALID);
+  this->paramSet_DisturbanceAnomalyCycles(kDisturbanceAnomalyCycles, Fw::ParamValid::VALID);
   // paramSet_* only stages values in the harness's table; the component's base
   // caches them at load, exactly as the topology does once ParameterDb is up.
   this->component.loadParameters();
@@ -199,11 +233,31 @@ void AttitudeControllerTester ::clearMagnetic() {
   this->estimate_.set_magRawValid(false);
 }
 
+double AttitudeControllerTester ::speedForMomentum(double momentumNms) {
+  // Four wheels at a common speed on the body diagonals: the X and Y
+  // contributions cancel and h_z = 4 * I * w / sqrt(3).
+  return momentumNms * std::sqrt(3.0) / (4.0 * kWheelInertiaKgm2);
+}
+
+void AttitudeControllerTester ::setWheelSpeeds(double speedRadps, bool valid) {
+  this->wheel_speed_radps_ = speedRadps;
+  for (U32 i = 0; i < kWheelCount; ++i) {
+    this->wheel_speed_valid_[i] = valid;
+  }
+}
+
 void AttitudeControllerTester ::runCycleAt(I64 taiNs) {
   const U32 seconds = static_cast<U32>(taiNs / kNsPerSecond);
   const U32 useconds = static_cast<U32>((taiNs % kNsPerSecond) / 1000);
   this->setTestTime(Fw::Time(seconds, useconds));
   this->invoke_to_estimateIn(0, this->estimate_);
+  for (U32 i = 0; i < kWheelCount; ++i) {
+    WheelSpeedMeas meas;
+    meas.set_speedRadps(this->wheel_speed_radps_);
+    meas.set_timeTagNs(taiNs);
+    meas.set_valid(this->wheel_speed_valid_[i]);
+    this->invoke_to_wheelSpeedIn(static_cast<FwIndexType>(i), meas);
+  }
   this->invoke_to_run(0, 0);
 }
 
@@ -548,6 +602,261 @@ void AttitudeControllerTester ::testResetClearsState() {
   this->clearMagnetic();
   this->runCycleAt(t);
   EXPECT_TRUE(this->last_schedule_.get_interlockHealthy());
+}
+
+// ----------------------------------------------------------------------
+// Momentum management (§8.5)
+// ----------------------------------------------------------------------
+
+void AttitudeControllerTester ::testDesatEngagesAndDisengagesInPoint() {
+  this->setValidParameters();
+
+  // A field along +X and wheels loaded along +Z: the momentum error is fully
+  // perpendicular to the field, so the unloading is at full effect and the
+  // dipole is along +Y (dh x B).
+  const Eigen::Vector3d field(kNominalFieldT, 0.0, 0.0);
+  const pm::Quaternion attitude = pm::Quaternion::Identity();
+  I64 t = kStartTaiNs;
+
+  this->setEstimate(attitude, Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->setMagnetic(field, t, kNominalFieldT);
+  this->setWheelSpeeds(0.0);
+  this->runCycleAt(t);
+  this->sendCmd_CTRL_SET_TARGET_Q(0, 0, 1.0, 0.0, 0.0, 0.0);
+  this->sendCmd_CTRL_MODE_SET(0, 0, AttitudeController::CtrlMode::POINT);
+  this->clearHistory();
+
+  // Empty wheels: no desaturation, and the rods stay off.
+  t += kPeriodNs;
+  this->setEstimate(attitude, Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->setMagnetic(field, t, kNominalFieldT);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_DesatEngaged_SIZE(0);
+  EXPECT_EQ(this->last_on_window_s_, 0.0);
+
+  // Past the threshold: engaged on the first cycle, with the rods commanded
+  // *and* the wheels still holding the attitude — the concurrency claim.
+  this->clearHistory();
+  t += kPeriodNs;
+  this->setWheelSpeeds(speedForMomentum(1.5e-3));
+  this->setEstimate(attitude, Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->setMagnetic(field, t, kNominalFieldT);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_DesatEngaged_SIZE(1);
+  ASSERT_TLM_DesatActive_SIZE(1);
+  ASSERT_TLM_DesatActive(0, true);
+  EXPECT_NEAR(this->last_on_window_s_, 0.5 * kPeriodSec, 1.0e-12);
+  // dh is +Z and B is +X, so dh x B is along +Y: rod 1 carries the command and
+  // the other two do not, which is also the ordering claim.
+  EXPECT_GT(this->last_dipoles_[1][1], 0.0);
+  EXPECT_NEAR(this->last_dipoles_[0][0], 0.0, 1.0e-15);
+  EXPECT_NEAR(this->last_dipoles_[2][2], 0.0, 1.0e-15);
+  EXPECT_EQ(this->last_schedule_.get_commandedMask(), 0x2u);
+  // The wheels are still being driven by the pointing law: desaturation is
+  // concurrent with POINT, not a mode that replaces it.
+  ASSERT_TLM_TorqueCmd_SIZE(1);
+
+  // **The rods' torque is fed forward into the wheel demand.** At a zero
+  // attitude error and zero rate the PID's own terms are zero, so the whole
+  // commanded torque is the feedforward — which must be exactly minus the
+  // average magnetic torque the rods are about to apply, or the wheels would
+  // discover it as pointing error instead (measured at 2.8 deg in SITL before
+  // this term existed, against a 1.0 deg requirement).
+  ASSERT_TLM_FeedforwardTorque_SIZE(1);
+  const Vec3F64 ff = this->tlmHistory_FeedforwardTorque->at(0).arg;
+  Eigen::Vector3d applied = Eigen::Vector3d::Zero();
+  for (U32 i = 0; i < kMtqCount; ++i) {
+    applied += Eigen::Vector3d(this->last_dipoles_[i][0], this->last_dipoles_[i][1],
+                               this->last_dipoles_[i][2]);
+  }
+  // Minus the *average* magnetic torque: the rods carry the dipole only through
+  // the on-window, so the duty factor is part of the model and not a detail.
+  const Eigen::Vector3d expected = -kDutyFactorDefault * applied.cross(field);
+  // The transverse axes carry the tier-1 residual-dipole model (m_res x B, ~5e-8
+  // N.m here) and the axis of the desaturation torque carries the tier-2
+  // observer's contribution as well — the harness stepped the wheel speeds,
+  // which is a real momentum jump and which the observer honestly reports. Both
+  // are orders below the term under test, which is what the tolerances say.
+  EXPECT_NEAR(ff[0], expected.x(), 1.0e-7);
+  EXPECT_NEAR(ff[1], expected.y(), 1.0e-7);
+  EXPECT_NEAR(ff[2], expected.z(), 0.05 * std::abs(expected.z()));
+  // ...and it reaches the *demand*, which is the claim that matters: with a zero
+  // attitude and rate error the PID's own terms vanish, so the commanded torque
+  // is the feedforward exactly. (The two differ from `expected` by the tier-2
+  // observer's contribution — the harness stepped the wheel speeds, which is a
+  // real momentum jump and which the observer honestly reports.)
+  const Vec3F64 torque = this->tlmHistory_TorqueCmd->at(0).arg;
+  EXPECT_NEAR(torque[0], ff[0], 1.0e-15) << "the feedforward did not reach the demand";
+  EXPECT_NEAR(torque[1], ff[1], 1.0e-15);
+  EXPECT_NEAR(torque[2], ff[2], 1.0e-15);
+
+  // Momentum comes down under the exit threshold: still engaged through the
+  // confirmation count, then disengaged. Both edges asserted.
+  this->clearHistory();
+  this->setWheelSpeeds(speedForMomentum(1.0e-4));
+  for (U32 i = 0; i < kMomentumConfirmCycles; ++i) {
+    t += kPeriodNs;
+    this->setEstimate(attitude, Eigen::Vector3d::Zero(), 1.0e-4, t);
+    this->setMagnetic(field, t, kNominalFieldT);
+    this->runCycleAt(t);
+  }
+  ASSERT_EVENTS_DesatDisengaged_SIZE(1);
+  EXPECT_EQ(this->last_on_window_s_, 0.0);
+  for (U32 i = 0; i < MtqDipoleSet::SIZE; ++i) {
+    for (U32 k = 0; k < 3; ++k) {
+      EXPECT_EQ(this->last_dipoles_[i][k], 0.0);
+    }
+  }
+}
+
+void AttitudeControllerTester ::testDesatExcludedFromDetumbleAndIdle() {
+  this->setValidParameters();
+
+  const Eigen::Vector3d field(kNominalFieldT, 0.0, 0.0);
+  // Wheels loaded well past the threshold for the whole test: if the mode gate
+  // were missing, every cycle below would desaturate.
+  this->setWheelSpeeds(speedForMomentum(1.8e-3));
+
+  // IDLE.
+  I64 t = kStartTaiNs;
+  this->setEstimate(pm::Quaternion::Identity(), Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->setMagnetic(field, t, kNominalFieldT);
+  this->runCycleAt(t);
+  t += kPeriodNs;
+  this->setEstimate(pm::Quaternion::Identity(), Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->setMagnetic(field, t, kNominalFieldT);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_DesatEngaged_SIZE(0);
+  EXPECT_EQ(this->last_on_window_s_, 0.0);
+
+  // DETUMBLE: the rods *are* driven, but by B-dot — the dipole opposes the field
+  // derivative rather than following dh x B, and no desaturation was engaged.
+  // A field walking along +Y gives a B-dot dipole along -Y; the desaturation
+  // demand for a +Z momentum error in a +X field would be along **+Y**, so the
+  // sign of rod 1 is what tells the two laws apart.
+  this->sendCmd_CTRL_MODE_SET(0, 0, AttitudeController::CtrlMode::DETUMBLE);
+  this->clearHistory();
+  const double step_t = 2.0e-9;
+  for (int k = 1; k <= 3; ++k) {
+    t += kPeriodNs;
+    const Eigen::Vector3d walking(kNominalFieldT, step_t * k, 0.0);
+    this->setEstimate(pm::Quaternion::Identity(), Eigen::Vector3d(0.05, 0.0, 0.0), 0.05, t);
+    this->setMagnetic(walking, t, walking.norm());
+    this->runCycleAt(t);
+  }
+  ASSERT_EVENTS_DesatEngaged_SIZE(0);
+  EXPECT_LT(this->last_dipoles_[1][1], 0.0) << "the rods are B-dot's in DETUMBLE";
+  ASSERT_TLM_DesatActive_SIZE(3);
+  ASSERT_TLM_DesatActive(2, false);
+}
+
+void AttitudeControllerTester ::testDesatGroundOverride() {
+  this->setValidParameters();
+
+  const Eigen::Vector3d field(kNominalFieldT, 0.0, 0.0);
+  I64 t = kStartTaiNs;
+  this->setWheelSpeeds(speedForMomentum(1.5e-3));
+  this->setEstimate(pm::Quaternion::Identity(), Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->setMagnetic(field, t, kNominalFieldT);
+  this->runCycleAt(t);
+  this->sendCmd_CTRL_SET_TARGET_Q(0, 0, 1.0, 0.0, 0.0, 0.0);
+  this->sendCmd_CTRL_MODE_SET(0, 0, AttitudeController::CtrlMode::POINT);
+
+  // INHIBIT stops a desaturation the predicate is asking for, immediately.
+  this->sendCmd_CTRL_DESAT(0, 0, AttitudeController::DesatOverride::INHIBIT);
+  ASSERT_EVENTS_DesatOverrideChanged_SIZE(1);
+  this->clearHistory();
+  t += kPeriodNs;
+  this->setEstimate(pm::Quaternion::Identity(), Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->setMagnetic(field, t, kNominalFieldT);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_DesatEngaged_SIZE(0);
+  EXPECT_EQ(this->last_on_window_s_, 0.0);
+
+  // AUTO hands the decision back, and the predicate is still asking.
+  this->sendCmd_CTRL_DESAT(0, 0, AttitudeController::DesatOverride::AUTO);
+  this->clearHistory();
+  t += kPeriodNs;
+  this->setEstimate(pm::Quaternion::Identity(), Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->setMagnetic(field, t, kNominalFieldT);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_DesatEngaged_SIZE(1);
+
+  // FORCE desaturates momentum the predicate would leave alone...
+  this->setWheelSpeeds(speedForMomentum(5.0e-5));
+  this->sendCmd_CTRL_DESAT(0, 0, AttitudeController::DesatOverride::FORCE);
+  this->clearHistory();
+  t += kPeriodNs;
+  this->setEstimate(pm::Quaternion::Identity(), Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->setMagnetic(field, t, kNominalFieldT);
+  this->runCycleAt(t);
+  EXPECT_GT(this->last_on_window_s_, 0.0);
+  EXPECT_GT(this->last_dipoles_[1][1], 0.0);
+
+  // ...but it is a *permission*, not an instruction to drive a rod blind: with no
+  // admissible field sample there is no law to run, and the rods stay off.
+  this->clearHistory();
+  t += kPeriodNs;
+  this->setEstimate(pm::Quaternion::Identity(), Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->clearMagnetic();
+  this->runCycleAt(t);
+  EXPECT_EQ(this->last_on_window_s_, 0.0);
+  ASSERT_EVENTS_DesatDisengaged_SIZE(1);
+}
+
+void AttitudeControllerTester ::testMomentumEnvelopeAndWheelDropout() {
+  this->setValidParameters();
+
+  I64 t = kStartTaiNs;
+  this->setWheelSpeeds(speedForMomentum(1.0e-3));
+  this->setEstimate(pm::Quaternion::Identity(), Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_MomentumEnvelopeExceeded_SIZE(0);
+  ASSERT_TLM_StoredMomentumNms_SIZE(1);
+  EXPECT_NEAR(this->tlmHistory_StoredMomentumNms->at(0).arg, 1.0e-3, 1.0e-9);
+
+  // Past the envelope: one event, and only one however long it persists.
+  this->setWheelSpeeds(speedForMomentum(2.5e-3));
+  for (int i = 0; i < 3; ++i) {
+    t += kPeriodNs;
+    this->setEstimate(pm::Quaternion::Identity(), Eigen::Vector3d::Zero(), 1.0e-4, t);
+    this->runCycleAt(t);
+  }
+  ASSERT_EVENTS_MomentumEnvelopeExceeded_SIZE(1);
+
+  // A wheel with no usable speed refuses the sum rather than understating it —
+  // and holds the latch, because a missing tachometer is not evidence that the
+  // wheels emptied. The telemetry says "no value" rather than zero — on the
+  // vector channel too, whose zero would draw as a perfectly empty array — and
+  // the refusal is FDIR-visible: one dead tachometer blinds desaturation and
+  // both §9 monitors at once, so the event names the reason and the wheel
+  // instead of leaving a silent NaN as the only witness.
+  this->clearHistory();
+  this->wheel_speed_valid_[2] = false;
+  t += kPeriodNs;
+  this->setEstimate(pm::Quaternion::Identity(), Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->runCycleAt(t);
+  ASSERT_TLM_StoredMomentumNms_SIZE(1);
+  EXPECT_TRUE(std::isnan(this->tlmHistory_StoredMomentumNms->at(0).arg));
+  ASSERT_TLM_StoredMomentum_SIZE(1);
+  EXPECT_TRUE(std::isnan(this->tlmHistory_StoredMomentum->at(0).arg[0]));
+  ASSERT_TLM_MomentumValid_SIZE(1);
+  ASSERT_TLM_MomentumValid(0, false);
+  ASSERT_EVENTS_MomentumUnavailable_SIZE(1);
+  ASSERT_EVENTS_MomentumUnavailable(0, AttitudeController::MomentumRefusalEv::WHEEL_INVALID, 2, 1);
+  ASSERT_EVENTS_MomentumEnvelopeRecovered_SIZE(0);
+
+  // The wheel comes back inside the envelope: recovery on the same comparison,
+  // the validity channel back to true, and no further refusal events.
+  this->clearHistory();
+  this->setWheelSpeeds(speedForMomentum(5.0e-4));
+  t += kPeriodNs;
+  this->setEstimate(pm::Quaternion::Identity(), Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_MomentumEnvelopeRecovered_SIZE(1);
+  ASSERT_EVENTS_MomentumUnavailable_SIZE(0);
+  ASSERT_TLM_MomentumValid_SIZE(1);
+  ASSERT_TLM_MomentumValid(0, true);
 }
 
 }  // namespace flight

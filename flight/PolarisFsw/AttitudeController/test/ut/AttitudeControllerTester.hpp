@@ -74,6 +74,27 @@ class AttitudeControllerTester : public AttitudeControllerGTestBase {
   //! CTRL_RESET drops the latch, the integrator and the mode.
   void testResetClearsState();
 
+  //! Desaturation engages autonomously inside POINT when the wheels pass the
+  //! momentum threshold, drives the rods concurrently with the wheels, and
+  //! disengages once the momentum has been low for the confirmation count. Both
+  //! edges are asserted, so "it disengages" is not read off a latch never set.
+  void testDesatEngagesAndDisengagesInPoint();
+
+  //! Desaturation is never active outside POINT — least of all in DETUMBLE,
+  //! where B-dot owns the rods and two laws on one actuator would be two
+  //! vehicles' worth of commands on one set of coils.
+  void testDesatExcludedFromDetumbleAndIdle();
+
+  //! CTRL_DESAT: INHIBIT stops a desaturation in progress, FORCE starts one the
+  //! momentum predicate would not have asked for, and AUTO hands the decision
+  //! back. FORCE is a permission, so it commands nothing without a field.
+  void testDesatGroundOverride();
+
+  //! Stored momentum past the envelope raises the §9 event once and recovers on
+  //! the same comparison; a wheel with no usable speed refuses the momentum sum
+  //! rather than understating it, and holds the latch where it was.
+  void testMomentumEnvelopeAndWheelDropout();
+
  private:
   // ----------------------------------------------------------------------
   // Captured outputs
@@ -113,6 +134,17 @@ class AttitudeControllerTester : public AttitudeControllerGTestBase {
   //! Clear the magnetic block (no admissible sample this cycle).
   void clearMagnetic();
 
+  //! Stage a common speed [rad/s] on every wheel, all readings valid. With the
+  //! body-diagonal pyramid an equal-speed set stores momentum along +Z only,
+  //! which makes the momentum under test a single number. Published by the next
+  //! @ref runCycleAt with that cycle's time tag, because the controller gates the
+  //! tachometers on staleness exactly as it gates the estimate.
+  void setWheelSpeeds(double speedRadps, bool valid = true);
+
+  //! Wheel speed [rad/s], common to all four, that stores @p momentumNms about
+  //! body +Z on the pyramid.
+  static double speedForMomentum(double momentumNms);
+
   AttitudeController component;
 
   //! Last captured commands and schedule.
@@ -124,8 +156,10 @@ class AttitudeControllerTester : public AttitudeControllerGTestBase {
   U32 mtq_cmd_count_{0};
   U32 schedule_count_{0};
 
-  //! The estimate staged for the next cycle.
+  //! The estimate and the wheel tachometers staged for the next cycle.
   AttitudeEstimate estimate_{};
+  double wheel_speed_radps_{0.0};
+  bool wheel_speed_valid_[4] = {true, true, true, true};
 };
 
 }  // namespace flight

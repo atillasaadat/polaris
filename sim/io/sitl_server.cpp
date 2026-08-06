@@ -118,6 +118,14 @@ sitl::MagnetometerRecord toWire(const Latest<sensors::MagnetometerMeasurement>& 
   return r;
 }
 
+sitl::WheelTachRecord toWire(const WheelTelemetry& w) {
+  sitl::WheelTachRecord r;
+  r.speed_rad_s = w.speed_rad_s;
+  r.time_tag_tai_ns = w.time_tag.nanosecondsSinceEpoch();
+  r.valid = w.valid ? 1 : 0;
+  return r;
+}
+
 sitl::GnssRecord toWire(const Latest<sensors::GnssMeasurement>& l) {
   sitl::GnssRecord r;
   const auto& m = l.measurement;
@@ -272,6 +280,9 @@ bool SitlServer::exchange(const FswInputs& in, FswOutputs& out) {
     ok = ok && sitl::writeRecord(buf.data(), buf.size(), off, toWire(u));
   }
   for (const auto& u : in.gnss) {
+    ok = ok && sitl::writeRecord(buf.data(), buf.size(), off, toWire(u));
+  }
+  for (const auto& u : in.wheels) {
     ok = ok && sitl::writeRecord(buf.data(), buf.size(), off, toWire(u));
   }
   if (!ok) {

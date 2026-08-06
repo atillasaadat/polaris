@@ -37,7 +37,12 @@
 namespace polaris::sitl {
 
 inline constexpr std::uint32_t kMagic = 0x50534954u;  ///< "PSIT"
-inline constexpr std::uint16_t kVersion = 1;
+/// Wire-format version. Bumped to 2 in Push 56, when the STEP_REQ gained the
+/// per-wheel tachometer records the §8.5 momentum management reads: both ends
+/// live in this repo and are built together, so the bump is a mismatch *detector*
+/// (a stale binary on either side fails `checkHeader` immediately) rather than a
+/// compatibility mechanism — there is deliberately no version negotiation.
+inline constexpr std::uint16_t kVersion = 2;
 
 /// Bounded unit counts per sensor/actuator type (wire arrays are sized to the
 /// HELLO-declared counts, never these maxima; these bound validation).
@@ -160,10 +165,26 @@ struct GnssRecord {
 
 static_assert(sizeof(GnssRecord) == 104);
 
+/// One reaction wheel's tachometer reading. A wheel drive reports its rotor
+/// speed as a matter of course — it is the feedback its own speed loop closes on
+/// — and the §8.5 momentum management needs it: the stored momentum
+/// `h = W (I_w omega_w)` is the whole basis of the desaturation demand and of the
+/// §9 momentum envelope. The **speed** crosses, not the momentum: rotor inertia
+/// is a catalog fact the FSW carries as a parameter, and a wire that pre-multiplied
+/// it would be the sim telling the FSW what the hardware is.
+struct WheelTachRecord {
+  double speed_rad_s = 0.0;
+  std::int64_t time_tag_tai_ns = 0;
+  std::uint8_t valid = 0;
+  std::uint8_t pad[7] = {};
+};
+
+static_assert(sizeof(WheelTachRecord) == 24);
+
 /// STEP_REQ fixed prefix; the per-unit records follow contiguously in HELLO
 /// order and counts: ImuRecord×n_imu, StarTrackerRecord×n_star_tracker,
 /// SunSensorRecord×n_sun_sensor, MagnetometerRecord×n_magnetometer,
-/// GnssRecord×n_gnss.
+/// GnssRecord×n_gnss, WheelTachRecord×n_wheel.
 struct StepReqHeader {
   MsgHeader hdr{kMagic, kVersion, static_cast<std::uint16_t>(MsgType::kStepReq)};
   std::int64_t epoch_tai_ns = 0;  ///< the macro-step boundary
@@ -209,7 +230,7 @@ static_assert(sizeof(StepReplyHeader) == 24);
 inline constexpr std::size_t kMaxStepReqBytes =
     sizeof(StepReqHeader) +
     kMaxUnits * (sizeof(ImuRecord) + sizeof(StarTrackerRecord) + sizeof(SunSensorRecord) +
-                 sizeof(MagnetometerRecord) + sizeof(GnssRecord));
+                 sizeof(MagnetometerRecord) + sizeof(GnssRecord) + sizeof(WheelTachRecord));
 
 /// Largest possible STEP_REPLY payload.
 inline constexpr std::size_t kMaxStepReplyBytes =

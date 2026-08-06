@@ -65,10 +65,21 @@ bool AttitudePid::update(const math::Quat<math::frames::Body, math::frames::ECI>
                          const math::Quat<math::frames::Body, math::frames::ECI>& q_ref,
                          const math::Vec3<math::frames::Body>& rate_ref, double dt_s,
                          AttitudePidResult& out) {
+  return update(q_est, rate_est, q_ref, rate_ref,
+                math::Vec3<math::frames::Body>(Eigen::Vector3d::Zero()), dt_s, out);
+}
+
+bool AttitudePid::update(const math::Quat<math::frames::Body, math::frames::ECI>& q_est,
+                         const math::Vec3<math::frames::Body>& rate_est,
+                         const math::Quat<math::frames::Body, math::frames::ECI>& q_ref,
+                         const math::Vec3<math::frames::Body>& rate_ref,
+                         const math::Vec3<math::frames::Body>& feedforward_nm, double dt_s,
+                         AttitudePidResult& out) {
   if (!configured_) {
     return refuse(AttitudePidRefusal::kUnconfigured, out);
   }
-  if (!rate_est.eigen().allFinite() || !rate_ref.eigen().allFinite() || !std::isfinite(dt_s)) {
+  if (!rate_est.eigen().allFinite() || !rate_ref.eigen().allFinite() ||
+      !feedforward_nm.eigen().allFinite() || !std::isfinite(dt_s)) {
     return refuse(AttitudePidRefusal::kBadInput, out);
   }
 
@@ -86,7 +97,10 @@ bool AttitudePid::update(const math::Quat<math::frames::Body, math::frames::ECI>
   const Eigen::Vector3d proportional = config_.kp_nm_per_rad * error.eigen();
   const Eigen::Vector3d derivative = config_.kd_nm_per_radps * rate_error;
   const Eigen::Vector3d integral_term = config_.ki_nm_per_rad_s * integral_.eigen();
-  Eigen::Vector3d demand = proportional + integral_term + derivative;
+  // Feedforward joins the demand here, upstream of both the saturation test and
+  // the conditional integration, so the integrator sees the torque the actuators
+  // will really be asked for rather than the feedback part of it alone.
+  Eigen::Vector3d demand = proportional + integral_term + derivative + feedforward_nm.eigen();
 
   const double demand_norm = demand.norm();
   const bool saturated = demand_norm > config_.max_torque_nm;

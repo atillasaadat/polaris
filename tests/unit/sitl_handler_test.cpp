@@ -49,16 +49,17 @@ void doHello(ps::SitlHandler& h, std::uint32_t n_wheel, std::uint32_t n_mtq) {
   EXPECT_EQ(ack.macro_dt_ns, hello.macro_dt_ns);
 }
 
-// A full STEP_REQ for the sensor suite makeHello() declares: the fixed header
-// followed by 1 IMU, 1 star tracker, 2 sun sensors, 1 magnetometer and 1 GNSS
-// record, in that order. Sensor values are seeded from @p seed so a decode can
-// be checked field by field.
+// A full STEP_REQ for the suite makeHello() declares: the fixed header followed
+// by 1 IMU, 1 star tracker, 2 sun sensors, 1 magnetometer, 1 GNSS record and
+// `n_wheel` tachometer records, in that order. Sensor values are seeded from @p seed so a decode
+// can be checked field by field.
 struct StepReqMessage {
   std::array<std::uint8_t, ps::kMaxStepReqBytes> bytes{};
   std::size_t len = 0;
 };
 
-StepReqMessage makeStepReq(std::uint64_t macro_step, std::int64_t epoch_tai_ns, double seed = 1.0) {
+StepReqMessage makeStepReq(std::uint64_t macro_step, std::int64_t epoch_tai_ns, double seed = 1.0,
+                           std::uint32_t n_wheel = 4) {
   StepReqMessage msg;
   ps::StepReqHeader hdr;
   hdr.macro_step = macro_step;
@@ -103,6 +104,17 @@ StepReqMessage makeStepReq(std::uint64_t macro_step, std::int64_t epoch_tai_ns, 
   gnss.fresh = 1;
   gnss.valid = 1;
   EXPECT_TRUE(ps::writeRecord(msg.bytes.data(), msg.bytes.size(), off, gnss));
+
+  // Wheel tachometers (wire v2): the §8.5 momentum management's input, and part
+  // of the declared length, so a request that omitted them would — correctly —
+  // be rejected as not the suite HELLO declared.
+  for (std::uint32_t i = 0; i < n_wheel; ++i) {
+    ps::WheelTachRecord tach;
+    tach.speed_rad_s = 100.0 * seed * static_cast<double>(i + 1);
+    tach.time_tag_tai_ns = epoch_tai_ns;
+    tach.valid = 1;
+    EXPECT_TRUE(ps::writeRecord(msg.bytes.data(), msg.bytes.size(), off, tach));
+  }
 
   msg.len = off;
   return msg;
@@ -163,6 +175,11 @@ TEST(SitlHandler, StepReqDecodesSensorRecords) {
   EXPECT_DOUBLE_EQ(h.magnetometer(0).field_tesla[1], 6.0e-5);
   EXPECT_DOUBLE_EQ(h.gnss(0).position_ecef_m[0], 1.4e7);
   EXPECT_DOUBLE_EQ(h.starTracker(0).q_body_eci[0], 1.0);
+  // Wheel tachometers, positional like every other unit: wheel 1 is not wheel 0.
+  ASSERT_EQ(h.nWheel(), 4u);
+  EXPECT_EQ(h.wheelTach(0).valid, 1);
+  EXPECT_DOUBLE_EQ(h.wheelTach(0).speed_rad_s, 200.0);
+  EXPECT_DOUBLE_EQ(h.wheelTach(3).speed_rad_s, 800.0);
 }
 
 TEST(SitlHandler, StepReqOfWrongLengthKeepsPreviousMeasurements) {
@@ -394,8 +411,9 @@ TEST(SitlHandler, ReHelloReLatchesCounts) {
   EXPECT_EQ(h.nWheel(), 2u);
   EXPECT_EQ(h.nMtq(), 1u);
 
-  // A subsequent STEP_REPLY reflects the re-latched counts.
-  const StepReqMessage req = makeStepReq(5, 5'000'000'000LL);
+  // A subsequent STEP_REPLY reflects the re-latched counts — and so does the
+  // *request* length, since the tachometer records are sized by the same count.
+  const StepReqMessage req = makeStepReq(5, 5'000'000'000LL, 1.0, /*n_wheel=*/2);
   std::array<std::uint8_t, ps::kMaxStepReplyBytes> out{};
   const ps::HandleResult r = h.handle(req.bytes.data(), req.len, out.data(), out.size());
   ASSERT_EQ(r.status, ps::HandleStatus::kStepReq);

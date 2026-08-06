@@ -164,6 +164,10 @@ class SitlHandler {
 
   const GnssRecord& gnss(std::uint32_t i) const { return gnss_[i]; }
 
+  /// Wheel tachometer of unit @p i (§8.5 momentum management). Bounded by
+  /// `nWheel()`, which HELLO declares and which also sizes the reply.
+  const WheelTachRecord& wheelTach(std::uint32_t i) const { return wheel_tach_[i]; }
+
   /// @}
 
  private:
@@ -235,7 +239,8 @@ class SitlHandler {
         static_cast<std::size_t>(n_star_tracker_) * sizeof(StarTrackerRecord) +
         static_cast<std::size_t>(n_sun_sensor_) * sizeof(SunSensorRecord) +
         static_cast<std::size_t>(n_magnetometer_) * sizeof(MagnetometerRecord) +
-        static_cast<std::size_t>(n_gnss_) * sizeof(GnssRecord);
+        static_cast<std::size_t>(n_gnss_) * sizeof(GnssRecord) +
+        static_cast<std::size_t>(n_wheel_) * sizeof(WheelTachRecord);
     if (in_len != expected) {
       return r;  // kMalformed: not the sensor set HELLO declared
     }
@@ -267,6 +272,11 @@ class SitlHandler {
         return r;
       }
     }
+    for (std::uint32_t i = 0; i < n_wheel_; ++i) {
+      if (!readRecord(in, in_len, off, wheel_tach_[i])) {
+        return r;
+      }
+    }
 
     r.status = HandleStatus::kStepReq;
     r.macro_step = req.macro_step;
@@ -290,6 +300,7 @@ class SitlHandler {
   SunSensorRecord sun_sensor_[kMaxUnits]{};
   MagnetometerRecord magnetometer_[kMaxUnits]{};
   GnssRecord gnss_[kMaxUnits]{};
+  WheelTachRecord wheel_tach_[kMaxUnits]{};
 };
 
 }  // namespace polaris::sitl

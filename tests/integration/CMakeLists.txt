@@ -41,7 +41,12 @@ target_link_libraries(polaris_integration_tests
 # closed-loop mission segments (a detumble row is >200 s of sim time in
 # micro-stepped lockstep); on a GitHub runner the long rows measure 300–1500+ s
 # against ctest's 1500 s default, which fails the suite on runner speed rather
-# than on behaviour.
+# than on behaviour. Push 56's momentum rows raised the ceiling again: the
+# feedforward row flies the same arc twice (with/without) and measures ~3000 s
+# locally, which a ~1.5-2x-slower runner pushes past 3600 — so 7200, still a
+# bound on behaviour (a healthy row never approaches it) rather than a race
+# against runner speed. The wall-clock cost of these rows is the recorded sim
+# profiling item (per-micro-step environment evaluations), not a CI knob.
 #
 # COST is longest-first scheduling for a parallel ctest. A fresh runner has no
 # CostData history, so without it ctest starts tests in definition order and
@@ -51,4 +56,4 @@ target_link_libraries(polaris_integration_tests
 # tie among these rows.
 gtest_discover_tests(polaris_integration_tests
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-  PROPERTIES TIMEOUT 3600 COST 1000)
+  PROPERTIES TIMEOUT 7200 COST 1000)

@@ -113,6 +113,11 @@ void RateHysteresis::reset() {
   below_streak_ = 0;
 }
 
+void RateHysteresis::clear() {
+  tumbling_ = false;
+  below_streak_ = config_.confirm_cycles;
+}
+
 bool RateHysteresis::update(double rate_norm_radps) {
   if (!configured_ || !std::isfinite(rate_norm_radps)) {
     return tumbling_;

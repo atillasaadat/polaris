@@ -151,10 +151,21 @@ class Vehicle:
         Per-wheel commanded-torque limit [N·m].
     wheel_max_momentum_nms : float
         Per-wheel momentum capacity [N·m·s], from the hardware catalog entry the
-        wheel's ``model_id`` resolves to. Not an FSW parameter — the flight
-        controller has no momentum management yet (Push 56) — but the number the
-        SISO validity boundary is drawn against, so it is read from the catalog
-        rather than assumed.
+        wheel's ``model_id`` resolves to — not an FSW parameter, but the number
+        the SISO validity boundary is drawn against, so it is read from the
+        catalog rather than assumed.
+    momentum_envelope_nms : float
+        The flight momentum-management ceiling
+        (``flight.attitudeController.MomentumEnvelopeNms``) [N·m·s]: the stored
+        momentum above which the vehicle raises the §9 envelope event. Carried
+        here so the analysis can check the committed parameter against the
+        momentum range its own margins are valid over — see
+        ``tests/analysis/test_control_momentum_envelope.py``, which is what stops
+        the config drifting out of the regime its evidence covers.
+    momentum_desat_enter_nms : float
+        The momentum error at which the vehicle starts desaturating
+        (``MomentumDesatEnterNms``) [N·m·s]. Read for the same reason: the action
+        has to sit inside the alarm.
     mtq_axes : numpy.ndarray
         Installed rod dipole axes as columns, shape ``(3, M)`` [-].
     mtq_max_dipole_am2 : float
@@ -183,6 +194,8 @@ class Vehicle:
     wheel_spin_axes: np.ndarray
     wheel_max_torque_nm: float
     wheel_max_momentum_nms: float
+    momentum_envelope_nms: float
+    momentum_desat_enter_nms: float
     mtq_axes: np.ndarray
     mtq_max_dipole_am2: float
     mtq_duty_factor: float
@@ -363,6 +376,8 @@ def load_vehicle(
         ),
         wheel_max_torque_nm=float(param("WheelMaxTorqueNm")),
         wheel_max_momentum_nms=_wheel_momentum_capacity(sc, hardware),
+        momentum_envelope_nms=float(param("MomentumEnvelopeNms")),
+        momentum_desat_enter_nms=float(param("MomentumDesatEnterNms")),
         mtq_axes=_axes_from_flat(list(param("MtqAxesBody")), mtq_count, "MtqAxesBody"),
         mtq_max_dipole_am2=float(param("BdotMaxDipoleAm2")),
         mtq_duty_factor=float(param("MtqDutyFactor")),

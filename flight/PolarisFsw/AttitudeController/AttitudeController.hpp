@@ -1,14 +1,16 @@
 // ======================================================================
 // \title  AttitudeController.hpp
 // \brief  Attitude control component: B-dot detumble, quaternion PID pointing,
-//         wheel allocation and the MTQ/MAG duty-cycle interlock
-//         (§8.5, §7, §9; REQ-ACTL-001..004)
+//         wheel allocation, momentum management and the MTQ/MAG duty-cycle
+//         interlock (§8.5, §7, §9; REQ-ACTL-001..005, -009..-011)
 //
-// The F´ wrapper around polaris::gnc::BdotController, polaris::gnc::AttitudePid
-// and polaris::gnc::RwAllocator. It consumes the §8.0 attitude estimate the
-// AttitudeEstimator published earlier in this same rate-group cycle, produces
-// the actuator commands for the next interval, owns the §7 duty-cycle schedule
-// and runs the §9 stuck-on rod monitor. No control math lives here.
+// The F´ wrapper around polaris::gnc::BdotController, polaris::gnc::AttitudePid,
+// polaris::gnc::RwAllocator, polaris::gnc::MomentumManager and
+// polaris::gnc::DisturbanceObserver. It consumes the §8.0 attitude estimate the
+// AttitudeEstimator published earlier in this same rate-group cycle plus the
+// wheel tachometers, produces the actuator commands for the next interval, owns
+// the §7 duty-cycle schedule and runs the §9 stuck-on rod, momentum-envelope and
+// momentum-anomaly monitors. No control math lives here.
 //
 // Flight rules — no heap after init, no exceptions, fixed-size storage, every
 // return code checked, finiteness guards on every published command.
@@ -26,6 +28,8 @@
 #include "flight/PolarisFsw/AttitudeController/AttitudeController_AllocMethodEnumAc.hpp"
 #include "gnc/attitude_pid.hpp"
 #include "gnc/bdot.hpp"
+#include "gnc/disturbance.hpp"
+#include "gnc/momentum.hpp"
 #include "gnc/rw_allocation.hpp"
 #include "math/frames.hpp"
 #include "math/quaternion.hpp"
@@ -42,6 +46,8 @@ class AttitudeController final : public AttitudeControllerComponentBase {
   using AllocMethod = AttitudeController_AllocMethod;
   using CtrlRefusal = AttitudeController_CtrlRefusal;
   using StuckAttribution = AttitudeController_StuckAttribution;
+  using DesatOverride = AttitudeController_DesatOverride;
+  using MomentumRefusalEv = AttitudeController_MomentumRefusal;
 
   //! Rods this component drives. The §7 interlock resolves the commanded body
   //! dipole onto an orthogonal triad, clamps each rod, and re-expands; anything
@@ -75,6 +81,22 @@ class AttitudeController final : public AttitudeControllerComponentBase {
   //! controller is refused, which is the correct behaviour and the wrong test.
   void commandModeAtStartup(U32 mode, const F64 q[4]);
 
+  //! Override the §8.5 feedforward enables at topology setup, for SITL and bench
+  //! runs (design doc §23.1.1). It exists for exactly one experiment: flying the
+  //! *same* vehicle with and without disturbance feedforward, which is the only
+  //! way to measure what the feedforward buys. On a flight vehicle both values
+  //! come from ParameterDb (§19.3) and change by uplink.
+  //!
+  //! Writes the component's own parameter cache and re-reads the tuning, so what
+  //! runs afterwards is the ordinary `applyParameters` path. Must follow
+  //! loadParameters(), which would otherwise overwrite it.
+  //!
+  //! @param model    tier 1 (gravity gradient + residual dipole) enabled.
+  //! @param observer tier 2 (the momentum-based observer) contributing to the
+  //!        feedforward. The observer itself runs either way — it is also the §9
+  //!        anomaly monitor.
+  void setFeedforwardAtStartup(bool model, bool observer);
+
  private:
   // ----------------------------------------------------------------------
   // Port handlers
@@ -86,6 +108,9 @@ class AttitudeController final : public AttitudeControllerComponentBase {
   //! Latch the estimator's product for this cycle.
   void estimateIn_handler(FwIndexType portNum, const AttitudeEstimate& estimate) override;
 
+  //! Latch one wheel's tachometer reading for this cycle.
+  void wheelSpeedIn_handler(FwIndexType portNum, const WheelSpeedMeas& meas) override;
+
   // ----------------------------------------------------------------------
   // Commands
   // ----------------------------------------------------------------------
@@ -96,6 +121,8 @@ class AttitudeController final : public AttitudeControllerComponentBase {
                                     F64 q3) override;
 
   void CTRL_RESET_cmdHandler(FwOpcodeType opCode, U32 cmdSeq) override;
+
+  void CTRL_DESAT_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, DesatOverride action) override;
 
   void parameterUpdated(FwPrmIdType id) override;
 
@@ -138,6 +165,51 @@ class AttitudeController final : public AttitudeControllerComponentBase {
   //! produced, leaving @p wheelTorque zeroed.
   bool runPoint(double dtSec, double* wheelTorque, CtrlRefusal::T& reason);
 
+  //! Fold this cycle's wheel tachometers into the momentum manager, run the §9
+  //! envelope monitor, and telemeter the result. Runs in **every** mode: the
+  //! envelope is a vehicle-level fault condition, not a POINT diagnostic.
+  //! @param nowNs cycle epoch, TAI ns — a tachometer reading older than
+  //!        `MaxEstimateAgeSec` is treated as no reading at all (§9.1), which
+  //!        refuses the momentum sum rather than computing it from a speed the
+  //!        wheel had at some earlier time.
+  //! @return true when @ref momentum_ produced a usable state this cycle.
+  bool updateMomentum(I64 nowNs);
+
+  //! Run the §8.5 tier-1/tier-2 disturbance chain and produce this cycle's
+  //! feedforward torque (already negated — it is the torque the actuators must
+  //! supply). Also drives the §9 momentum-anomaly monitor, which is the same
+  //! estimator read by a second consumer. Runs in **every** mode, for the same
+  //! reason the stuck-on monitor does: an unmodelled torque is a vehicle fault
+  //! whatever the controller happens to be doing.
+  //! @param nowNs cycle epoch, TAI ns. Leaves the feedforward in
+  //!        @ref feedforward_nm_, zeroed when nothing is enabled or available.
+  void updateDisturbance(I64 nowNs);
+
+  //! Whether the rods should desaturate this cycle, honouring the mode, the
+  //! ground override and the momentum predicate. DETUMBLE and IDLE always answer
+  //! false — in DETUMBLE the rods are B-dot's, and two laws on one actuator is
+  //! not a schedule. Pure: the engage/disengage edges are emitted by the caller,
+  //! once, where the transition is visible.
+  bool desatDue() const;
+
+  //! Run the cross-product desaturation law on this cycle's field and momentum
+  //! error. @return false when no dipole was produced, leaving @p dipole zero.
+  bool runDesat(polaris::math::Vec3<polaris::math::frames::Body>& dipole);
+
+  //! Resolve @p demand onto the rod triad, clamp each rod to its rating, and
+  //! re-expand — the one clamp on the magnetic path, shared by B-dot and
+  //! desaturation so the two cannot saturate differently. Sets
+  //! @ref commanded_mask_ and raises the bounded-cadence DipoleSaturated warning.
+  //! @return false when the clamped result is not finite.
+  bool clampDipoleToRods(const polaris::math::Vec3<polaris::math::frames::Body>& demand,
+                         polaris::math::Vec3<polaris::math::frames::Body>& applied);
+
+  //! Record the body torque @p dipole will produce in @p field over the interval
+  //! this cycle commands, duty-averaged. Both magnetic laws call it; see the
+  //! member it writes for why the observer reads the previous cycle's value.
+  void noteMagneticTorque(const polaris::math::Vec3<polaris::math::frames::Body>& dipole,
+                          const polaris::math::Vec3<polaris::math::frames::Body>& field);
+
   //! Emit the actuator commands and the duty-cycle schedule for the next
   //! interval. Called exactly once per cycle from every path, including the
   //! refusal paths — an actuator that is not commanded holds its last command,
@@ -177,10 +249,45 @@ class AttitudeController final : public AttitudeControllerComponentBase {
   polaris::gnc::AttitudePid pid_{};
   polaris::gnc::RwAllocator allocator_{};
   polaris::gnc::RateHysteresis rate_hysteresis_{};
+  polaris::gnc::MomentumManager momentum_{};
+  polaris::gnc::DisturbanceObserver observer_{};
+  //! The desaturation law is stateless, so its tuning is held rather than an
+  //! object built from it.
+  polaris::gnc::MtqDesatConfig desat_config_{};
 
   //! Latest estimate off `estimateIn`, and whether one has ever arrived.
   AttitudeEstimate estimate_{};
   bool have_estimate_{false};
+
+  //! Latest wheel tachometer readings off `wheelSpeedIn`, indexed by port. A
+  //! reading that has never arrived stays invalid, so an unwired wheel refuses
+  //! the momentum sum rather than contributing a zero that would understate it.
+  F64 wheel_speed_radps_[polaris::gnc::kMaxWheels] = {};
+  bool wheel_speed_valid_[polaris::gnc::kMaxWheels] = {};
+  I64 wheel_speed_time_ns_[polaris::gnc::kMaxWheels] = {};
+
+  //! This cycle's momentum state and whether it is usable.
+  polaris::gnc::MomentumState momentum_state_{};
+
+  //! Body torque the rods will apply over the interval this cycle commands
+  //! [N*m] — from **either** magnetic law, averaged over the control period by
+  //! the duty factor and computed from the **clamped** dipole. Zero when the rods
+  //! are not driven.
+  polaris::math::Vec3<polaris::math::frames::Body> magnetic_torque_nm_{Eigen::Vector3d::Zero()};
+
+  //! The same quantity from the *previous* cycle, which is the one the
+  //! disturbance observer must subtract: the momentum change it differences
+  //! happened over the interval the previous cycle commanded (§2.4 — commands
+  //! apply one step later). Using this cycle's would leave the vehicle's own
+  //! magnetic actuation in the residual, and B-dot's torque alone is more than
+  //! ten times the §9 anomaly budget — a detumble would alarm every time.
+  polaris::math::Vec3<polaris::math::frames::Body> magnetic_torque_prev_nm_{
+      Eigen::Vector3d::Zero()};
+
+  //! This cycle's feedforward torque [N*m] — minus the modelled and observed
+  //! disturbance, as enabled. Computed once per cycle in every mode and consumed
+  //! by POINT.
+  polaris::math::Vec3<polaris::math::frames::Body> feedforward_nm_{Eigen::Vector3d::Zero()};
 
   //! Commanded control mode and the inertial-hold target.
   CtrlMode::T mode_{CtrlMode::IDLE};
@@ -202,6 +309,25 @@ class AttitudeController final : public AttitudeControllerComponentBase {
   U32 alert_cycles_{0};
   U32 wheel_count_{0};
   polaris::gnc::RwAllocationMethod alloc_method_{polaris::gnc::RwAllocationMethod::kMinNorm};
+
+  //! Momentum-management tuning the cycle reads directly.
+  F64 wheel_inertia_kgm2_{0.0};
+  Eigen::Vector3d inertia_diag_kgm2_{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d residual_dipole_am2_{Eigen::Vector3d::Zero()};
+  F64 momentum_envelope_nms_{0.0};
+  F64 disturbance_budget_nm_{0.0};
+  bool feedforward_model_{false};
+  bool feedforward_observer_{false};
+  //! SITL/bench feedforward override (@ref setFeedforwardAtStartup). Held rather
+  //! than written into the parameter cache so a later `parameterUpdated` cannot
+  //! silently revert the experiment mid-run.
+  bool feedforward_override_{false};
+  bool feedforward_model_override_{false};
+  bool feedforward_observer_override_{false};
+  //! Wheel spin axes, body frame, unit norm — the array's W columns. Held
+  //! alongside the allocator's *negated* copy because momentum and torque
+  //! authority genuinely differ by that sign (see gnc/momentum.hpp).
+  Eigen::Vector3d wheel_axes_[polaris::gnc::kMaxWheels] = {};
 
   //! Rod dipole axes, body frame, unit norm. Index i is rod i's command axis.
   Eigen::Vector3d rod_axes_[kRodCount] = {Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(),
@@ -244,6 +370,20 @@ class AttitudeController final : public AttitudeControllerComponentBase {
   //! Rods carrying a non-zero command in the period now being judged — the
   //! candidate set for an attribution.
   U32 commanded_mask_{0};
+
+  //! Desaturation state: the ground override, whether the rods are unloading the
+  //! wheels this cycle, and the §9 envelope/anomaly edges (edge-gated, so a
+  //! persistent condition costs one event pair and not one per 10 Hz cycle).
+  DesatOverride::T desat_override_{DesatOverride::AUTO};
+  bool desat_active_{false};
+  bool envelope_alerted_{false};
+  bool anomaly_alerted_{false};
+
+  //! Consecutive cycles the momentum accounting has refused — the
+  //! MomentumUnavailable cadence counter, zeroed by the first usable state. A
+  //! refusal blinds desaturation and both §9 momentum monitors at once, which is
+  //! why it gets an event stream and not just a NaN channel.
+  U32 momentum_refusal_streak_{0};
 
   //! Control mode latched by @ref commandModeAtStartup and retried each cycle
   //! until it is accepted. Zero when there is nothing pending.

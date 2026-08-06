@@ -86,3 +86,6 @@ CLAUDE.md.pre-ruflo
 # catalog; the specs are transcribed into the *.yaml entries, the PDFs are not
 # committed).
 /*-datasheet-*.pdf
+
+# FreeFlyer local install (installer, license key, vendor help docs) — never committed
+/freeflyer/
