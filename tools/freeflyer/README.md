@@ -100,6 +100,10 @@ the seat until reset.
   into an FF-side `Matrix` and read once at a final label (`vv.py`).
 - FreeFlyer's internal failure mode is frequently a **hang, not an error** —
   timeout every engine interaction you script.
+- WSLg's accelerated GL fails the renderer probe (`ff -rr` → "Renderer:
+  Unknown", zink/dri2 errors); `LIBGL_ALWAYS_SOFTWARE=1` renders fine
+  ("Renderer: Software") and `engine.py` sets it automatically for
+  windowed engines on Linux.
 - The engine process (`ff --api-mode`) outlives a killed Python parent;
   `pkill -f api-mode` cleans up leaked engines (each holds one of the two
   license instances).

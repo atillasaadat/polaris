@@ -98,6 +98,14 @@ def open_engine(install: FreeFlyerInstall, windowed: bool = False):
     from aisolutions.freeflyer.runtimeapi.RuntimeApiEngine import RuntimeApiEngine
     from aisolutions.freeflyer.runtimeapi.WindowedOutputMode import WindowedOutputMode
 
+    if windowed and install.platform == "linux":
+        # WSLg's accelerated GL path fails FreeFlyer's renderer probe (zink
+        # finds no Vulkan device, dri2 screen creation fails → "Renderer:
+        # Unknown"); Mesa's software rasteriser renders the windows fine and
+        # the viz scene is light. Measured on the dev machine: `ff -rr`
+        # reports "Software" with this set and "Unknown" without. setdefault,
+        # so a machine with working GPU GL can override with =0.
+        os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
     mode = WindowedOutputMode.GenerateOutputWindows if windowed else None
     with RuntimeApiEngine(
         str(install.install_dir),
