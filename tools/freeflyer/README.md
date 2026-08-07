@@ -112,7 +112,14 @@ the seat until reset.
 - WSLg's accelerated GL fails the renderer probe (`ff -rr` → "Renderer:
   Unknown", zink/dri2 errors); `LIBGL_ALWAYS_SOFTWARE=1` renders fine
   ("Renderer: Software") and `engine.py` sets it automatically for
-  windowed engines on Linux.
+  windowed engines on Linux. This is **structural, not a tuning choice**:
+  FreeFlyer renders via EGL, and Mesa's EGL path on WSLg offers only zink
+  (needs a Vulkan driver Ubuntu doesn't ship for the WSL vGPU — dead end)
+  or the CPU rasteriser; the hardware d3d12 driver is GLX-only. Frame cost
+  scales with window area — keep the windows small, prefer `--view close`.
+  **Planned follow-on:** render on the *Windows* side (native GPU) while
+  the sim runs in WSL — the stream file is visible to both — once the
+  vendor resets the device-transfer allowance (see Licensing above).
 - The engine process (`ff --api-mode`) outlives a killed Python parent;
   `pkill -f api-mode` cleans up leaked engines (each holds one of the two
   license instances).
