@@ -117,8 +117,12 @@ inline pid_t spawnFsw(const std::string& bin, std::uint16_t port, const std::str
                       const double* ctrlTargetQ = nullptr, int feedforward = -1) {
   const pid_t pid = ::fork();
   if (pid == 0) {
-    ::freopen(log_path.c_str(), "w", stdout);
-    ::freopen("/dev/null", "w", stderr);
+    // A child whose log cannot be opened must not fly and report nothing: the
+    // parent reads the log as the run's event stream.
+    if (::freopen(log_path.c_str(), "w", stdout) == nullptr ||
+        ::freopen("/dev/null", "w", stderr) == nullptr) {
+      _exit(126);
+    }
     const std::string port_str = std::to_string(port);
     const std::string cal_str = std::to_string(magCalSamples);
     const std::string align_str = std::to_string(stAlignUnit) + "," + std::to_string(stAlignPairs);

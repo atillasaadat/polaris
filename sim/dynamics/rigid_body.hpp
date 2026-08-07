@@ -22,7 +22,9 @@
 
 #include <Eigen/Core>
 #include <Eigen/LU>  // Matrix3d::inverse
+#include <vector>
 
+#include "dynamics/dense_output.hpp"
 #include "dynamics/force_torque.hpp"
 #include "dynamics/integrator.hpp"
 #include "math/quaternion.hpp"
@@ -65,6 +67,8 @@ class RigidBody6Dof {
  public:
   static constexpr int kStateDim = 13;
   using State = Eigen::Matrix<double, kStateDim, 1>;
+  /// One accepted-step end of a propagation (see `propagate`'s @p nodes).
+  using Node = StepNode<kStateDim>;
 
   /// @param inertia Body-frame inertia tensor J [kg·m^2], symmetric positive
   ///        definite (invertibility is the caller's responsibility).
@@ -122,12 +126,20 @@ class RigidBody6Dof {
   }
 
   /// Propagate @p s0 forward by @p dt seconds (dt >= 0) with adaptive RK8(9).
-  state::TruthState propagate(const state::TruthState& s0, double dt,
-                              const StepControl& ctl = {}) const {
+  ///
+  /// When @p nodes is non-null it receives this propagation's accepted-step
+  /// nodes, times measured from @p s0's epoch, for `stateAt` to interpolate
+  /// between — how the §2.4 loop serves sensor samples without stopping the
+  /// integrator at each one.
+  state::TruthState propagate(const state::TruthState& s0, double dt, const StepControl& ctl = {},
+                              std::vector<Node>* nodes = nullptr) const {
     // Boundary guard (§3.6): this plant only propagates forward. A non-positive
     // dt is a no-op returning s0 unchanged — never a state advanced against a
     // rewound epoch (which would be an internally inconsistent TruthState).
     if (dt <= 0.0) {
+      if (nodes != nullptr) {
+        nodes->clear();
+      }
       return s0;
     }
     // The derivative is evaluated at the RUNNING epoch, s0.epoch + t, not at the
@@ -143,8 +155,22 @@ class RigidBody6Dof {
     auto f = [this, &epoch](double t, const State& y) {
       return derivative(epoch + time::Duration::fromSecondsF(t), y);
     };
-    const State y1 = integrate<kStateDim>(verner89(), f, 0.0, dt, pack(s0), ctl, QuatProjector{});
+    const State y1 =
+        integrate<kStateDim>(verner89(), f, 0.0, dt, pack(s0), ctl, QuatProjector{}, nodes);
     return unpack(y1, epoch + time::Duration::fromSecondsF(dt));
+  }
+
+  /// Truth state @p dt seconds into the propagation that produced @p nodes,
+  /// stamped @p epoch. The Hermite interpolant runs on the packed vector, so
+  /// position/velocity come from (r, v) and (v, a) and the body rate from
+  /// (w, wdot); the quaternion is interpolated component-wise and renormalised,
+  /// which over a macro step at spacecraft rates costs far less than the
+  /// sensor's own noise.
+  static state::TruthState stateAt(const std::vector<Node>& nodes, double dt,
+                                   const time::Tai& epoch) {
+    State y = hermiteAt<kStateDim>(nodes, dt);
+    QuatProjector{}(y);
+    return unpack(y, epoch);
   }
 
  private:

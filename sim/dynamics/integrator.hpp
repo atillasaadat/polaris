@@ -27,6 +27,7 @@
 #include <cmath>
 #include <cstddef>
 #include <Eigen/Core>
+#include <vector>
 
 namespace polaris::sim::dynamics {
 
@@ -75,9 +76,14 @@ struct StepControl {
 /// where \f$e_i = b_i^{\text{high}} - b_i^{\text{low}}\f$ is the difference of the
 /// order-9 and order-8 weight rows, so \f$\mathbf{err}\f$ estimates the local
 /// truncation error of the order-8 member (Verner 1978 [verner1978]).
+///
+/// @p k0_out, when non-null, receives the first stage \f$\mathbf{k}_0 = f(t_0,
+/// \mathbf{y})\f$ — the state derivative at the step's left end, which the dense
+/// output below needs and which this step already computes.
 template <int N, class Deriv>
 void rk89_step(const RkTableau& tab, Deriv& f, double t0, const Eigen::Matrix<double, N, 1>& y,
-               double h, Eigen::Matrix<double, N, 1>& y_next, Eigen::Matrix<double, N, 1>& err) {
+               double h, Eigen::Matrix<double, N, 1>& y_next, Eigen::Matrix<double, N, 1>& err,
+               Eigen::Matrix<double, N, 1>* k0_out = nullptr) {
   using Vec = Eigen::Matrix<double, N, 1>;
   std::array<Vec, RkTableau::kStages> k;
   for (std::size_t i = 0; i < RkTableau::kStages; ++i) {
@@ -87,6 +93,9 @@ void rk89_step(const RkTableau& tab, Deriv& f, double t0, const Eigen::Matrix<do
     }
     k[i] = f(t0 + tab.c[i] * h, yi);
   }
+  if (k0_out != nullptr) {
+    *k0_out = k[0];
+  }
   y_next = y;
   err = Vec::Zero();
   for (std::size_t i = 0; i < RkTableau::kStages; ++i) {
@@ -94,6 +103,18 @@ void rk89_step(const RkTableau& tab, Deriv& f, double t0, const Eigen::Matrix<do
     err.noalias() += (h * tab.e[i]) * k[i];
   }
 }
+
+/// One end of an accepted step: time, state, and state derivative there. A
+/// propagation's nodes are the integrator's own accepted grid, which is what
+/// `dense_output.hpp` interpolates between — so an observer (a sensor sample)
+/// can be served at an arbitrary instant without the integrator having to stop
+/// there. Times are relative to the propagation's `t0`, as `integrate` uses.
+template <int N>
+struct StepNode {
+  double t = 0.0;                    ///< [s] time from the propagation start
+  Eigen::Matrix<double, N, 1> y;     ///< state at @ref t (post-projection)
+  Eigen::Matrix<double, N, 1> ydot;  ///< f(t, y) at @ref t
+};
 
 /// No-op state projection (default for `integrate`).
 struct NoProjection {
@@ -124,10 +145,18 @@ struct NoProjection {
 /// (`error_order`, so the exponent is \f$-1/(p+1) = -1/9\f$), and per-step growth
 /// bounded to \f$[s_{\min}, s_{\max}]\f$. When \f$E = 0\f$ the growth defaults to
 /// \f$s_{\max}\f$. The final step is truncated to land exactly on \f$t_1\f$.
+///
+/// **Dense output.** When @p nodes is non-null it is cleared and filled with one
+/// `StepNode` per accepted-step boundary, first to last, giving the caller the
+/// \f$(t, \mathbf{y}, \dot{\mathbf{y}})\f$ pairs a Hermite interpolant needs
+/// (`dense_output.hpp`). The left-end derivative of each step is the step's own
+/// first stage, so recording costs exactly one extra derivative evaluation for
+/// the whole propagation (the final node's).
 template <int N, class Deriv, class Project = NoProjection>
 Eigen::Matrix<double, N, 1> integrate(const RkTableau& tab, Deriv& f, double t0, double t1,
                                       Eigen::Matrix<double, N, 1> y, const StepControl& ctl = {},
-                                      Project project = {}) {
+                                      Project project = {},
+                                      std::vector<StepNode<N>>* nodes = nullptr) {
   using Vec = Eigen::Matrix<double, N, 1>;
   // Validate the controller invariants up front: std::clamp is UB if
   // min_step > max_step (§3.6, validate at boundaries), and the exponent/norm
@@ -137,16 +166,19 @@ Eigen::Matrix<double, N, 1> integrate(const RkTableau& tab, Deriv& f, double t0,
   assert(ctl.min_scale > 0.0 && ctl.min_scale <= ctl.max_scale);
   double t = t0;
   double h = std::min(ctl.max_step, t1 - t0);
+  if (nodes != nullptr) {
+    nodes->clear();
+  }
   if (h <= 0.0) {
     return y;
   }
   const double exponent = -1.0 / (static_cast<double>(tab.error_order) + 1.0);
-  Vec y_next, err;
+  Vec y_next, err, k0;
   while (t < t1) {
     if (t + h > t1) {
       h = t1 - t;
     }
-    rk89_step<N>(tab, f, t, y, h, y_next, err);
+    rk89_step<N>(tab, f, t, y, h, y_next, err, nodes != nullptr ? &k0 : nullptr);
 
     double sum_sq = 0.0;
     for (Eigen::Index i = 0; i < N; ++i) {
@@ -161,6 +193,12 @@ Eigen::Matrix<double, N, 1> integrate(const RkTableau& tab, Deriv& f, double t0,
     // ponytail: forced accept keeps the loop finite; tighten min_step if a real
     // step is being clipped (the error norm at accept is reported nowhere yet).
     if (err_norm <= 1.0 || h <= ctl.min_step) {
+      if (nodes != nullptr) {
+        // The left end of the step just accepted: its state is already
+        // projected (it came out of the previous accept, or is y0), and k0 is
+        // this step's own first stage, so the pair is consistent.
+        nodes->push_back({t - t0, y, k0});
+      }
       t += h;
       y = y_next;
       project(y);
@@ -169,6 +207,9 @@ Eigen::Matrix<double, N, 1> integrate(const RkTableau& tab, Deriv& f, double t0,
     double growth = (err_norm == 0.0) ? ctl.max_scale : ctl.safety * std::pow(err_norm, exponent);
     growth = std::clamp(growth, ctl.min_scale, ctl.max_scale);
     h = std::clamp(h * growth, ctl.min_step, ctl.max_step);
+  }
+  if (nodes != nullptr) {
+    nodes->push_back({t - t0, y, f(t, y)});
   }
   return y;
 }

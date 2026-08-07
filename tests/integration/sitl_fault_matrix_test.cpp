@@ -203,7 +203,10 @@ RunResult flyWithFaults(const std::string& tag, const scenario::SimConfig& orbit
   // build-artifacts before anyone noticed. `POLARIS_KEEP_SITL_LOGS=1` keeps them,
   // which is how you read the event stream of a run that *passed*.
   if (std::getenv("POLARIS_KEEP_SITL_LOGS") == nullptr) {
-    (void)std::system(("rm -rf '" + work_dir + "'").c_str());
+    // Best-effort cleanup; glibc marks system() warn_unused_result and a (void)
+    // cast does not silence it, so the result is named and ignored.
+    const int rm_rc = std::system(("rm -rf '" + work_dir + "'").c_str());
+    static_cast<void>(rm_rc);
   }
   return result;
 }

@@ -389,6 +389,44 @@ TEST(Magnetorquer, SettleTransientDecaysFromTheDrivenMomentToTheRemanentOne) {
   }
 }
 
+TEST(Magnetorquer, TheSettleTransientsMeanCarriesTheImpulseNotItsLeadingEdge) {
+  // The plant takes one held wrench per integration span, and the span covering
+  // the quiet window is a whole macro period (100 ms) while the transient decays
+  // in ~10 ms. Holding the value at the span's *start* would apply the full
+  // driven moment for the whole period — tens of times the real post-off
+  // impulse — so the torque is built from the span mean instead.
+  act::MagnetorquerSpec spec;
+  spec.max_dipole_am2 = 15.0;
+  spec.residual_dipole_am2 = 0.0;
+  spec.settle_time_s = 0.01;
+  act::Magnetorquer m(spec);
+
+  m.commandDipole(Vec3B(Eigen::Vector3d(10.0, 0.0, 0.0)));
+  const double driven = m.dipole().eigen().x();
+  m.deenergize();
+
+  // The mean over the quiet window against the same integral by fine quadrature
+  // — this is the statement that matters, that the impulse is right.
+  const double window = 0.1;
+  const int n = 100000;
+  double integral = 0.0;
+  for (int k = 0; k < n; ++k) {
+    integral += m.settlingDipole(window * (static_cast<double>(k) + 0.5) / n).eigen().x();
+  }
+  const double mean = m.settlingDipoleMean(0.0, window).eigen().x();
+  // The closed form is exact; the tolerance is the midpoint rule's own residual.
+  EXPECT_NEAR(mean, integral / n, 1e-8);
+  // ...and it is ~30x below the leading-edge value the naive hold would use.
+  EXPECT_LT(mean, driven / 25.0);
+
+  // Inside the on-window the moment is constant, so a mean must change nothing:
+  // an interval starting long after the transient sees only the remanent value.
+  EXPECT_NEAR(m.settlingDipoleMean(10.0 * spec.settle_time_s, 0.1).eigen().x(), 0.0, 1e-9);
+  // Degenerate spans fall back to the instantaneous value rather than dividing
+  // by zero.
+  EXPECT_NEAR(m.settlingDipoleMean(0.0, 0.0).eigen().x(), driven, 1e-12);
+}
+
 TEST(Magnetorquer, SettleTransientDecaysTowardTheRemanentMomentNotZero) {
   // The remanence is what the core keeps indefinitely, so it is the value the
   // transient decays *toward* — folding it into the transient would model a rod

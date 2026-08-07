@@ -95,4 +95,5 @@ target_link_libraries(polaris_unit_tests
     polaris_test_flags
     GTest::gtest_main)
 
-gtest_discover_tests(polaris_unit_tests)
+gtest_discover_tests(polaris_unit_tests
+  PROPERTIES LABELS unit)

@@ -6,8 +6,30 @@ sensors → FSW → actuators**, sim-time-driven and bit-reproducible from
 
 | File | Role |
 |---|---|
-| `closed_loop.{hpp,cpp}` | The loop: exact integer-ns event grid from each sensor's native rate; micro-steps the plant between events; §2.4 buffers (IMU delta accumulation, latest-valid for discrete sensors); reads the wheel tachometers at each macro boundary for the §8.5 momentum management (an actuator that reports state, so it crosses as a measurement); fires `FswCallback` at each macro boundary; holds returned commands for the *next* interval (causality); feeds actuator output into the dynamics (`CommandedWrench`: RW reaction torques through the assembly's W, MTQ m×B); applies the GNSS jamming map + fault schedule at sample time (§9.2) |
+| `closed_loop.{hpp,cpp}` | The loop: exact integer-ns event grid from each sensor's native rate; steps the plant between *dynamics* events and serves sensor samples by dense-output interpolation (below); §2.4 buffers (IMU delta accumulation, latest-valid for discrete sensors); reads the wheel tachometers at each macro boundary for the §8.5 momentum management (an actuator that reports state, so it crosses as a measurement); fires `FswCallback` at each macro boundary; holds returned commands for the *next* interval (causality); feeds actuator output into the dynamics (`CommandedWrench`: RW reaction torques through the assembly's W, MTQ m×B); applies the GNSS jamming map + fault schedule at sample time (§9.2) |
 | `sitl_server.{hpp,cpp}` | The two-process barrier (§2.2/§2.4): an `FswCallback` backed by a live `flight_PolarisFsw -s <port>` process. Sim listens on loopback; the FSW's `Drv::TcpClient` connects; payloads are the shared `lib/sitl/wire.hpp` PODs inside standard F´ frames (start word + length + CRC-32, byte-identical to `Svc::FprimeFramer`). The blocking STEP_REQ→STEP_REPLY read *is* the barrier; a protocol failure degrades to open loop (`healthy()` false) rather than crashing the run |
+
+## Which events stop the integrator
+
+Two kinds of thing happen on the ns grid, and only one of them is allowed to
+break an integration step:
+
+- **Dynamics events** — a macro boundary (new FSW commands apply) and the MTQ
+  duty-window off edge — change the equations of motion, so they are exact
+  integration stops. A step straddling the duty edge would drive the rods
+  through the magnetometer's quiet window, which is the violation the §7 model
+  exists to expose.
+- **Sensor samples** are observations: they read the plant and change nothing.
+  Stopping for them only fragments the grid — the flown config's STIM300 IMUs at
+  2000 Hz cut it to 0.5 ms, and every fragment pays RK8(9)'s 16-stage minimum,
+  which is what made the SITL rows cost more CPU than sim time. So the loop
+  integrates straight through them and serves each sample from the propagation's
+  own accepted-step nodes (`dynamics/dense_output.hpp`), in the same time order
+  and therefore with the same RNG draw order as before.
+
+Everything published — the trace, the FSW inputs, the `POLARIS_SIM_STREAM` tap —
+is an exact integration endpoint, never an interpolant, and epochs stay pinned to
+the integer-ns grid.
 
 ## The contract, in five tests
 

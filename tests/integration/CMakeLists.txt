@@ -61,4 +61,4 @@ target_link_libraries(polaris_integration_tests
 # tie among these rows.
 gtest_discover_tests(polaris_integration_tests
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-  PROPERTIES TIMEOUT 10800 COST 1000)
+  PROPERTIES TIMEOUT 10800 COST 1000 LABELS integration)
