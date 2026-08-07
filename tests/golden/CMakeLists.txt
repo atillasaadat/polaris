@@ -24,7 +24,8 @@ target_link_libraries(polaris_golden_tests
     nlohmann_json::nlohmann_json
     GTest::gtest_main)
 
-gtest_discover_tests(polaris_golden_tests)
+gtest_discover_tests(polaris_golden_tests
+  PROPERTIES LABELS golden)
 
 # GMAT drift check — registered only when the GmatConsole binary is present
 # (design doc §23.1/§23.2). GMAT independently recomputes the fixture and the test
@@ -44,6 +45,7 @@ if(GMAT_CONSOLE)
     COMMAND ${CMAKE_COMMAND} -E env "GMAT_CONSOLE=${GMAT_CONSOLE}"
             uv run pytest -q "${_polaris_root}/tests/tools/test_gmat_drift.py"
     WORKING_DIRECTORY "${_polaris_root}")
+  set_tests_properties(golden_regen_drift PROPERTIES LABELS golden)
   message(STATUS "GMAT found (${GMAT_CONSOLE}); golden_regen_drift test enabled")
 else()
   message(STATUS "GMAT not found; golden_regen_drift skipped (committed fixtures still checked)")
