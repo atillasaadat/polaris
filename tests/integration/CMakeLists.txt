@@ -43,10 +43,15 @@ target_link_libraries(polaris_integration_tests
 # against ctest's 1500 s default, which fails the suite on runner speed rather
 # than on behaviour. Push 56's momentum rows raised the ceiling again: the
 # feedforward row flies the same arc twice (with/without) and measures ~3000 s
-# locally, which a ~1.5-2x-slower runner pushes past 3600 — so 7200, still a
-# bound on behaviour (a healthy row never approaches it) rather than a race
-# against runner speed. The wall-clock cost of these rows is the recorded sim
-# profiling item (per-micro-step environment evaluations), not a CI knob.
+# locally. 7200 was sized from "local × 2x-slower runner" and measurement
+# proved it short: with the three 1h+ rows running *concurrently* under
+# parallel ctest on a 4-core runner, the 2026-08-07 run measured desaturation
+# at 5954 s and feedforward past 7200 (killed). Contention triples the local
+# figure, so the bound is 10800 — still a bound on behaviour (a healthy row
+# never approaches it; the runner's 6 h job ceiling is the real backstop)
+# rather than a race against runner speed. The wall-clock cost of these rows
+# is the recorded sim profiling item (per-micro-step environment
+# evaluations), not a CI knob.
 #
 # COST is longest-first scheduling for a parallel ctest. A fresh runner has no
 # CostData history, so without it ctest starts tests in definition order and
@@ -56,4 +61,4 @@ target_link_libraries(polaris_integration_tests
 # tie among these rows.
 gtest_discover_tests(polaris_integration_tests
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-  PROPERTIES TIMEOUT 7200 COST 1000)
+  PROPERTIES TIMEOUT 10800 COST 1000)

@@ -9,8 +9,11 @@
 /// rather than as subtly-wrong drag.
 
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -44,7 +47,12 @@ std::string row(const std::string& date, const std::string& ap, const std::strin
 /// A minimal SW-All.csv: header + three daily rows then a monthly-prediction tail
 /// whose blank Ap must stop the parse.
 std::string writeTempCsv() {
-  const std::string path = std::string(std::tmpnam(nullptr)) + ".csv";
+  // mkstemps rather than tmpnam: name minted and file created atomically, so
+  // no other process can claim the path in between.
+  std::string path = (std::filesystem::temp_directory_path() / "polaris_sw_XXXXXX.csv").string();
+  const int fd = mkstemps(path.data(), 4);  // 4 = strlen(".csv")
+  EXPECT_GE(fd, 0) << "mkstemps failed for " << path;
+  ::close(fd);
   std::ofstream out(path);
   out << "DATE,BSRN,ND,KP1,KP2,KP3,KP4,KP5,KP6,KP7,KP8,KP_SUM,"
          "AP1,AP2,AP3,AP4,AP5,AP6,AP7,AP8,AP_AVG,CP,C9,ISN,F10.7_OBS,F10.7_ADJ,"

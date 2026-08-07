@@ -48,3 +48,14 @@ barriers against the real flight binary produce a trace **bitwise identical**
 to the in-process zero-command run. `main.cpp`'s open-loop trajectory mode is
 unchanged. (The flight bridge answers zero commands until the rate-group
 coupling lands — next push.)
+
+## Live truth-state stream (`POLARIS_SIM_STREAM`)
+
+When the environment variable `POLARIS_SIM_STREAM` names a file, `ClosedLoop::run`
+appends one JSON line per macro boundary — TAI epoch, ECI position/velocity, the
+Body←ECI quaternion (JPL scalar-first) and the body rate — flushed per line, so
+an external viewer can follow the run while it executes. The consumer is the
+FreeFlyer visualization client (`python -m freeflyer viz --stream <file>
+[--follow]`, `tools/freeflyer/viz.py`). Pure output: nothing reads it back, so
+determinism and the sim-time clock are untouched, and it works identically under
+any harness (unit rows, the SITL integration suite, a long local run).
