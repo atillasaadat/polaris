@@ -96,6 +96,19 @@ math::Vec3<math::frames::Body> Magnetorquer::settlingDipole(double seconds_since
   return math::Vec3<math::frames::Body>(Eigen::Vector3d(off + (pre_off_.eigen() - off) * decay));
 }
 
+math::Vec3<math::frames::Body> Magnetorquer::settlingDipoleMean(double t0_s, double dt_s) const {
+  const double t0 = std::max(t0_s, 0.0);
+  if (!(spec_.settle_time_s > 0.0) || !(dt_s > 0.0)) {
+    return settlingDipole(t0);
+  }
+  const double tau = spec_.settle_time_s / 3.0;
+  const Eigen::Vector3d off = actual_.eigen();
+  // Mean of exp(-t/tau) over [t0, t0+dt]: (tau/dt)(e^{-t0/tau} - e^{-(t0+dt)/tau}).
+  const double mean_decay = (tau / dt_s) * (std::exp(-t0 / tau) - std::exp(-(t0 + dt_s) / tau));
+  return math::Vec3<math::frames::Body>(
+      Eigen::Vector3d(off + (pre_off_.eigen() - off) * mean_decay));
+}
+
 double Magnetorquer::busPower() const {
   if (spec_.max_dipole_am2 <= 0.0 || spec_.power_max_w <= 0.0) {
     return 0.0;

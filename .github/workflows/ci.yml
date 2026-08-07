@@ -90,9 +90,18 @@ jobs:
         run: |
           uv run fprime-util generate
           uv run fprime-util build
+      # -O2 on the UT tree, keeping the Debug build type so asserts stay live
+      # (Debug's own -g appends after, and no NDEBUG is defined). F´'s UT default
+      # is a plain -O0 Debug build, which is the right thing for debugging a test
+      # and the wrong thing for running 712 of them: the sim side of every SITL
+      # row is Eigen-heavy, and unoptimized Eigen measured 34x slower per sensor
+      # sample (7.43 -> 0.22 us, identical output). This flag is most of the
+      # difference between the momentum rows fitting their timeout comfortably
+      # and being killed by it. Locally, drop back to -O0 (omit the flag) when
+      # single-stepping a test matters more than its runtime.
       - name: Build unit-test tree (GoogleTest)
         run: |
-          uv run fprime-util generate --ut
+          uv run fprime-util generate --ut -DCMAKE_CXX_FLAGS=-O2 -DCMAKE_Fortran_FLAGS=-O2
           uv run fprime-util build --ut
       # Direct ctest instead of `fprime-util check`, for the -j: check runs the
       # suite serially, which is the difference between the sum of all 684 tests

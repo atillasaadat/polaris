@@ -257,13 +257,9 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
     return sky;
   };
 
-  /// Advance actuators over [from, to) under zero-order-held commands and write
-  /// the net wrench into the plant for that interval.
   /// This unit's produced dipole at truth time @p at_ns: the driven moment inside
-  /// the on-window, the decaying transient after it. Zero-order held across each
-  /// micro-interval, which is exact inside the on-window and a small
-  /// approximation of the decay tail — whose torque contribution is a fraction of
-  /// a per-cent of the driven one by construction.
+  /// the on-window, the decaying transient after it. The *instantaneous* value —
+  /// what a magnetometer sampling at @p at_ns is exposed to.
   auto mtqMomentAt = [&](std::size_t i, std::int64_t at_ns) {
     if (!rods_off) {
       return mtq_actual[i];
@@ -272,6 +268,21 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
     return vehicle_.magnetorquers[i].model.settlingDipole(since_off_s).eigen();
   };
 
+  /// The same dipole averaged over an integration span — what the *torque* over
+  /// that span must be built from. Inside the on-window the moment is constant
+  /// and this is the driven value exactly; the span covering the quiet window is
+  /// a whole macro period, over which the transient has long decayed, so its
+  /// mean and not its leading edge is what carries the right impulse.
+  auto mtqMeanMomentOver = [&](std::size_t i, std::int64_t at_ns, double dt_s) {
+    if (!rods_off) {
+      return mtq_actual[i];
+    }
+    const double since_off_s = static_cast<double>(at_ns - duty_off_ns) / 1.0e9;
+    return vehicle_.magnetorquers[i].model.settlingDipoleMean(since_off_s, dt_s).eigen();
+  };
+
+  /// Advance actuators over [at_ns, at_ns + dt_s) under zero-order-held commands
+  /// and write the net wrench into the plant for that interval.
   auto applyActuators = [&](std::int64_t at_ns, double dt_s) {
     Eigen::Vector3d torque = Eigen::Vector3d::Zero();
     for (std::size_t i = 0; i < vehicle_.wheels.size(); ++i) {
@@ -286,7 +297,7 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
       if (field_fn(s.epoch, s.position, b_eci)) {
         const Eigen::Vector3d b_body = s.attitude.rotate(b_eci).eigen();
         for (std::size_t i = 0; i < vehicle_.magnetorquers.size(); ++i) {
-          torque += mtqMomentAt(i, at_ns).cross(b_body);
+          torque += mtqMeanMomentOver(i, at_ns, dt_s).cross(b_body);
         }
       }
     }
@@ -427,30 +438,55 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
   stream.write(0.0, s);
 
   std::int64_t t_ns = 0;
+  std::vector<dynamics::RigidBody6Dof::Node> nodes;
   for (std::uint64_t macro = 0; macro < macro_count; ++macro) {
     const std::int64_t boundary_ns = static_cast<std::int64_t>(macro + 1) * macro_ns;
     while (t_ns < boundary_ns) {
-      // Next event: the earliest due sensor, capped at the boundary.
+      // Next event: the next *dynamics* event, which is the macro boundary or,
+      // if it comes first, the end of the MTQ-on window. That window's end is an
+      // event of the grid, not something a step is allowed to straddle: a step
+      // spanning it would apply the driven moment across the quiet window too,
+      // which is precisely the violation this model exists to make visible.
+      //
+      // Sensor samples are *not* events of this grid. They observe the plant
+      // without changing it, so stopping the integrator at each one only
+      // fragments the step (a 2000 Hz IMU cuts it to 0.5 ms, and every fragment
+      // pays RK8(9)'s 16-stage minimum) — they are served below from the
+      // propagation's own accepted-step nodes by Hermite dense output.
       std::int64_t next_ns = boundary_ns;
-      for (const auto* tracks :
-           {&imu_track, &st_track, &ss_track, &mag_track, &gnss_track, &payload_track}) {
-        for (const Track& track : *tracks) {
-          next_ns = std::min(next_ns, track.next_ns);
-        }
-      }
-      // The end of the MTQ-on window is an event of the grid, not something a
-      // micro-interval is allowed to straddle: a step spanning it would apply the
-      // driven moment across the quiet window too, which is precisely the
-      // violation this model exists to make visible.
       if (!rods_off && duty_off_ns > t_ns) {
         next_ns = std::min(next_ns, duty_off_ns);
       }
       const double dt_s = static_cast<double>(next_ns - t_ns) / 1.0e9;
+      state::TruthState s_end = s;
       if (dt_s > 0.0) {
         applyActuators(t_ns, dt_s);
-        s = runner_.body()->propagate(s, dt_s, control);
-        s.epoch = taiAt(next_ns);
+        s_end = runner_.body()->propagate(s, dt_s, control, &nodes);
+        s_end.epoch = taiAt(next_ns);
       }
+      // Observations strictly inside the span, in time order, each served the
+      // interpolated state at its own epoch. `sampleDue` advances every track it
+      // fires, so the next-due scan cannot repeat an instant.
+      while (dt_s > 0.0) {
+        std::int64_t event_ns = next_ns;
+        for (const auto* tracks :
+             {&imu_track, &st_track, &ss_track, &mag_track, &gnss_track, &payload_track}) {
+          for (const Track& track : *tracks) {
+            event_ns = std::min(event_ns, track.next_ns);
+          }
+        }
+        if (event_ns >= next_ns) {
+          break;
+        }
+        s = dynamics::RigidBody6Dof::stateAt(nodes, static_cast<double>(event_ns - t_ns) / 1.0e9,
+                                             taiAt(event_ns));
+        if (!sampleDue(event_ns)) {
+          return false;
+        }
+      }
+      // Land on the span end. Published states and any sample due at this
+      // instant see the exact integration endpoint, never an interpolant.
+      s = s_end;
       t_ns = next_ns;
       if (!rods_off && t_ns >= duty_off_ns) {
         for (auto& rod : vehicle_.magnetorquers) {

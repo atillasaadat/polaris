@@ -14,8 +14,10 @@
 
 #include <cmath>
 #include <Eigen/Core>
+#include <vector>
 
 #include "constants/constants.hpp"
+#include "dynamics/dense_output.hpp"
 #include "dynamics/force_torque.hpp"
 #include "dynamics/integrator.hpp"
 #include "dynamics/rigid_body.hpp"
@@ -183,6 +185,56 @@ TEST(RigidBody6Dof, TorqueFreeConservesEnergyAndInertialMomentum) {
 
   EXPECT_NEAR(kinetic(s1), t0, t0 * 1.0e-9);
   EXPECT_LT((inertial_momentum(s1) - L0).norm(), L0.norm() * 1.0e-9);
+}
+
+// --- Dense output: observations without stopping the integrator -------------
+
+TEST(RigidBody6Dof, DenseOutputMatchesTheStoppedGrid) {
+  RecordProperty("verifies", "REQ-SIM-001");
+  // The §2.4 loop serves sensor samples by interpolating the accepted-step
+  // nodes instead of stopping the integrator at each sample epoch. That is only
+  // legitimate if the interpolated state is indistinguishable from the one a
+  // stopped grid would have produced: over one 100 ms macro step in the SITL
+  // rows' regime (LEO two-body, 5 deg/s tumble) the agreement must be far
+  // tighter than any sensor's noise floor.
+  const double mu = polaris::constants::wgs84::kGM;
+  const double r0 = 6.878137e6;
+  const double v0 = std::sqrt(mu / r0);
+
+  ps::TruthState s0;
+  s0.position = pm::Vec3<pf::ECI>(r0, 0.0, 0.0);
+  s0.velocity = pm::Vec3<pf::ECI>(0.0, v0, 0.0);
+  s0.attitude = pm::Quat<pf::Body, pf::ECI>(
+      pm::Quaternion::FromAxisAngle(Eigen::Vector3d(1.0, 2.0, 3.0).normalized(), 0.7));
+  s0.body_rate = pm::Vec3<pf::Body>(Eigen::Vector3d(5.0, -3.0, 4.0) * (M_PI / 180.0));
+
+  const dyn::TwoBodyGravity gravity(mu);
+  const dyn::RigidBody6Dof body(Eigen::Vector3d(0.12, 0.12, 0.10).asDiagonal(), gravity);
+
+  std::vector<dyn::RigidBody6Dof::Node> nodes;
+  const ps::TruthState end = body.propagate(s0, 0.1, {}, &nodes);
+  ASSERT_GE(nodes.size(), 2u);
+  EXPECT_DOUBLE_EQ(nodes.front().t, 0.0);
+  EXPECT_DOUBLE_EQ(nodes.back().t, 0.1);
+
+  // The nodes' own ends are the integration solution, not an approximation.
+  const ps::TruthState node_end = dyn::RigidBody6Dof::stateAt(nodes, 0.1, end.epoch);
+  EXPECT_LT((node_end.position - end.position).norm(), 1.0e-12);
+
+  // A 2000 Hz IMU's sample epochs through the step.
+  for (int i = 1; i < 200; ++i) {
+    const double tau = 0.0005 * static_cast<double>(i);
+    const ps::TruthState stopped = body.propagate(s0, tau);
+    const ps::TruthState dense = dyn::RigidBody6Dof::stateAt(nodes, tau, stopped.epoch);
+    EXPECT_LT((dense.position - stopped.position).norm(), 1.0e-6) << "tau=" << tau;
+    EXPECT_LT((dense.velocity - stopped.velocity).norm(), 1.0e-9) << "tau=" << tau;
+    EXPECT_LT(dense.attitude.core().angularDistance(stopped.attitude.core()), 1.0e-9)
+        << "tau=" << tau;
+    EXPECT_LT((dense.body_rate - stopped.body_rate).norm(), 1.0e-9) << "tau=" << tau;
+    // Interpolating the quaternion component-wise leaves the unit manifold; the
+    // renormalisation in stateAt is what puts it back.
+    EXPECT_NEAR(dense.attitude.core().coeffs().norm(), 1.0, 1.0e-15) << "tau=" << tau;
+  }
 }
 
 TEST(RigidBody6Dof, NonPositiveDtIsAConsistentNoOp) {

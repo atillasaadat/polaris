@@ -130,6 +130,22 @@ class Magnetorquer {
   /// model before Push 54.
   math::Vec3<math::frames::Body> settlingDipole(double seconds_since_off) const;
 
+  /// The **time-average** of @ref settlingDipole over `[t0, t0 + dt]`, i.e.
+  /// \f$\mathbf m_\mathrm{off} + (\mathbf m_\mathrm{on} - \mathbf
+  /// m_\mathrm{off})\,\frac{\tau}{\Delta t}\big(e^{-t_0/\tau} -
+  /// e^{-(t_0+\Delta t)/\tau}\big)\f$ with \f$\tau = T_s/3\f$.
+  ///
+  /// This is what a *torque* over that span must be computed from. The plant
+  /// takes one held wrench per integration span (§2.4), and the span covering
+  /// the quiet window is a whole macro period while the transient decays in
+  /// ~\f$T_s\f$ — so holding the instantaneous value at the span's start would
+  /// apply the full driven moment across the entire quiet window, tens of times
+  /// the real post-off impulse. The mean gives the exact impulse for a field
+  /// that is constant over the span, which over 100 ms it is. Sensing wants the
+  /// instantaneous value instead: a magnetometer reads the field at its sample
+  /// epoch, not an average.
+  math::Vec3<math::frames::Body> settlingDipoleMean(double t0_s, double dt_s) const;
+
   /// Bus power [W] for the last produced dipole (∝ dipole²).
   double busPower() const;
 

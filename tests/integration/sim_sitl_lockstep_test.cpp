@@ -149,8 +149,10 @@ io::SitlServer::Counts sitlCounts() {
 pid_t spawnFsw(const std::string& bin, std::uint16_t port) {
   const pid_t pid = ::fork();
   if (pid == 0) {
-    ::freopen("/dev/null", "w", stdout);
-    ::freopen("/dev/null", "w", stderr);
+    if (::freopen("/dev/null", "w", stdout) == nullptr ||
+        ::freopen("/dev/null", "w", stderr) == nullptr) {
+      _exit(126);
+    }
     const std::string port_str = std::to_string(port);
     ::execl(bin.c_str(), bin.c_str(), "-s", port_str.c_str(), static_cast<char*>(nullptr));
     _exit(127);  // exec failed

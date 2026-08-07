@@ -5,13 +5,25 @@
 /// @brief The §2.4 sim-time-driven closed loop: plant → sensors → FSW → actuators.
 ///
 /// The execution model the whole architecture is built around, sim-side. The
-/// loop owns simulation time and marches it in **micro-steps** set by the
-/// sensors' own native rates (an event grid in exact integer nanoseconds, so a
-/// long run cannot drift off the sample times). Each micro-interval it: steps
-/// the actuators under their zero-order-held commands, writes the net actuator
-/// wrench into the plant (reaction-wheel reaction torques through the assembly's
-/// W matrix, magnetorquer m×B), propagates the 6DOF state, and samples whichever
-/// sensors came due. At each **macro-step** boundary (the FSW rate) it publishes
+/// loop owns simulation time and marches it on an event grid in exact integer
+/// nanoseconds, so a long run cannot drift off the sample times. Each interval
+/// it: steps the actuators under their zero-order-held commands, writes the net
+/// actuator wrench into the plant (reaction-wheel reaction torques through the
+/// assembly's W matrix, magnetorquer m×B), propagates the 6DOF state, and
+/// samples whichever sensors came due.
+///
+/// **Only dynamics events break an integration step**: a macro boundary, where
+/// the FSW's commands begin to apply, and the magnetorquer duty-window off edge
+/// (§7), which a step must never straddle. A sensor sample is an *observation* —
+/// it reads the plant and changes nothing — so the integrator runs through it
+/// and the sample is served an interpolated state from the propagation's own
+/// accepted-step nodes (`dynamics/dense_output.hpp`). Stopping at every sample
+/// instead fragments the grid to the fastest sensor's period (0.5 ms for the
+/// flown 2000 Hz IMUs), and every fragment pays RK89's 16-stage minimum. Sample
+/// order, epochs and RNG draw order are unaffected; anything *published* is an
+/// exact integration endpoint, never an interpolant.
+///
+/// At each **macro-step** boundary (the FSW rate) it publishes
 /// the buffered measurements, invokes the FSW, and holds the returned commands
 /// for the *next* interval — commands apply one step later, exactly the §2.4
 /// contract, so the loop is causal and bit-reproducible from `{config, seed}`.
