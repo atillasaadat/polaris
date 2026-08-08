@@ -123,8 +123,10 @@ add_library(polaris_gnc
   gnc/bdot.cpp
   gnc/attitude_pid.cpp
   gnc/rw_allocation.cpp
+  gnc/rw_friction.cpp
   gnc/momentum.cpp
-  gnc/disturbance.cpp)
+  gnc/disturbance.cpp
+  gnc/dipole_estimation.cpp)
 target_include_directories(polaris_gnc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_gnc
   PUBLIC Eigen3::Eigen polaris_math polaris_time polaris_state polaris_constants

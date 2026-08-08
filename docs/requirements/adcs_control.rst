@@ -95,16 +95,24 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    operating point, so the bound carries a factor of 2.4 in margin; it is
    stated as a round operational number rather than shaved to the measurement.
 
-   The momentum condition is load-bearing, not a caveat: on a **loaded** array
-   the same vehicle measures **2.9°**, and the excess is arithmetically the
-   wheels' Coulomb friction (the pyramid's four ``dry_friction_nm`` reactions
-   sum to 2.3e-4 N·m on the body — more than twice the integrator's whole
-   authority — predicting 3.0° at the committed Kp; see REQ-ACTL-010, whose
-   owed friction-compensation item is what removes the condition). Push 56
-   found this by measuring the requirement at an operating point Push 54 never
-   visited; until the friction feedforward lands, this bound is verified only
-   near zero stored momentum, and the loaded-array behaviour is bounded by
-   REQ-ACTL-010's desaturation rows instead.
+   The momentum condition is load-bearing, not a caveat, and it **stays** — but
+   the reason for it has changed and is now measured rather than argued. Push 56
+   found a loaded array at **2.9°** and attributed the excess to the wheels'
+   Coulomb friction. Push 59 built the friction feedforward that item owed
+   (REQ-ACTL-010, ``lib/gnc/rw_friction``) and then ablated the drive term by
+   term instead of trusting the attribution. The friction was **about half** of
+   it: with the feedforward flown the loaded array measures **1.38°**, and the
+   remainder is the **drive torque quantization** — RW-X quotes a 1.0e-4 N·m
+   torque LSB, the same size as the Coulomb friction, so a per-wheel demand
+   under half an LSB is commanded as zero and the loop carries a dead zone of
+   ~5e-5 N·m per wheel. Removing that and nothing else takes the same run to
+   0.17°, against a 0.18° floor with neither non-ideality present.
+
+   So a loaded array is now **1.38°** rather than 2.9°, still above this
+   requirement's 1.0°, and the condition is verified near zero stored momentum
+   (0.25° measured) until the drive-quantization item lands. Loaded-array
+   behaviour is bounded by REQ-ACTL-010's desaturation rows, whose absolute
+   bound moved 3.5° → 1.7° with the improvement.
 
    Verified by ``tests/integration/sitl_attitude_control_test.cpp``
    (``InertialHoldConvergesUnderThePointingBound``), the allocation properties by
@@ -440,15 +448,20 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    under a disturbance that never stops.
 
    **Pointing during desaturation is asserted, and what it found is a vehicle
-   fact rather than a control-coupling one.** The error falls through every
-   desaturation window and rises while the wheels reload; on a loaded array it
-   reaches 2.9°, against REQ-ACTL-002's 1.0°. The cause is the wheels' Coulomb
-   friction (``dry_friction_nm`` = 1e-4 N·m; the pyramid's four reactions sum to
-   2.3e-4 N·m on the body, more than twice the PID integrator's whole authority),
-   not the rods: at Kp = 4.4e-3 N·m/rad that predicts 3.0° and the run measures
-   2.9°. The row therefore asserts the claim this feature owns — that every
-   desaturation window leaves the pointing **better** than it found it — plus an
-   absolute 3.5° bound, the measurement with 20 % declared margin.
+   fact rather than a control-coupling one.** On a loaded array the error reaches
+   **1.38°** against REQ-ACTL-002's 1.0°, and the cause is the wheel *drive*, not
+   the rods — see the owed items below for the term-by-term ablation. The row
+   asserts an absolute **1.7°** bound (the measurement with 20 % declared margin)
+   plus the claim this feature actually owns: the worst pointing while a rod is
+   energised is no worse than the worst while none is, measured 0.92° against
+   1.38°, so the rods are not what drives the error.
+
+   Push 56's version of this paragraph asserted that every desaturation window
+   left the pointing **better** than it found it, on the mechanism that emptying
+   the wheels removed their friction torque. Push 59's friction feedforward paid
+   for that friction directly, so the coupling — and with it the claim — is gone;
+   the assertion moved with the physics rather than being kept as something the
+   vehicle no longer supports.
 
    Verified by ``tests/integration/sitl_attitude_control_test.cpp``
    (``DesaturationDumpsMomentumWhilePointingHolds`` — the full latch cycle, both
@@ -458,13 +471,56 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    ``lib/gnc`` unit tests, which pin the dissipativity argument term by term
    under the per-rod clamp (``MtqDesaturation.*``).
 
-   **Owed (1):** torque-mode wheels on this vehicle have no **friction
-   compensation**. Until the drive-level feedforward (or a speed-mode inner loop)
-   lands, REQ-ACTL-002's 1° is a near-zero-momentum figure and a loaded array
-   holds ~3°. That is a wheel-drive item, not a momentum-management one, and it
-   is recorded here because this is the row that measured it.
+   **Owed (1) — implemented in Push 59.** The drive-level **friction
+   feedforward** now runs: ``lib/gnc/rw_friction`` adds :math:`-\tau_f` per wheel
+   after the §8.5 allocation and before the drive command, so the net rotor
+   torque is the one the allocation asked for. The Coulomb term's
+   :math:`\mathrm{sgn}(\omega)` goes through a bounded linear blend over a
+   configured deadband speed (Karnopp's zero-velocity band in feedforward form
+   [karnopp1985]) rather than a bare sign, which would chatter at a wheel's zero
+   crossing; inside the band the friction is deliberately under-compensated, and
+   that is stated as the band's cost rather than hidden. The compensation never
+   exceeds the modelled friction at a trim :math:`k \le 1`, and the torque-box
+   clamp is applied so that what it removes is the compensation and never the
+   control demand. A wheel with no usable tachometer has no speed sign and is
+   passed through uncompensated rather than given a guessed one.
 
-   **Owed (2):** the momentum parallel to the field is untouchable at any instant —
+   *Measured on the reference vehicle*, worst pointing over the same orbit and
+   seed: **2.77° uncompensated → 1.38°** at the flown trim
+   (``WheelFrictionScale`` = 0.5). The trim is a genuine closed-loop parameter
+   and not merely a safety margin on a model: full compensation is *worse* than
+   half on both operating points (1.52° loaded and 1.09° near-empty at
+   :math:`k = 1.0`, against 1.38° and 0.25° at :math:`k = 0.5`), because the
+   friction being removed was also passively damping the stored wheel momentum
+   and a near-empty array runs at the speeds where the compensation's sign is
+   least trustworthy. The open-loop argument that partial compensation is never
+   worse is about the *residual disturbance*, and it does not carry to the closed
+   loop; the numbers do, and they are why the trim is a flight parameter.
+
+   Verified by the ``lib/gnc`` unit tests (``RwFriction.*`` — blend continuity
+   and boundedness, the no-over-compensation bound, saturation, the trim, and a
+   zero-speed no-chatter case), by the component test
+   ``WheelFrictionFeedforward`` (the commanded torque is the allocation's demand
+   plus the modelled friction and the two are separable from telemetry; a missing
+   coefficient refuses the whole configuration rather than flying the feedforward
+   silently off), and by the SITL row below.
+
+   **Owed (2) — the wheel drive's torque quantization.** The ablation above names
+   what is left: a 1.0e-4 N·m drive LSB, i.e. a ±5e-5 N·m per-wheel dead zone,
+   worth ~1.2° of the remaining 1.38°. The fixes are drive-level — dither, a
+   speed-mode inner loop, or a finer drive — and none is a control-law change.
+   This is what now stands between the loaded array and REQ-ACTL-002's 1.0°.
+
+   **Owed (3) — the blend deadband's lower bound.** The flown 5.0e-3 rad/s is
+   derived from this vehicle's own wheel-speed range (the array lives between
+   ~0.05 and ~0.55 rad/s, a ten-rpm vehicle, so a band sized for a 6000 rpm wheel
+   covers a fifth of the operating envelope and recovers almost nothing). The
+   *lower* bound is the flight tachometer's resolution and noise, below which the
+   sign of :math:`\omega` is not a measurement — and the RW-X catalog entry
+   carries no tachometer specification, so that bound is unknown for this vehicle
+   and must be re-derived against the flight unit before launch.
+
+   **Owed (4):** the momentum parallel to the field is untouchable at any instant —
    :math:`\mathbf m\times\mathbf B` has no component along :math:`\hat{\mathbf
    B}` — so the worst-case unloading time over the orbit's field geometry is a
    Monte Carlo campaign, as it is for B-dot (REQ-ACTL-001).
@@ -513,22 +569,22 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
 
    *Measured on the reference vehicle*, flying the **same** vehicle and the same
    injected 2.4e-4 N·m residual-dipole torque twice, differing only in whether
-   the feedforward tiers are enabled: settled pointing error **3.45°** with
-   feedforward against **3.52°** without, and the §9 anomaly latched **once** in
+   the feedforward tiers are enabled: settled pointing error **1.72°** with
+   feedforward against **2.10°** without, and the §9 anomaly latched **once** in
    each run — in both, because the observer runs whether or not its estimate is
    fed forward.
 
-   **What that comparison does and does not establish.** Feedforward buys back
-   the part of a disturbance the feedback loop cannot trim unaided, and at this
-   operating point that part is small: the integrator absorbs up to
-   Ki × clamp = 1.0e-4 N·m per axis on its own, the observer is one time constant
-   into a 200 s filter, and the error budget is dominated by a term feedforward
-   does not address — the wheels' Coulomb friction (REQ-ACTL-010, owed item 1),
-   worth ~3.0° on a loaded array. The row therefore asserts that feedforward
-   does **not degrade** the pointing and records both numbers; asserting the 2 %
-   improvement itself would be a threshold inside its own noise. A decisive
-   measurement of what the feedforward is worth waits on the friction term being
-   removed from the budget it is compared against, and is owed.
+   **What that comparison establishes, and what it took.** Push 56 measured the
+   same pair at 3.45° against 3.52° — a 2 % difference, too small to assert — and
+   recorded that a decisive measurement waited on the wheels' Coulomb friction
+   being removed from the budget the comparison runs against, since feedforward
+   does not address friction and friction dominated the budget. Push 59's
+   friction feedforward (REQ-ACTL-010, owed item 1) removed it, and the effect is
+   now **18 %** on an error budget less than half its former size. The row still
+   asserts only that feedforward does **not degrade** the pointing, and records
+   both numbers, because the remaining budget is in turn dominated by the drive's
+   torque quantization (REQ-ACTL-010, owed item 2); asserting the improvement
+   itself is worth doing once that term is gone too.
 
    The anomaly monitor's own evidence is stronger and is what this row pins: it
    fires on the injected torque and, in the nominal inertial-hold row, does not

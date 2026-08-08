@@ -70,6 +70,12 @@ TEST(AttitudeController, DesatGroundOverride) {
   tester.testDesatGroundOverride();
 }
 
+TEST(AttitudeController, WheelFrictionFeedforward) {
+  RecordProperty("verifies", "REQ-ACTL-010");
+  flight::AttitudeControllerTester tester;
+  tester.testWheelFrictionFeedforward();
+}
+
 TEST(AttitudeController, MomentumEnvelopeAndWheelDropout) {
   RecordProperty("verifies", "REQ-ACTL-009");
   flight::AttitudeControllerTester tester;

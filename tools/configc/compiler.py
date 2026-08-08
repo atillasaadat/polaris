@@ -383,6 +383,69 @@ _WHY_MTQ_AXES = (
 )
 
 
+#: The friction coefficients the §8.5 drive feedforward inverts, paired with the
+#: hardware-catalog key each one *is*. The flight parameter is a scalar (the
+#: reference vehicle flies identical wheels), so every installed wheel has to
+#: carry the same catalog value for the pairing to be meaningful at all.
+_WHEEL_FRICTION_PARAMS = (
+    ("flight.attitudeController.WheelDryFrictionNm", "dry_friction_nm"),
+    ("flight.attitudeController.WheelViscousFrictionNmS", "viscous_friction_nm_s"),
+)
+
+
+def _check_wheel_friction_parameters(
+    fsw: dict[str, Any], wheels: list[dict[str, Any]]
+) -> None:
+    """Refuse a friction feedforward that does not describe the installed wheels.
+
+    The flight law adds ``-tau_f`` to every wheel command, so these coefficients
+    are not tuning: they are an assertion about the bearings. Transcribing them
+    into the spacecraft file is a copy of the catalog, and every copy is a place
+    for the two to disagree in the direction that passes (P54) — a feedforward
+    quietly built on a stale number over-compensates, which is the one direction
+    that can leave the vehicle worse off than no compensation at all. So the
+    number is written where every other flight parameter is written, and checked
+    here against the units it claims to describe.
+
+    Silent when the parameter is absent, so a config that predates the
+    feedforward compiles unchanged.
+    """
+    if not wheels:
+        return
+    for param, catalog_key in _WHEEL_FRICTION_PARAMS:
+        declared = fsw.get(param)
+        if declared is None:
+            continue
+        catalog = {
+            unit["name"]: float(unit.get("params", {}).get(catalog_key, 0.0))
+            for unit in wheels
+        }
+        distinct = set(catalog.values())
+        if len(distinct) > 1:
+            raise ConfigError(
+                f"{param} is a single value, but this vehicle's reaction wheels do "
+                f"not share one {catalog_key}: "
+                f"{', '.join(f'{n} = {v}' for n, v in catalog.items())}.\n"
+                f"A mixed array needs the friction model per-unit in flight, exactly "
+                f"as the wheel axes already are; until it is, the flight scalar "
+                f"cannot describe this suite."
+            )
+        expected = distinct.pop()
+        # An exact comparison: this is a transcription of one catalog number, not
+        # a derived quantity, so there is no round-off to allow for and a
+        # tolerance would only hide a real edit.
+        if float(declared) != expected:
+            raise ConfigError(
+                f"{param} = {declared} against {catalog_key} = {expected} in the "
+                f"hardware catalog entry of "
+                f"{', '.join(sorted(catalog))}.\n"
+                f"The flight friction feedforward commands -tau_f on every wheel from "
+                f"this number, so a value larger than the hardware's real friction "
+                f"over-compensates — the one direction that makes the vehicle worse "
+                f"than no feedforward. Fix whichever of the two is stale."
+            )
+
+
 def _check_control_parameters(body: dict[str, Any]) -> None:
     """Refuse control tuning that contradicts the installed actuator suite (§8.5)."""
     sc = body["spacecraft"]
@@ -407,6 +470,8 @@ def _check_control_parameters(body: dict[str, Any]) -> None:
         _WHY_MTQ_AXES,
         expected_fn=_axis_key("dipole_axis"),
     )
+
+    _check_wheel_friction_parameters(fsw, wheels)
 
     # The counts are what bound every loop in the flight allocation, so a count
     # that disagrees with the suite is not a tuning error to find in orbit: it

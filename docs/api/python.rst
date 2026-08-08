@@ -94,7 +94,39 @@ the vehicle.
   the rendered text report, into a caller-supplied directory (default under
   ``build-artifacts/``, never committed).
 
-Run it with the ``analysis`` dependency group::
+Detumble Monte Carlo
+--------------------
+
+``analysis/detumble/`` (design doc §13, §23.2) is the second live package, and
+the first built on the **campaign** pattern: the runs are C++
+(``tests/mc/detumble_mc.cpp`` → ``polaris_detumble_mc``, which forks the real
+deployment and drives the real closed loop, so no GNC math is reimplemented),
+and this package owns the sampling statistics, the figures and the report. It
+characterises the residual-spin tail REQ-ACTL-001 records as owed — the time to
+the ``DetumbleExitRadps`` completion predicate across dispersed tip-off rate and
+direction, attitude, RAAN, argument of latitude and epoch.
+
+- ``records`` — the driver's JSONL per-run schema. Every record carries its
+  dispersion draw, its derived seed and the compiled ``config_hash``, so a run
+  is re-flyable from its own record.
+- ``statistics`` — the distribution, and the **distribution-free** upper
+  tolerance bound the handover time is read from (Wilks order statistics
+  [wilks1941], [conover1999]: 59 runs for a 95/95 bound from the sample
+  maximum, 93 from the second largest). Right-censored runs are counted, never
+  quietly folded in.
+- ``report`` — REQ-ACTL-001's fast-phase bound re-measured across the
+  dispersion as pass/fail criteria, with the proposed handover time carried as a
+  *proposal* in the provenance and warnings rather than as a criterion: no
+  requirement is written on it yet, and passing against a threshold invented
+  here would be circular.
+- ``plots`` — the rate ensemble, the empirical CDF of time-to-completion, and
+  the scatter against the geometric driver.
+
+``analysis/detumble/README.md`` carries the recipe for flying the campaign and a
+smoke case that proves the harness in a couple of minutes. The campaign itself
+is deliberately not a ctest, for the same reason ``tests/benchmark/`` is not.
+
+Run either package with the ``analysis`` dependency group::
 
    uv run --group analysis pytest tests/analysis
 

@@ -888,3 +888,45 @@ def test_albedo_check_is_silent_without_a_sun_sensor(tmp_path):
     # unchanged — the check is a cross-check, not a new requirement.
     config = Config.model_validate(_minimal_config_dict())
     resolve(config, load_hardware_library(_HARDWARE))  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Wheel-drive friction feedforward (REQ-ACTL-010)
+# ---------------------------------------------------------------------------
+
+_DRY_FRICTION = "flight.attitudeController.WheelDryFrictionNm"
+
+
+def test_shipped_friction_coefficients_match_the_wheel_catalog():
+    # The shipped vehicle: the flight feedforward's coefficients are the
+    # installed wheels' own catalog values.
+    resolve(load_config(_TEMPLATE), load_hardware_library(_HARDWARE))  # must not raise
+
+
+def test_friction_coefficient_contradicting_the_catalog_is_refused(tmp_path):
+    # The flight law commands -tau_f on every wheel from this number, so a value
+    # above the hardware's real friction over-compensates — the one direction
+    # that leaves the vehicle worse than no feedforward at all. Transcription is
+    # a copy, and every copy is a place for the two to disagree in the direction
+    # that passes (review-lessons, P54).
+    config = yaml.safe_load(_TEMPLATE.read_text(encoding="utf-8"))
+    config["spacecraft"]["fsw_parameters"][_DRY_FRICTION] = 5.0e-4
+    path = tmp_path / "stale_friction.yaml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    with pytest.raises(ConfigError) as exc:
+        resolve(load_config(path), load_hardware_library(_HARDWARE))
+    message = str(exc.value)
+    assert "dry_friction_nm" in message
+    assert "rw_1" in message  # names the units, not just the parameter
+
+
+def test_friction_check_is_silent_without_the_parameter(tmp_path):
+    # A config predating the feedforward compiles unchanged: this is a
+    # cross-check, not a new requirement on every vehicle.
+    config = yaml.safe_load(_TEMPLATE.read_text(encoding="utf-8"))
+    del config["spacecraft"]["fsw_parameters"][_DRY_FRICTION]
+    path = tmp_path / "no_friction_param.yaml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    resolve(load_config(path), load_hardware_library(_HARDWARE))  # must not raise

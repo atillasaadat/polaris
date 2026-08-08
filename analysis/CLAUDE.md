@@ -8,9 +8,22 @@
 > which writes the figures and the rendered report, prints the report and **exits
 > non-zero on any FAIL** — the pre-simulation design check (`--no-plots` skips the
 > figures, `--out` chooses the directory). Warnings qualify a report and never
-> fail it, per the convention below. Every other subdirectory (`momentum/`, `detumble/`,
-> `contacts/`, `linkbudget/`, `postproc/`) is still a placeholder and waits on
-> `bindings/` exposing the C++ it must reuse (§13/§21.4, Phase 11).
+> fail it, per the convention below.
+>
+> **`detumble/` is live as of Push 59** — the B-dot residual-spin-tail Monte Carlo
+> (§13, §23.2; REQ-ACTL-001's recorded owed item). It is the first package built
+> on the campaign pattern: the **runs are C++** (`tests/mc/detumble_mc.cpp` →
+> `polaris_detumble_mc`, which forks the real deployment and drives the real
+> `ClosedLoop`, so no GNC math is reimplemented), and this package reads the
+> JSONL the driver writes and owns the sampling statistics, the figures and the
+> report. `uv run --group analysis python -m analysis.detumble <records>` prints
+> the report and exits non-zero on any FAIL; see `analysis/detumble/README.md`
+> for how to fly the campaign. It needs no bindings precisely because the runs
+> stay on the C++ side — which is the shape any future campaign package should
+> copy.
+>
+> `momentum/`, `contacts/`, `linkbudget/` and `postproc/` are still placeholders
+> and wait on `bindings/` exposing the C++ they must reuse (§13/§21.4, Phase 11).
 
 Python tools for mission analysis: RW/CMG momentum budgeting & sizing, detumble-time MC, ground-station contact scheduling, link budget, pointing budgets, post-processing. Read the root `CLAUDE.md` first.
 

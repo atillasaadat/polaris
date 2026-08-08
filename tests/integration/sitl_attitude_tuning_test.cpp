@@ -101,9 +101,10 @@ TEST(SitlAttitudeTuning, CompiledParametersLetTheEstimatorAcquireAttitude) {
   EXPECT_NE(log.find("PrmFileLoadComplete"), std::string::npos)
       << "prmDb never loaded the compiled parameter file:\n"
       << log;
-  EXPECT_NE(log.find("Records: 100"), std::string::npos)
-      << "prmDb loaded a record count other than the 100 declared parameters "
-         "(55 estimator + 45 controller, Push 56):\n"
+  EXPECT_NE(log.find("Records: 105"), std::string::npos)
+      << "prmDb loaded a record count other than the 105 declared parameters "
+         "(55 estimator + 50 controller, the last five being Push 59's wheel-drive "
+         "friction feedforward):\n"
       << log;
 
   // 2. The estimator accepted the whole tuning set — both gates. ConfigInvalid

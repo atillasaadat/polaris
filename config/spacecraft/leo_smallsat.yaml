@@ -827,6 +827,89 @@ spacecraft:
     # array saturates as late as possible. 0 would fly the L2 pseudo-inverse.
     flight.attitudeController.AllocMethodSel: 1
 
+    # --- Wheel-drive friction feedforward (§8.5, REQ-ACTL-010) --------------
+    # THE ALLOCATION COMMANDS MOTOR TORQUE; THE BODY FEELS NET ROTOR TORQUE, and
+    # the difference is the bearings. On a loaded array that difference is
+    # secular: the RW-X pyramid's four `dry_friction_nm` = 1.0e-4 N·m reactions
+    # sum to 2.3e-4 N·m on the body — more than twice the pointing integrator's
+    # entire authority (Ki x clamp) — which at Kp = 4.4e-3 N·m/rad is 3.0 deg of
+    # steady-state pointing error, against REQ-ACTL-002's 1.0 deg. Push 56
+    # measured 2.9 deg on a loaded array and this is the term that removes it.
+    flight.attitudeController.WheelFrictionEnable: 1
+    # The RW-X rundown coefficients, **checked against the catalog entry** by the
+    # config compiler rather than trusted as a transcription: a value larger than
+    # the hardware's real friction over-compensates, which is the one direction
+    # that leaves the vehicle worse off than no feedforward at all.
+    flight.attitudeController.WheelDryFrictionNm: 0.0001
+    flight.attitudeController.WheelViscousFrictionNmS: 0.000005
+    # Blend half-width for the Coulomb term's sign [rad/s]. Friction is
+    # -sgn(omega)*tau_c and a bare sign() feedforward chatters at low wheel
+    # speed, so the compensation ramps linearly from zero at omega = 0 to full
+    # magnitude here. Inside the band the friction is deliberately
+    # under-compensated — that is the band's cost, and it is bounded by tau_c,
+    # exactly the error the vehicle already lived with, where a chattering
+    # feedforward would be a new disturbance it did not have.
+    #
+    # THE NUMBER IS SET FROM THIS VEHICLE'S OWN WHEEL-SPEED RANGE, which is far
+    # narrower than a datasheet wheel's. The pyramid stores the 1.0e-3 N·m·s
+    # desaturation threshold at ~0.54 rad/s per wheel and the 3.0e-4 N·m·s exit
+    # threshold at ~0.16 rad/s, so the wheels live between roughly 0.05 and
+    # 0.55 rad/s (~0.5 to 5 rpm) — a *ten rpm* vehicle. A band has to be small
+    # against that whole range or it under-compensates over most of the flight
+    # envelope rather than only at a zero crossing: 5.0e-3 rad/s is 1% of the
+    # upper end and 3% of the exit threshold's speed. (A band of 0.1 rad/s —
+    # defensible for a 6000 rpm wheel and measured here — recovers only 0.06 deg
+    # of the 1.25 deg this parameter is worth, because it covers a fifth of the
+    # operating range.)
+    #
+    # OWED: the *lower* bound on this band is the flight tachometer's resolution
+    # and noise — below those the sign of omega is not a measurement, and a
+    # full-magnitude compensation there is a coin flip applied at 1.0e-4 N·m. The
+    # RW-X catalog entry carries no tachometer specification, so that bound is
+    # unknown for this vehicle; the value below is derived from the operating
+    # range only and must be re-derived against the flight unit's tachometer
+    # before launch.
+    #
+    # Per-wheel trim on the modelled friction. **Policy: at or below 1** —
+    # compensating a fraction k <= 1 leaves (1-k) of the friction, same sign,
+    # never worse, whereas over-compensating reverses the residual's sign and
+    # past k = 2 makes it larger than doing nothing.
+    #
+    # 0.5 IS A MEASURED CHOICE, NOT A ROUND ONE, and the measurement says
+    # something the open-loop argument above does not. Flown on the two rows that
+    # bracket the operating range (worst pointing, deg):
+    #
+    #                              k = 0    k = 0.5   k = 1.0
+    #   loaded array (desat row)    2.77      1.38      1.52
+    #   near-empty array (hold row) 0.12      0.25      1.09  <- 1.0 deg bound
+    #
+    # The loaded case is what the feedforward is for and it improves by half a
+    # degree. The near-empty case gets *worse* with it, monotonically in k, and
+    # at k = 1 it breaks REQ-ACTL-002's own verification row. The mechanism is
+    # that a near-empty array runs its wheels at the speeds where the
+    # compensation's sign is least trustworthy — inside and around the blend
+    # band, one control period stale — and where the friction the feedforward
+    # removes was also passively damping the stored momentum. Half compensation
+    # keeps most of the loaded-array gain, stays a factor of four inside the
+    # near-empty bound, and is conservative in the direction the policy above
+    # says to be conservative in. **This is a closed-loop trade the open-loop
+    # "partial is never worse" argument does not cover, and it is why the trim is
+    # a flight parameter rather than a constant.**
+    #
+    # The catalog entry labels its friction "representative (unit calibration)",
+    # so a measured rundown re-opens this number; that is a per-unit uplink,
+    # which is why the trim is per-unit here and not one scalar.
+    flight.attitudeController.WheelFrictionDeadbandRadps: 5.0e-3
+    flight.attitudeController.WheelFrictionScale: [
+      0.5,   # 0: rw_1
+      0.5,   # 1: rw_2
+      0.5,   # 2: rw_3
+      0.5,   # 3: rw_4
+      0.0,   # 4: not installed
+      0.0,   # 5: not installed
+      0.0,   # 6: not installed
+      0.0]   # 7: not installed
+
     # --- MTQ/MAG duty-cycle interlock (§7) -----------------------------
     flight.attitudeController.MtqCount: 3
     # Rod dipole axes, body frame, in actuator build order — checked against the

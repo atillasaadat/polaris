@@ -56,13 +56,17 @@ bool AttitudeController ::updateMomentum(I64 nowNs) {
   // be a second chance to disagree. A stuck driver reports a plausible speed with
   // an old tag, which is exactly what this catches — and a stale wheel refuses
   // the sum rather than contributing a momentum the array no longer has.
-  bool fresh[polaris::gnc::kMaxWheels] = {};
+  //
+  // The verdict is a member rather than a local because the §8.5 friction
+  // feedforward asks the same question of the same tachometers later in the same
+  // cycle, and two answers to one question is how they come to disagree.
   for (U32 i = 0; i < polaris::gnc::kMaxWheels; ++i) {
     const I64 age_ns = nowNs - this->wheel_speed_time_ns_[i];
     const double age_s = static_cast<double>(age_ns < 0 ? -age_ns : age_ns) / 1.0e9;
-    fresh[i] = this->wheel_speed_valid_[i] && age_s <= this->max_estimate_age_s_;
+    this->wheel_speed_fresh_[i] = this->wheel_speed_valid_[i] && age_s <= this->max_estimate_age_s_;
   }
-  if (!this->momentum_.update(this->wheel_speed_radps_, fresh, this->momentum_state_)) {
+  if (!this->momentum_.update(this->wheel_speed_radps_, this->wheel_speed_fresh_,
+                              this->momentum_state_)) {
     // No usable momentum this cycle. The envelope latch is **held** rather than
     // cleared: a missing tachometer is not evidence the wheels emptied, and
     // clearing on absence is how a monitor un-alarms itself by losing its input.
