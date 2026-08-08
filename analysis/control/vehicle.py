@@ -1,5 +1,12 @@
 """As-flown vehicle description, read from the committed spacecraft YAML.
 
+Shared: :mod:`analysis.control` and :mod:`analysis.sizing` both load their
+vehicle here rather than each parsing the config. A second loader would be a
+second set of defaults and a second place for the two packages to describe
+different vehicles from the same file, so the sizing fields (mass properties,
+drag/SRP areas, CP-CM lever arms, residual dipole, the detumble and
+desaturation thresholds, the magnetometer noise) live on the same dataclass.
+
 Every number the linear-analysis toolkit uses comes from
 ``config/spacecraft/*.yaml`` through the config compiler's own loader
 (:func:`configc.compiler.load_config`), so the models analysed here are the
@@ -148,7 +155,15 @@ class Vehicle:
         the sim's ``W`` matrix; see :meth:`wheel_torque_axes` for the sign the
         controller applies.
     wheel_max_torque_nm : float
-        Per-wheel commanded-torque limit [N·m].
+        Per-wheel commanded-torque limit [N·m], from the **flight parameter**
+        ``flight.attitudeController.WheelMaxTorqueNm``. This is what the FSW will
+        ask the wheel for; it is not what the wheel can give.
+    wheel_catalog_torque_nm : float
+        Per-wheel peak output torque [N·m] from the hardware catalog entry the
+        wheel's ``model_id`` resolves to — what the wheel can actually deliver.
+        Carried **alongside** ``wheel_max_torque_nm`` and never merged with it:
+        they are two independent numbers that must agree, and
+        :func:`analysis.sizing.wheels.criteria` is what checks that they do.
     wheel_max_momentum_nms : float
         Per-wheel momentum capacity [N·m·s], from the hardware catalog entry the
         wheel's ``model_id`` resolves to — not an FSW parameter, but the number
@@ -166,12 +181,32 @@ class Vehicle:
         The momentum error at which the vehicle starts desaturating
         (``MomentumDesatEnterNms``) [N·m·s]. Read for the same reason: the action
         has to sit inside the alarm.
+    momentum_desat_exit_nms : float
+        The momentum error the desaturation stops at (``MomentumDesatExitNms``)
+        [N·m·s]. The low end of the hysteresis pair
+        :mod:`analysis.sizing.parameters` checks the ordering invariant on.
+    detumble_enter_radps : float
+        Body rate above which the vehicle is declared tumbling
+        (``DetumbleEnterRadps``) [rad/s].
+    detumble_exit_radps : float
+        Body rate at which detumble is declared complete
+        (``DetumbleExitRadps``) [rad/s]. Sized against both the wheel momentum
+        envelope and the B-dot noise floor in :mod:`analysis.sizing.parameters`.
+    bdot_gain_nms : float
+        The flown B-dot gain (``BdotGainNms``) [N·m·s], checked against the
+        Avanzini & Giulietti floor.
     mtq_axes : numpy.ndarray
         Installed rod dipole axes as columns, shape ``(3, M)`` [-].
     mtq_max_dipole_am2 : float
         Per-rod rated moment [A·m²].
     mtq_duty_factor : float
         Fraction of the control period the rods are energised [-].
+    mag_noise_t : float
+        Per-sample magnetometer noise, 1σ per axis [T], from the catalog entry
+        the magnetometer's ``model_id`` resolves to. The largest across the
+        installed units, since a voted pair is bounded by its noisiest member.
+        This is what sets the B-dot field-derivative noise floor
+        (:func:`analysis.sizing.magnetorquers.bdot_noise_floor`).
     alloc_min_conditioning : float
         The flight allocator's three-axis-span gate,
         :math:`\\lambda_{\\min}/\\lambda_{\\max}` of :math:`AA^\\top` [-]. Carried
@@ -187,23 +222,51 @@ class Vehicle:
         The estimator noise budget.
     orbit : Orbit
         The scenario orbit.
+    mass_kg : float
+        Total vehicle mass [kg].
+    drag_area_m2, drag_cd : float
+        Drag reference area [m²] and coefficient [-].
+    srp_area_m2, srp_cr : float
+        SRP reference area [m²] and reflectivity coefficient [-]; ``srp_cr``
+        is :math:`1+q` in the usual flat-plate form.
+    cp_offset_aero_m, cp_offset_srp_m : numpy.ndarray
+        Centre-of-pressure offsets from the centre of mass, body frame [m],
+        shape ``(3,)`` — the lever arms of the §5.3 disturbance torques. The
+        config declares these with **no default** precisely because a zero here
+        and an unmeasured vehicle must not look the same.
+    residual_dipole_am2 : numpy.ndarray
+        Residual magnetic dipole moment, body frame [A·m²], shape ``(3,)``.
     """
 
     name: str
     inertia_kgm2: np.ndarray
     wheel_spin_axes: np.ndarray
     wheel_max_torque_nm: float
+    wheel_catalog_torque_nm: float
     wheel_max_momentum_nms: float
     momentum_envelope_nms: float
     momentum_desat_enter_nms: float
+    momentum_desat_exit_nms: float
+    detumble_enter_radps: float
+    detumble_exit_radps: float
+    bdot_gain_nms: float
     mtq_axes: np.ndarray
     mtq_max_dipole_am2: float
     mtq_duty_factor: float
+    mag_noise_t: float
     alloc_min_conditioning: float
     control_period_s: float
     pid: PidGains
     sensors: SensorNoise
     orbit: Orbit
+    mass_kg: float
+    drag_area_m2: float
+    drag_cd: float
+    srp_area_m2: float
+    srp_cr: float
+    cp_offset_aero_m: np.ndarray
+    cp_offset_srp_m: np.ndarray
+    residual_dipole_am2: np.ndarray
 
     def wheel_torque_axes(self, wheels: tuple[int, ...] | None = None) -> np.ndarray:
         """Body torque per unit commanded wheel torque, as columns.
@@ -260,26 +323,75 @@ def _axes_from_flat(flat: list[float], count: int, what: str) -> np.ndarray:
     return installed
 
 
-def _wheel_momentum_capacity(spacecraft, hardware_dir: Path) -> float:
-    """Per-wheel momentum capacity [N·m·s] from the resolved hardware catalog.
+def _wheel_catalog_min(spacecraft, hardware_dir: Path, key: str, why: str) -> float:
+    """The smallest ``key`` across the installed wheels' catalog entries.
 
     Read rather than restated: a transcribed catalog value is a copy, and every
     copy is a place for the analysis and the vehicle to disagree. The smallest
-    capacity across the installed wheels is taken, since a mixed array is
-    bounded by its weakest unit.
+    value across the installed wheels is taken, since a mixed array is bounded
+    by its weakest unit.
     """
     library = load_hardware_library(hardware_dir)
-    capacities = [
-        float(library[unit.model_id].params["max_momentum_nms"])
+    values = [
+        float(library[unit.model_id].params[key])
         for unit in spacecraft.actuators
         if unit.model_id in library and library[unit.model_id].kind == "reaction_wheel"
     ]
-    if not capacities:
+    if not values:
         raise KeyError(
             f"{hardware_dir}: no reaction-wheel catalog entry for this vehicle's "
-            "actuators; the SISO validity boundary cannot be evaluated"
+            f"actuators; {why}"
         )
-    return min(capacities)
+    return min(values)
+
+
+def _wheel_momentum_capacity(spacecraft, hardware_dir: Path) -> float:
+    """Per-wheel momentum capacity [N·m·s] from the resolved hardware catalog."""
+    return _wheel_catalog_min(
+        spacecraft,
+        hardware_dir,
+        "max_momentum_nms",
+        "the SISO validity boundary cannot be evaluated",
+    )
+
+
+def _wheel_torque_capacity(spacecraft, hardware_dir: Path) -> float:
+    """Per-wheel peak output torque [N·m] from the resolved hardware catalog.
+
+    The counterpart of :func:`_wheel_momentum_capacity`, and read for a sharper
+    reason: the *commanded* limit ``WheelMaxTorqueNm`` is a flight parameter set
+    independently of the wheel installed, so the two can disagree silently — and
+    did, when the reference vehicle's wheel was swapped and the parameter was not.
+    Nothing can compare them unless both are read.
+    """
+    return _wheel_catalog_min(
+        spacecraft,
+        hardware_dir,
+        "max_torque_nm",
+        "the commanded torque limit cannot be checked against the hardware",
+    )
+
+
+def _magnetometer_noise_t(spacecraft, hardware_dir: Path) -> float:
+    """Per-sample magnetometer noise [T], 1σ per axis, from the catalog.
+
+    Read for the same reason as the wheel capacity: a transcribed sensor spec is
+    a copy. The **largest** across the installed units is taken — a voted pair
+    is only as quiet as its noisiest member, and the B-dot noise floor this
+    feeds is a worst-case number.
+    """
+    library = load_hardware_library(hardware_dir)
+    noises = [
+        float(library[unit.model_id].params["noise_ut_rms"]) * 1.0e-6
+        for unit in spacecraft.sensors
+        if unit.model_id in library and library[unit.model_id].kind == "magnetometer"
+    ]
+    if not noises:
+        raise KeyError(
+            f"{hardware_dir}: no magnetometer catalog entry for this vehicle's "
+            "sensors; the B-dot noise floor cannot be evaluated"
+        )
+    return max(noises)
 
 
 def load_vehicle(
@@ -375,12 +487,18 @@ def load_vehicle(
             list(param("WheelAxesBody")), wheel_count, "WheelAxesBody"
         ),
         wheel_max_torque_nm=float(param("WheelMaxTorqueNm")),
+        wheel_catalog_torque_nm=_wheel_torque_capacity(sc, hardware),
         wheel_max_momentum_nms=_wheel_momentum_capacity(sc, hardware),
         momentum_envelope_nms=float(param("MomentumEnvelopeNms")),
         momentum_desat_enter_nms=float(param("MomentumDesatEnterNms")),
+        momentum_desat_exit_nms=float(param("MomentumDesatExitNms")),
+        detumble_enter_radps=float(param("DetumbleEnterRadps")),
+        detumble_exit_radps=float(param("DetumbleExitRadps")),
+        bdot_gain_nms=float(param("BdotGainNms")),
         mtq_axes=_axes_from_flat(list(param("MtqAxesBody")), mtq_count, "MtqAxesBody"),
         mtq_max_dipole_am2=float(param("BdotMaxDipoleAm2")),
         mtq_duty_factor=float(param("MtqDutyFactor")),
+        mag_noise_t=_magnetometer_noise_t(sc, hardware),
         alloc_min_conditioning=float(param("AllocMinConditioning")),
         control_period_s=float(param("ControlPeriodSec")),
         pid=PidGains(
@@ -403,4 +521,12 @@ def load_vehicle(
             raan_rad=float(np.deg2rad(orbit.raan_deg)),
             epoch_utc=cfg.scenario.epoch_utc,
         ),
+        mass_kg=float(sc.mass_kg),
+        drag_area_m2=float(sc.drag_area_m2),
+        drag_cd=float(sc.drag_cd),
+        srp_area_m2=float(sc.srp_area_m2),
+        srp_cr=float(sc.srp_cr),
+        cp_offset_aero_m=np.asarray(sc.cp_offset_aero_m, dtype=float),
+        cp_offset_srp_m=np.asarray(sc.cp_offset_srp_m, dtype=float),
+        residual_dipole_am2=np.asarray(sc.residual_dipole_am2, dtype=float),
     )

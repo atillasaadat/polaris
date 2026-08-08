@@ -148,7 +148,7 @@ def test_siso_coupling_matches_its_closed_form(vehicle):
 
 
 def test_the_reference_vehicle_warns_at_full_stored_momentum(vehicle, reference_config):
-    """A momentum-biased 6U is not a per-axis problem, and the report says so.
+    """A momentum-biased vehicle is not a per-axis problem, and the report says so.
 
     This is a *warning*, not a failure: the margins are those of the loop as
     analysed, and what the warning qualifies is the claim that the analysed loop
@@ -159,7 +159,16 @@ def test_the_reference_vehicle_warns_at_full_stored_momentum(vehicle, reference_
         result = axis_margins(vehicle, i)
         assert result.siso_coupling_ratio > MAX_SISO_COUPLING_RATIO
         assert not result.siso_assumption_holds
-        assert 0.0 < result.siso_momentum_limit_nms < vehicle.wheel_max_momentum_nms
+        # Finite, positive, and inside what the array can physically store —
+        # compared against the *array* rather than a single wheel, because the
+        # re-baselined vehicle's certified limit (0.51 N.m.s) is above one RW-X's
+        # 0.5 N.m.s capacity while still being a small fraction of the four-wheel
+        # pyramid's. Which of the two it sits between is a property of the
+        # vehicle; that it is a real bound below the hardware is the claim.
+        array_capacity = (
+            vehicle.wheel_spin_axes.shape[1] * vehicle.wheel_max_momentum_nms
+        )
+        assert 0.0 < result.siso_momentum_limit_nms < array_capacity
 
     report = control_analysis_report(vehicle, reference_config)
     assert len(report.warnings) == 3

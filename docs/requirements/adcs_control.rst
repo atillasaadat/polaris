@@ -50,6 +50,19 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    telemetered, but no requirement is written on the time to reach it until that
    campaign has run.
 
+   *The completion predicate itself moved in Push 60, and the two bounds on it
+   now agree.* ``analysis/sizing`` measures B-dot's own measurement noise floor
+   :math:`\sigma\sqrt2/(\Delta t\,\|B\|)` at **1.71 deg/s** at the orbit's
+   weakest field — below it the law commands on magnetometer noise rather than
+   on :math:`\dot{\mathbf B}` — while the wheels' side of the handover requires
+   the array to absorb :math:`J\omega` at whatever rate the rods hand over at,
+   which against the committed envelope puts the threshold at **1.72 deg/s**.
+   The committed ``DetumbleExitRadps`` is **0.033161 rad/s = 1.9 deg/s**, clearing
+   both by 11 %. On the pre-Push-60 vehicle it was 0.5 deg/s — *below* the sensing
+   floor — and the two bounds were mutually unsatisfiable; they now agree within
+   1 %, which is a property of the wheel and the loop bandwidth the vehicle took
+   in Push 60 rather than of a re-tuned threshold.
+
    Verified by ``tests/integration/sitl_attitude_control_test.cpp``
    (``DetumblesFromFiveDegreesPerSecond``), with the law's dissipativity — the
    rotational kinetic energy non-increasing on every cycle it commands, saturated
@@ -91,28 +104,40 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
 
    Holding a commanded inertial attitude under nominal sensing **with the wheel
    array near its momentum target**, the steady-state pointing error **shall**
-   be below **1.0 deg**. The reference vehicle measures 0.41 deg at that
-   operating point, so the bound carries a factor of 2.4 in margin; it is
-   stated as a round operational number rather than shaved to the measurement.
+   be below **1.0 deg**. The reference vehicle measures **0.0094 deg** at that
+   operating point, so the bound carries two orders of margin; it is stated as a
+   round operational number rather than shaved to the measurement, and the
+   threshold has **not** been re-derived against the new measurement — tightening
+   it is a requirements decision, not a consequence of a hardware change.
 
    The momentum condition is load-bearing, not a caveat, and it **stays** — but
-   the reason for it has changed and is now measured rather than argued. Push 56
-   found a loaded array at **2.9°** and attributed the excess to the wheels'
-   Coulomb friction. Push 59 built the friction feedforward that item owed
-   (REQ-ACTL-010, ``lib/gnc/rw_friction``) and then ablated the drive term by
-   term instead of trusting the attribution. The friction was **about half** of
-   it: with the feedforward flown the loaded array measures **1.38°**, and the
-   remainder is the **drive torque quantization** — RW-X quotes a 1.0e-4 N·m
-   torque LSB, the same size as the Coulomb friction, so a per-wheel demand
-   under half an LSB is commanded as zero and the loop carries a dead zone of
-   ~5e-5 N·m per wheel. Removing that and nothing else takes the same run to
-   0.17°, against a 0.18° floor with neither non-ideality present.
+   what it is guarding against has changed twice, and the second change is the
+   Push 60 wheel. Push 56 found a loaded array at **2.9°** and attributed the
+   excess to the wheels' Coulomb friction. Push 59 built the friction feedforward
+   that item owed (REQ-ACTL-010, ``lib/gnc/rw_friction``) and then ablated the
+   drive term by term instead of trusting the attribution: friction was **about
+   half** of it, the loaded array measured **1.38°**, and the remainder was the
+   **drive torque quantization** — the RW-X wheel that vehicle flew quotes a
+   1.0e-4 N·m torque LSB, the same size as its Coulomb friction, so a per-wheel
+   demand under half an LSB is commanded as zero and the loop carries a dead
+   zone of ~5e-5 N·m per wheel.
 
-   So a loaded array is now **1.38°** rather than 2.9°, still above this
-   requirement's 1.0°, and the condition is verified near zero stored momentum
-   (0.25° measured) until the drive-quantization item lands. Loaded-array
-   behaviour is bounded by REQ-ACTL-010's desaturation rows, whose absolute
-   bound moved 3.5° → 1.7° with the improvement.
+   **Push 60 removed the term rather than compensating it.** ``analysis/sizing``
+   found the RW-X wheel to be 78× the largest momentum any sizing driver asks of
+   this 12 kg bus, and the vehicle took the 30 mN·m·s ``RW-S`` entry instead
+   (design doc §19.2). That wheel's friction and drive LSB are **8e-6 N·m**, an
+   order of magnitude down from 1.0e-4, and the loop was retuned around it
+   (:math:`\omega_n` 0.197 → 0.8 rad/s at :math:`\zeta` = 0.7). A loaded array now
+   measures **0.0396°** — 25× *inside* this requirement, where the same row
+   measured 1.38° and was 1.4× outside it. The dead zone did not need a
+   drive-level fix; it needed the right part.
+
+   The near-zero-momentum condition on the **shall** above is nevertheless kept
+   as written, pending review: it is the condition the requirement was verified
+   under, and dropping it is a requirements change on the strength of one
+   measurement of one loaded row. Loaded-array behaviour is bounded by
+   REQ-ACTL-010's desaturation rows, whose absolute bound is now the rod
+   contribution's own 0.05° rather than a fraction of a degree.
 
    Verified by ``tests/integration/sitl_attitude_control_test.cpp``
    (``InertialHoldConvergesUnderThePointingBound``), the allocation properties by
@@ -243,7 +268,7 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    :math:`|L|>1`. The gain margin **shall** therefore be stated as the smaller
    of the loop-gain increase and the loop-gain decrease the loop tolerates. A
    single signed margin, which is what a naive frequency-domain margin call
-   returns, reads −15 dB on this healthy design and would fail a requirement
+   returns, reads −27 dB on this healthy design and would fail a requirement
    written for the ordinary case.
 
    The margins **shall** be computed from the same committed configuration the
@@ -251,17 +276,23 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    modelling assumptions the linear regime rests on — small angle, unsaturated
    torque, integrator unfrozen — **shall** be stated with the result.
 
-   *Measured on the reference vehicle*, sampled loop at 0.1 s: X and Y hold
-   **59.5°** of phase margin and **15.0 dB** of downward gain margin (37.8 dB
-   upward) at a 0.272 rad/s crossover; Z holds **63.9°** and **16.6 dB**
-   (36.2 dB upward) at 0.321 rad/s. Sensitivity peak is 1.02 on every axis and
-   the symmetric disk margin is 0.94–1.04, i.e. 8.8–10.0 dB of *simultaneous*
-   gain and 50–55° of simultaneous phase variation. The binding threshold is
-   therefore cleared with a factor of 2.5 in gain margin and a factor of 2.0 in
-   phase margin, and the design also clears the preferred 45° target. Adding a
-   pessimistic full cycle of computation delay — which the flight topology does
-   not have, since the estimator and controller run in the same 10 Hz cycle —
-   costs 1.6–1.8° of phase and still passes.
+   *Measured on the reference vehicle* (the Push 60 tuning, :math:`\omega_n` =
+   0.8 rad/s at :math:`\zeta` = 0.7 on the ``RW-S`` wheels), sampled loop at
+   0.1 s: X and Y hold **60.1°** of phase margin at a 1.161 rad/s crossover and
+   tolerate **25.5 dB** of loop-gain increase against 27.1 dB of decrease; Z
+   holds **63.1°** at 1.361 rad/s and tolerates 23.9 dB up against 28.6 dB down.
+   The requirement is written on the smaller of the two directions, so the gain
+   margins of record are 25.5 dB (X, Y) and 23.9 dB (Z). Sensitivity peak is
+   1.06–1.07 and the symmetric disk margin is 1.05–1.12, i.e. 10.1–11.0 dB of
+   *simultaneous* gain and 55–59° of simultaneous phase variation. The binding
+   threshold is therefore cleared with a factor of 4 in gain margin and a factor
+   of 2.0 in phase margin, and the design also clears the preferred 45° target.
+   Adding a pessimistic full cycle of computation delay — which the flight
+   topology does not have, since the estimator and controller run in the same
+   10 Hz cycle — costs **6.6–7.8°** of phase (53.5°/55.3° remaining) and still
+   passes. That cost is four times the pre-Push-60 vehicle's, and for a stated
+   reason rather than a mysterious one: a delay costs :math:`\omega_c T` of
+   phase, and this loop's crossover is four times faster.
 
    The margin extraction is Polaris's own — there is no control-systems library
    behind it — so it **shall** be validated against cases with closed-form
@@ -372,7 +403,7 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    :method: Test
    :derived_from: REQ-ACTL-006, REQ-ACT-003
    :allocation: lib/gnc, flight/PolarisFsw/AttitudeController, config/spacecraft
-   :value_required: stored momentum <= MomentumEnvelopeNms (2.0e-3 N.m.s as committed)
+   :value_required: stored momentum <= MomentumEnvelopeNms (7.2e-3 N.m.s as committed)
    :margin_required: 10 %
    :refs: wie2008, camillo1980
 
@@ -394,12 +425,16 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    boundary").
 
    *Measured on the reference vehicle.* The per-axis analysis is valid to
-   **2.72e-3 N·m·s** (the binding X/Y axes, at their 0.272 rad/s crossover); the
-   committed ``MomentumEnvelopeNms`` is **2.0e-3 N·m·s**, i.e. 74 % of the bound
-   and inside the required margin. That is **0.4 %** of one RW-X wheel's 0.5
-   N·m·s capacity — the honest statement of what the shipped linear evidence
-   covers, and the reason the desaturation threshold (1.0e-3 N·m·s) sits far
-   below anything a wheel would notice.
+   **1.16e-2 N·m·s** (the binding X/Y axes, at their 1.161 rad/s crossover); the
+   committed ``MomentumEnvelopeNms`` is **7.2e-3 N·m·s**, i.e. 62 % of the bound
+   and inside the required margin. That is **24 %** of one ``RW-S`` wheel's
+   0.030 N·m·s capacity and 15 % of the 0.049 N·m·s the four-wheel pyramid
+   guarantees in every direction — a certified regime that is now a real
+   fraction of the hardware rather than the 0.4 % of a wheel the pre-Push-60
+   vehicle's envelope covered. The bound scales as :math:`J_{\min}\omega_c`, so
+   what closed that gap is the loop bandwidth (0.197 → 0.8 rad/s), which the
+   30 mN·m·s wheel is what made affordable; the desaturation threshold
+   (3.6e-3 N·m·s) sits at half the envelope.
 
    Verified by ``tests/analysis/test_control_momentum_envelope.py``, which
    recomputes the bound from the *same committed YAML* through
@@ -439,29 +474,44 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    sample or no momentum estimate, no dipole is commanded.
 
    *Measured on the reference vehicle*, in closed loop against an unmodelled
-   residual-dipole torque of ~4.5e-5 N·m: the wheels load to the 1.0e-3 N·m·s
-   threshold in ~65 s, the rods engage autonomously at **1.007e-3 N·m·s**, the
-   momentum falls under the 3.0e-4 N·m·s exit threshold in **~10 s** at a peak
-   dipole of ~12 A·m² (of a 15 A·m² rating), and the desaturation disengages
-   13 s after engaging — the dump plus the 5 s confirmation. Stored momentum
-   never approaches the REQ-ACTL-009 envelope, and the cycle repeats every ~82 s
-   under a disturbance that never stops.
+   residual-dipole torque of ~4.5e-5 N·m: the wheels load to the committed
+   3.6e-3 N·m·s entry threshold, the rods engage autonomously there, the
+   momentum falls under the 1.08e-3 N·m·s exit threshold and the latch clears
+   after its 5 s confirmation, settling at 6.2e-4 N·m·s. Peak stored momentum
+   over the run is **3.60e-3 N·m·s**, half of the 7.2e-3 N·m·s REQ-ACTL-009
+   envelope, under a disturbance that never stops. (The dump and reload
+   *durations* moved with the Push 60 thresholds and are not restated here until
+   the row records them; what the row asserts is the momentum, both latch edges
+   and the pointing below.)
 
    **Pointing during desaturation is asserted, and what it found is a vehicle
-   fact rather than a control-coupling one.** On a loaded array the error reaches
-   **1.38°** against REQ-ACTL-002's 1.0°, and the cause is the wheel *drive*, not
-   the rods — see the owed items below for the term-by-term ablation. The row
-   asserts an absolute **1.7°** bound (the measurement with 20 % declared margin)
-   plus the claim this feature actually owns: the worst pointing while a rod is
-   energised is no worse than the worst while none is, measured 0.92° against
-   1.38°, so the rods are not what drives the error.
+   fact rather than a control-coupling one.** On a loaded array the worst error
+   is **0.0396°** against REQ-ACTL-002's 1.0° — 25× inside the requirement,
+   where the pre-Push-60 vehicle measured 1.38° and was outside it. The row
+   asserts an absolute **0.05°** bound on the error while a rod is energised,
+   which is where the requirement is written, plus a loose 5× band against the
+   quiet phases as a sanity check.
 
-   Push 56's version of this paragraph asserted that every desaturation window
-   left the pointing **better** than it found it, on the mechanism that emptying
-   the wheels removed their friction torque. Push 59's friction feedforward paid
-   for that friction directly, so the coupling — and with it the claim — is gone;
-   the assertion moved with the physics rather than being kept as something the
-   vehicle no longer supports.
+   **The relative claim was retired in Push 60 and should not be restored.**
+   Through Push 59 this row asserted that the worst pointing while a rod is
+   energised is no worse than the worst while none is (0.92° against 1.38°), an
+   inequality that meant something while the wheels' own Coulomb friction
+   dominated the budget and the rods were a small perturbation on a large
+   number. The ``RW-S`` wheel carries 8e-6 N·m of friction rather than 1e-4, and
+   with the Push 59 feedforward on top the quiet error collapses to **0.0203°**
+   — at which point the rods are the *dominant* term inside their own windows
+   and the ratio rises to ~2 while the absolute error stays 25× inside the
+   requirement. A ratio against a near-zero baseline is evidence that everything
+   else got quiet, not evidence of coupling, so the rod contribution is bounded
+   absolutely and the ratio kept only as a band.
+
+   Push 56's earlier version of the same paragraph asserted that every
+   desaturation window left the pointing **better** than it found it, on the
+   mechanism that emptying the wheels removed their friction torque. Push 59's
+   friction feedforward paid for that friction directly, so that coupling — and
+   with it that claim — was already gone. Both retirements are the same
+   discipline: the assertion moves with the physics rather than being kept as
+   something the vehicle no longer supports.
 
    Verified by ``tests/integration/sitl_attitude_control_test.cpp``
    (``DesaturationDumpsMomentumWhilePointingHolds`` — the full latch cycle, both
@@ -485,9 +535,14 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    control demand. A wheel with no usable tachometer has no speed sign and is
    passed through uncompensated rather than given a guessed one.
 
-   *Measured on the reference vehicle*, worst pointing over the same orbit and
-   seed: **2.77° uncompensated → 1.38°** at the flown trim
-   (``WheelFrictionScale`` = 0.5). The trim is a genuine closed-loop parameter
+   *Measured on the pre-Push-60 reference vehicle* (the RW-X wheels, whose
+   1.0e-4 N·m Coulomb friction is what the feedforward was built against), worst
+   pointing over the same orbit and seed: **2.77° uncompensated → 1.38°** at the
+   flown trim (``WheelFrictionScale`` = 0.5). Those figures are the evidence for
+   the *law*, and they stand as taken; on the ``RW-S`` wheels the friction being
+   compensated is an order of magnitude smaller, so the same feedforward is worth
+   correspondingly less and the loaded array measures 0.0396° with it flown. The
+   trim is a genuine closed-loop parameter
    and not merely a safety margin on a model: full compensation is *worse* than
    half on both operating points (1.52° loaded and 1.09° near-empty at
    :math:`k = 1.0`, against 1.38° and 0.25° at :math:`k = 0.5`), because the
@@ -505,20 +560,31 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    coefficient refuses the whole configuration rather than flying the feedforward
    silently off), and by the SITL row below.
 
-   **Owed (2) — the wheel drive's torque quantization.** The ablation above names
-   what is left: a 1.0e-4 N·m drive LSB, i.e. a ±5e-5 N·m per-wheel dead zone,
-   worth ~1.2° of the remaining 1.38°. The fixes are drive-level — dither, a
-   speed-mode inner loop, or a finer drive — and none is a control-law change.
-   This is what now stands between the loaded array and REQ-ACTL-002's 1.0°.
+   **Owed (2) — the wheel drive's torque quantization, and what Push 60 did to
+   it.** The Push 59 ablation named a 1.0e-4 N·m drive LSB — a ±5e-5 N·m
+   per-wheel dead zone — as ~1.2° of the remaining 1.38°, and recorded it as the
+   term standing between a loaded array and REQ-ACTL-002's 1.0°. **It is no
+   longer that term.** The ``RW-S`` wheel the vehicle took in Push 60 quotes an
+   8e-6 N·m LSB, an order of magnitude finer, and the loaded array now measures
+   0.0396° — inside the requirement with 25× to spare, without any of the
+   drive-level fixes (dither, a speed-mode inner loop, a finer drive) this item
+   proposed. The item stays open only as a *class*: a dead zone of half an LSB
+   is still the pointing floor a wheel drive imposes, and it is what would bind
+   again on a vehicle whose drive is coarse relative to its control torque. It
+   no longer names a gap against a requirement on this vehicle.
 
    **Owed (3) — the blend deadband's lower bound.** The flown 5.0e-3 rad/s is
-   derived from this vehicle's own wheel-speed range (the array lives between
-   ~0.05 and ~0.55 rad/s, a ten-rpm vehicle, so a band sized for a 6000 rpm wheel
-   covers a fifth of the operating envelope and recovers almost nothing). The
-   *lower* bound is the flight tachometer's resolution and noise, below which the
-   sign of :math:`\omega` is not a measurement — and the RW-X catalog entry
-   carries no tachometer specification, so that bound is unknown for this vehicle
-   and must be re-derived against the flight unit before launch.
+   derived from this vehicle's own wheel-speed range, which the Push 60 wheel
+   moved: the 30 mN·m·s rotor's inertia is 4.775e-5 kg·m², so the committed
+   1.08e-3 to 3.6e-3 N·m·s momentum band puts each wheel between roughly **10
+   and 33 rad/s** (~90 to 310 rpm) rather than the ~0.05 to 0.55 rad/s the
+   ten-rpm RW-X vehicle ran at. The flown band is therefore now ~0.02 % of the
+   upper end rather than 1 % of it — further inside the "small against the
+   operating range" rule the value was chosen under, not outside it. The *lower* bound is the flight tachometer's resolution and noise,
+   below which the sign of :math:`\omega` is not a measurement — and the ``RW-S``
+   catalog entry, like the ``RW-X`` one before it, carries no tachometer
+   specification, so that bound is unknown for this vehicle and must be
+   re-derived against the flight unit before launch.
 
    **Owed (4):** the momentum parallel to the field is untouchable at any instant —
    :math:`\mathbf m\times\mathbf B` has no component along :math:`\hat{\mathbf
@@ -569,22 +635,28 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
 
    *Measured on the reference vehicle*, flying the **same** vehicle and the same
    injected 2.4e-4 N·m residual-dipole torque twice, differing only in whether
-   the feedforward tiers are enabled: settled pointing error **1.72°** with
-   feedforward against **2.10°** without, and the §9 anomaly latched **once** in
-   each run — in both, because the observer runs whether or not its estimate is
-   fed forward.
+   the feedforward tiers are enabled: settled pointing error **0.0409°** with
+   feedforward against **0.0391°** without, and the §9 anomaly latched **once**
+   in each run — in both, because the observer runs whether or not its estimate
+   is fed forward.
 
-   **What that comparison establishes, and what it took.** Push 56 measured the
-   same pair at 3.45° against 3.52° — a 2 % difference, too small to assert — and
-   recorded that a decisive measurement waited on the wheels' Coulomb friction
-   being removed from the budget the comparison runs against, since feedforward
-   does not address friction and friction dominated the budget. Push 59's
-   friction feedforward (REQ-ACTL-010, owed item 1) removed it, and the effect is
-   now **18 %** on an error budget less than half its former size. The row still
-   asserts only that feedforward does **not degrade** the pointing, and records
-   both numbers, because the remaining budget is in turn dominated by the drive's
-   torque quantization (REQ-ACTL-010, owed item 2); asserting the improvement
-   itself is worth doing once that term is gone too.
+   **What that comparison establishes, and how it has moved.** Push 56 measured
+   the same pair at 3.45° against 3.52° — a 2 % difference, too small to assert.
+   Push 59's friction feedforward (REQ-ACTL-010, owed item 1) took the wheels'
+   Coulomb friction out of the budget the comparison runs against, and the pair
+   separated to 1.72° against 2.10°, an 18 % effect that was the first decisive
+   reading of what the tiers are worth. Push 60's wheel and its retuned loop then
+   shrank the *whole* budget by a further factor of ~40, and at 0.04° the pair is
+   **inside its own noise again, with the feedforward run 4.6 % worse rather than
+   better**. That is not a regression in the feedforward: the disturbance it
+   subtracts is unchanged, and what changed is that a 16× stiffer proportional
+   gain now trims the same torque almost entirely on its own, leaving a
+   difference of ~2e-4° between the two runs. The row's assertion is unchanged
+   and is the one that survives all three readings — feedforward **does not
+   degrade** the pointing (asserted with a 5 % band), with both numbers recorded.
+   **Asserting an improvement is off the table on this vehicle**, not deferred:
+   the effect is smaller than the measurement, and a vehicle whose PID alone
+   holds 0.04° is not the vehicle on which feedforward earns its keep.
 
    The anomaly monitor's own evidence is stronger and is what this row pins: it
    fires on the injected torque and, in the nominal inertial-hold row, does not

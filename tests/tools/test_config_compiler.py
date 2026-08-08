@@ -75,8 +75,17 @@ def test_compiles_template_and_emits_three_artifacts(tmp_path):
     fparams = emitted["parameters"]
     assert fparams["sc.mass_kg"] == 12.0
     assert not [k for k in fparams if k.startswith("gains.")]
+    # Read from the YAML rather than transcribed: this assertion is that the
+    # emitter carries the value through, not that the value is any particular
+    # number. It was 4.4e-3 until Push 60 retuned the loop for the RW-S wheel,
+    # and a literal here would have to be re-typed at every retune while
+    # checking nothing about the compiler.
+    expected_kp = yaml.safe_load(_TEMPLATE.read_text())["spacecraft"]["fsw_parameters"][
+        "flight.attitudeController.PidKpNmPerRad"
+    ]
     assert (
-        emitted["fsw_parameters"]["flight.attitudeController.PidKpNmPerRad"] == 4.4e-3
+        emitted["fsw_parameters"]["flight.attitudeController.PidKpNmPerRad"]
+        == expected_kp
     )
     assert resolved["provenance"]["config_hash"]
     # The GNSS jamming KML path and fault controls are carried through for the sim.

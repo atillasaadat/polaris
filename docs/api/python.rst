@@ -59,7 +59,7 @@ Analysis: shared reporting convention
 Linear control analysis
 -----------------------
 
-``analysis/control/`` (design doc §8.5, §13) is the first live package under
+``analysis/control/`` (design doc §8.5, §12) is the first live package under
 ``analysis/``. It measures the **as-flown** attitude loop from the same
 committed ``config/spacecraft/*.yaml`` the flight software is tuned from, and
 verifies REQ-ACTL-006/007/008. Built on **numpy and scipy only** — no
@@ -126,7 +126,79 @@ direction, attitude, RAAN, argument of latitude and epoch.
 smoke case that proves the harness in a couple of minutes. The campaign itself
 is deliberately not a ctest, for the same reason ``tests/benchmark/`` is not.
 
-Run either package with the ``analysis`` dependency group::
+ADCS actuator sizing
+--------------------
+
+``analysis/sizing/`` (design doc §12, §7, §8.5) is the third live package and
+fulfils the ``momentum/`` item on the Phase-11 list, broadened: it sizes the
+actuators, validates a candidate design against its drivers with 30 % margin,
+and derives the flight tuning the design implies. Like ``control/`` it reads
+matrices and scalars from the committed ``config/`` YAML and computes no
+quaternion, frame transform or propagation.
+
+- ``envelope`` — the exact achievable set of an actuator array. The zonotope's
+  support function :math:`h(u) = a_{\max}\lVert W^\top u\rVert_1`, its
+  **inscribed** radius (found exactly by enumerating facet normals, and
+  cross-checked against a dense spherical sample) and its circumscribed radius,
+  plus the L2 ellipsoid inscribed in it. Sizing uses the inscribed radius —
+  the capability guaranteed in *every* direction — never the best-direction
+  figure. Degenerate layouts are refused rather than approximated.
+- ``disturbances`` — the §5.3 budget in closed form at the config's own orbit:
+  gravity gradient, aerodynamic, SRP and residual magnetic, each split into a
+  **secular** part (which sizes desaturation) and a **cyclic** part (which sizes
+  storage) by an assumption the report states. The atmosphere band table is
+  parsed from ``sim/world/atmosphere.cpp`` and the field from the committed IAGA
+  table through ``control.field``.
+- ``wheels`` — momentum drivers D1–D4 and the torque driver, judged against
+  ``min(zonotope r_in, MomentumEnvelopeNms)``, plus an oversizing check.
+- ``magnetorquers`` — desaturation authority against the secular disturbance,
+  detumble authority, and the **B-dot noise floor** :math:`\sigma\sqrt2/(\Delta
+  t\,\lvert B\rvert)`: the body rate below which the law commands on its own
+  measurement noise, and therefore a lower bound on any detumble exit threshold.
+- ``parameters`` — the derived tuning with its justification: PID gains, the
+  momentum envelope (reusing ``control.plant.siso_coupling``), the desaturation
+  hysteresis ordering, the detumble exit threshold (refused if it would sit
+  below the noise floor) and the B-dot gain against the Avanzini & Giulietti
+  convergence floor.
+- ``assumptions`` — everything sizing needs that no config carries, each with a
+  documented default and each rendered into the report's assumptions block.
+- ``report``/``plots`` — the shared ``AnalysisReport``, the momentum-envelope
+  figure and its driver companion, the disturbance budget, and the magnetorquer
+  authority/noise-floor figure.
+- ``interactive``/``html`` — the **default output**: a single self-contained
+  ``index.html``, opened in a browser unless ``--no-browser`` is given, laid out
+  as an engineering document — sticky header with the vehicle, verdict and
+  provenance; section nav; and the criteria **grouped by family** (wheel
+  momentum, wheel torque, magnetorquer authority, control tuning), sortable
+  within each group, each margin carrying its absolute *and* percentage figure
+  in one cell. plotly figures for the momentum and torque envelopes in 3D (with
+  each driver drawn as a labelled vector along the array's weakest direction,
+  and the *usable* ``MomentumEnvelopeNms`` sphere drawn distinctly from the
+  hardware zonotope), the disturbance budget and the per-criterion margins, plus
+  the assumptions and warnings, and the derived tuning as cards carrying each
+  formula, its inputs and its reasoning. plotly.js is inlined and the matplotlib
+  figures are embedded as ``data:`` URIs, with no external stylesheet or web
+  font, so the page fetches nothing at runtime; every value is escaped, because
+  config-derived strings are untrusted input. ``--print`` keeps the console
+  report, whose content is unchanged and which is written to
+  ``sizing_report.txt`` regardless.
+- ``mathfmt`` — the presentation formatter the page renders through, and the
+  reason it can typeset mathematics while staying one offline file. It escapes
+  first and then substitutes only tokens it recognises, so ``Kp = J * wn^2``
+  becomes :math:`K_p = J\,\omega_n^2` and ``N.m.s`` becomes ``N·m·s`` using
+  Unicode plus ``<sub>``/``<sup>`` rather than MathJax or KaTeX. It is
+  deliberately conservative — a constant name such as
+  ``MAX_SISO_COUPLING_RATIO``, a config path, or a note that opens with a symbol
+  (``eta * m_in * ...``) is passed through untouched rather than guessed at, so
+  the failure mode is an unconverted string and never a corrupted one. It is
+  rendering only: the ``AnalysisReport`` and the plain-text report keep their
+  original strings.
+
+``analysis/sizing/README.md`` covers pointing it at your own config, what each
+criterion means, how to read the envelope figure, and what to change when one
+fails.
+
+Run any of the three packages with the ``analysis`` dependency group::
 
    uv run --group analysis pytest tests/analysis
 

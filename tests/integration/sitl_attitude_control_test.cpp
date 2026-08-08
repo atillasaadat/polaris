@@ -639,11 +639,14 @@ TEST(SitlAttitudeControl, DesaturationDumpsMomentumWhilePointingHolds) {
   RecordProperty("final_stored_momentum_nms", std::to_string(settled));
   EXPECT_GT(peak, 1.0e-3) << "the wheels never loaded past the desaturation threshold";
   EXPECT_LT(settled, 0.5 * peak);
-  // ...and it never left the analysed envelope (2.0e-3 N·m·s), which is the
-  // requirement the desaturation exists to keep: the loop's margins are only
-  // valid inside it. Asserted with the requirement's own margin, not the
-  // measured peak.
-  EXPECT_LT(peak, 2.0e-3) << "stored momentum left the SISO-validity envelope";
+  // ...and it never left the analysed envelope, which is the requirement the
+  // desaturation exists to keep: the loop's margins are only valid inside it.
+  // Asserted with the requirement's own margin, not the measured peak. The
+  // number is the committed `MomentumEnvelopeNms`, which moved 2.0e-3 -> 7.2e-3
+  // when the vehicle took the RW-S wheel and the faster loop (Push 60) — it is
+  // a property of the certified SISO regime, so it is restated here rather than
+  // derived, and `analysis/sizing` is what checks it against the design.
+  EXPECT_LT(peak, 7.2e-3) << "stored momentum left the SISO-validity envelope";
   EXPECT_EQ(countOf(run.log, "outside the"), 0u) << "the §9 envelope monitor fired";
 
   // **Pointing through the desaturation, and the two vehicle facts this row
@@ -715,19 +718,30 @@ TEST(SitlAttitudeControl, DesaturationDumpsMomentumWhilePointingHolds) {
   // found it" is no longer true and no longer means anything — emptying the
   // wheels buys nothing once the wheels' friction is already paid for. What the
   // concurrency claim reduces to is that the rods are not what drives the error:
-  // their torque is fed forward into the pointing demand a cycle ahead (Push 56),
-  // so the worst pointing while a rod is energised must be no worse than the
-  // worst while none is. It measures **0.92 deg desaturating against 1.38 deg
-  // quiet** — the run's peak is outside the windows, not inside them.
+  // their torque is fed forward into the pointing demand a cycle ahead (Push 56).
   //
-  // The comparison carries a 20% band rather than being asserted bare, because
-  // a bare inequality between two measurements of the same run is a coin flip
-  // when they happen to land close, which they did at other trims. A real fight
-  // between the rods and the wheels would not be a 7% effect: the rods' torque
-  // is ~4.5e-5 N.m against a 4.4e-3 N.m/rad gain, so discovering it through the
-  // error rather than being told about it costs a degree of its own.
+  // **The claim had to change shape when the wheel did, and the reason is the
+  // point.** On the RW-X vehicle the wheels' own Coulomb friction dominated the
+  // error budget (1.38 deg quiet), so the rods were a small perturbation on a
+  // large number and "desaturating is no worse than quiet" was a meaningful
+  // inequality. RW-S carries 8e-6 N·m of friction instead of 1e-4, and with the
+  // Push 59 feedforward on top the quiet error collapses to ~0.024 deg — at
+  // which point the rods are the *dominant* term inside their own windows and
+  // the ratio rises to ~1.6 while the absolute error stays 25x inside
+  // REQ-ACTL-002. A ratio against a near-zero baseline stops being evidence of
+  // coupling and starts being evidence that everything else got quiet, so the
+  // rod contribution is bounded in absolute terms — where the requirement is
+  // written — and the ratio is kept only as a loose sanity band.
   ASSERT_GT(worst_desat, 0.0) << "no desaturation window in the trace to compare across";
-  EXPECT_LT(worst_desat, 1.2 * worst_quiet)
+  // REQ-ACTL-002 is 1.0 deg; the measured 0.040 deg desaturating carries the
+  // usual declared margin rather than being transcribed.
+  EXPECT_LT(worst_desat, 0.05 * M_PI / 180.0)
+      << "pointing during desaturation left the REQ-ACTL-002 regime:\n"
+      << profile.str();
+  // A genuine rod/wheel fight would be an order-of-magnitude effect, not the
+  // 1.6x of a quiet baseline; this catches that without pretending 1.6x on
+  // 0.024 deg is a defect.
+  EXPECT_LT(worst_desat, 5.0 * worst_quiet)
       << "the rods drove the pointing materially worse than the quiet phases, which is "
          "the coupling this feature exists to rule out:\n"
       << profile.str();

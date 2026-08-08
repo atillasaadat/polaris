@@ -108,15 +108,25 @@ def test_an_off_window_gain_set_fails_loudly_instead_of_inflating(vehicle):
     margin than the design has. The guard is only worth having if it fires, so
     both directions are driven here.
     """
-    # Crossover scales as Kd/J: a 1e6x derivative gain puts it far above the
-    # 1e4 rad/s top of the continuous sweep.
-    fast = replace(vehicle, pid=replace(vehicle.pid, kd_nm_per_radps=3.1e4))
+    # Crossover scales as Kd/J, so the multipliers are written against the
+    # vehicle's own committed Kd rather than as absolute gains — the reference
+    # tuning moved by three orders with the Push 60 re-baseline and a transcribed
+    # gain would have quietly stopped landing where this test needs it. A 1e6x
+    # derivative gain puts the crossover far above the 1e4 rad/s top of the
+    # continuous sweep.
+    fast = replace(
+        vehicle,
+        pid=replace(vehicle.pid, kd_nm_per_radps=1.0e6 * vehicle.pid.kd_nm_per_radps),
+    )
     with pytest.raises(GridWindowError, match="no unity-gain crossing"):
         axis_margins(fast, 0, sampled=False)
 
     # And a crossing that lands *inside* but within a decade of an edge is the
     # same hazard one step earlier: the next configuration falls off.
-    marginal = replace(vehicle, pid=replace(vehicle.pid, kd_nm_per_radps=3.1e2))
+    marginal = replace(
+        vehicle,
+        pid=replace(vehicle.pid, kd_nm_per_radps=1.0e3 * vehicle.pid.kd_nm_per_radps),
+    )
     with pytest.raises(GridWindowError, match="within 1 decade of the sweep edge"):
         axis_margins(marginal, 0, sampled=False)
 
@@ -200,7 +210,7 @@ def test_margins_survive_a_one_cycle_computation_delay(vehicle):
 
 
 def test_sampling_costs_phase_relative_to_the_continuous_idealisation(vehicle):
-    """The ZOH lag is real but small here, because the crossover is two decades down."""
+    """The ZOH lag is real but small here, because the crossover is well under Nyquist."""
     for i in range(3):
         sampled = axis_margins(vehicle, i, sampled=True)
         continuous = axis_margins(vehicle, i, sampled=False)
@@ -210,7 +220,12 @@ def test_sampling_costs_phase_relative_to_the_continuous_idealisation(vehicle):
         )
         loss = continuous.phase_margin_deg - sampled.phase_margin_deg
         assert loss == pytest.approx(expected_loss_deg, rel=0.25)
-        assert loss < 1.0
+        # "Small" is stated against the margin it eats into rather than as an
+        # absolute number of degrees: the absolute loss is w_c * T / 2 and moves
+        # with the bandwidth (0.3 deg at the 12 kg tuning's 0.27 rad/s crossover,
+        # 3.4 deg at this one's 1.26 rad/s), while the claim being made — that
+        # sampling is not what decides the design — is a ratio.
+        assert loss < 0.1 * sampled.phase_margin_deg
 
 
 def test_the_loop_is_conditionally_stable_and_says_so(vehicle):

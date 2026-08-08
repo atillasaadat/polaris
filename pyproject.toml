@@ -113,8 +113,16 @@ config = [
 # build tooling. It is not optional for the test suite though — the margin
 # requirements are verified by the Python suite, so CI runs
 # `uv run --group analysis pytest`.
+#
+# **plotly is the one domain library here**, and only for rendering: the sizing
+# report's headline is a 3D momentum envelope a reviewer must rotate to read,
+# and hand-rolling an interactive WebGL viewer is far more code than the
+# dependency costs. It is emitted with `include_plotlyjs="inline"`, so the
+# report is one self-contained file that works offline; nothing is fetched at
+# runtime. No analysis number comes from it — it draws what numpy computed.
 analysis = [
     "matplotlib>=3.9,<4",
+    "plotly>=5.22,<7",
     "numpy>=2.0,<3",
     "scipy>=1.13,<2",
     "pydantic>=2.11,<3",
