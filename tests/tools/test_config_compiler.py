@@ -77,7 +77,7 @@ def test_compiles_template_and_emits_three_artifacts(tmp_path):
     assert not [k for k in fparams if k.startswith("gains.")]
     # Read from the YAML rather than transcribed: this assertion is that the
     # emitter carries the value through, not that the value is any particular
-    # number. It was 4.4e-3 until Push 60 retuned the loop for the RW-S wheel,
+    # number. It was 4.4e-3 until Push 60 retuned the loop for the RW-X wheel,
     # and a literal here would have to be re-typed at every retune while
     # checking nothing about the compiler.
     expected_kp = yaml.safe_load(_TEMPLATE.read_text())["spacecraft"]["fsw_parameters"][

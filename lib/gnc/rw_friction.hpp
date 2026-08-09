@@ -94,7 +94,7 @@
 ///
 /// Those four numbers were taken on the RW-X wheels the reference vehicle flew
 /// through Push 59, whose Coulomb friction is 1.0e-4 N·m. Push 60 moved the
-/// vehicle to the RW-S entry (8e-6 N·m) and retuned the loop around it, which
+/// vehicle to the re-sized 30 mN·m·s entry (8e-6 N·m) and retuned the loop around it, which
 /// scales the whole term down by an order of magnitude; the trim sweep has not
 /// been re-flown there, so 0.5 is carried forward on the argument above rather
 /// than on a fresh measurement. See `config/spacecraft/leo_smallsat.yaml`.

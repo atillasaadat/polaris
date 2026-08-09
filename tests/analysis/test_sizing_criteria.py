@@ -206,7 +206,7 @@ def test_wheel_torque_is_judged_on_the_guaranteed_radius_not_the_body_axis(
     direction is ``4·τ/√6``; the body-axis reach is ``4·τ/√3``, larger by 41 %
     in the unconservative direction. Both are written against the vehicle's own
     per-wheel torque so the identity is what is pinned, not the magnitude — the
-    wheel changed from RW-X to RW-S in Push 60 and the ratio did not.
+    wheel changed from RW-X to RW-X in Push 60 and the ratio did not.
     """
     report = sizing_report(vehicle, reference_config)
     torque = _criterion(report, "wheel torque")
@@ -229,7 +229,7 @@ def test_the_commanded_torque_limit_may_not_exceed_the_installed_wheel(
 
     The flight parameter and the hardware capability are set independently, so a
     wheel swap can leave the FSW authorised to command torque the unit cannot
-    produce. That happened on this vehicle (RW-X 0.025 N·m → RW-S 0.002 N·m) and
+    produce. That happened on this vehicle (RW-X 0.025 N·m → RW-X 0.002 N·m) and
     nothing caught it; this is what catches it now.
     """
     report = sizing_report(vehicle, reference_config)

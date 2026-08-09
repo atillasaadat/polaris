@@ -33,15 +33,30 @@ sortable within each group, with each margin shown in absolute *and* percentage
 terms in one cell; the assumptions and warnings; and the derived tuning with its
 justifications.
 
+**Scannable by default, complete on demand.** Each criterion row, card, caption
+and warning shows one sentence plus its numbers; anything longer collapses into
+a `<details>` disclosure. Nothing is deleted, the justifications are the reason
+this report exists, they are simply one click away rather than between the
+reader and the next row.
+
 The console strings are set for a fixed-width terminal, so the page typesets
-them on the way in — `Kp = J * wn^2` becomes *K*<sub>p</sub> = *J* · ω<sub>n</sub>²
-and `N.m.s` becomes N·m·s. That conversion lives entirely in
-[`mathfmt.py`](mathfmt.py) and is presentation-only: it is Unicode plus
-`<sub>`/`<sup>` rather than MathJax or KaTeX, precisely so the page stays one
-offline file, and it is conservative by construction — anything it does not
-recognise is passed through unchanged rather than guessed at, and every string
-is HTML-escaped *before* substitution. **The report objects and the plain-text
-rendering keep their original strings**; nothing about the verdict changes.
+them on the way in. **Formulae are real LaTeX**, rendered server-side to a tight
+transparent SVG by matplotlib mathtext in [`texmath.py`](texmath.py) and
+embedded as a `data:` URI, baseline-aligned and sized in `em` so an equation
+scales with the text around it. That keeps typeset mathematics without MathJax,
+KaTeX or a web font, so the page stays one offline file. The LaTeX comes from a
+lookup table keyed on the formula strings the report emits rather than from a
+parser guessing at ASCII math, and `tests/analysis/test_sizing_texmath.py`
+asserts the table covers every formula the analysis produces.
+
+Everything else goes through [`mathfmt.py`](mathfmt.py): `N.m.s` becomes N·m·s,
+`wn` becomes ω<sub>n</sub>. It is conservative by construction, anything it does
+not recognise is passed through unchanged rather than guessed at, every string
+is HTML-escaped *before* substitution, and it is also the fallback whenever a
+formula has no LaTeX form or mathtext refuses one. Em dashes and `**emphasis**`
+are console conventions and are dropped at render time. **The report objects and
+the plain-text rendering keep their original strings**; nothing about the
+verdict changes.
 
 | Flag | Effect |
 |---|---|
@@ -130,7 +145,7 @@ ceiling is distinguishable from one whose wheels are genuinely too small.
 than a design.** `WheelMaxTorqueNm` is a flight parameter; `max_torque_nm` is a
 property of the unit bolted to the deck, and nothing links them — so swapping the
 wheel and leaving the parameter behind is silent. It happened here: the reference
-wheel went RW-X (0.025 N·m) → RW-S (0.002 N·m) and the parameter stayed, leaving
+wheel went RW-X (0.025 N·m) → RW-X (0.002 N·m) and the parameter stayed, leaving
 the FSW authorised to command 12.5× what the wheel can produce. Commanding past
 the catalog value is *not* conservative in the safe direction — the wheel simply
 does not deliver it, so the allocator's authority assumption is wrong and every

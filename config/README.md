@@ -16,7 +16,7 @@ analysis inputs — don't hand-edit derived params.
   ├── sun_sensor/       # GomSpace NanoSense FSS, coarse + fine templates
   ├── magnetometer/     # generic three-axis
   ├── gnss/             # NovAtel OEM7600, generic
-  ├── reaction_wheel/   # RW-0.4, RW-X generic (0.5 N·m·s), RW-S generic (30 mN·m·s)
+  ├── reaction_wheel/   # RW-0.4, RW-X generic (30 mN·m·s)
   ├── magnetorquer/     # NSS Taurus, MTQ800, generic
   └── payload_sensor/   # generic imager
   ```

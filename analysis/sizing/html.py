@@ -2,7 +2,7 @@
 
 The console report (:meth:`analysis.common.report.AnalysisReport.format_text`)
 remains the record the tests assert on and is unchanged; this module is a second
-*rendering* of the same structured objects, for the case the text serves badly —
+*rendering* of the same structured objects, for the case the text serves badly:
 a design review, where the headline is a three-dimensional achievable set a
 reader has to rotate to believe.
 
@@ -14,16 +14,27 @@ A document, not a dump
 ----------------------
 The page is laid out as an engineering document: a sticky header carrying the
 vehicle, the verdict and the provenance; a section nav; and the criteria grouped
-by the family they judge — wheel momentum, wheel torque, magnetorquer authority,
-control tuning — rather than one flat list. Margins are shown in absolute and
+by the family they judge (wheel momentum, wheel torque, magnetorquer authority,
+control tuning) rather than one flat list. Margins are shown in absolute and
 percentage terms **in the same cell**, because a pass with 2 % of margin and a
 pass with 150 % are different engineering situations.
 
+Scannable by default, complete on demand
+----------------------------------------
+A reviewer reads a criteria table to find the row that surprises them, not to
+read prose. So each row, card, caption and warning shows **one sentence** plus
+its numbers, and everything longer collapses into a ``<details>`` disclosure.
+Nothing is deleted: the justifications are the reason this report exists, they
+are simply one click away rather than in the way of the next row.
+
 The console strings are set for a fixed-width terminal, so they are typeset on
-the way in by :mod:`analysis.sizing.mathfmt`: ``Kp = J * wn^2`` becomes
-``K<sub>p</sub> = J · ω<sub>n</sub>²`` and ``N.m.s`` becomes ``N·m·s``. That
-conversion is presentation-only and lives entirely in this layer — the report
-objects and the plain-text rendering keep their original strings.
+the way in. Formulae go through :mod:`analysis.sizing.texmath`, which renders
+real LaTeX to an inline SVG with matplotlib mathtext (no MathJax, no KaTeX, no
+web font); everything else goes through :mod:`analysis.sizing.mathfmt`, which
+sets ``N.m.s`` as ``N·m·s`` and is also the fallback when a formula has no LaTeX
+form. Em dashes and ``**emphasis**`` are console conventions and are dropped
+here. All of it is presentation-only and lives entirely in this layer: the
+report objects and the plain-text rendering keep their original strings.
 
 Self-contained by construction
 ------------------------------
@@ -52,6 +63,7 @@ from __future__ import annotations
 import base64
 import html as _html
 import math
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -74,11 +86,80 @@ from analysis.sizing.mathfmt import (
     unit_html,
 )
 from analysis.sizing.report import SizingAnalysis
+from analysis.sizing.texmath import split_leading_formula, tex_html
 
 
 def _esc(value: object) -> str:
     """Escape any value for interpolation into the page."""
     return _html.escape(str(value), quote=True)
+
+
+#: Em dashes are set for prose read at length; this page is scanned. Each one
+#: becomes a comma at render time so the source strings, which the plain-text
+#: report shares, are left alone. ``**emphasis**`` is likewise console markup
+#: with no meaning here.
+_EM_DASH = re.compile(r"\s*—\s*")
+
+#: A sentence boundary: ``.`` followed by whitespace only, so ``0.5 N.m.s`` and
+#: ``REQ-ACTL-009`` survive.
+_SENTENCE = re.compile(r"(?<=\.)\s+")
+
+#: A clause boundary, used only on a note long enough that one sentence is
+#: already a paragraph. The report's notes use ``;`` where a full stop would do.
+_CLAUSE = re.compile(r"(?<=;)\s+")
+
+#: Below this, a string is short enough to read whole and is not split [chars].
+_LONG = 150
+
+#: Below this, a remainder is not worth a disclosure of its own [chars].
+_WORTH_HIDING = 60
+
+#: Clauses repeated on many rows, lifted out and said once in the family
+#: subhead instead. Stripped at render time; the console report keeps them,
+#: since a terminal has no subhead to carry them.
+_BOILERPLATE = ("; capability is min(zonotope r_in, MomentumEnvelopeNms)",)
+
+
+def _plain(text: object) -> str:
+    """A source string as the page sets prose: no em dashes, no ``**``."""
+    return _EM_DASH.sub(", ", str(text)).replace("**", "")
+
+
+def _prose(text: object) -> str:
+    """Prose, de-dashed, sentence-cased and set as mathematics."""
+    return math_html(sentence_case(_plain(text)))
+
+
+def _split(text: str) -> tuple[str, str]:
+    """What stays in the open, and what collapses beneath it.
+
+    The first sentence leads. A note with no full stop splits at a semicolon
+    instead, but only once it is long enough that leaving it whole would be a
+    paragraph in a table cell; and a remainder too short to be worth a click
+    stays where it is.
+    """
+    text = text.strip()
+    parts = _SENTENCE.split(text, maxsplit=1)
+    if len(parts) == 1 and len(text) > _LONG:
+        parts = _CLAUSE.split(text, maxsplit=1)
+    if len(parts) == 1 or len(parts[1]) < _WORTH_HIDING:
+        return text, ""
+    # The semicolon it was split at would otherwise dangle at the end of the
+    # visible line, pointing at a clause that is now behind a disclosure.
+    return parts[0].rstrip("; "), parts[1]
+
+
+def _why(body: str, label: str = "Why") -> str:
+    """The reasoning, one click away: what shows by default is the verdict."""
+    if not body.strip():
+        return ""
+    return f"<details><summary>{_esc(label)}</summary><div>{body}</div></details>"
+
+
+def _lead_and_why(text: object, label: str = "Why") -> str:
+    """One sentence in the open, the remainder collapsed beneath it."""
+    head, tail = _split(_plain(text))
+    return f'<div class="lead">{_prose(head)}</div>' + _why(_prose(tail), label)
 
 
 def _unit(units: object) -> str:
@@ -111,7 +192,8 @@ def _math(text: object) -> str:
 _FAMILIES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "Wheel momentum",
-        "Can the array hold what the sizing drivers accumulate?",
+        "Can the array hold what the sizing drivers accumulate? "
+        "Usable capability is min(zonotope r_in, MomentumEnvelopeNms).",
         ("D1", "D2", "D3", "oversizing", "handover"),
     ),
     (
@@ -154,7 +236,7 @@ _CSS = """
   --accent: #1f4e79; --accent-soft: #e8eef5;
   --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
 }
-/* Light unconditionally — there is deliberately no prefers-color-scheme
+/* Light unconditionally: there is deliberately no prefers-color-scheme
    override. This page is a design-review artifact: two reviewers reading the
    same file must see the same document, and an appearance that changes with the
    reader's OS setting is a liability, not a feature. The plotly figures are set
@@ -312,7 +394,27 @@ tfoot td { border-top: 1px solid var(--line); font-weight: 650; }
 .formula {
   display: block; background: var(--accent-soft); border-radius: 6px;
   padding: .4rem .65rem; margin: 0; font-size: 1.02rem; color: var(--ink);
-  overflow-x: auto;
+  overflow-x: auto; white-space: nowrap;
+}
+/* Typeset equations, rendered server-side to inline SVG. Height and baseline
+   offset are set per image in em, so an equation shrinks with the text it sits
+   in and its baseline lands on the line's. */
+img.tex { max-width: 100%; }
+
+/* ---- disclosures ---- */
+.lead { margin: 0; }
+details { margin: .3rem 0 0; }
+details > summary {
+  cursor: pointer; color: var(--accent); font-size: .8rem; font-weight: 600;
+  list-style: none; display: inline-flex; align-items: center; gap: .3rem;
+}
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before { content: "\\25B8"; font-size: .8em; }
+details[open] > summary::before { content: "\\25BE"; }
+details > summary:hover { text-decoration: underline; }
+details > div {
+  margin-top: .35rem; color: var(--ink-2); font-size: .84rem; max-width: 72ch;
+  border-left: 2px solid var(--line); padding-left: .7rem;
 }
 
 /* ---- figures ---- */
@@ -342,7 +444,7 @@ figcaption { color: var(--ink-2); font-size: .85rem; margin-top: .6rem;
 .card .k { color: var(--muted); font-size: .74rem; font-weight: 600;
   letter-spacing: .06em; text-transform: uppercase; display: block;
   margin-bottom: .15rem; }
-.card p.why { margin: .9rem 0 0; font-size: .88rem; color: var(--ink-2); }
+.card > details { margin-top: .9rem; }
 
 /* ---- prose blocks ---- */
 .panel { background: var(--panel); border: 1px solid var(--line);
@@ -364,6 +466,9 @@ ul.block li::marker { color: var(--muted); }
   }
   section > h2 { break-after: avoid; }
   tr.fail td { background: #fff; }
+  /* Paper cannot be clicked: the collapsed reasoning prints. */
+  details > summary { display: none; }
+  details > div { display: block; }
 }
 """
 
@@ -396,6 +501,23 @@ document.querySelectorAll('table.sortable').forEach(function (table) {
 """
 
 
+def _criterion_note(note: str) -> str:
+    """A criterion's note, scannable: the equation and its numbers, then a disclosure.
+
+    The measuring modules write a note as "<formula> = <value> (<inputs>)" and
+    then, often, a paragraph explaining the threshold. The first part is what a
+    reviewer needs in the row; the paragraph is what they need only when the row
+    surprises them, so it collapses.
+    """
+    text = _plain(note)
+    for clause in _BOILERPLATE:
+        text = text.replace(clause, "")
+    formula, remainder = split_leading_formula(text)
+    head, tail = _split(remainder)
+    lead = math_html(head) if formula else _prose(head)
+    return f'<div class="note">{formula} {lead}</div>' + _why(_prose(tail))
+
+
 def _criteria_table(report: AnalysisReport) -> str:
     """The criteria table: grouped by family, sortable within each group.
 
@@ -425,20 +547,16 @@ def _criteria_table(report: AnalysisReport) -> str:
         )
         blocks.append(
             f'<tbody class="group"><tr><th colspan="6">{_esc(title)}'
-            f'<span class="why">{_esc(why)} &middot; {_esc(tally)}</span>'
+            f'<span class="why">{math_html(why)} {_esc(tally)}.</span>'
             "</th></tr></tbody><tbody>"
         )
         for c in criteria:
             verdict = "PASS" if c.passes else "FAIL"
             sense = "≥" if c.sense == "min" else "≤"
-            note = (
-                f'<div class="note">{math_html(sentence_case(c.note))}</div>'
-                if c.note
-                else ""
-            )
+            note = _criterion_note(c.note) if c.note else ""
             blocks.append(
                 f'<tr class="{"fail" if not c.passes else ""}">'
-                f'<td class="req">{_esc(c.requirement) if c.requirement else "&mdash;"}</td>'
+                f'<td class="req">{_esc(c.requirement) if c.requirement else "n/a"}</td>'
                 f'<td><span class="crit">{math_html(sentence_case(c.name))}</span>{note}</td>'
                 f'<td class="n" data-sort="{c.threshold}">{sense} {_esc(_num(c.threshold))}'
                 f"{_unit(c.units)}</td>"
@@ -469,13 +587,13 @@ def _derived_cards(analysis: SizingAnalysis) -> str:
                 float("nan") if math.isnan(p.ratio) else 100.0 * (p.ratio - 1.0)
             )
             agreement = (
-                "identical to the derived value"
+                "identical"
                 if abs(difference) < 0.05
-                else f"{_esc(percent(difference))} against the derived value"
+                else f"{_esc(percent(difference))}"
             )
             delta = (
                 f'<div class="d">Committed is <b>{_esc(_num(p.ratio, 3))}×</b> '
-                f"derived &middot; {agreement}.</div>"
+                f"the derived value ({agreement}).</div>"
             )
         cards.append(
             f'<div class="card"><h3>{_esc(p.name)}</h3>'
@@ -485,9 +603,9 @@ def _derived_cards(analysis: SizingAnalysis) -> str:
             f"<div>{committed}{_unit(p.units) if not math.isnan(p.committed) else ''}</div>"
             f"{delta}</div>"
             f'<div class="row"><span class="k">Formula</span>'
-            f'<span class="m formula">{math_html(p.formula)}</span></div>'
+            f'<span class="formula">{tex_html(p.formula)}</span></div>'
             f'<div class="row"><span class="k">Evaluated at</span>{_math(p.inputs)}</div>'
-            f'<p class="why">{math_html(p.reasoning)}</p></div>'
+            f"{_lead_and_why(p.reasoning, 'Why this value')}</div>"
         )
     return '<div class="cards">' + "".join(cards) + "</div>"
 
@@ -504,8 +622,8 @@ def _budget_table(analysis: SizingAnalysis) -> str:
             f'<td class="n">{_esc(_num(t.torque_nm * 1e6))}{_unit("uN.m")}</td>'
             f'<td class="n">{_esc(_num(t.secular_nm * 1e6))}</td>'
             f'<td class="n">{_esc(_num(t.cyclic_nm * 1e6))}</td>'
-            f'<td><span class="m">{math_html(t.formula)}</span>'
-            f'<div class="note">{math_html(sentence_case(t.inputs))}</div></td></tr>'
+            f"<td>{tex_html(t.formula)}"
+            f'<div class="note">{_prose(t.inputs)}</div></td></tr>'
         )
     budget = analysis.budget
     rows.append(
@@ -525,15 +643,18 @@ def _embed_png(path: Path) -> str:
     return f"data:image/png;base64,{encoded}"
 
 
-def _figure_block(fig: go.Figure, caption: str, first: bool) -> str:
-    """One plotly figure with its caption; plotly.js is inlined into the first."""
+def _figure_block(fig: go.Figure, caption: str, detail: str, first: bool) -> str:
+    """One plotly figure, a one-line caption and its detail; plotly.js inlines once."""
     div = fig.to_html(
         include_plotlyjs="inline" if first else False,
         full_html=False,
         default_width="100%",
         config={"displaylogo": False, "responsive": True},
     )
-    return f"<figure>{div}<figcaption>{_esc(caption)}</figcaption></figure>"
+    return (
+        f"<figure>{div}<figcaption>{_prose(caption)}"
+        f"{_why(_prose(detail), 'How to read it')}</figcaption></figure>"
+    )
 
 
 #: The document's sections, in order: anchor and nav label.
@@ -589,30 +710,33 @@ def write_html(
     figures = [
         _figure_block(
             momentum_envelope_figure(analysis),
-            "Rotate and zoom. The orange sphere is what the certified analysis "
-            "covers (MomentumEnvelopeNms); the blue hull is what the wheels can "
-            "physically hold. A driver arrow reaching past the orange surface is "
-            "momentum this vehicle may not use, whatever the hardware can do. The "
-            "drivers on this class of vehicle are orders of magnitude smaller than "
-            "the envelope — zoom in, or read the margin chart below.",
+            "Orange is the certified ceiling (MomentumEnvelopeNms); blue is what "
+            "the wheels can physically hold.",
+            "Rotate and zoom. A driver arrow reaching past the orange surface is "
+            "momentum this vehicle may not use, whatever the hardware can do. On "
+            "this class of vehicle the drivers are orders of magnitude smaller "
+            "than the envelope, so zoom in or read the margin chart below.",
             True,
         ),
         _figure_block(
             torque_envelope_figure(analysis),
-            "The same construction for torque: the demand is PidMaxTorqueNm plus "
-            "the total disturbance, drawn along the array's weakest direction.",
+            "The same construction for torque, with demand along the array's "
+            "weakest direction.",
+            "Demand is PidMaxTorqueNm plus the total disturbance torque.",
             False,
         ),
         _figure_block(
             disturbance_figure(analysis),
-            "Closed-form worst case at a static attitude. The secular/cyclic split "
-            "is an assumption, stated below, not a measurement.",
+            "Closed-form worst case at a static attitude.",
+            "The secular/cyclic split is an assumption, stated under "
+            "Assumptions, not a measurement.",
             False,
         ),
         _figure_block(
             margin_figure(report),
-            "Every criterion in the table above, as margin against its own "
-            "threshold. Green and PASS, red and FAIL — the word is the verdict.",
+            "Every criterion above, as margin against its own threshold.",
+            "Green and PASS, red and FAIL: the word carries the verdict, never "
+            "the colour alone.",
             False,
         ),
     ]
@@ -620,19 +744,18 @@ def write_html(
         if Path(path).is_file():
             figures.append(
                 f'<figure><img src="{_embed_png(Path(path))}" alt="{_esc(Path(path).stem)}">'
-                f"<figcaption>{_esc(Path(path).stem)} — static figure, embedded "
-                "inline; a log axis is the only way the drivers and the envelope "
-                "share one plot.</figcaption></figure>"
+                f"<figcaption>{_esc(Path(path).stem)}: static figure, log axis."
+                "</figcaption></figure>"
             )
 
     provenance = "".join(
         f"<dt>{_esc(provenance_label(k))}</dt><dd>{math_html(v)}</dd>"
         for k, v in report.provenance.items()
     )
-    assumptions = "".join(
-        f"<li>{math_html(sentence_case(a))}</li>" for a in report.assumptions
+    assumptions = "".join(f"<li>{_lead_and_why(a)}</li>" for a in report.assumptions)
+    warnings = "".join(
+        f"<li>{_lead_and_why(w, 'Detail')}</li>" for w in report.warnings
     )
-    warnings = "".join(f"<li>{math_html(w)}</li>" for w in report.warnings)
     nav = "".join(
         f'<li><a href="#{anchor}">{_esc(label)}</a></li>' for anchor, label in _SECTIONS
     )
@@ -641,7 +764,7 @@ def write_html(
     page = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{_esc(report.title)} — {verdict}</title>
+<title>{_esc(_plain(report.title))} ({verdict})</title>
 <style>{_CSS}</style></head><body>
 <header class="topbar">
   <div class="row">
@@ -667,10 +790,9 @@ def write_html(
 </section>
 
 <section id="criteria"><h2>Criteria</h2>
-<p class="lede">Each criterion is judged against its own threshold with the
-margin convention stated below. Margins are signed: positive is how far the
-design sits past the threshold. Click a column to sort within a family. Failing
-rows are shaded <b>and</b> say FAIL — colour is never the only signal.</p>
+<p class="lede">Margins are signed: positive is how far past its threshold the
+design sits. Click a column heading to sort within a family; failing rows are
+shaded <b>and</b> say FAIL.</p>
 {_criteria_table(report)}
 </section>
 
@@ -684,9 +806,8 @@ rows are shaded <b>and</b> say FAIL — colour is never the only signal.</p>
 </section>
 
 <section id="derived"><h2>Derived flight parameters</h2>
-<p class="lede">What this design implies the flight tuning should be, what the
-config currently carries, and the argument for each. These are recommendations,
-not criteria — nothing here contributes to the verdict above.</p>
+<p class="lede">What this design implies the tuning should be, against what the
+config carries. Recommendations, not criteria: nothing here moves the verdict.</p>
 {_derived_cards(analysis)}
 </section>
 
@@ -696,7 +817,7 @@ not criteria — nothing here contributes to the verdict above.</p>
 </section>
 
 <section id="warnings"><h2>Warnings</h2>
-<p class="lede">These do not fail the analysis. They qualify it.</p>
+<p class="lede">These qualify the analysis; they do not fail it.</p>
 <div class="panel warn"><ul class="block">{warnings}</ul></div>
 </section>
 

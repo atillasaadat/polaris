@@ -15,7 +15,7 @@ hardware/
 ├── magnetometer/   MAG-GENERIC
 ├── gnss/           NOVATEL-OEM7600 · GNSS-GENERIC
 ├── payload_sensor/ PAYLOAD-IMAGER-GENERIC (any instrument with a boresight)
-├── reaction_wheel/ RW-0.4 (Rocket Lab) · RW-X (generic, 0.5 N·m·s) · RW-S (generic, 30 mN·m·s)
+├── reaction_wheel/ RW-0.4 (Rocket Lab) · RW-X (generic, 0.5 N·m·s) · RW-X (generic, 30 mN·m·s)
 └── magnetorquer/   NSS Taurus · MTQ800 (AAC Clyde) · MTQ-GENERIC
 ```
 

@@ -206,7 +206,7 @@ def _demand_vector(
         line={"color": PASS_COLOR if inside else FAIL_COLOR, "width": 8},
         marker={"size": [1, 6], "color": PASS_COLOR if inside else FAIL_COLOR},
         textfont_color=FONT_COLOR,
-        name=f"{label} — {_num(magnitude)} {units}, {verdict}",
+        name=f"{label}: {_num(magnitude)} {units}, {verdict}",
         hovertemplate=f"{label}<br>{_num(magnitude)} {units}<br>{verdict}<extra></extra>",
     )
 
@@ -312,7 +312,7 @@ def momentum_envelope_figure(analysis: SizingAnalysis) -> go.Figure:
     return go.Figure(
         data=traces,
         layout=_scene(
-            f"{analysis.vehicle.name} — wheel momentum envelope "
+            f"{analysis.vehicle.name}: wheel momentum envelope "
             f"(drivers shown at ×{margin:g} margin, along the weakest direction)",
             "h_{} [N.m.s]",
         ),
@@ -358,7 +358,7 @@ def torque_envelope_figure(analysis: SizingAnalysis) -> go.Figure:
     return go.Figure(
         data=traces,
         layout=_scene(
-            f"{analysis.vehicle.name} — wheel torque envelope "
+            f"{analysis.vehicle.name}: wheel torque envelope "
             f"(demand = PidMaxTorqueNm + disturbance, ×{margin:g} margin)",
             "tau_{} [N.m]",
         ),
@@ -411,13 +411,13 @@ def disturbance_figure(analysis: SizingAnalysis) -> go.Figure:
     fig.update_layout(
         barmode="group",
         title={
-            "text": f"Disturbance-torque budget — total {budget.total_nm * 1e6:.3g} "
+            "text": f"Disturbance-torque budget: total {budget.total_nm * 1e6:.3g} "
             f"uN.m = secular {budget.secular_nm * 1e6:.3g} + cyclic "
             f"{budget.cyclic_nm * 1e6:.3g}. The rods must beat the <b>secular "
             "total</b>, or the wheels saturate whatever their size.",
             "font": {"size": 13, "color": FONT_COLOR},
         },
-        yaxis_title="disturbance torque [uN.m] — log scale",
+        yaxis_title="disturbance torque [uN.m], log scale",
         height=460,
         margin={"l": 60, "r": 20, "t": 70, "b": 40},
         paper_bgcolor=PAPER_BG,
@@ -484,8 +484,8 @@ def margin_figure(report: AnalysisReport) -> go.Figure:
     fig.add_vline(x=0.0, line={"color": AXIS_COLOR, "width": 2})
     fig.update_layout(
         title={
-            "text": "Margin per criterion — bars clipped to ±400 % for legibility; "
-            "the label carries the true value",
+            "text": "Margin per criterion (bars clipped to ±400 % for legibility; "
+            "the label carries the true value)",
             "font": {"size": 13, "color": FONT_COLOR},
         },
         xaxis_title="margin [% of threshold]",

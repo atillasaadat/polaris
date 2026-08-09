@@ -124,7 +124,7 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
 
    **Push 60 removed the term rather than compensating it.** ``analysis/sizing``
    found the RW-X wheel to be 78× the largest momentum any sizing driver asks of
-   this 12 kg bus, and the vehicle took the 30 mN·m·s ``RW-S`` entry instead
+   this 12 kg bus, and the entry was re-sized in place to the 30 mN·m·s class instead
    (design doc §19.2). That wheel's friction and drive LSB are **8e-6 N·m**, an
    order of magnitude down from 1.0e-4, and the loop was retuned around it
    (:math:`\omega_n` 0.197 → 0.8 rad/s at :math:`\zeta` = 0.7). A loaded array now
@@ -277,7 +277,7 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    torque, integrator unfrozen — **shall** be stated with the result.
 
    *Measured on the reference vehicle* (the Push 60 tuning, :math:`\omega_n` =
-   0.8 rad/s at :math:`\zeta` = 0.7 on the ``RW-S`` wheels), sampled loop at
+   0.8 rad/s at :math:`\zeta` = 0.7 on the re-sized ``RW-X`` wheels), sampled loop at
    0.1 s: X and Y hold **60.1°** of phase margin at a 1.161 rad/s crossover and
    tolerate **25.5 dB** of loop-gain increase against 27.1 dB of decrease; Z
    holds **63.1°** at 1.361 rad/s and tolerates 23.9 dB up against 28.6 dB down.
@@ -427,7 +427,7 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    *Measured on the reference vehicle.* The per-axis analysis is valid to
    **1.16e-2 N·m·s** (the binding X/Y axes, at their 1.161 rad/s crossover); the
    committed ``MomentumEnvelopeNms`` is **7.2e-3 N·m·s**, i.e. 62 % of the bound
-   and inside the required margin. That is **24 %** of one ``RW-S`` wheel's
+   and inside the required margin. That is **24 %** of one wheel's
    0.030 N·m·s capacity and 15 % of the 0.049 N·m·s the four-wheel pyramid
    guarantees in every direction — a certified regime that is now a real
    fraction of the hardware rather than the 0.4 % of a wheel the pre-Push-60
@@ -497,7 +497,7 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    energised is no worse than the worst while none is (0.92° against 1.38°), an
    inequality that meant something while the wheels' own Coulomb friction
    dominated the budget and the rods were a small perturbation on a large
-   number. The ``RW-S`` wheel carries 8e-6 N·m of friction rather than 1e-4, and
+   number. The re-sized wheel carries 8e-6 N·m of friction rather than 1e-4, and
    with the Push 59 feedforward on top the quiet error collapses to **0.0203°**
    — at which point the rods are the *dominant* term inside their own windows
    and the ratio rises to ~2 while the absolute error stays 25× inside the
@@ -539,7 +539,7 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    1.0e-4 N·m Coulomb friction is what the feedforward was built against), worst
    pointing over the same orbit and seed: **2.77° uncompensated → 1.38°** at the
    flown trim (``WheelFrictionScale`` = 0.5). Those figures are the evidence for
-   the *law*, and they stand as taken; on the ``RW-S`` wheels the friction being
+   the *law*, and they stand as taken; on the re-sized wheels the friction being
    compensated is an order of magnitude smaller, so the same feedforward is worth
    correspondingly less and the loaded array measures 0.0396° with it flown. The
    trim is a genuine closed-loop parameter
@@ -564,7 +564,7 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    it.** The Push 59 ablation named a 1.0e-4 N·m drive LSB — a ±5e-5 N·m
    per-wheel dead zone — as ~1.2° of the remaining 1.38°, and recorded it as the
    term standing between a loaded array and REQ-ACTL-002's 1.0°. **It is no
-   longer that term.** The ``RW-S`` wheel the vehicle took in Push 60 quotes an
+   longer that term.** The wheel as re-sized in Push 60 quotes an
    8e-6 N·m LSB, an order of magnitude finer, and the loaded array now measures
    0.0396° — inside the requirement with 25× to spare, without any of the
    drive-level fixes (dither, a speed-mode inner loop, a finer drive) this item
@@ -581,7 +581,7 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    ten-rpm RW-X vehicle ran at. The flown band is therefore now ~0.02 % of the
    upper end rather than 1 % of it — further inside the "small against the
    operating range" rule the value was chosen under, not outside it. The *lower* bound is the flight tachometer's resolution and noise,
-   below which the sign of :math:`\omega` is not a measurement — and the ``RW-S``
+   below which the sign of :math:`\omega` is not a measurement — and the re-sized
    catalog entry, like the ``RW-X`` one before it, carries no tachometer
    specification, so that bound is unknown for this vehicle and must be
    re-derived against the flight unit before launch.

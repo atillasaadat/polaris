@@ -643,7 +643,7 @@ TEST(SitlAttitudeControl, DesaturationDumpsMomentumWhilePointingHolds) {
   // desaturation exists to keep: the loop's margins are only valid inside it.
   // Asserted with the requirement's own margin, not the measured peak. The
   // number is the committed `MomentumEnvelopeNms`, which moved 2.0e-3 -> 7.2e-3
-  // when the vehicle took the RW-S wheel and the faster loop (Push 60) — it is
+  // when the vehicle took the RW-X wheel and the faster loop (Push 60) — it is
   // a property of the certified SISO regime, so it is restated here rather than
   // derived, and `analysis/sizing` is what checks it against the design.
   EXPECT_LT(peak, 7.2e-3) << "stored momentum left the SISO-validity envelope";
@@ -724,7 +724,7 @@ TEST(SitlAttitudeControl, DesaturationDumpsMomentumWhilePointingHolds) {
   // point.** On the RW-X vehicle the wheels' own Coulomb friction dominated the
   // error budget (1.38 deg quiet), so the rods were a small perturbation on a
   // large number and "desaturating is no worse than quiet" was a meaningful
-  // inequality. RW-S carries 8e-6 N·m of friction instead of 1e-4, and with the
+  // inequality. RW-X carries 8e-6 N·m of friction instead of 1e-4, and with the
   // Push 59 feedforward on top the quiet error collapses to ~0.024 deg — at
   // which point the rods are the *dominant* term inside their own windows and
   // the ratio rises to ~1.6 while the absolute error stays 25x inside

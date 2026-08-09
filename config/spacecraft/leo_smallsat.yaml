@@ -191,16 +191,16 @@ spacecraft:
       mounting_quaternion_wxyz: [1.0, 0.0, 0.0, 0.0]
   actuators:                        # pyramidal 4-wheel set: spin axes = body
     - name: rw_1                    # diagonals [±1,±1,1]/√3, so any 3 wheels give
-      model_id: RW-S                # 3-axis control (§7 W-matrix assembly)
+      model_id: RW-X                # 3-axis control (§7 W-matrix assembly)
       spin_axis: [0.57735, 0.57735, 0.57735]
     - name: rw_2
-      model_id: RW-S
+      model_id: RW-X
       spin_axis: [-0.57735, 0.57735, 0.57735]
     - name: rw_3
-      model_id: RW-S
+      model_id: RW-X
       spin_axis: [-0.57735, -0.57735, 0.57735]
     - name: rw_4
-      model_id: RW-S
+      model_id: RW-X
       spin_axis: [0.57735, -0.57735, 0.57735]
     # Three torque rods, one per body axis (detumble + desaturation). `dipole_axis`
     # is the rod analogue of the wheels' spin_axis and is what
@@ -738,11 +738,11 @@ spacecraft:
     # ==================================================================
     #
     # Derived from *this* vehicle: J = diag(0.12, 0.12, 0.10) kg·m², a 500 km SSO
-    # (orbital rate 1.107e-3 rad/s), four RW-S wheels (0.002 N·m, 0.030 N·m·s
+    # (orbital rate 1.107e-3 rad/s), four RW-X wheels (0.002 N·m, 0.030 N·m·s
     # each) on the body diagonals, and three MTQ-GENERIC rods (15 A·m² each).
     # Re-derive whenever the inertia, the orbit or a model_id changes — Push 60
     # is what that instruction looks like when it is obeyed: the wheel moved from
-    # RW-X to RW-S (see config/hardware/reaction_wheel/rws.yaml for why) and
+    # 0.5 N·m·s to the 30 mN·m·s class (config/hardware/reaction_wheel/rwx.yaml) and
     # every gain, torque limit and momentum threshold below moved with it.
     # `python -m analysis.sizing config/spacecraft/leo_smallsat.yaml` recomputes
     # the derivations and reports PASS/FAIL on each; run it after any change here.
@@ -811,7 +811,7 @@ spacecraft:
     # WHY 0.8 AND NOT THE OLD 0.197 rad/s. Bandwidth is what buys the certified
     # momentum envelope: the SISO validity bound is J_min*w_c*0.1, linear in the
     # crossover, so the 4x faster loop is most of the 2.0e-3 -> 7.2e-3 N·m·s the
-    # envelope moved by (§8.5). It is affordable because the RW-S wheel's torque
+    # envelope moved by (§8.5). It is affordable because the RW-X wheel's torque
     # box is small and its drive quantization is fine — a stiffer loop on the
     # RW-X drive would have amplified a 1e-4 N·m dead zone rather than a 8e-6
     # one. Raising it further is bounded above by the sample rate, by the
@@ -853,7 +853,7 @@ spacecraft:
        0.0,      0.0,     0.0,       # 5: not installed
        0.0,      0.0,     0.0,       # 6: not installed
        0.0,      0.0,     0.0]       # 7: not installed
-    # RW-S peak output torque (config/hardware/reaction_wheel/rws.yaml).
+    # RW-X peak output torque (config/hardware/reaction_wheel/rwx.yaml).
     flight.attitudeController.WheelMaxTorqueNm: 0.002
     # Three-axis-span gate as lambda_min/lambda_max of A*A^T. The body-diagonal
     # pyramid is isotropic (ratio exactly 1.0), so 0.05 rejects a collapsed array
@@ -874,7 +874,7 @@ spacecraft:
     # steady-state error against REQ-ACTL-002's 1.0 deg, and Push 56 measured
     # 2.9 deg.
     #
-    # ON THE RW-S WHEELS IT IS A SMALL TERM, AND THE FEEDFORWARD STAYS ON. The
+    # ON THE RW-X WHEELS IT IS A SMALL TERM, AND THE FEEDFORWARD STAYS ON. The
     # four 8e-6 N·m reactions sum to 1.8e-5 N·m, which at Kp = 0.07253 is
     # 0.015 deg — the same physics two orders down, because the wheel changed and
     # the loop got 16x stiffer (Push 60). Keeping the compensation is still the
@@ -882,7 +882,7 @@ spacecraft:
     # costs nothing, and the vehicle's measured 0.0396 deg loaded-array error is
     # small enough that 0.015 deg of it is not a rounding error.
     flight.attitudeController.WheelFrictionEnable: 1
-    # The RW-S rundown coefficients, **checked against the catalog entry** by the
+    # The RW-X rundown coefficients, **checked against the catalog entry** by the
     # config compiler rather than trusted as a transcription: a value larger than
     # the hardware's real friction over-compensates, which is the one direction
     # that leaves the vehicle worse off than no feedforward at all.
@@ -897,7 +897,7 @@ spacecraft:
     # feedforward would be a new disturbance it did not have.
     #
     # THE NUMBER IS SET FROM THIS VEHICLE'S OWN WHEEL-SPEED RANGE, and Push 60
-    # moved that range by two orders. With the RW-S rotor's 4.7746e-5 kg·m² the
+    # moved that range by two orders. With the RW-X rotor's 4.7746e-5 kg·m² the
     # pyramid stores the 3.6e-3 N·m·s desaturation threshold at ~33 rad/s per
     # wheel and the 1.08e-3 N·m·s exit threshold at ~10 rad/s, so the wheels live
     # between roughly 10 and 33 rad/s (~90 to 310 rpm). (The RW-X vehicle ran at
@@ -912,7 +912,7 @@ spacecraft:
     # OWED: the *lower* bound on this band is the flight tachometer's resolution
     # and noise — below those the sign of omega is not a measurement, and a
     # full-magnitude compensation there is a coin flip applied at 8e-6 N·m. The
-    # RW-S catalog entry, like the RW-X one before it, carries no tachometer
+    # RW-X catalog entry, before and after the re-size, carries no tachometer
     # specification, so that bound is unknown for this vehicle; the value below is
     # derived from the operating range only and must be re-derived against the
     # flight unit's tachometer before launch.
@@ -926,7 +926,7 @@ spacecraft:
     # something the open-loop argument above does not. Flown on the two rows that
     # bracket the operating range (worst pointing, deg) **on the RW-X vehicle**,
     # whose friction was 1.0e-4 N·m — the trim sweep has not been re-flown on
-    # RW-S, where the whole term is an order of magnitude smaller, so 0.5 is
+    # RW-X, where the whole term is an order of magnitude smaller, so 0.5 is
     # carried forward on the argument rather than on a fresh measurement:
     #
     #                              k = 0    k = 0.5   k = 1.0
@@ -1025,7 +1025,7 @@ spacecraft:
     flight.attitudeController.MtqStuckConfirmCycles: 5
     flight.attitudeController.MtqStuckClearCycles: 20
     # --- Momentum management and desaturation (§8.5, Push 56) ----------------
-    # RW-S rotor inertia, derived from its catalog entry rather than restated:
+    # RW-X rotor inertia, derived from its catalog entry rather than restated:
     # I = max_momentum_nms / max_speed = 0.030 / (6000 rpm * 2*pi/60) = 4.7746e-5
     # kg·m². Re-derive if the wheel model_id changes (Push 60 did: the RW-X value
     # was 7.9577e-4).
@@ -1039,7 +1039,7 @@ spacecraft:
     # Zero-momentum vehicle: no bias to hold.
     flight.attitudeController.MomentumTargetBody: [0.0, 0.0, 0.0]
     # THE ENVELOPE IS NOT THE WHEELS' CAPACITY, and this is the line that says so.
-    # Four RW-S wheels store 0.030 N·m·s each — 0.049 N·m·s guaranteed in every
+    # Four RW-X wheels store 0.030 N·m·s each — 0.049 N·m·s guaranteed in every
     # direction with the pyramid and the L-infinity allocator — but the pointing
     # loop's certified margins (REQ-ACTL-006) are computed by a per-axis SISO
     # analysis whose own validity check fails above

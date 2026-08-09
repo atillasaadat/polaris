@@ -18,10 +18,22 @@ from pathlib import Path
 import pytest
 
 from analysis.control.vehicle import load_vehicle
-from analysis.sizing.html import write_html
+from analysis.sizing.html import _plain, _prose, _split, write_html
 from analysis.sizing.mathfmt import math_html, sentence_case
 from analysis.sizing.plots import driver_figure
 from analysis.sizing.report import sizing_analysis, sizing_report
+from analysis.sizing.texmath import tex_html
+
+
+def _both_halves(text: str) -> tuple[str, ...]:
+    """The lead sentence and the collapsed remainder, as the page sets them.
+
+    The page shows one sentence and folds the rest into a ``<details>``. Both
+    halves must still be *on* the page: collapsing the justification is a
+    layout decision, deleting it would be a content one.
+    """
+    head, tail = _split(_plain(text))
+    return tuple(_prose(part) for part in (head, tail) if part)
 
 
 @pytest.fixture(scope="module")
@@ -129,10 +141,9 @@ def test_a_config_name_with_html_metacharacters_is_escaped(vehicle, analysis, tm
 def test_the_assumptions_and_the_warnings_are_both_on_the_page(report, page):
     """A margin without its assumptions is not a result (``analysis/CLAUDE.md``)."""
     assert report.assumptions and report.warnings
-    for line in report.assumptions:
-        assert math_html(sentence_case(line)[:60]) in page
-    for warning in report.warnings:
-        assert math_html(sentence_case(warning)[:60]) in page
+    for line in list(report.assumptions) + list(report.warnings):
+        for half in _both_halves(line):
+            assert half in page
 
 
 def test_every_derived_parameter_carries_its_justification(analysis, page):
@@ -140,8 +151,36 @@ def test_every_derived_parameter_carries_its_justification(analysis, page):
     assert analysis.derived
     for parameter in analysis.derived:
         assert parameter.name in page
-        assert math_html(parameter.formula) in page
-        assert math_html(parameter.reasoning[:60]) in page
+        assert tex_html(parameter.formula) in page
+        for half in _both_halves(parameter.reasoning):
+            assert half in page
+
+
+def test_the_page_carries_no_em_dash(page):
+    """Em dashes are console prose; a page that is scanned reads without them.
+
+    The source strings keep theirs, because the plain-text report is a record
+    and rewriting it to suit a stylesheet would be the tail wagging the dog.
+    The substitution is a render-time one, so this is the assertion that it
+    actually reached every string on the page.
+    """
+    assert "—" not in page
+    assert "&mdash;" not in page
+
+
+def test_every_formula_is_typeset_rather_than_approximated(analysis, page):
+    """Formulae render as LaTeX, and the page still fetches nothing to do it.
+
+    ``tests/analysis/test_sizing_texmath.py`` owns the coverage of the LaTeX
+    table; what matters here is that the page uses it, and that using it did
+    not smuggle in a remote asset (the fetch test above would catch a CDN, this
+    catches an SVG that was never rendered at all).
+    """
+    for parameter in analysis.derived:
+        assert tex_html(parameter.formula).startswith('<img class="tex"')
+    for term in analysis.budget.terms:
+        assert tex_html(term.formula) in page
+    assert page.count('<img class="tex"') >= len(analysis.derived)
 
 
 def test_no_browser_writes_the_page_without_opening_one(

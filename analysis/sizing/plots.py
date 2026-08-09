@@ -178,7 +178,7 @@ def envelope_figure(
     ax.set_zlabel("h_z [N.m.s]")
     ax.set_box_aspect((1.0, 1.0, 1.0))
     ax.set_title(
-        f"{analysis.vehicle.name} — wheel momentum envelope\n"
+        f"{analysis.vehicle.name}: wheel momentum envelope\n"
         f"zonotope (blue) reaches {momentum.circumscribed:.3g} at best, "
         f"guarantees {momentum.inscribed:.3g} (green sphere);\n"
         f"L2 ellipsoid (purple wireframe) guarantees "
@@ -252,7 +252,7 @@ def driver_figure(analysis: SizingAnalysis, out_dir: str | Path | None = None) -
     ax2.legend(fontsize=8, loc="lower left")
     verdict_title(
         ax2,
-        f"{analysis.vehicle.name} — required momentum vs what the vehicle may use",
+        f"{analysis.vehicle.name}: required momentum vs what the vehicle may use",
         passed,
         "a bar above the green line is a driver the certified envelope cannot hold",
     )
