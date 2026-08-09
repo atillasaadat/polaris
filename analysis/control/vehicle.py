@@ -42,6 +42,10 @@ from pathlib import Path
 import numpy as np
 from configc.compiler import load_config, load_hardware_library
 
+#: The repository's own hardware catalog, located relative to this module rather
+#: than to the working directory, so it is found however the tool is invoked.
+REPO_HARDWARE_DIR = Path(__file__).resolve().parents[2] / "config" / "hardware"
+
 #: Largest per-unit array the FSW parameter set carries (``flight.GncMaxUnits``);
 #: the flat ``*AxesBody`` parameters are always this many 3-vectors, with the
 #: uninstalled slots written as the zero vector.
@@ -394,6 +398,51 @@ def _magnetometer_noise_t(spacecraft, hardware_dir: Path) -> float:
     return max(noises)
 
 
+def resolve_hardware_dir(
+    config_path: Path, hardware_dir: str | Path | None = None
+) -> Path:
+    """Locate the hardware catalog a config's ``model_id`` references resolve in.
+
+    An explicit directory wins. Otherwise the ``config/spacecraft`` /
+    ``config/hardware`` sibling layout is tried first, so a checkout with its own
+    catalog is used in preference to this repository's; then
+    :data:`REPO_HARDWARE_DIR`, which makes a config living **anywhere** analysable
+    without a flag. Resolving the fallback against this module rather than the
+    working directory is the point: a config at ``/tmp/alt.yaml`` used to resolve
+    to ``/hardware`` and fail.
+
+    Parameters
+    ----------
+    config_path : pathlib.Path
+        The spacecraft config being loaded.
+    hardware_dir : str or pathlib.Path, optional
+        An explicit catalog directory; returned unchanged when given.
+
+    Returns
+    -------
+    pathlib.Path
+
+    Raises
+    ------
+    FileNotFoundError
+        If neither candidate exists. The message names both paths tried, since
+        "not found" without them leaves the caller guessing which one to create.
+    """
+    if hardware_dir is not None:
+        return Path(hardware_dir)
+    sibling = config_path.resolve().parent.parent / "hardware"
+    if sibling.is_dir():
+        return sibling
+    if REPO_HARDWARE_DIR.is_dir():
+        return REPO_HARDWARE_DIR
+    raise FileNotFoundError(
+        f"no hardware catalog for {config_path}: tried {sibling} (the "
+        f"config/spacecraft, config/hardware sibling layout) and "
+        f"{REPO_HARDWARE_DIR} (this repository's catalog). Pass --hardware, or "
+        "hardware_dir=, with the directory the model_id references resolve in."
+    )
+
+
 def load_vehicle(
     config_path: str | Path, hardware_dir: str | Path | None = None
 ) -> Vehicle:
@@ -405,7 +454,8 @@ def load_vehicle(
         Path to a ``config/spacecraft/*.yaml`` file.
     hardware_dir : str or pathlib.Path, optional
         The hardware model library the ``model_id`` references resolve against.
-        Defaults to ``config/hardware`` beside the given config.
+        Defaults to whatever :func:`resolve_hardware_dir` finds: the catalog
+        beside the config, else this repository's.
 
     Returns
     -------
@@ -414,6 +464,8 @@ def load_vehicle(
 
     Raises
     ------
+    FileNotFoundError
+        If no hardware catalog can be located; see :func:`resolve_hardware_dir`.
     ValueError
         If the config carries products of inertia (the per-axis models in
         :mod:`analysis.control.plant` assume a diagonal tensor and say so), or
@@ -423,11 +475,7 @@ def load_vehicle(
         defaults (§19.3) and there are none here either.
     """
     config_path = Path(config_path)
-    hardware = (
-        Path(hardware_dir)
-        if hardware_dir is not None
-        else config_path.parent.parent / "hardware"
-    )
+    hardware = resolve_hardware_dir(config_path, hardware_dir)
     cfg = load_config(config_path)
     sc = cfg.spacecraft
     fsw = sc.fsw_parameters

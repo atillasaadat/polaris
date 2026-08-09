@@ -58,7 +58,7 @@ import numpy as np
 from analysis.control.vehicle import load_vehicle
 from analysis.sizing.assumptions import SizingAssumptions
 from analysis.sizing.html import write_html
-from analysis.sizing.plots import DEFAULT_OUTPUT_DIR, write_all
+from analysis.sizing.plots import DEFAULT_OUTPUT_DIR, write_all, write_text_report
 from analysis.sizing.report import (
     format_budget,
     format_derived,
@@ -160,7 +160,8 @@ def main(argv: list[str] | None = None) -> int:
         "--hardware",
         type=Path,
         default=None,
-        help="hardware catalog directory (default: config/hardware beside the config)",
+        help="hardware catalog directory (default: config/hardware beside the "
+        "config, else this repository's config/hardware)",
     )
     parser.add_argument(
         "--out",
@@ -172,8 +173,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--no-plots",
         action="store_true",
-        help="skip the matplotlib figures; the HTML report is still written, "
-        "without the static figures it would otherwise embed",
+        help="skip the matplotlib figures; the HTML page and the text report "
+        "are still written, the page without the static figures it would "
+        "otherwise embed",
     )
     parser.add_argument(
         "--no-browser",
@@ -223,6 +225,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     analysis = sizing_analysis(vehicle, assumptions)
     report = sizing_report(vehicle, args.config, assumptions, analysis)
+    if args.no_plots:
+        # The text rendering is the record, not a figure: skipping the plots
+        # must not skip it. write_all() already wrote it on the other branch.
+        write_text_report(analysis, args.out, args.config)
 
     # Only the two matplotlib figures with no interactive counterpart are
     # embedded: the log-axis driver comparison (a log scale is the only way the

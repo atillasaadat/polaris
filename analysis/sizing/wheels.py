@@ -89,8 +89,15 @@ class MomentumDriver:
         Momentum the design must be able to hold [N·m·s].
     formula : str
         The closed form, for the report.
+    formula_tex : str
+        The same closed form as LaTeX, written here beside the ASCII rather than
+        recovered from it downstream. Empty means the page sets the ASCII as
+        plain text, deliberately and visibly.
     inputs : str
         The values it was evaluated at.
+    inputs_tex : str
+        The evaluated inputs as LaTeX, where setting them as mathematics adds
+        something. Empty is the ordinary case: a list of numbers reads fine.
     judged : bool
         Whether a criterion is written on it. ``False`` for a driver the config
         does not declare an input for — it is reported, not judged.
@@ -100,6 +107,8 @@ class MomentumDriver:
     required_nms: float
     formula: str
     inputs: str
+    formula_tex: str = ""
+    inputs_tex: str = ""
     judged: bool = True
 
 
@@ -210,6 +219,7 @@ def wheel_sizing(
             name="D1 tip-off absorption",
             required_nms=worst_inertia * assumptions.tipoff_rate_radps,
             formula="|J * omega_tipoff|",
+            formula_tex=r"h_{D1} = \left|J\,\omega_{\mathrm{tipoff}}\right|",
             inputs=(
                 f"J_max = {worst_inertia:g} kg.m^2, "
                 f"omega = {np.degrees(assumptions.tipoff_rate_radps):.3g} deg/s"
@@ -232,6 +242,7 @@ def wheel_sizing(
             name="D1b post-B-dot handover",
             required_nms=worst_inertia * vehicle.detumble_exit_radps,
             formula="|J * DetumbleExitRadps|",
+            formula_tex=r"h_{D1b} = \left|J\,\omega_{\mathrm{exit}}\right|",
             inputs=(
                 f"J_max = {worst_inertia:g} kg.m^2, "
                 f"omega = {np.degrees(vehicle.detumble_exit_radps):.3g} deg/s"
@@ -241,12 +252,14 @@ def wheel_sizing(
             name="D2 cyclic storage",
             required_nms=CYCLIC_RMS_FACTOR * budget.cyclic_nm * period / 4.0,
             formula="0.707 * tau_cyclic * T_orbit / 4",
+            formula_tex=r"h_{D2} = 0.707\,\tau_{\mathrm{cyc}}\,\frac{T_{\mathrm{orbit}}}{4}",
             inputs=(f"tau_cyclic = {budget.cyclic_nm:.3g} N.m, T = {period:.0f} s"),
         ),
         MomentumDriver(
             name="D3 secular accumulation",
             required_nms=budget.secular_nm * desat_interval,
             formula="tau_secular * T_desat",
+            formula_tex=r"h_{D3} = \tau_{\mathrm{sec}}\,T_{\mathrm{desat}}",
             inputs=(
                 f"tau_secular = {budget.secular_nm:.3g} N.m, "
                 f"T_desat = {desat_interval:.0f} s"
@@ -256,6 +269,7 @@ def wheel_sizing(
             name="D4 slew agility",
             required_nms=worst_inertia * (assumptions.slew_rate_radps or 0.0),
             formula="|J * omega_slew|",
+            formula_tex=r"h_{D4} = \left|J\,\omega_{\mathrm{slew}}\right|",
             inputs=(
                 "no commanded slew rate in the config"
                 if assumptions.slew_rate_radps is None
@@ -344,6 +358,10 @@ def criteria(
                     f"({driver.inputs}); capability is min(zonotope r_in, "
                     "MomentumEnvelopeNms)"
                 ),
+                # The note opens with the driver's own formula, so it carries the
+                # driver's own LaTeX with it. Nothing downstream re-derives it.
+                formula=driver.formula,
+                formula_tex=driver.formula_tex,
             )
         )
 
@@ -381,13 +399,16 @@ def criteria(
     )
     out.append(
         Criterion(
-            name="commanded torque limit vs the installed wheel",
+            name="commanded wheel torque within hardware capability",
             requirement="",
             threshold=sizing.catalog_torque_nm,
             measured=sizing.commanded_torque_nm,
             units="N.m",
             sense="max",
             note=(
+                "A margin of 0% is the intended state for this row: equality "
+                "means the flight parameter commands exactly the wheel that is "
+                "installed, so the 30% sizing convention does not apply here. "
                 f"WheelMaxTorqueNm = {sizing.commanded_torque_nm:.3g} N.m against "
                 f"the catalog max_torque_nm = {sizing.catalog_torque_nm:.3g} N.m of "
                 "the installed unit. Commanding past the catalog value is not "
@@ -395,7 +416,10 @@ def criteria(
                 "deliver it, so the allocator's authority assumption is wrong and "
                 "every torque margin computed on it — including the guaranteed-"
                 "radius criterion above, which is built from this same parameter "
-                "— is optimistic by the same factor"
+                "— is optimistic by the same factor. Commanding below it is a "
+                "derate: legitimate, and not a failure, but the vehicle then "
+                "carries the mass and power of authority it never uses, which is "
+                "raised as a warning past 2x"
             ),
         )
     )

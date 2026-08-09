@@ -244,6 +244,10 @@ class DisturbanceTerm:
         Fraction treated as secular [-]; the rest is cyclic.
     formula : str
         The closed form evaluated, for the report.
+    formula_tex : str
+        The same closed form as LaTeX, written here beside the ASCII rather than
+        recovered from it downstream. Empty means the page sets the ASCII as
+        plain text, deliberately and visibly.
     inputs : str
         The values it was evaluated at, for the report.
     """
@@ -253,6 +257,7 @@ class DisturbanceTerm:
     secular_fraction: float
     formula: str
     inputs: str
+    formula_tex: str = ""
 
     @property
     def secular_nm(self) -> float:
@@ -415,6 +420,9 @@ def disturbance_budget(
             torque_nm=gravity_gradient_torque(vehicle),
             secular_fraction=assumptions.secular_fraction_gg,
             formula="3*mu/(2*R^3) * |I_max - I_min|",
+            formula_tex=(
+                r"\tau_{gg} = \frac{3\mu}{2R^{3}}" r"\left|I_{\max}-I_{\min}\right|"
+            ),
             inputs=(
                 f"R = {vehicle.orbit.sma_m / 1000.0:.1f} km, "
                 f"dI = {np.max(moments) - np.min(moments):.4g} kg.m^2"
@@ -425,6 +433,9 @@ def disturbance_budget(
             torque_nm=aerodynamic_torque(vehicle, density),
             secular_fraction=assumptions.secular_fraction_aero,
             formula="0.5 * rho * V^2 * Cd * A * |d_cp|",
+            formula_tex=(
+                r"\tau_{a} = \tfrac{1}{2}\,\rho\,V^{2}\,C_d\,A\," r"\left|d_{cp}\right|"
+            ),
             inputs=(
                 f"rho = {density:.3g} kg/m^3 at {altitude / 1000.0:.0f} km, "
                 f"Cd = {vehicle.drag_cd:g}, A = {vehicle.drag_area_m2:g} m^2, "
@@ -436,6 +447,9 @@ def disturbance_budget(
             torque_nm=srp_torque(vehicle),
             secular_fraction=assumptions.secular_fraction_srp,
             formula="(Phi/c) * A * Cr * |d_cp|",
+            formula_tex=(
+                r"\tau_{srp} = \frac{\Phi}{c}\,A\,C_r\," r"\left|d_{cp}\right|"
+            ),
             inputs=(
                 f"Phi/c = {SOLAR_CONSTANT_W_M2 / SPEED_OF_LIGHT_M_S:.3g} Pa, "
                 f"Cr = {vehicle.srp_cr:g}, A = {vehicle.srp_area_m2:g} m^2, "
@@ -447,6 +461,7 @@ def disturbance_budget(
             torque_nm=residual_dipole_torque(vehicle, field.max_t),
             secular_fraction=assumptions.secular_fraction_mag,
             formula="|m_res| * |B|_max",
+            formula_tex=(r"\tau_{m} = \left|m_{\mathrm{res}}\right|\,|B|_{\max}"),
             inputs=(
                 f"|m_res| = {np.linalg.norm(vehicle.residual_dipole_am2):.4g} A.m^2, "
                 f"|B|_max = {field.max_t * 1e6:.1f} uT"

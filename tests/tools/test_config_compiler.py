@@ -939,3 +939,200 @@ def test_friction_check_is_silent_without_the_parameter(tmp_path):
     path.write_text(yaml.safe_dump(config), encoding="utf-8")
 
     resolve(load_config(path), load_hardware_library(_HARDWARE))  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Flight parameters that restate sim-side truth (§19.3)
+# ---------------------------------------------------------------------------
+#
+# The defect class these guard is the most invisible one in the repo: a quantity
+# that exists twice by design — once as the hardware/sim truth, once as the FSW
+# parameter — edited on one side only. Nothing crashes, no test fails, and the
+# flight software believes something the vehicle is not. Push 60 shipped the
+# instance: a wheel re-sized to 0.002 N·m peak against a flight limit still
+# reading 0.025, i.e. 12.5x more commanded torque than the wheel could deliver.
+#
+# Every perturbation below is derived from the config's own value rather than
+# written as a literal, so these survive the next retune.
+
+
+def _template() -> dict:
+    return yaml.safe_load(_TEMPLATE.read_text(encoding="utf-8"))
+
+
+def _written(config: dict, path: Path, name: str) -> Path:
+    out = path / name
+    out.write_text(yaml.safe_dump(config), encoding="utf-8")
+    return out
+
+
+def _wheel_catalog(key: str) -> float:
+    """The installed reaction wheel's catalog value, read not restated."""
+    library = load_hardware_library(_HARDWARE)
+    return float(library["RW-X"].params[key])
+
+
+#: (parameter, the truth-side token the message must name, the unit it must name).
+_TRUTH_PAIRS = [
+    ("flight.attitudeController.WheelMaxTorqueNm", "max_torque_nm", "rw_1"),
+    ("flight.attitudeController.WheelInertiaKgm2", "max_momentum_nms", "rw_1"),
+    ("flight.attitudeController.WheelDryFrictionNm", "dry_friction_nm", "rw_1"),
+    (
+        "flight.attitudeController.WheelViscousFrictionNmS",
+        "viscous_friction_nm_s",
+        "rw_1",
+    ),
+    ("flight.attitudeController.BdotMaxDipoleAm2", "max_dipole_am2", "mtq_x"),
+    ("flight.attitudeController.InertiaBodyKgm2", "inertia_kgm2", "0.1"),
+    (
+        "flight.attitudeController.ResidualDipoleAm2",
+        "residual_dipole_am2",
+        "0.002",
+    ),
+]
+
+
+def test_shipped_vehicle_agrees_with_its_own_hardware():
+    # Every pair below agrees on the committed vehicle today; this is the test
+    # that fails first when one side is edited alone.
+    resolve(load_config(_TEMPLATE), load_hardware_library(_HARDWARE))  # must not raise
+
+
+@pytest.mark.parametrize(("param", "truth_token", "unit_token"), _TRUTH_PAIRS)
+def test_flight_parameter_contradicting_truth_is_refused(
+    tmp_path, param, truth_token, unit_token
+):
+    config = _template()
+    fsw = config["spacecraft"]["fsw_parameters"]
+    shipped = fsw[param]
+    # Perturbed from the shipped value, not replaced by a literal: a factor of two
+    # is far outside every pair's tolerance and stays wrong after a retune.
+    fsw[param] = (
+        [2.0 * v for v in shipped] if isinstance(shipped, list) else 2.0 * shipped
+    )
+    path = _written(config, tmp_path, "drifted.yaml")
+
+    with pytest.raises(ConfigError) as exc:
+        resolve(load_config(path), load_hardware_library(_HARDWARE))
+    message = str(exc.value)
+    # Actionable means both values and both source locations, or the reader goes
+    # hunting for what a bare "mismatch" would not tell them.
+    assert param in message
+    assert truth_token in message
+    assert unit_token in message
+    assert "fsw_parameter_divergence" in message  # names the way out
+
+
+def test_wheel_torque_limit_is_the_catalog_peak():
+    # The Push 60 instance, pinned as a value rather than only as a mechanism:
+    # the flight limit IS the installed wheel's rating.
+    resolved = resolve(load_config(_TEMPLATE), load_hardware_library(_HARDWARE))
+    fsw = resolved["spacecraft"]["fsw_parameters"]
+    assert fsw["flight.attitudeController.WheelMaxTorqueNm"] == pytest.approx(
+        _wheel_catalog("max_torque_nm")
+    )
+    # And the rotor inertia is the derivation of two catalog values, not a third.
+    expected = _wheel_catalog("max_momentum_nms") / (
+        _wheel_catalog("max_speed_rpm") * math.pi / 30.0
+    )
+    assert fsw["flight.attitudeController.WheelInertiaKgm2"] == pytest.approx(
+        expected, rel=1.0e-4
+    )
+
+
+def test_a_mixed_wheel_array_refuses_the_scalar_friction_model(tmp_path):
+    # A single flight scalar cannot describe a suite that does not share one
+    # value, so the compiler says that rather than picking a representative.
+    config = _template()
+    config["spacecraft"]["actuators"][0]["model_id"] = "RW-0.4"
+    path = _written(config, tmp_path, "mixed_array.yaml")
+
+    with pytest.raises(ConfigError) as exc:
+        resolve(load_config(path), load_hardware_library(_HARDWARE))
+    assert "do not share one" in str(exc.value)
+
+
+def test_declared_divergence_is_accepted(tmp_path):
+    # Derating a wheel is a real design decision, and sim/CLAUDE.md makes the
+    # onboard model deliberately lower fidelity than truth. So divergence is
+    # declarable — in the config, against the truth value, with a reason.
+    config = _template()
+    catalog = _wheel_catalog("max_torque_nm")
+    config["spacecraft"]["fsw_parameters"][
+        "flight.attitudeController.WheelMaxTorqueNm"
+    ] = 0.6 * catalog
+    config["spacecraft"]["fsw_parameter_divergence"] = {
+        "flight.attitudeController.WheelMaxTorqueNm": {
+            "catalog_value": catalog,
+            "reason": "Derated to 60% of catalog peak pending thermal qualification.",
+        }
+    }
+    path = _written(config, tmp_path, "derated.yaml")
+
+    resolve(load_config(path), load_hardware_library(_HARDWARE))  # must not raise
+
+
+def test_declared_divergence_lapses_when_the_hardware_changes(tmp_path):
+    # The reason an exemption names the truth value: a waiver that outlives its
+    # subject is worse than no check, because it reads as a decision somebody
+    # made about the part now installed.
+    config = _template()
+    catalog = _wheel_catalog("max_torque_nm")
+    config["spacecraft"]["fsw_parameter_divergence"] = {
+        "flight.attitudeController.WheelMaxTorqueNm": {
+            "catalog_value": 10.0 * catalog,  # the wheel this waiver was written for
+            "reason": "Derated to 60% of catalog peak pending thermal qualification.",
+        }
+    }
+    path = _written(config, tmp_path, "lapsed_waiver.yaml")
+
+    with pytest.raises(ConfigError) as exc:
+        resolve(load_config(path), load_hardware_library(_HARDWARE))
+    message = str(exc.value)
+    assert "no longer" in message
+    assert repr(catalog) in message  # names what the config says now
+
+
+def test_divergence_for_an_unchecked_parameter_is_refused(tmp_path):
+    # A typo'd or orphaned exemption reads as protection that is not there.
+    config = _template()
+    config["spacecraft"]["fsw_parameter_divergence"] = {
+        "flight.attitudeController.PidKpNmPerRad": {
+            "catalog_value": 1.0,
+            "reason": "No cross-check covers this parameter, so this is nonsense.",
+        }
+    }
+    path = _written(config, tmp_path, "orphan_waiver.yaml")
+
+    with pytest.raises(ConfigError) as exc:
+        resolve(load_config(path), load_hardware_library(_HARDWARE))
+    assert "no flight/sim cross-check covers" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"reason": "Missing the truth value this divergence was written against."},
+        {"catalog_value": 0.002},  # no reason at all
+        {"catalog_value": 0.002, "reason": "stale"},  # a label, not a reason
+        {"catalog_value": 0.002, "reason": "ok", "note": "unknown key"},
+    ],
+)
+def test_malformed_divergence_is_refused(tmp_path, entry):
+    # The escape hatch is itself validated: an exemption nobody can act on is an
+    # exemption nobody will revisit.
+    config = _template()
+    config["spacecraft"]["fsw_parameter_divergence"] = {
+        "flight.attitudeController.WheelMaxTorqueNm": entry
+    }
+    path = _written(config, tmp_path, "malformed_waiver.yaml")
+
+    with pytest.raises(ConfigError):
+        load_config(path)
+
+
+def test_truth_cross_checks_are_silent_on_a_vehicle_without_the_hardware():
+    # No actuators, no parameters: a cross-check between two things the config
+    # already says never becomes a requirement on what it must say.
+    config = Config.model_validate(_minimal_config_dict())
+    resolve(config, load_hardware_library(_HARDWARE))  # must not raise

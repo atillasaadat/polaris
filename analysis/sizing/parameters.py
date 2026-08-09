@@ -95,8 +95,15 @@ class DerivedParameter:
         Display units.
     formula : str
         The closed form used.
+    formula_tex : str
+        The same closed form as LaTeX, written here beside the ASCII rather than
+        recovered from it downstream. Empty means the page sets the ASCII as
+        plain text, deliberately and visibly.
     inputs : str
         The values it was evaluated at.
+    inputs_tex : str
+        The evaluated inputs as LaTeX, for the rows where the substitution is
+        itself the argument. Empty is the ordinary case.
     reasoning : str
         Why this is the right form and what it trades — the part that makes the
         number an argument rather than an assertion.
@@ -109,6 +116,8 @@ class DerivedParameter:
     formula: str
     inputs: str
     reasoning: str
+    formula_tex: str = ""
+    inputs_tex: str = ""
 
     @property
     def ratio(self) -> float:
@@ -224,6 +233,7 @@ def derived_parameters(
             committed=vehicle.pid.kp_nm_per_rad,
             units="N.m/rad",
             formula="Kp = J * wn^2",
+            formula_tex=r"K_p = J\,\omega_n^{2}",
             inputs=f"J = {inertia_mean:g} kg.m^2, wn = {wn:.4g} rad/s",
             reasoning=(
                 f"wn = {wn:.4g} rad/s is {sample_rate / wn:.0f}x below the "
@@ -244,6 +254,7 @@ def derived_parameters(
             committed=vehicle.pid.kd_nm_per_radps,
             units="N.m/(rad/s)",
             formula="Kd = 2 * zeta * wn * J",
+            formula_tex=r"K_d = 2\,\zeta\,\omega_n\,J",
             inputs=f"J = {inertia_mean:g} kg.m^2, wn = {wn:.4g} rad/s, zeta = {zeta:.4g}",
             reasoning=(
                 f"zeta = {zeta:.4g} is what the committed Kp and Kd jointly imply; "
@@ -261,6 +272,7 @@ def derived_parameters(
             committed=vehicle.momentum_envelope_nms,
             units="N.m.s",
             formula="h_limit = MAX_SISO_COUPLING_RATIO * J_min * w_crossover",
+            formula_tex=(r"h_{\mathrm{limit}} = \rho_{\max}\,J_{\min}\,\omega_{c}"),
             inputs=(
                 f"J_min = {inertia_min:g} kg.m^2, "
                 f"w_c = {crossover:.4g} rad/s (axis x)"
@@ -287,7 +299,12 @@ def derived_parameters(
             committed=vehicle.momentum_desat_enter_nms,
             units="N.m.s",
             formula="enter = 0.5 * MomentumEnvelopeNms",
+            formula_tex=r"h_{\mathrm{enter}} = 0.5\,h_{\mathrm{envelope}}",
             inputs=f"envelope = {vehicle.momentum_envelope_nms:g} N.m.s",
+            inputs_tex=(
+                r"h_{\mathrm{envelope}} = "
+                rf"{vehicle.momentum_envelope_nms:g}\ \mathrm{{N{{\cdot}}m{{\cdot}}s}}"
+            ),
             reasoning=(
                 "The vehicle must act before it alarms, so the entry threshold "
                 "sits inside the envelope; half of it leaves room for the "
@@ -303,7 +320,12 @@ def derived_parameters(
             committed=vehicle.momentum_desat_exit_nms,
             units="N.m.s",
             formula="exit = 0.3 * enter",
+            formula_tex=r"h_{\mathrm{exit}} = 0.3\,h_{\mathrm{enter}}",
             inputs=f"enter = {vehicle.momentum_desat_enter_nms:g} N.m.s",
+            inputs_tex=(
+                r"h_{\mathrm{enter}} = "
+                rf"{vehicle.momentum_desat_enter_nms:g}\ \mathrm{{N{{\cdot}}m{{\cdot}}s}}"
+            ),
             reasoning=(
                 "Hysteresis: unloading must stop well below where it started or "
                 "the vehicle re-engages on the next disturbance cycle and the rods "
@@ -317,6 +339,11 @@ def derived_parameters(
             committed=vehicle.detumble_exit_radps,
             units="rad/s",
             formula="max(f * h_usable / J_max, sigma*sqrt(2)/(dt*|B|_min))",
+            formula_tex=(
+                r"\omega_{\mathrm{exit}} = \max\!\left("
+                r"\frac{f\,h_{\mathrm{usable}}}{J_{\max}},\;"
+                r"\frac{\sigma\sqrt{2}}{\Delta t\,|B|_{\min}}\right)"
+            ),
             inputs=(
                 f"f = {assumptions.detumble_exit_fraction:g}, "
                 f"h_usable = {wheels.usable_momentum_nms:.3g} N.m.s, "
@@ -349,6 +376,7 @@ def derived_parameters(
             committed=vehicle.bdot_gain_nms,
             units="N.m.s",
             formula="k >= 2 * omega_o * (1 + sin xi) * J_min",
+            formula_tex=r"k \geq 2\,\omega_o\,(1+\sin\xi)\,J_{\min}",
             inputs=(
                 f"omega_o = {vehicle.orbit.mean_motion_rad_s:.4g} rad/s, "
                 f"sin xi = 1 (worst case), J_min = {inertia_min:g} kg.m^2"
@@ -469,6 +497,8 @@ def criteria(
                 "and the right one for a near-polar orbit [avanzini2012]; above "
                 "the floor buys decay rate, below it does not converge"
             ),
+            formula="k >= 2*omega_o*(1 + sin xi)*J_min",
+            formula_tex=r"k \geq 2\,\omega_o\,(1+\sin\xi)\,J_{\min}",
         ),
         Criterion(
             name="usable momentum vs handover at the B-dot noise floor",

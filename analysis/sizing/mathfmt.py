@@ -36,7 +36,31 @@ import html as _html
 import math
 import re
 
-from analysis.sizing.interactive import _num
+
+def _num(value: float, digits: int = 4) -> str:
+    """A number a reader can scan, across nine orders of magnitude.
+
+    Fixed-point where a reader has intuition for it, scientific notation
+    outside that band, and the report's own words for the non-finite cases.
+
+    Parameters
+    ----------
+    value : float
+    digits : int, optional
+        Significant figures.
+
+    Returns
+    -------
+    str
+    """
+    if isinstance(value, float) and math.isnan(value):
+        return "n/a"
+    if isinstance(value, float) and math.isinf(value):
+        return "\u221e" if value > 0 else "\u2212\u221e"
+    if value != 0.0 and (abs(value) < 1.0e-3 or abs(value) >= 1.0e5):
+        return f"{value:.{digits - 1}e}"
+    return f"{value:.{digits}g}"
+
 
 #: Greek names spelled out in the console strings, and their letters. Applied to
 #: a whole token only, so ``etaFoo`` and ``theta_bar`` behave predictably.

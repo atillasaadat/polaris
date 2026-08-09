@@ -12,6 +12,17 @@ Every consumer reads the derived artifacts, never the raw YAML (REQ-CFG-001), an
 each artifact records the source config hash so any FSW param / sim run / fixture
 is traceable to the exact config that produced it (REQ-CFG-003).
 
+**Cross-checks are half of what this module does.** A handful of quantities exist
+twice by design — once as sim/hardware truth, once as the ``flight.*`` parameter
+the FSW runs on — and editing one side alone is invisible: nothing crashes, no
+test fails, and the flight software believes something the vehicle is not. Those
+pairings are declared here (``_CATALOG_PAIRS``, ``_VEHICLE_PAIRS``, and the
+per-unit direction sets above them) and refused when they disagree, because the
+compile is the last place the two are in the same room. Divergence that is a real
+design decision is *declarable* rather than silently exempt — see
+``schema.ParameterDivergence`` — since a check with no legitimate escape is a
+check somebody eventually deletes.
+
 Four artifacts. Three are JSON: ``sim_setup.json`` is the real truth-sim input,
 while ``fprime_params.json`` and ``analysis_inputs.json`` are readable summaries
 whose *encoding* is still provisional. The fourth, ``PrmDb.dat``, is the flight
@@ -383,66 +394,337 @@ _WHY_MTQ_AXES = (
 )
 
 
-#: The friction coefficients the §8.5 drive feedforward inverts, paired with the
-#: hardware-catalog key each one *is*. The flight parameter is a scalar (the
-#: reference vehicle flies identical wheels), so every installed wheel has to
-#: carry the same catalog value for the pairing to be meaningful at all.
-_WHEEL_FRICTION_PARAMS = (
-    ("flight.attitudeController.WheelDryFrictionNm", "dry_friction_nm"),
-    ("flight.attitudeController.WheelViscousFrictionNmS", "viscous_friction_nm_s"),
+# --- FSW parameters that restate sim-side truth (§19.3) -----------------------
+#
+# Several physical quantities exist twice by design: once as the truth the sim
+# and the hardware carry (a `config/hardware/**` catalog entry, a `spacecraft.*`
+# field) and once as the flight parameter the FSW runs on. Changing one without
+# the other is the most invisible defect this repo has: nothing crashes, no test
+# fails, and the flight software simply believes something the vehicle is not.
+# The instance that forced this table generalised from the albedo and axis checks
+# above — a wheel re-sized to 0.002 N·m peak torque against a flight limit still
+# reading 0.025, i.e. an FSW commanding 12.5x what the wheel could deliver and
+# every torque margin derived from it optimistic by the same factor.
+#
+# So each pairing is declared here and checked, rather than trusted to a comment
+# asking for care. Divergence that is a real design decision is *declarable*
+# (`spacecraft.fsw_parameter_divergence`, schema `ParameterDivergence`) — a check
+# strict enough to have no legitimate escape is a check the next engineer deletes
+# wholesale.
+
+
+class _Reduce:
+    """How one flight scalar is expected to describe several installed units.
+
+    ``BOUND`` — a capability rating (peak torque, rated dipole). A mixed array is
+    bounded by its weakest unit, so the flight limit must be the **minimum**
+    across the suite; this matches `analysis.control.vehicle._wheel_catalog_min`,
+    which reads the same catalog for the same reason.
+
+    ``UNIFORM`` — a model coefficient the flight side applies identically to every
+    unit (bearing friction, rotor inertia). A single scalar cannot describe a
+    mixed array at all, so a suite that does not share one value is refused
+    outright rather than reduced to some representative of it.
+    """
+
+    BOUND = "bound"
+    UNIFORM = "uniform"
+
+
+def _catalog(key: str):
+    """Per-unit accessor for a hardware-catalog scalar; None when unspecified.
+
+    None and 0.0 are different answers and the distinction is load-bearing: a
+    catalog that does not carry the key says nothing for the parameter to
+    contradict, while one that declares zero (a frictionless fixture) is an
+    assertion the flight value has to match.
+    """
+
+    def value(unit: dict[str, Any]) -> float | None:
+        raw = unit.get("params", {}).get(key)
+        return None if raw is None else float(raw)
+
+    return value
+
+
+def _rotor_inertia(unit: dict[str, Any]) -> float | None:
+    """A wheel's rotor inertia [kg·m²], derived from its catalog entry.
+
+    ``I = h_max / omega_max`` — the same relation `ReactionWheelSpec::inertia()`
+    applies in the sim (sim/actuators/reaction_wheel.hpp), so the flight number is
+    a *derivation* of two catalog values rather than a third independent one.
+    None when either input is missing or the speed is not positive: there is then
+    no derivation to compare against, which is not the same as one that comes out
+    zero.
+    """
+    params = unit.get("params", {})
+    momentum, speed_rpm = params.get("max_momentum_nms"), params.get("max_speed_rpm")
+    if momentum is None or speed_rpm is None or float(speed_rpm) <= 0.0:
+        return None
+    return float(momentum) / (float(speed_rpm) * math.pi / 30.0)
+
+
+#: (parameter, actuator kind, truth description, per-unit value, reduction,
+#:  relative tolerance, why a mismatch is invisible).
+#:
+#: The tolerances are relative and per-pair because the pairs are not the same
+#: kind of number: a transcription of one catalog scalar has no round-off to
+#: allow for (1e-9 admits float-repr noise and nothing else), while a *derived*
+#: quantity is written to the digits a human would write (1e-4 admits the five
+#: significant figures of `4.7746e-5` against an exact 4.774648...e-5).
+_CATALOG_PAIRS: tuple[tuple[str, str, str, Any, str, float, str], ...] = (
+    (
+        "flight.attitudeController.WheelMaxTorqueNm",
+        "reaction_wheel",
+        "max_torque_nm",
+        _catalog("max_torque_nm"),
+        _Reduce.BOUND,
+        1.0e-9,
+        "The allocation clamps every wheel command to this limit, so a value above "
+        "the hardware's rating commands torque the wheel cannot deliver and makes "
+        "every margin computed from it optimistic by the same factor — and the "
+        "vehicle reports saturation nowhere, because as far as the FSW knows it "
+        "never saturated.",
+    ),
+    (
+        "flight.attitudeController.WheelInertiaKgm2",
+        "reaction_wheel",
+        "max_momentum_nms / (max_speed_rpm * 2*pi/60)",
+        _rotor_inertia,
+        _Reduce.UNIFORM,
+        1.0e-4,
+        "This is how the FSW turns tachometer speed into stored momentum, so a "
+        "stale value mis-scales the entire momentum budget: the envelope, the "
+        "desaturation hysteresis and the total-momentum telemetry all move "
+        "together, which is exactly what makes the error look self-consistent.",
+    ),
+    (
+        "flight.attitudeController.WheelDryFrictionNm",
+        "reaction_wheel",
+        "dry_friction_nm",
+        _catalog("dry_friction_nm"),
+        _Reduce.UNIFORM,
+        1.0e-9,
+        "The flight friction feedforward commands -tau_f on every wheel from this "
+        "number, so a value larger than the hardware's real friction "
+        "over-compensates — the one direction that makes the vehicle worse than no "
+        "feedforward at all.",
+    ),
+    (
+        "flight.attitudeController.WheelViscousFrictionNmS",
+        "reaction_wheel",
+        "viscous_friction_nm_s",
+        _catalog("viscous_friction_nm_s"),
+        _Reduce.UNIFORM,
+        1.0e-9,
+        "Same feedforward as the dry term and the same asymmetry: it is inverted "
+        "against wheel speed, so on a loaded array an over-stated coefficient is a "
+        "secular torque error that grows with the speed the wheels run at.",
+    ),
+    (
+        "flight.attitudeController.BdotMaxDipoleAm2",
+        "magnetorquer",
+        "max_dipole_am2",
+        _catalog("max_dipole_am2"),
+        _Reduce.BOUND,
+        1.0e-9,
+        "B-dot clamps each rod to this rating independently, which is what keeps a "
+        "saturated detumble dissipative (lib/gnc/bdot.hpp). A limit above the rod's "
+        "rating moves the clamp into the driver, where it is no longer per-axis — "
+        "and detumble convergence was argued on the per-axis one.",
+    ),
+)
+
+#: The pairs whose truth side is not the hardware catalog but the vehicle's own
+#: mass/magnetic properties — the fields the *sim* propagates with. Same defect
+#: class, one step closer: these are literally the same numbers written twice in
+#: one file, which is exactly the edit that gets made on one line and not the
+#: other. (parameter, spacecraft field, accessor, description, why).
+_VEHICLE_PAIRS: tuple[tuple[str, str, Any, str, str], ...] = (
+    (
+        "flight.attitudeController.InertiaBodyKgm2",
+        "inertia_kgm2",
+        lambda v: tuple(float(v[k]) for k in ("ixx", "iyy", "izz")),
+        "spacecraft.inertia_kgm2 (ixx, iyy, izz)",
+        "The flight controller forms the total system momentum H = J*omega + "
+        "h_wheels and its gravity-gradient feedforward on this tensor, so a stale "
+        "diagonal biases both against a vehicle the sim is propagating with the "
+        "other one — a modelling error that reads as a plant the controller almost "
+        "fits. Only the diagonal is compared, because the flight parameter is a "
+        "diagonal: zero products of inertia are an assumption the FSW and the §8.5 "
+        "SISO analysis both state.",
+    ),
+    (
+        "flight.attitudeController.ResidualDipoleAm2",
+        "residual_dipole_am2",
+        lambda v: tuple(float(c) for c in v),
+        "spacecraft.residual_dipole_am2",
+        "The tier-1 disturbance feedforward subtracts m_res x B with this vector "
+        "while the sim generates the torque from the other one, so a mismatch does "
+        "not fail — it feeds forward a disturbance the vehicle does not have and "
+        "leaves the one it does have to the integrator.",
+    ),
+)
+
+#: Every parameter the cross-checks above cover. A declared divergence naming
+#: anything outside this set is refused: it is either a typo or an exemption left
+#: behind by a check that no longer exists, and both read as protection that is
+#: not there.
+_CROSS_CHECKED_PARAMS = frozenset(
+    [pair[0] for pair in _CATALOG_PAIRS] + [pair[0] for pair in _VEHICLE_PAIRS]
 )
 
 
-def _check_wheel_friction_parameters(
-    fsw: dict[str, Any], wheels: list[dict[str, Any]]
-) -> None:
-    """Refuse a friction feedforward that does not describe the installed wheels.
+def _close(actual: float, expected: float, rtol: float) -> bool:
+    # Relative, not exact: these are floats read back through YAML and (for the
+    # derived pairs) written to the digits a human writes. `math.isclose` with an
+    # absolute floor so a legitimate zero compares equal to itself.
+    return math.isclose(actual, expected, rel_tol=rtol, abs_tol=1.0e-300)
 
-    The flight law adds ``-tau_f`` to every wheel command, so these coefficients
-    are not tuning: they are an assertion about the bearings. Transcribing them
-    into the spacecraft file is a copy of the catalog, and every copy is a place
-    for the two to disagree in the direction that passes (P54) — a feedforward
-    quietly built on a stale number over-compensates, which is the one direction
-    that can leave the vehicle worse off than no compensation at all. So the
-    number is written where every other flight parameter is written, and checked
-    here against the units it claims to describe.
 
-    Silent when the parameter is absent, so a config that predates the
-    feedforward compiles unchanged.
+def _divergence_declared(
+    divergences: dict[str, Any],
+    param: str,
+    expected: tuple[float, ...],
+    truth: str,
+    rtol: float,
+) -> bool:
+    """True when @p param carries a valid declared divergence from @p expected.
+
+    Raises when the declaration is stale — its ``catalog_value`` no longer being
+    the truth means the waiver was granted against a part this vehicle no longer
+    carries, and a waiver that outlives its subject is worse than no check.
     """
-    if not wheels:
-        return
-    for param, catalog_key in _WHEEL_FRICTION_PARAMS:
-        declared = fsw.get(param)
-        if declared is None:
+    declared = divergences.get(param)
+    if declared is None:
+        return False
+    raw = declared["catalog_value"]
+    written = tuple(float(v) for v in (raw if isinstance(raw, list) else [raw]))
+    if len(written) != len(expected) or not all(
+        _close(w, e, rtol) for w, e in zip(written, expected)
+    ):
+        raise ConfigError(
+            f"{param} declares a deliberate divergence from "
+            f"catalog_value {_fmt(written)}, but this vehicle's {truth} now reads "
+            f"{_fmt(expected)}.\n"
+            f"The declaration was written against a value the config no longer "
+            f"carries, so it is exempting the parameter from a comparison nobody "
+            f"has made. Re-decide the divergence against the current hardware: "
+            f"update catalog_value and the reason, or delete the entry."
+        )
+    return True
+
+
+def _fmt(values: tuple[float, ...]) -> str:
+    return repr(values[0]) if len(values) == 1 else repr(list(values))
+
+
+def _refuse_mismatch(
+    param: str,
+    actual: tuple[float, ...],
+    expected: tuple[float, ...],
+    truth: str,
+    where: str,
+    why: str,
+) -> None:
+    raise ConfigError(
+        f"{param} = {_fmt(actual)} contradicts the vehicle it flies on: "
+        f"{truth} = {_fmt(expected)} ({where}).\n"
+        f"{why}\n"
+        f"Fix whichever is stale — the fsw_parameters entry in the vehicle config, "
+        f"or the value it restates. If the divergence is deliberate, declare it "
+        f"rather than loosening the check:\n"
+        f"  spacecraft:\n"
+        f"    fsw_parameter_divergence:\n"
+        f"      {param}:\n"
+        f"        catalog_value: {_fmt(expected)}\n"
+        f"        reason: <why this vehicle deliberately flies a different value>"
+    )
+
+
+def _check_catalog_pairs(sc: dict[str, Any]) -> None:
+    """Refuse flight parameters that contradict the hardware they describe (§19.3).
+
+    Silent for a pair whose parameter is absent or whose unit kind is not
+    installed, so a vehicle that predates a parameter — or does not carry that
+    actuator — compiles unchanged. This is a cross-check between two things the
+    config already says, never a new requirement on what it must say.
+    """
+    fsw = sc.get("fsw_parameters", {})
+    divergences = sc.get("fsw_parameter_divergence", {})
+    actuators = sc.get("actuators", [])
+    for param, kind, truth, value_of, reduce_by, rtol, why in _CATALOG_PAIRS:
+        units = [u for u in actuators if u.get("kind") == kind]
+        if not units or param not in fsw:
             continue
-        catalog = {
-            unit["name"]: float(unit.get("params", {}).get(catalog_key, 0.0))
-            for unit in wheels
-        }
-        distinct = set(catalog.values())
-        if len(distinct) > 1:
+        per_unit = {unit["name"]: value_of(unit) for unit in units}
+        if any(v is None for v in per_unit.values()):
+            # At least one installed unit's catalog entry says nothing about this
+            # quantity, so the suite as a whole makes no claim the parameter can
+            # contradict. (A declared zero is a claim, and is checked.)
+            continue
+        if reduce_by == _Reduce.UNIFORM and len(set(per_unit.values())) > 1:
             raise ConfigError(
-                f"{param} is a single value, but this vehicle's reaction wheels do "
-                f"not share one {catalog_key}: "
-                f"{', '.join(f'{n} = {v}' for n, v in catalog.items())}.\n"
-                f"A mixed array needs the friction model per-unit in flight, exactly "
-                f"as the wheel axes already are; until it is, the flight scalar "
-                f"cannot describe this suite."
+                f"{param} is a single value, but this vehicle's {kind}s do not "
+                f"share one {truth}: "
+                f"{', '.join(f'{n} = {v}' for n, v in per_unit.items())}.\n"
+                f"A mixed array needs this per-unit in flight, exactly as the "
+                f"actuator axes already are; until it is, the flight scalar cannot "
+                f"describe this suite."
             )
-        expected = distinct.pop()
-        # An exact comparison: this is a transcription of one catalog number, not
-        # a derived quantity, so there is no round-off to allow for and a
-        # tolerance would only hide a real edit.
-        if float(declared) != expected:
+        expected = (min(per_unit.values()),)
+        models = sorted({unit["model_id"] for unit in units})
+        where = (
+            f"the config/hardware entry for {', '.join(models)}, installed as "
+            f"{', '.join(sorted(per_unit))}"
+        )
+        if _divergence_declared(divergences, param, expected, truth, rtol):
+            continue
+        actual = (float(fsw[param]),)
+        if not _close(actual[0], expected[0], rtol):
+            _refuse_mismatch(param, actual, expected, truth, where, why)
+
+
+def _check_vehicle_pairs(sc: dict[str, Any]) -> None:
+    """Refuse flight vectors that are not the vehicle's own properties (§19.3).
+
+    An exact comparison (1e-9 relative, float-repr noise and nothing else): these
+    are transcriptions of numbers written a few hundred lines up the same file,
+    not derivations, so there is no round-off to allow for and a looser tolerance
+    would only hide a real edit.
+    """
+    fsw = sc.get("fsw_parameters", {})
+    divergences = sc.get("fsw_parameter_divergence", {})
+    for param, field, accessor, truth, why in _VEHICLE_PAIRS:
+        if param not in fsw or field not in sc:
+            continue
+        expected = accessor(sc[field])
+        if _divergence_declared(divergences, param, expected, truth, 1.0e-9):
+            continue
+        actual = tuple(float(v) for v in fsw[param])
+        if len(actual) != len(expected) or not all(
+            _close(a, e, 1.0e-9) for a, e in zip(actual, expected)
+        ):
+            _refuse_mismatch(
+                param,
+                actual,
+                expected,
+                truth,
+                "the vehicle config's own properties",
+                why,
+            )
+
+
+def _check_declared_divergences(sc: dict[str, Any]) -> None:
+    """Refuse an exemption for a parameter nothing cross-checks."""
+    for param in sc.get("fsw_parameter_divergence", {}):
+        if param not in _CROSS_CHECKED_PARAMS:
             raise ConfigError(
-                f"{param} = {declared} against {catalog_key} = {expected} in the "
-                f"hardware catalog entry of "
-                f"{', '.join(sorted(catalog))}.\n"
-                f"The flight friction feedforward commands -tau_f on every wheel from "
-                f"this number, so a value larger than the hardware's real friction "
-                f"over-compensates — the one direction that makes the vehicle worse "
-                f"than no feedforward. Fix whichever of the two is stale."
+                f"fsw_parameter_divergence declares an exemption for '{param}', "
+                f"which no flight/sim cross-check covers.\n"
+                f"Either the name is a typo, or the check it was written against no "
+                f"longer exists — both read as protection that is not there. "
+                f"Checked parameters: {', '.join(sorted(_CROSS_CHECKED_PARAMS))}."
             )
 
 
@@ -470,8 +752,6 @@ def _check_control_parameters(body: dict[str, Any]) -> None:
         _WHY_MTQ_AXES,
         expected_fn=_axis_key("dipole_axis"),
     )
-
-    _check_wheel_friction_parameters(fsw, wheels)
 
     # The counts are what bound every loop in the flight allocation, so a count
     # that disagrees with the suite is not a tuning error to find in orbit: it
@@ -523,9 +803,12 @@ def resolve(
     }
     # Cross-checks between the two halves of the resolved object, which only
     # become checkable once the hardware library has been inlined.
+    _check_declared_divergences(body["spacecraft"])
     _check_albedo_parameters(body)
     _check_star_tracker_parameters(body)
     _check_control_parameters(body)
+    _check_catalog_pairs(body["spacecraft"])
+    _check_vehicle_pairs(body["spacecraft"])
     resolved = {
         "provenance": {
             "config_hash": _config_hash(body),

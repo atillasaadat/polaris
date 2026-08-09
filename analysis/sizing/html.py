@@ -30,6 +30,27 @@ reviewer arrives wanting the answer and reads the configuration only once the
 answer is in hand. On a failure the sentence names the count and the worst
 criterion, since "FAIL" on its own sends the reader hunting through a table.
 
+Self-explaining, not self-evident
+---------------------------------
+The report's short codes are its own: D1 through D4 name the wheel momentum
+drivers, M1 through M3 the magnetorquer criteria, and a reader meeting them for
+the first time cannot expand either from the row. Each family subhead therefore
+carries a glossary (:func:`_glossary`), said once per family rather than repeated
+on every row, and the criteria section opens with :data:`_HOW_TO_READ_A_ROW` —
+what threshold, measured and margin mean for a minimum-sense criterion against a
+maximum-sense one, and which rows the 30 % convention actually governs. One row,
+the commanded wheel torque against the installed unit, is *designed* to land on
+its threshold at 0 % margin, and says so in its own note rather than leaving the
+reader to read a zero as a near miss.
+
+The provenance strip is a table, not a string
+---------------------------------------------
+:func:`analysis.sizing.report.spec_groups` carries each configuration quantity
+apart — label, symbol, value, units — so the page sets one per line with the
+symbol typeset and the number in the tabular face. The console gets the same
+quantities joined into its one-line-per-group form, from the same source, so the
+two cannot drift.
+
 Scannable by default, complete on demand
 ----------------------------------------
 A reviewer reads a criteria table to find the row that surprises them, not to
@@ -39,21 +60,28 @@ Nothing is deleted: the justifications are the reason this report exists, they
 are simply one click away rather than in the way of the next row.
 
 The console strings are set for a fixed-width terminal, so they are typeset on
-the way in. Formulae go through :mod:`analysis.sizing.texmath`, which renders
-real LaTeX to an inline SVG with matplotlib mathtext (no MathJax, no KaTeX, no
-web font); everything else goes through :mod:`analysis.sizing.mathfmt`, which
-sets ``N.m.s`` as ``N·m·s`` and is also the fallback when a formula has no LaTeX
-form. Em dashes and ``**emphasis**`` are console conventions and are dropped
-here. All of it is presentation-only and lives entirely in this layer: the
-report objects and the plain-text rendering keep their original strings.
+the way in. Formulae go through :mod:`analysis.sizing.texmath`, which typesets
+the LaTeX **the report objects carry themselves** with KaTeX; everything else
+goes through :mod:`analysis.sizing.mathfmt`, which sets ``N.m.s`` as ``N·m·s``
+and is also what a formula with no LaTeX degrades to — plainly, in the body
+face, never as pseudo-mathematics. Em dashes and ``**emphasis**`` are console
+conventions and are dropped here. All of it is presentation-only and lives
+entirely in this layer: the report objects and the plain-text rendering keep
+their original strings.
+
+Every symbol the page sets is defined once, in the Nomenclature section, beside
+its units and — where the two are the same quantity — the committed flight
+parameter it corresponds to. That last column is the link a reviewer needs and
+the one no formula carries.
 
 Self-contained by construction
 ------------------------------
-plotly.js is inlined into the first figure (``include_plotlyjs="inline"``) and
-the matplotlib figures are embedded as ``data:`` URIs. No external stylesheet,
-no web font, no CDN. The result is one file that opens offline, survives being
-emailed, and fetches nothing at runtime. It is a few megabytes for exactly that
-reason.
+plotly.js is inlined into the first figure (``include_plotlyjs="inline"``),
+KaTeX's stylesheet, library and eight WOFF2 faces are inlined by
+:func:`analysis.sizing.texmath.katex_assets`, and the matplotlib figures are
+embedded as ``data:`` URIs. No external stylesheet, no web font, no CDN. The
+result is one file that opens offline, survives being emailed, and fetches
+nothing at runtime. It is a few megabytes for exactly that reason.
 
 Escaping
 --------
@@ -82,13 +110,13 @@ import plotly.graph_objects as go
 
 from analysis.common.report import AnalysisReport, Criterion
 from analysis.sizing.interactive import (
-    _num,
     disturbance_figure,
     margin_figure,
     momentum_envelope_figure,
     torque_envelope_figure,
 )
 from analysis.sizing.mathfmt import (
+    _num,
     math_html,
     percent,
     provenance_label,
@@ -96,8 +124,13 @@ from analysis.sizing.mathfmt import (
     signed,
     unit_html,
 )
-from analysis.sizing.report import SizingAnalysis
-from analysis.sizing.texmath import split_leading_formula, tex_html
+from analysis.sizing.report import SizingAnalysis, SpecItem, spec_groups
+from analysis.sizing.texmath import (
+    katex_assets,
+    tex_html,
+    tex_symbol,
+    tex_value,
+)
 
 
 def _esc(value: object) -> str:
@@ -200,26 +233,74 @@ def _math(text: object) -> str:
 #: keyword sets are disjoint over the current criteria, so this is a display
 #: order and not a priority; anything a future criterion introduces falls into
 #: the last family rather than being dropped.
-_FAMILIES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+_FAMILIES: tuple[tuple[str, str, tuple[str, ...], tuple[tuple[str, str], ...]], ...] = (
     (
         "Wheel momentum",
         "Can the array hold what the sizing drivers accumulate? "
         "Usable capability is min(zonotope r_in, MomentumEnvelopeNms).",
         ("D1", "D2", "D3", "oversizing", "handover"),
+        (
+            (
+                "D1 tip-off absorption",
+                "The raw body momentum at separation, which the wheels must "
+                "absorb if nothing else removes it first.",
+            ),
+            (
+                "D1b post-B-dot handover",
+                "What is left for the wheels once the magnetorquers have "
+                "detumbled, which is the driver that binds when M2 passes.",
+            ),
+            (
+                "D2 cyclic storage",
+                "The momentum the orbit-periodic disturbance torques park in "
+                "the wheels over a quarter of a lap, and take back out.",
+            ),
+            (
+                "D3 secular accumulation",
+                "The momentum the non-cancelling torques build up between one "
+                "desaturation and the next.",
+            ),
+            (
+                "D4 slew agility",
+                "The momentum a commanded slew rate implies. Reported "
+                "parametrically, and judged only when a slew rate is given.",
+            ),
+        ),
     ),
     (
         "Wheel torque",
         "Is there control torque in every direction, disturbances included?",
-        ("wheel torque", "commanded torque"),
+        ("wheel torque", "commanded wheel torque"),
+        (),
     ),
     (
         "Magnetorquer authority",
         "Can the rods desaturate the wheels and detumble the vehicle?",
         ("M1 ", "M2 ", "M3 "),
+        (
+            (
+                "M1 desaturation authority",
+                "The orbit-average magnetic torque the rods produce, against "
+                "the secular disturbance torque they have to beat. Losing this "
+                "one saturates the wheels whatever their size.",
+            ),
+            (
+                "M2 detumble authority",
+                "The body momentum the rods can remove inside the detumble "
+                "budget, against the tip-off momentum they must remove.",
+            ),
+            (
+                "M3 detumble exit threshold",
+                "The committed exit rate against the slowest rotation B-dot "
+                "can distinguish from magnetometer noise. Below that floor, "
+                "B-dot is commanding on noise.",
+            ),
+        ),
     ),
     (
         "Control tuning and thresholds",
         "Are the committed flight parameters self-consistent and in bounds?",
+        (),
         (),
     ),
 )
@@ -227,7 +308,7 @@ _FAMILIES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 
 def _family_of(criterion: Criterion) -> int:
     """Index into :data:`_FAMILIES`; the last family is the catch-all."""
-    for index, (_, _, keywords) in enumerate(_FAMILIES):
+    for index, (_, _, keywords, _) in enumerate(_FAMILIES):
         if any(keyword in criterion.name for keyword in keywords):
             return index
     return len(_FAMILIES) - 1
@@ -259,6 +340,12 @@ def _document_order(report: AnalysisReport) -> list[list[Criterion]]:
 
 _CSS = """
 :root {
+  /* Declared, and not merely implied by the palette below: a browser with
+     automatic dark mode enabled will otherwise invert a page that states no
+     scheme, which turns this document's warm paper into a dark surface with
+     figures that were drawn for the light one. Saying "light" opts out. */
+  color-scheme: light;
+
   /* Surface and ink. Warm off-white paper, near-black ink: an engineering memo,
      not an application chrome. */
   --surface: #fcfcfb; --panel: #ffffff; --panel-2: #f7f7f5;
@@ -403,6 +490,53 @@ nav.sections a:hover { color: var(--slate); border-bottom-color: var(--slate); }
   .spec dd { padding: .45rem .1rem; border-top: 1px solid var(--line-2); }
 }
 .spec dl > dt:first-of-type, .spec dl > dt:first-of-type + dd { border-top: 0; }
+/* One quantity per line: what it is, its symbol, its value with units. Packing
+   six of these into one string is what the console has to do, not what a
+   reviewer should have to read. */
+.spec .quantities { display: grid; gap: .1rem .9rem; }
+@media (min-width: 700px) {
+  .spec .quantities {
+    grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr));
+  }
+}
+.spec .q {
+  display: grid; grid-template-columns: minmax(0, 1fr) 3.2rem auto;
+  align-items: baseline; gap: .5rem; padding: .1rem 0;
+}
+.spec .ql { font-family: var(--body); color: var(--muted); font-size: .82rem; }
+.spec .qs { font-family: var(--body); color: var(--ink-2); font-size: .82rem;
+  text-align: right; }
+.spec .qv { font-family: var(--mono); font-variant-numeric: tabular-nums;
+  color: var(--ink); font-size: .82rem; text-align: right; white-space: nowrap; }
+/* The inertia tensor is a matrix, so its row takes the full width of the strip,
+   sets its value left of the label rather than flush right where a 3x3 would be
+   clipped, and is allowed the height the matrix needs. */
+.spec .q.wide {
+  grid-column: 1 / -1; align-items: center;
+  grid-template-columns: max-content minmax(0, 1fr);
+}
+.spec .q.wide .qv {
+  text-align: left; white-space: normal; font-family: var(--body);
+  font-size: 1rem;
+}
+
+/* ---- glossary and the reading guide ---- */
+dl.glossary { margin: .1rem 0 0; display: grid; gap: .1rem .8rem; }
+@media (min-width: 700px) {
+  dl.glossary { grid-template-columns: 15rem minmax(0, 1fr); }
+}
+dl.glossary dt {
+  font-family: var(--mono); font-size: .78rem; color: var(--ink);
+  font-weight: 600; padding-top: .25rem;
+}
+dl.glossary dd {
+  margin: 0; font-family: var(--body); font-weight: 400; letter-spacing: 0;
+  color: var(--ink-2); font-size: .84rem; padding-bottom: .25rem;
+}
+details.howto { margin: 0 0 1.1rem; background: var(--panel);
+  border: 1px solid var(--line); padding: .55rem .9rem; }
+details.howto > div { border-left: 0; padding-left: 0; max-width: 84ch; }
+details.howto p { margin: .5rem 0; }
 
 /* ---- sections ---- */
 section { margin: 3.6rem 0 0; scroll-margin-top: 7.5rem; }
@@ -465,19 +599,36 @@ tr.fail td:first-child { box-shadow: inset 3px 0 0 var(--fail); }
 .note { color: var(--muted); font-size: .84rem; margin-top: .25rem;
   max-width: 68ch; }
 tfoot td { border-top: 1px solid var(--slate); font-weight: 650; }
+/* The nomenclature is read, not sorted: its columns carry no order worth
+   imposing, so its headings are plain rather than the sortable affordance. */
+table.nomen thead th { cursor: default; }
+table.nomen thead th::after { content: ""; }
+table.nomen td.sym { white-space: nowrap; font-size: 1.02rem; width: 1%; }
+table.nomen td.n { color: var(--muted); }
 
 /* ---- mathematics ---- */
+/* Two faces, and the difference is meant to be visible. `.tex` carries LaTeX
+   from its source and is typeset by KaTeX on load. `.m` is everything else:
+   a bare symbol in the provenance strip, which needs no more than a subscript,
+   and any formula whose source carries no LaTeX, which is set as italic body
+   text rather than converted by guesswork. A reader can tell at a glance which
+   is which, and that is the honest state to be in. */
 .m { font-family: var(--body); font-style: italic; letter-spacing: .01em; }
 .m sub, .m sup { font-style: normal; font-size: .68em; }
+/* Until the script runs, and forever if it never does, a `.tex` span holds the
+   same Unicode rendering `.m` would have. */
+.tex { font-family: var(--body); font-style: italic; letter-spacing: .01em; }
+.tex sub, .tex sup { font-style: normal; font-size: .68em; }
+.katex { font-style: normal; letter-spacing: normal; }
 .formula {
   display: block; background: var(--slate-soft); border-left: 2px solid var(--slate);
   padding: .4rem .65rem; margin: 0; font-size: 1.02rem; color: var(--ink);
   overflow-x: auto; white-space: nowrap;
 }
-/* Typeset equations, rendered server-side to inline SVG. Height and baseline
-   offset are set per image in em, so an equation shrinks with the text it sits
-   in and its baseline lands on the line's. */
-img.tex { max-width: 100%; }
+/* KaTeX sets display mode as a centred block; here an equation is a value in a
+   document, so it stays on the left of whatever cell holds it. */
+.katex-display { margin: .3rem 0; text-align: left; }
+.katex-display > .katex { text-align: left; }
 
 /* ---- disclosures ---- */
 .lead { margin: 0; }
@@ -601,21 +752,46 @@ document.querySelectorAll('table.sortable').forEach(function (table) {
 """
 
 
-def _criterion_note(note: str) -> str:
+def _criterion_note(criterion: Criterion) -> str:
     """A criterion's note, scannable: the equation and its numbers, then a disclosure.
 
     The measuring modules write a note as "<formula> = <value> (<inputs>)" and
     then, often, a paragraph explaining the threshold. The first part is what a
     reviewer needs in the row; the paragraph is what they need only when the row
     surprises them, so it collapses.
+
+    The equation is lifted off the front using the criterion's own
+    :attr:`~analysis.common.report.Criterion.formula`, which is the same string
+    the note was built from — not by matching the note against a table of
+    formulae the report might contain.
     """
-    text = _plain(note)
+    text = _plain(criterion.note)
     for clause in _BOILERPLATE:
         text = text.replace(clause, "")
-    formula, remainder = split_leading_formula(text)
-    head, tail = _split(remainder)
+    formula = ""
+    if criterion.formula and text.startswith(criterion.formula):
+        formula = tex_html(criterion.formula, criterion.formula_tex)
+        text = text[len(criterion.formula) :].strip()
+    head, tail = _split(text)
     lead = math_html(head) if formula else _prose(head)
     return f'<div class="note">{formula} {lead}</div>' + _why(_prose(tail))
+
+
+def _glossary(entries: tuple[tuple[str, str], ...]) -> str:
+    """What a family's short codes mean, collapsed under its subhead.
+
+    D1 through D4 and M1 through M3 are the report's own labels for the sizing
+    drivers and the magnetorquer criteria, and a reader meeting them for the
+    first time has no way to expand them from the row alone. The expansion is
+    said once per family rather than repeated on every row.
+    """
+    if not entries:
+        return ""
+    items = "".join(
+        f"<dt>{math_html(term)}</dt><dd>{_prose(meaning)}</dd>"
+        for term, meaning in entries
+    )
+    return _why(f'<dl class="glossary">{items}</dl>', "What these mean")
 
 
 def _criteria_table(grouped: list[list[Criterion]]) -> str:
@@ -634,7 +810,7 @@ def _criteria_table(grouped: list[list[Criterion]]) -> str:
         '<th class="n">Margin</th><th>Verdict</th></tr></thead>'
     )
     blocks = []
-    for (title, why, _), criteria in zip(_FAMILIES, grouped):
+    for (title, why, _, glossary), criteria in zip(_FAMILIES, grouped):
         if not criteria:
             continue
         failing = sum(1 for c in criteria if not c.passes)
@@ -646,16 +822,20 @@ def _criteria_table(grouped: list[list[Criterion]]) -> str:
         )
         blocks.append(
             f'<tbody class="group"><tr><th colspan="6">{_esc(title)}'
-            f'<span class="why">{math_html(why)} {_esc(tally)}.</span>'
+            f'<span class="why">{math_html(why)} {_esc(tally)}.'
+            f"{_glossary(glossary)}</span>"
             "</th></tr></tbody><tbody>"
         )
         for c in criteria:
             verdict = "PASS" if c.passes else "FAIL"
             sense = "≥" if c.sense == "min" else "≤"
-            note = _criterion_note(c.note) if c.note else ""
+            note = _criterion_note(c) if c.note else ""
             blocks.append(
                 f'<tr class="{"fail" if not c.passes else ""}">'
-                f'<td class="req">{_esc(c.requirement) if c.requirement else "n/a"}</td>'
+                # No requirement ID is the normal case here and says something:
+                # nothing in the baseline is written on actuator sizing. "None"
+                # states that; a lower-case "n/a" reads as a missing field.
+                f'<td class="req">{_esc(c.requirement) if c.requirement else "None"}</td>'
                 f'<td><span class="crit">{math_html(sentence_case(c.name))}</span>{note}</td>'
                 f'<td class="n" data-sort="{c.threshold}">{sense} {_esc(_num(c.threshold))}'
                 f"{_unit(c.units)}</td>"
@@ -673,12 +853,47 @@ def _criteria_table(grouped: list[list[Criterion]]) -> str:
     )
 
 
+def _spec_items(items: tuple[SpecItem, ...]) -> str:
+    """One provenance group as a definition list, one quantity per line.
+
+    The console renders a group as a single packed line because a terminal has
+    no other option. Here each quantity gets its own row: what it is, its symbol
+    typeset, and its value with the units attached in the tabular face. A
+    reviewer looking for the inscribed radius should find it on a line of its
+    own, not fifth in a semicolon-separated string.
+    """
+    rows = []
+    for item in items:
+        if item.value_tex:
+            # The inertia tensor is the one quantity here that is not a scalar,
+            # and it is the quantity the per-axis analysis depends on: every
+            # SISO margin on this page is valid because the off-diagonal terms
+            # are zero. It is shown as the matrix, zeros and all, rather than
+            # asserted in prose. Its LaTeX already opens with the symbol, so the
+            # symbol column would only repeat it and the row spans instead.
+            rows.append(
+                '<div class="q wide">'
+                f'<span class="ql">{_esc(item.label)}</span>'
+                f'<span class="qv">{tex_value(item.value_tex, item.value)}'
+                f"{_unit(item.units)}</span></div>"
+            )
+            continue
+        rows.append(
+            '<div class="q">'
+            f'<span class="ql">{_esc(item.label)}</span>'
+            f'<span class="qs">{_math(item.symbol) if item.symbol else ""}</span>'
+            f'<span class="qv">{math_html(item.value)}{_unit(item.units)}</span>'
+            "</div>"
+        )
+    return f'<div class="quantities">{"".join(rows)}</div>'
+
+
 def _derived_cards(analysis: SizingAnalysis) -> str:
     """The derived tuning as cards — the justification, not a dump."""
     cards = []
     for p in analysis.derived:
         if math.isnan(p.committed):
-            committed = '<span class="v">&mdash;</span>'
+            committed = '<span class="v">&ndash;</span>'
             delta = '<div class="d">No committed value in the config.</div>'
         else:
             committed = f'<span class="v">{_esc(_num(p.committed))}</span>'
@@ -702,8 +917,9 @@ def _derived_cards(analysis: SizingAnalysis) -> str:
             f"<div>{committed}{_unit(p.units) if not math.isnan(p.committed) else ''}</div>"
             f"{delta}</div>"
             f'<div class="row"><span class="k">Formula</span>'
-            f'<span class="formula">{tex_html(p.formula)}</span></div>'
-            f'<div class="row"><span class="k">Evaluated at</span>{_math(p.inputs)}</div>'
+            f'<span class="formula">{tex_html(p.formula, p.formula_tex)}</span></div>'
+            f'<div class="row"><span class="k">Evaluated at</span>'
+            f"{tex_html(p.inputs, p.inputs_tex)}</div>"
             f"{_lead_and_why(p.reasoning, 'Why this value')}</div>"
         )
     return '<div class="cards">' + "".join(cards) + "</div>"
@@ -721,7 +937,7 @@ def _budget_table(analysis: SizingAnalysis) -> str:
             f'<td class="n">{_esc(_num(t.torque_nm * 1e6))}{_unit("uN.m")}</td>'
             f'<td class="n">{_esc(_num(t.secular_nm * 1e6))}</td>'
             f'<td class="n">{_esc(_num(t.cyclic_nm * 1e6))}</td>'
-            f"<td>{tex_html(t.formula)}"
+            f"<td>{tex_html(t.formula, t.formula_tex)}"
             f'<div class="note">{_prose(t.inputs)}</div></td></tr>'
         )
     budget = analysis.budget
@@ -777,14 +993,323 @@ def _thesis(analysis: SizingAnalysis, report: AnalysisReport) -> str:
         excess = 100.0 * (analysis.assumptions.margin - 1.0)
         return (
             "Every sizing requirement fits inside the capability envelope, "
-            f"judged with the {_num(excess, 3)} % design margin applied."
+            f"with the {_num(excess, 3)} % design margin applied to each "
+            "driver it is compared against."
         )
     worst = min(failures, key=_worst_first)
     noun = "criterion does" if len(failures) == 1 else "criteria do"
     return (
         f"<b>{len(failures)} {noun} not close.</b> The worst is "
         f"{math_html(sentence_case(worst.name))}, short by "
-        f"{_esc(percent(abs(worst.margin_pct)))}."
+        # The magnitude, unsigned: "short by" already carries the direction, and
+        # percent() writes a leading "+" that would contradict it.
+        f"{_esc(percent(abs(worst.margin_pct)).lstrip('+'))}."
+    )
+
+
+#: Captions for the embedded matplotlib figures, by file stem. Written per
+#: figure rather than derived from the filename: the two say different things,
+#: and one caption covering both said the wrong thing about one of them.
+_STATIC_CAPTIONS: dict[str, tuple[str, str]] = {
+    "momentum_drivers": (
+        "Momentum drivers against the envelope",
+        "Every judged driver at its margin, against the usable envelope and the "
+        "hardware radius, on a log axis. The log scale is the only way the "
+        "drivers and the envelope share one plot on this class of vehicle.",
+    ),
+    "magnetorquer_sizing": (
+        "Magnetorquer authority and the B-dot noise floor",
+        "M2 on the left: the momentum the rods can remove against the tip-off "
+        "momentum they must remove. M3 on the right: the committed exit "
+        "threshold against the noise floor at the weakest and mean field.",
+    ),
+}
+
+#: What the four numeric columns mean, which depends on the criterion's sense
+#: and is the question a first-time reader of this table actually has. Open by
+#: default: a reader who does not know what "measured" is measuring cannot read
+#: a single row, and one who does closes it once.
+_HOW_TO_READ_A_ROW = """
+<details class="howto" open><summary>How to read a row</summary><div>
+<p><b>Threshold</b> is the bound the design is held to and carries its direction
+in the cell: <b>&#8805;</b> for a <b>minimum-sense</b> criterion, where a
+capability must exceed a requirement, and <b>&#8804;</b> for a
+<b>maximum-sense</b> one, where a value must stay under a ceiling.
+<b>Measured</b> is what this configuration actually provides or carries.</p>
+<p><b>Margin</b> is the distance between them, signed so that positive is always
+the safe direction: for a minimum-sense row it is measured minus threshold, for
+a maximum-sense row it is threshold minus measured. The percentage beside it is
+that same distance as a fraction of the threshold, so a margin of +50 % means
+the design sits half the threshold clear of it.</p>
+<p>The <b>30 % convention</b> applies to the sizing comparisons only, where a
+capability is required to beat a driver by that factor, and the factor is
+already inside the threshold shown. It does <b>not</b> apply to the consistency
+and bound criteria: those pass anywhere on the safe side of their limit, and one
+of them is designed to land on it exactly, at a margin of 0 %.</p>
+</div></details>
+"""
+
+#: Every symbol this page sets, what it means, its units, and the committed
+#: flight parameter it is the same quantity as. That last column is the one a
+#: reviewer most needs and the one no formula carries: a page can typeset
+#: ``h_envelope`` perfectly and still leave the reader guessing which key in
+#: ``config/spacecraft/*.yaml`` it is. Grouped in reading order — the vehicle,
+#: then what it must do, then what the actuators provide, then the tuning, then
+#: the environment — because an alphabetical list of forty symbols is a lookup
+#: table and this is meant to be read once, top to bottom.
+#:
+#: ``(latex, meaning, units, flight parameter)``. An empty parameter means the
+#: symbol is an intermediate of this analysis and is committed nowhere.
+_NOMENCLATURE: tuple[tuple[str, str, tuple[tuple[str, str, str, str], ...]], ...] = (
+    (
+        "The vehicle",
+        "What the config says the spacecraft is.",
+        (
+            (r"J", "Body-frame inertia tensor, shown in full above", "kg.m^2", ""),
+            (
+                r"J_{\min},\ J_{\max}",
+                "Smallest and largest principal moment",
+                "kg.m^2",
+                "",
+            ),
+            (r"m", "Dry mass", "kg", ""),
+            (r"W", "Actuator distribution matrix, unit spin axes as columns", "-", ""),
+            (
+                r"\sigma_{\min},\ \sigma_{\max}",
+                "Smallest and largest singular value of W; their ratio is the "
+                "array conditioning a degenerate geometry is refused on",
+                "-",
+                "",
+            ),
+        ),
+    ),
+    (
+        "Rates and momentum",
+        "What the vehicle carries and what the wheels must take from it.",
+        (
+            (r"\omega", "Body angular rate", "rad/s", ""),
+            (
+                r"\omega_{\mathrm{tipoff}}",
+                "Assumed separation tip-off rate",
+                "rad/s",
+                "",
+            ),
+            (
+                r"\omega_{\mathrm{exit}}",
+                "Rate B-dot hands over to the wheels at",
+                "rad/s",
+                "DetumbleExitRadps",
+            ),
+            (
+                r"\omega_{\mathrm{floor}}",
+                "Slowest rate B-dot can resolve against magnetometer noise",
+                "rad/s",
+                "",
+            ),
+            (
+                r"\omega_{\mathrm{slew}}",
+                "Commanded slew rate, when the config declares one",
+                "rad/s",
+                "",
+            ),
+            (r"h", "Stored wheel momentum", "N.m.s", ""),
+            (
+                r"h_{\mathrm{envelope}}",
+                "Certified momentum ceiling the FSW alarms on",
+                "N.m.s",
+                "MomentumEnvelopeNms",
+            ),
+            (
+                r"h_{\mathrm{usable}}",
+                "min(r_in, h_envelope), the momentum the vehicle may actually use",
+                "N.m.s",
+                "",
+            ),
+            (
+                r"h_{\mathrm{limit}}",
+                "SISO validity bound: stored momentum at which the gyroscopic term "
+                "stops being negligible at crossover",
+                "N.m.s",
+                "",
+            ),
+            (
+                r"h_{\mathrm{enter}},\ h_{\mathrm{exit}}",
+                "Desaturation entry and exit thresholds; the gap is the hysteresis",
+                "N.m.s",
+                "MomentumDesatEnterNms, MomentumDesatExitNms",
+            ),
+            (
+                r"h_{D1},\ h_{D1b},\ h_{D2},\ h_{D3},\ h_{D4}",
+                "The five momentum drivers: tip-off, post-B-dot handover, cyclic "
+                "storage, secular accumulation, slew agility",
+                "N.m.s",
+                "",
+            ),
+        ),
+    ),
+    (
+        "Actuator capability",
+        "The envelope geometry, and what the rods can produce.",
+        (
+            (
+                r"r_{\mathrm{in}}",
+                "Zonotope inscribed radius, the capability guaranteed in every "
+                "direction and the only figure a criterion is written on",
+                "N.m.s",
+                "",
+            ),
+            (
+                r"r_{\mathrm{out}}",
+                "Zonotope circumscribed radius, the best direction",
+                "N.m.s",
+                "",
+            ),
+            (r"\tau", "Torque", "N.m", ""),
+            (
+                r"\bar\tau_{\mathrm{mtq}}",
+                "Average magnetorquer torque available for desaturation",
+                "N.m",
+                "",
+            ),
+            (
+                r"m_{\mathrm{in}}",
+                "Dipole the rod array guarantees in every direction",
+                "A.m^2",
+                "",
+            ),
+            (
+                r"\eta",
+                "Magnetorquer efficiency, the fraction of dipole that does work",
+                "-",
+                "",
+            ),
+            (
+                r"d_{\mathrm{duty}}",
+                "Rod duty factor, the fraction of the orbit they may drive",
+                "-",
+                "MtqDutyFactor",
+            ),
+            (
+                r"m_{\mathrm{res}}",
+                "Residual (uncommanded) magnetic dipole of the vehicle",
+                "A.m^2",
+                "",
+            ),
+        ),
+    ),
+    (
+        "Control tuning",
+        "The gains and periods the design implies.",
+        (
+            (r"K_p", "Proportional attitude gain", "N.m/rad", "PidKpNmPerRad"),
+            (r"K_d", "Derivative (rate) gain", "N.m/(rad/s)", "PidKdNmPerRadps"),
+            (
+                r"\omega_n",
+                "Closed-loop natural frequency the committed gains imply",
+                "rad/s",
+                "",
+            ),
+            (r"\zeta", "Closed-loop damping ratio the committed gains imply", "-", ""),
+            (r"\omega_{c}", "Loop gain crossover frequency", "rad/s", ""),
+            (
+                r"\Delta t",
+                "Control period, the interval between attitude updates",
+                "s",
+                "ControlPeriodS",
+            ),
+            (r"k", "B-dot gain", "N.m.s", "BdotGainNms"),
+            (
+                r"f",
+                "Detumble exit fraction: how much of the usable envelope the handover may consume",
+                "-",
+                "",
+            ),
+            (
+                r"\rho_{\max}",
+                "Largest gyroscopic-to-control torque ratio the SISO analysis "
+                "tolerates (MAX_SISO_COUPLING_RATIO)",
+                "-",
+                "",
+            ),
+        ),
+    ),
+    (
+        "Orbit and environment",
+        "Where the vehicle flies and what pushes on it there.",
+        (
+            (r"a", "Semi-major axis", "km", ""),
+            (r"i", "Inclination", "deg", ""),
+            (r"T,\ T_{\mathrm{orbit}}", "Orbital period", "s", ""),
+            (r"T_{\mathrm{desat}}", "Interval between desaturation passes", "s", ""),
+            (r"\omega_o", "Orbit mean motion", "rad/s", ""),
+            (r"R", "Geocentric radius", "km", ""),
+            (r"\mu", "Earth gravitational parameter", "m^3/s^2", ""),
+            (
+                r"B,\ |B|_{\min},\ |B|_{\max},\ |B|_{\mathrm{mean}}",
+                "Geomagnetic flux density, and its extremes over the orbit",
+                "uT",
+                "",
+            ),
+            (
+                r"\sigma",
+                "Magnetometer noise, one standard deviation per axis",
+                "nT",
+                "",
+            ),
+            (
+                r"\xi",
+                "Inclination of the field to the orbit plane; 90 deg is taken as the worst case",
+                "deg",
+                "",
+            ),
+            (
+                r"\tau_{\mathrm{sec}},\ \tau_{\mathrm{cyc}}",
+                "Secular and cyclic halves of the disturbance budget",
+                "N.m",
+                "",
+            ),
+            (r"\rho", "Atmospheric density", "kg/m^3", ""),
+            (r"V", "Orbital speed", "m/s", ""),
+            (r"C_d,\ C_r", "Drag and reflectivity coefficients", "-", ""),
+            (r"A", "Projected area", "m^2", ""),
+            (
+                r"d_{cp}",
+                "Offset from the centre of mass to the centre of pressure",
+                "m",
+                "",
+            ),
+            (r"\Phi/c", "Solar radiation pressure at 1 AU", "Pa", ""),
+        ),
+    ),
+)
+
+
+def _nomenclature() -> str:
+    """Every symbol on the page, defined once, with its config key where it has one."""
+    blocks = []
+    for title, why, rows in _NOMENCLATURE:
+        blocks.append(
+            f'<tbody class="group"><tr><th colspan="4">{_esc(title)}'
+            f'<span class="why">{_esc(why)}</span></th></tr></tbody><tbody>'
+        )
+        for tex, meaning, units, parameter in rows:
+            blocks.append(
+                f'<tr><td class="sym">{tex_symbol(tex)}</td>'
+                f"<td>{_prose(meaning)}</td>"
+                f'<td class="n">{unit_html(units) or "&ndash;"}</td>'
+                f'<td class="req">{_esc(parameter) if parameter else "&ndash;"}</td>'
+                "</tr>"
+            )
+        blocks.append("</tbody>")
+    head = (
+        "<thead><tr><th>Symbol</th><th>Meaning</th>"
+        '<th class="n">Units</th><th>Flight parameter</th></tr></thead>'
+    )
+    return (
+        '<div class="scroll"><table class="nomen">'
+        + head
+        + "".join(blocks)
+        + "</table></div>"
     )
 
 
@@ -795,6 +1320,7 @@ _SECTIONS = (
     ("figures", "Figures"),
     ("budget", "Disturbance budget"),
     ("derived", "Derived parameters"),
+    ("nomenclature", "Nomenclature"),
     ("assumptions", "Assumptions"),
     ("warnings", "Warnings"),
 )
@@ -885,18 +1411,24 @@ def write_html(
     ]
     for path in static_figures or []:
         if Path(path).is_file():
-            label = Path(path).stem.replace("_", " ")
+            title, caption = _STATIC_CAPTIONS.get(
+                Path(path).stem,
+                (
+                    Path(path).stem.replace("_", " ").capitalize(),
+                    "A static figure written beside this page.",
+                ),
+            )
             figures.append(
-                f'<figure><img src="{_embed_png(Path(path))}" alt="{_esc(label)}">'
-                f"<figcaption>{_esc(sentence_case(label))}: the same verdicts on "
-                "a log axis, which is the only way the drivers and the envelope "
-                "share one plot. Static, and the version that prints."
-                "</figcaption></figure>"
+                f'<figure><img src="{_embed_png(Path(path))}" alt="{_esc(title)}">'
+                f"<figcaption><b>{_esc(title)}.</b> {_prose(caption)} Static, and "
+                "the rendering that prints.</figcaption></figure>"
             )
 
+    # Built from the structured quantities rather than the report's flattened
+    # provenance strings: same numbers, one per line instead of packed into one.
     provenance = "".join(
-        f"<dt>{_esc(provenance_label(k))}</dt><dd>{math_html(v)}</dd>"
-        for k, v in report.provenance.items()
+        f"<dt>{_esc(provenance_label(key))}</dt><dd>{_spec_items(items)}</dd>"
+        for key, items in spec_groups(analysis)
     )
     assumptions = "".join(f"<li>{_lead_and_why(a)}</li>" for a in report.assumptions)
     warnings = "".join(
@@ -908,10 +1440,20 @@ def write_html(
     )
     failures = len(report.failures())
 
+    katex_css, katex_js = katex_assets()
+
     page = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Declared in the head, not only as a CSS property: a browser with
+     auto-dark-mode enabled decides whether to force-darken before it
+     parses the stylesheet, so the CSS declaration alone arrives too late
+     and the page is re-rendered inverted. This report is a review
+     artifact whose verdict colours and figures are chosen against a light
+     ground; it must look the same for every reader. -->
+<meta name="color-scheme" content="light">
 <title>{_esc(_plain(report.title))} ({verdict})</title>
+<style>{katex_css}</style>
 <style>{_CSS}</style></head><body>
 <header class="topbar">
   <div class="row">
@@ -937,10 +1479,11 @@ def write_html(
 </section>
 
 <section id="criteria"><h2>Criteria</h2>
-<p class="lede">Margins are signed: positive is how far past its threshold the
-design sits. Criteria are grouped by what they judge and led by the tightest
+<p class="lede">Criteria are grouped by what they judge and led by the tightest
 margin in each group. Click a column heading to sort within a family; failing
-rows are shaded <b>and</b> say FAIL.</p>
+rows are shaded <b>and</b> say FAIL. Each family subhead carries a
+<b>What these mean</b> disclosure expanding the short codes it uses.</p>
+{_HOW_TO_READ_A_ROW}
 {_criteria_table(grouped)}
 </section>
 
@@ -959,6 +1502,14 @@ config carries. Recommendations, not criteria: nothing here moves the verdict.</
 {_derived_cards(analysis)}
 </section>
 
+<section id="nomenclature"><h2>Nomenclature</h2>
+<p class="lede">Every symbol this page sets, with its units and, where the symbol
+names a quantity the vehicle commits to, the flight parameter that carries it.
+An em dash in the last column means the symbol is an intermediate of this
+analysis and is committed nowhere.</p>
+{_nomenclature()}
+</section>
+
 <section id="assumptions"><h2>Assumptions in force</h2>
 <p class="lede">A margin without its assumptions is not a result.</p>
 <div class="panel"><ul class="block">{assumptions}</ul></div>
@@ -969,7 +1520,7 @@ config carries. Recommendations, not criteria: nothing here moves the verdict.</
 <div class="panel warn"><ul class="block warn">{warnings}</ul></div>
 </section>
 
-</main><script>{_JS}</script></body></html>
+</main><script>{katex_js}</script><script>{_JS}</script></body></html>
 """
     target = directory / "index.html"
     target.write_text(page, encoding="utf-8")

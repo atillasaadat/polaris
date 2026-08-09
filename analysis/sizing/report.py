@@ -133,6 +133,249 @@ def sizing_analysis(
     )
 
 
+@dataclass(frozen=True)
+class SpecItem:
+    """One provenance quantity: what it is, its symbol, its value, its units.
+
+    Provenance used to be written straight into the report as one crammed string
+    per group (``"4 at 0.03 N.m.s / 0.002 N.m; zonotope r_in 0.04899, ..."``),
+    which a terminal tolerates and a reader does not. The quantities are carried
+    apart instead, so the HTML page can set one per line with its symbol typeset
+    and its number in the tabular face, and :func:`_provenance` can still join
+    them back into the single line the console report wants. One source, two
+    renderings.
+
+    Attributes
+    ----------
+    label : str
+        What the quantity is, in words, capitalised.
+    symbol : str
+        Its symbol as the report's plain-text convention writes it (``r_in``,
+        ``|B|_min``), or empty when it has none. Typeset at the presentation
+        boundary; never parsed.
+    value : str
+        The formatted value, or a short phrase for a non-numeric fact.
+    units : str
+        Display units in the report's dotted convention (``N.m.s``), or empty.
+    value_tex : str
+        The value as LaTeX, for the one quantity that is not a scalar: the
+        inertia tensor, which the page sets as a matrix. Empty everywhere else,
+        and the console never sees it — :meth:`one_line` renders
+        :attr:`value` exactly as before.
+    """
+
+    label: str
+    symbol: str
+    value: str
+    units: str
+    value_tex: str = ""
+
+    def one_line(self) -> str:
+        """The item as the console report writes it: label, symbol, value, units."""
+        head = f"{self.label} {self.symbol}".strip()
+        tail = f"{self.value} {self.units}".strip()
+        return f"{head} {tail}".strip()
+
+
+def _inertia_item(tensor: np.ndarray) -> SpecItem:
+    """The inertia tensor as one provenance quantity, matrix and all.
+
+    Every per-axis result in this report — and every margin
+    :mod:`analysis.control` contributes to it — is valid *because* the products
+    of inertia are zero. The page therefore shows the whole 3×3 rather than
+    asserting the diagonality in prose, which is why the LaTeX is a full
+    ``bmatrix`` with the off-diagonal zeros visible.
+
+    :func:`analysis.control.vehicle.load_vehicle` refuses a tensor with non-zero
+    products, so on any config that reaches here they are zero. The rendering
+    still reads them out of the tensor rather than assuming: a value that is
+    displayed and a value that is used must be the same value, and the failure
+    mode of assuming is a page that quietly shows zeros a config does not carry.
+    The console form stays ``diag(...)`` while they are zero and spells the rows
+    out when they are not, so the one-line record cannot become a false claim.
+
+    Parameters
+    ----------
+    tensor : numpy.ndarray
+        Body-frame inertia tensor, shape ``(3, 3)`` [kg·m²].
+
+    Returns
+    -------
+    SpecItem
+    """
+    rows = [[float(tensor[i][j]) for j in range(3)] for i in range(3)]
+    diagonal = all(rows[i][j] == 0.0 for i in range(3) for j in range(3) if i != j)
+    value = (
+        "diag(" + ", ".join(f"{rows[i][i]:g}" for i in range(3)) + ")"
+        if diagonal
+        else "; ".join(", ".join(f"{v:g}" for v in row) for row in rows)
+    )
+    body = r" \\ ".join(" & ".join(f"{v:g}" for v in row) for row in rows)
+    return SpecItem(
+        "Inertia tensor",
+        "J",
+        value,
+        "kg.m^2",
+        value_tex=rf"J = \begin{{bmatrix}} {body} \end{{bmatrix}}",
+    )
+
+
+def spec_groups(
+    analysis: SizingAnalysis,
+) -> tuple[tuple[str, tuple[SpecItem, ...]], ...]:
+    """The configuration this analysis describes, quantity by quantity.
+
+    The provenance strip of the report, structured. Keys match the flat
+    :attr:`~analysis.common.report.AnalysisReport.provenance` dictionary
+    :func:`sizing_report` builds from this, so the two renderings cannot drift.
+
+    Parameters
+    ----------
+    analysis : SizingAnalysis
+        The computed analysis.
+
+    Returns
+    -------
+    tuple
+        ``(key, items)`` pairs in document order.
+    """
+    vehicle = analysis.vehicle
+    wheel = analysis.wheels
+    mtq = analysis.mtq
+    budget = analysis.budget
+    floor = mtq.noise_floor
+    binding = (
+        "MomentumEnvelopeNms, the flight ceiling binds"
+        if wheel.envelope_limited
+        else "the wheel zonotope, the hardware binds"
+    )
+    return (
+        (
+            "wheels",
+            (
+                SpecItem("Units installed", "", f"{wheel.momentum.n_actuators}", ""),
+                SpecItem(
+                    "Momentum per wheel",
+                    "",
+                    f"{vehicle.wheel_max_momentum_nms:g}",
+                    "N.m.s",
+                ),
+                SpecItem(
+                    "Torque per wheel", "", f"{vehicle.wheel_max_torque_nm:g}", "N.m"
+                ),
+                SpecItem(
+                    "Zonotope inscribed radius",
+                    "r_in",
+                    f"{wheel.momentum.inscribed:.4g}",
+                    "N.m.s",
+                ),
+                SpecItem(
+                    "Zonotope circumscribed radius",
+                    "r_out",
+                    f"{wheel.momentum.circumscribed:.4g}",
+                    "N.m.s",
+                ),
+                SpecItem(
+                    "L2 ellipsoid radius",
+                    "",
+                    f"{wheel.momentum.ellipsoid_inscribed:.4g}",
+                    "N.m.s",
+                ),
+            ),
+        ),
+        (
+            "usable",
+            (
+                SpecItem(
+                    "Usable momentum", "", f"{wheel.usable_momentum_nms:.4g}", "N.m.s"
+                ),
+                SpecItem("Binding limit", "", binding, ""),
+            ),
+        ),
+        (
+            "rods",
+            (
+                SpecItem("Units installed", "", f"{mtq.dipole.n_actuators}", ""),
+                SpecItem(
+                    "Dipole per rod", "", f"{vehicle.mtq_max_dipole_am2:g}", "A.m^2"
+                ),
+                SpecItem("Duty factor", "", f"{vehicle.mtq_duty_factor:g}", ""),
+                SpecItem(
+                    "Guaranteed dipole",
+                    "m_in",
+                    f"{mtq.dipole.inscribed:g}",
+                    "A.m^2",
+                ),
+                SpecItem("Average torque", "", f"{mtq.average_torque_nm:.3g}", "N.m"),
+            ),
+        ),
+        (
+            "inertia",
+            (
+                _inertia_item(vehicle.inertia_kgm2),
+                SpecItem("Mass", "", f"{vehicle.mass_kg:g}", "kg"),
+            ),
+        ),
+        (
+            "orbit",
+            (
+                SpecItem(
+                    "Semi-major axis", "a", f"{vehicle.orbit.sma_m / 1000.0:.1f}", "km"
+                ),
+                SpecItem(
+                    "Inclination",
+                    "i",
+                    f"{np.degrees(vehicle.orbit.inc_rad):.2f}",
+                    "deg",
+                ),
+                SpecItem("Period", "T", f"{vehicle.orbit.period_s:.0f}", "s"),
+                SpecItem(
+                    "Weakest field", "|B|_min", f"{budget.field.min_t * 1e6:.1f}", "uT"
+                ),
+                SpecItem(
+                    "Strongest field",
+                    "|B|_max",
+                    f"{budget.field.max_t * 1e6:.1f}",
+                    "uT",
+                ),
+            ),
+        ),
+        (
+            "disturbance",
+            (
+                SpecItem("Total torque", "", f"{budget.total_nm:.3g}", "N.m"),
+                SpecItem("Secular", "", f"{budget.secular_nm:.3g}", "N.m"),
+                SpecItem("Cyclic", "", f"{budget.cyclic_nm:.3g}", "N.m"),
+            ),
+        ),
+        (
+            "bdot floor",
+            (
+                SpecItem(
+                    "At the weakest field",
+                    "|B|_min",
+                    f"{np.degrees(floor.rate_worst_radps):.2f}",
+                    "deg/s",
+                ),
+                SpecItem(
+                    "At the mean field",
+                    "|B|_mean",
+                    f"{np.degrees(floor.rate_mean_radps):.2f}",
+                    "deg/s",
+                ),
+            ),
+        ),
+    )
+
+
+def _provenance(analysis: SizingAnalysis) -> dict[str, str]:
+    """:func:`spec_groups` flattened to the one-line-per-group console form."""
+    return {
+        key: "; ".join(item.one_line() for item in items)
+        for key, items in spec_groups(analysis)
+    }
+
+
 def _warnings(analysis: SizingAnalysis) -> tuple[str, ...]:
     """Conditions that qualify the analysis without failing it."""
     vehicle = analysis.vehicle
@@ -228,58 +471,10 @@ def sizing_report(
     """
     assumptions = assumptions or SizingAssumptions()
     analysis = analysis or sizing_analysis(vehicle, assumptions)
-    budget = analysis.budget
-    wheel = analysis.wheels
     return AnalysisReport(
         title=f"ADCS actuator sizing — {vehicle.name}",
         config_path=str(config_path),
-        provenance={
-            "wheels": (
-                f"{wheel.momentum.n_actuators} at "
-                f"{vehicle.wheel_max_momentum_nms:g} N.m.s / "
-                f"{vehicle.wheel_max_torque_nm:g} N.m; zonotope r_in "
-                f"{wheel.momentum.inscribed:.4g}, r_out "
-                f"{wheel.momentum.circumscribed:.4g}, ellipsoid "
-                f"{wheel.momentum.ellipsoid_inscribed:.4g} N.m.s"
-            ),
-            "usable": (
-                f"{wheel.usable_momentum_nms:.4g} N.m.s = "
-                + (
-                    "MomentumEnvelopeNms (the flight ceiling binds)"
-                    if wheel.envelope_limited
-                    else "the wheel zonotope (the hardware binds)"
-                )
-            ),
-            "rods": (
-                f"{analysis.mtq.dipole.n_actuators} at "
-                f"{vehicle.mtq_max_dipole_am2:g} A.m^2, duty "
-                f"{vehicle.mtq_duty_factor:g}; guaranteed dipole "
-                f"{analysis.mtq.dipole.inscribed:g} A.m^2, average torque "
-                f"{analysis.mtq.average_torque_nm:.3g} N.m"
-            ),
-            "inertia": (
-                "diag("
-                + ", ".join(f"{j:g}" for j in vehicle.principal_moments_kgm2)
-                + ") kg.m^2, mass "
-                + f"{vehicle.mass_kg:g} kg"
-            ),
-            "orbit": (
-                f"a = {vehicle.orbit.sma_m / 1000.0:.1f} km, i = "
-                f"{np.degrees(vehicle.orbit.inc_rad):.2f} deg, T = "
-                f"{vehicle.orbit.period_s:.0f} s; |B| "
-                f"{budget.field.min_t * 1e6:.1f}-{budget.field.max_t * 1e6:.1f} uT"
-            ),
-            "disturbance": (
-                f"total {budget.total_nm:.3g} N.m = secular "
-                f"{budget.secular_nm:.3g} + cyclic {budget.cyclic_nm:.3g}"
-            ),
-            "bdot floor": (
-                f"{np.degrees(analysis.mtq.noise_floor.rate_worst_radps):.2f} deg/s "
-                f"at |B|_min, "
-                f"{np.degrees(analysis.mtq.noise_floor.rate_mean_radps):.2f} deg/s "
-                "at |B|_mean"
-            ),
-        },
+        provenance=_provenance(analysis),
         assumptions=assumptions.describe(vehicle.orbit.period_s),
         criteria=analysis.criteria(),
         warnings=_warnings(analysis),

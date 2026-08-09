@@ -120,6 +120,13 @@ config = [
 # dependency costs. It is emitted with `include_plotlyjs="inline"`, so the
 # report is one self-contained file that works offline; nothing is fetched at
 # runtime. No analysis number comes from it — it draws what numpy computed.
+#
+# The page's other rendering library, **KaTeX, is deliberately not here**: it is
+# JavaScript, it runs in the reader's browser and never in this process, and it
+# is committed verbatim under `analysis/sizing/vendor/katex/` (see that
+# directory's PROVENANCE.md) rather than resolved by a package manager, because
+# the page inlines the bytes and they must stay reproducible from their upstream
+# source. Nothing in this group depends on it and no Python import reaches it.
 analysis = [
     "matplotlib>=3.9,<4",
     "plotly>=5.22,<7",

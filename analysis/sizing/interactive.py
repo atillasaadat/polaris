@@ -34,6 +34,7 @@ from scipy.spatial import ConvexHull
 
 from analysis.common.report import AnalysisReport
 from analysis.sizing.envelope import Envelope
+from analysis.sizing.mathfmt import _num, sentence_case
 from analysis.sizing.report import SizingAnalysis
 
 #: Verdict colours. Never load-bearing alone — every verdict is also a word.
@@ -73,17 +74,6 @@ AXIS_COLOR = "#5b6470"
 #: Largest actuator count the zonotope hull is drawn for; the vertex set is
 #: :math:`2^N`. Mirrors ``plots.MAX_HULL_WHEELS``.
 MAX_HULL_ACTUATORS = 12
-
-
-def _num(value: float, digits: int = 4) -> str:
-    """A number a reader can scan, across nine orders of magnitude."""
-    if isinstance(value, float) and math.isnan(value):
-        return "n/a"
-    if isinstance(value, float) and math.isinf(value):
-        return "∞" if value > 0 else "−∞"
-    if value != 0.0 and (abs(value) < 1.0e-3 or abs(value) >= 1.0e5):
-        return f"{value:.{digits - 1}e}"
-    return f"{value:.{digits}g}"
 
 
 # --------------------------------------------------------------------------
@@ -127,7 +117,7 @@ def _hull_edge_lines(vertices: np.ndarray, hull: ConvexHull) -> go.Scatter3d:
         mode="lines",
         line={"color": ZONOTOPE_COLOR, "width": 2},
         opacity=0.55,
-        name="zonotope edges",
+        name="Zonotope edges",
         showlegend=True,
         hoverinfo="skip",
     )
@@ -195,7 +185,7 @@ def _ellipsoid(env: Envelope, opacity: float = 0.28) -> go.Surface:
         colorscale=[[0.0, ELLIPSOID_COLOR], [1.0, ELLIPSOID_COLOR]],
         showscale=False,
         opacity=opacity,
-        name="L2 ellipsoid (if AllocMethodSel were 0)",
+        name="L2 ellipsoid, if AllocMethodSel were 0",
         showlegend=True,
         hoverinfo="name",
     )
@@ -213,7 +203,11 @@ def _demand_vector(
     figure exists to show. The word is in the label and in the hover text.
     """
     tip = np.asarray(direction, dtype=float) * magnitude
-    verdict = "inside the usable envelope" if inside else "OUTSIDE the usable envelope"
+    verdict = (
+        "Inside the capability envelope"
+        if inside
+        else "OUTSIDE the capability envelope"
+    )
     return go.Scatter3d(
         x=[0.0, tip[0]],
         y=[0.0, tip[1]],
@@ -296,14 +290,14 @@ def momentum_envelope_figure(analysis: SizingAnalysis) -> go.Figure:
     margin = analysis.assumptions.margin
     traces: list[go.Scatter3d | go.Surface | go.Mesh3d] = list(
         _zonotope_mesh(
-            env, f"wheel zonotope (hardware, best {_num(env.circumscribed)})"
+            env, f"Wheel zonotope, hardware, best {_num(env.circumscribed)} N·m·s"
         )
     )
     traces.append(
         _sphere(
             env.inscribed,
             SERIES_1,
-            f"hardware guarantee r_in = {_num(env.inscribed)} N.m.s",
+            f"Hardware guarantee rᵢₙ = {_num(env.inscribed)} N·m·s",
             0.13,
         )
     )
@@ -311,7 +305,7 @@ def momentum_envelope_figure(analysis: SizingAnalysis) -> go.Figure:
         _sphere(
             wheels.usable_momentum_nms,
             USABLE_COLOR,
-            f"USABLE envelope = {_num(wheels.usable_momentum_nms)} N.m.s"
+            f"Usable envelope = {_num(wheels.usable_momentum_nms)} N·m·s"
             + (" (MomentumEnvelopeNms binds)" if wheels.envelope_limited else ""),
             0.6,
         )
@@ -327,15 +321,15 @@ def momentum_envelope_figure(analysis: SizingAnalysis) -> go.Figure:
                 required,
                 driver.name.split(" ")[0],
                 wheels.usable_momentum_nms >= required,
-                "N.m.s",
+                "N·m·s",
             )
         )
     return go.Figure(
         data=traces,
         layout=_scene(
-            f"{analysis.vehicle.name}: wheel momentum envelope "
-            f"(drivers shown at ×{margin:g} margin, along the weakest direction)",
-            "h_{} [N.m.s]",
+            f"Wheel momentum envelope, {analysis.vehicle.name} "
+            f"(drivers at ×{margin:g} margin, along the weakest direction)",
+            "h<sub>{}</sub> [N·m·s]",
         ),
     )
 
@@ -356,7 +350,7 @@ def torque_envelope_figure(analysis: SizingAnalysis) -> go.Figure:
     margin = analysis.assumptions.margin
     required = margin * analysis.wheels.required_torque_nm
     traces: list[go.Scatter3d | go.Surface | go.Mesh3d] = list(
-        _zonotope_mesh(env, f"torque zonotope (best {_num(env.circumscribed)} N.m)")
+        _zonotope_mesh(env, f"Torque zonotope, best {_num(env.circumscribed)} N·m")
     )
     traces.append(
         _sphere(
@@ -364,7 +358,7 @@ def torque_envelope_figure(analysis: SizingAnalysis) -> go.Figure:
             # A capability surface, so it takes a series colour and not a
             # verdict one; the demand arrow's label carries the verdict.
             SERIES_1,
-            f"guarantee r_in = {_num(env.inscribed)} N.m",
+            f"Guarantee rᵢₙ = {_num(env.inscribed)} N·m",
             0.22,
         )
     )
@@ -373,17 +367,17 @@ def torque_envelope_figure(analysis: SizingAnalysis) -> go.Figure:
         _demand_vector(
             env.worst_direction,
             required,
-            "torque demand",
+            "Torque demand",
             env.inscribed >= required,
-            "N.m",
+            "N·m",
         )
     )
     return go.Figure(
         data=traces,
         layout=_scene(
-            f"{analysis.vehicle.name}: wheel torque envelope "
+            f"Wheel torque envelope, {analysis.vehicle.name} "
             f"(demand = PidMaxTorqueNm + disturbance, ×{margin:g} margin)",
-            "tau_{} [N.m]",
+            "\u03c4<sub>{}</sub> [N·m]",
         ),
     )
 
@@ -401,7 +395,9 @@ def disturbance_figure(analysis: SizingAnalysis) -> go.Figure:
     plotly.graph_objects.Figure
     """
     budget = analysis.budget
-    names = [t.name for t in budget.terms]
+    # Capitalised here rather than in the budget: these are axis labels on a
+    # figure, and the term names are written for a console table.
+    names = [t.name[:1].upper() + t.name[1:] for t in budget.terms]
     available = analysis.mtq.average_torque_nm * 1e6
     secular = [t.secular_nm * 1e6 for t in budget.terms]
     cyclic = [t.cyclic_nm * 1e6 for t in budget.terms]
@@ -419,26 +415,28 @@ def disturbance_figure(analysis: SizingAnalysis) -> go.Figure:
             go.Bar(
                 x=names,
                 y=secular,
-                name="secular (sizes desaturation)",
+                name="Secular, sizes desaturation",
                 marker_color=SERIES_1,
-                text=[f"secular {v:.3g}" if v > 0.0 else "" for v in secular],
+                text=[f"Secular {v:.3g}" if v > 0.0 else "" for v in secular],
                 textposition="outside",
                 textangle=0,
                 textfont={"size": 10, "color": FONT_COLOR},
                 customdata=[t.formula for t in budget.terms],
-                hovertemplate="%{x} secular<br>%{y:.4g} uN.m<br>%{customdata}<extra></extra>",
+                hovertemplate="<b>%{x}</b><br>Secular %{y:.4g} µN·m<br>%{customdata}"
+                "<extra></extra>",
             ),
             go.Bar(
                 x=names,
                 y=cyclic,
-                name="cyclic (sizes storage)",
+                name="Cyclic, sizes storage",
                 marker_color=SERIES_2,
-                text=[f"cyclic {v:.3g}" if v > 0.0 else "" for v in cyclic],
+                text=[f"Cyclic {v:.3g}" if v > 0.0 else "" for v in cyclic],
                 textposition="outside",
                 textangle=0,
                 textfont={"size": 10, "color": FONT_COLOR},
                 customdata=[t.formula for t in budget.terms],
-                hovertemplate="%{x} cyclic<br>%{y:.4g} uN.m<br>%{customdata}<extra></extra>",
+                hovertemplate="<b>%{x}</b><br>Cyclic %{y:.4g} µN·m<br>%{customdata}"
+                "<extra></extra>",
             ),
         ]
     )
@@ -447,7 +445,7 @@ def disturbance_figure(analysis: SizingAnalysis) -> go.Figure:
     fig.add_hline(
         y=available,
         line={"color": FONT_COLOR, "width": 2, "dash": "dash"},
-        annotation_text=f"MTQ desaturation authority {available:.3g} uN.m "
+        annotation_text=f"Magnetorquer desaturation authority {available:.3g} µN·m "
         "(orbit-average, worst direction, weakest field)",
         # Below the line, not above it: the line sits near the top of the range
         # and an annotation above it lands outside the plotting area.
@@ -464,12 +462,12 @@ def disturbance_figure(analysis: SizingAnalysis) -> go.Figure:
         bargroupgap=0.08,
         title={
             "text": f"Disturbance-torque budget: total {budget.total_nm * 1e6:.3g} "
-            f"uN.m = secular {budget.secular_nm * 1e6:.3g} + cyclic "
-            f"{budget.cyclic_nm * 1e6:.3g} uN.m.<br>The rods must beat the "
+            f"µN·m = secular {budget.secular_nm * 1e6:.3g} + cyclic "
+            f"{budget.cyclic_nm * 1e6:.3g} µN·m.<br>The rods must beat the "
             "<b>secular total</b>, or the wheels saturate whatever their size.",
             "font": {"size": 13, "color": FONT_COLOR},
         },
-        yaxis_title="disturbance torque [uN.m], log scale",
+        yaxis_title="Disturbance torque [µN·m], log scale",
         height=460,
         margin={"l": 60, "r": 20, "t": 70, "b": 40},
         paper_bgcolor=PAPER_BG,
@@ -528,7 +526,7 @@ def margin_figure(report: AnalysisReport, order: list | None = None) -> go.Figur
     fig = go.Figure(
         go.Bar(
             x=clipped,
-            y=[c.name for c in criteria],
+            y=[sentence_case(c.name) for c in criteria],
             orientation="h",
             marker_color=[PASS_COLOR if c.passes else FAIL_COLOR for c in criteria],
             text=labels,
@@ -543,7 +541,7 @@ def margin_figure(report: AnalysisReport, order: list | None = None) -> go.Figur
                 for c in criteria
             ],
             hovertemplate="%{y}<br><b>%{customdata[0]}</b><br>"
-            "threshold %{customdata[1]}<br>measured %{customdata[2]}<extra></extra>",
+            "Threshold %{customdata[1]}<br>Measured %{customdata[2]}<extra></extra>",
         )
     )
     # Zero is the threshold every bar is measured against, so it is drawn solid
@@ -557,7 +555,7 @@ def margin_figure(report: AnalysisReport, order: list | None = None) -> go.Figur
             "true value)",
             "font": {"size": 13, "color": FONT_COLOR},
         },
-        xaxis_title="margin [% of threshold]",
+        xaxis_title="Margin [% of threshold]",
         height=max(360, 34 * len(criteria) + 140),
         margin={"l": 340, "r": 90, "t": 60, "b": 50},
         paper_bgcolor=PAPER_BG,

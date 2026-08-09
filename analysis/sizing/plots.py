@@ -5,7 +5,9 @@ curve: thresholds are drawn on the axes, measured values are annotated where
 they were measured with the word PASS or FAIL, and every title carries the
 configuration name and the verdict. Colour is never load-bearing on its own.
 
-Three figures, each earning its place:
+Four figures, each earning its place, plus :func:`write_text_report` — the
+plain-text rendering, which lives here beside them but is **not** one of them:
+it is the record, so a run that skips the figures still writes it.
 
 * :func:`envelope_figure` — **the headline.** The wheel array's momentum
   zonotope in 3D as a solid hull, with the L2 ellipsoid inscribed in it and the
@@ -27,7 +29,18 @@ Three figures, each earning its place:
 Units at the presentation boundary
 ----------------------------------
 SI internally; the figures use N·m·s, µN·m and deg/s, which is where a reader's
-intuition lives.
+intuition lives, set with the unit symbols rather than the console's dotted
+convention.
+
+The same palette as the page
+----------------------------
+These PNGs are embedded in the HTML report and go into design reviews, so they
+share its rules: titles in title case, axis labels capitalised and carrying their
+units, symbols set as mathtext (``$r_{in}$``, ``$|B|_{min}$``), annotated values
+in a mono face so a column of them aligns, a recessive hairline grid, and the
+**status colours reserved for verdicts** — a category or a threshold line is
+drawn in the series or structure colour, never in the PASS green or FAIL red,
+and every verdict is a word as well as a colour.
 
 References
 ----------
@@ -43,7 +56,6 @@ import numpy as np
 from scipy.spatial import ConvexHull
 
 from analysis.common.plotting import (
-    NEUTRAL_COLOR,
     annotate_measurement,
     plt,
     save,
@@ -53,6 +65,13 @@ from analysis.common.plotting import (
 )
 from analysis.control.vehicle import Vehicle
 from analysis.sizing.assumptions import SizingAssumptions
+from analysis.sizing.interactive import (
+    ELLIPSOID_COLOR,
+    GRID_COLOR,
+    SERIES_1,
+    SERIES_2,
+    STRUCTURE_COLOR,
+)
 from analysis.sizing.report import (
     SizingAnalysis,
     format_budget,
@@ -63,6 +82,40 @@ from analysis.sizing.report import (
 
 #: Default output directory, relative to the repository root.
 DEFAULT_OUTPUT_DIR = Path("build-artifacts/analysis/sizing")
+
+#: The mono face numbers are annotated in, so a column of values on a figure
+#: aligns the way it does in the page's tables. Bundled with matplotlib, so this
+#: adds no font dependency.
+MONO = "DejaVu Sans Mono"
+
+#: Grid weight. A grid is a reading aid behind the data, never a mark competing
+#: with it, so it is a hairline in the page's rule colour rather than a
+#: half-opaque copy of the ink.
+GRID_WIDTH = 0.6
+
+#: Line weight for anything that carries data or a threshold. Matches the 2 px
+#: the interactive figures use, so the two renderings look like one set.
+LINE_WIDTH = 2.0
+
+
+def _upper_first(text: str) -> str:
+    """Capitalise the first character and leave every other one alone.
+
+    ``str.capitalize`` would lower-case the rest, which turns "post-B-dot
+    handover" into "post-b-dot handover" and renames the algorithm.
+    """
+    return text[:1].upper() + text[1:]
+
+
+def _grid(ax, which: str = "major", axis: str = "y") -> None:
+    """A recessive hairline grid, and no frame competing with it."""
+    ax.grid(True, axis=axis, which=which, color=GRID_COLOR, linewidth=GRID_WIDTH)
+    ax.set_axisbelow(True)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color(GRID_COLOR)
+
 
 #: Largest wheel count the 3D zonotope hull is drawn for. The vertex set is
 #: :math:`2^N`, so this bounds the figure's cost; past it the ellipsoid and the
@@ -134,16 +187,16 @@ def envelope_figure(
             vertices[:, 1],
             vertices[:, 2],
             triangles=hull.simplices,
-            color="#1f4e79",
+            color=STRUCTURE_COLOR,
             alpha=0.16,
             linewidth=0.2,
-            edgecolor="#1f4e79",
+            edgecolor=STRUCTURE_COLOR,
         )
     else:  # pragma: no cover - no such vehicle in the repo
         ax.text2D(
             0.02,
             0.02,
-            f"hull omitted: {momentum.n_actuators} wheels is "
+            f"Hull omitted: {momentum.n_actuators} wheels is "
             f"{2**momentum.n_actuators} vertices",
             transform=ax.transAxes,
             fontsize=7,
@@ -155,7 +208,7 @@ def envelope_figure(
         semi[0] * sx,
         semi[1] * sy,
         semi[2] * sz,
-        color="#7a5195",
+        color=ELLIPSOID_COLOR,
         linewidth=0.35,
         rstride=4,
         cstride=4,
@@ -165,24 +218,30 @@ def envelope_figure(
         momentum.inscribed * sy,
         momentum.inscribed * sz,
         alpha=0.22,
-        color="#1a7f37",
+        color=SERIES_1,
         linewidth=0,
     )
     worst = momentum.worst_direction * momentum.inscribed
     ax.plot(
-        [0.0, worst[0]], [0.0, worst[1]], [0.0, worst[2]], color="k", lw=1.6, zorder=10
+        [0.0, worst[0]],
+        [0.0, worst[1]],
+        [0.0, worst[2]],
+        color="k",
+        lw=LINE_WIDTH,
+        zorder=10,
     )
-    ax.text(worst[0], worst[1], worst[2], "  weakest direction", fontsize=8)
-    ax.set_xlabel("h_x [N.m.s]")
-    ax.set_ylabel("h_y [N.m.s]")
-    ax.set_zlabel("h_z [N.m.s]")
+    ax.text(worst[0], worst[1], worst[2], "  Weakest direction", fontsize=8)
+    ax.set_xlabel("$h_x$ [N\u00b7m\u00b7s]")
+    ax.set_ylabel("$h_y$ [N\u00b7m\u00b7s]")
+    ax.set_zlabel("$h_z$ [N\u00b7m\u00b7s]")
     ax.set_box_aspect((1.0, 1.0, 1.0))
     ax.set_title(
-        f"{analysis.vehicle.name}: wheel momentum envelope\n"
-        f"zonotope (blue) reaches {momentum.circumscribed:.3g} at best, "
-        f"guarantees {momentum.inscribed:.3g} (green sphere);\n"
-        f"L2 ellipsoid (purple wireframe) guarantees "
-        f"{momentum.ellipsoid_inscribed:.3g} N.m.s. Sizing uses the green radius.",
+        f"Wheel Momentum Envelope, {analysis.vehicle.name}\n"
+        f"Zonotope (slate hull) reaches {momentum.circumscribed:.3g} at best and "
+        f"guarantees $r_{{in}}$ = {momentum.inscribed:.3g} (blue sphere);\n"
+        f"the L2 ellipsoid (violet wireframe) guarantees "
+        f"{momentum.ellipsoid_inscribed:.3g} N\u00b7m\u00b7s. "
+        "Sizing uses the blue radius.",
         fontsize=9,
     )
     return save(fig, _prepare(out_dir) / "momentum_envelope.png")
@@ -223,38 +282,57 @@ def driver_figure(analysis: SizingAnalysis, out_dir: str | Path | None = None) -
         positions,
         required,
         color=[verdict_color(v) for v in verdicts],
-        label=f"required x {analysis.assumptions.margin:g} margin",
+        label=f"Required \u00d7 {analysis.assumptions.margin:g} margin",
     )
     threshold_line(
         ax2,
         wheels.usable_momentum_nms,
-        f"usable envelope {wheels.usable_momentum_nms:.3g} N.m.s",
-        color="#1a7f37",
+        f"Usable envelope {wheels.usable_momentum_nms:.3g} N\u00b7m\u00b7s",
+        color=STRUCTURE_COLOR,
         ls="-",
+        lw=LINE_WIDTH,
     )
     threshold_line(
         ax2,
         momentum.inscribed,
-        f"wheel hardware r_in {momentum.inscribed:.3g} N.m.s",
+        f"Wheel hardware $r_{{in}}$ {momentum.inscribed:.3g} N\u00b7m\u00b7s",
+        color=SERIES_1,
+        lw=LINE_WIDTH,
     )
     for x, (driver, value, ok) in enumerate(
         zip(drivers, required, verdicts, strict=True)
     ):
         annotate_measurement(
-            ax2, x, value, f"{driver.required_nms:.2e} N.m.s", ok, offset=(4, 6)
+            ax2,
+            x,
+            value,
+            f"{driver.required_nms:.2e} N\u00b7m\u00b7s",
+            ok,
+            offset=(4, 6),
         )
     ax2.set_yscale("log")
     ax2.set_xticks(positions)
-    ax2.set_xticklabels([d.name.replace(" ", "\n", 1) for d in drivers], fontsize=8)
-    ax2.set_ylabel("momentum [N.m.s], log scale")
+    # "D1b post-B-dot handover" onto two lines, the second capitalised: a label
+    # is a label, not the middle of a sentence.
+    ax2.set_xticklabels(
+        [
+            f"{d.name.split(' ', 1)[0]}\n{_upper_first(d.name.split(' ', 1)[1])}"
+            if " " in d.name
+            else d.name
+            for d in drivers
+        ],
+        fontsize=8,
+    )
+    ax2.set_ylabel("Momentum [N\u00b7m\u00b7s], log scale")
     ax2.set_ylim(min(required) / 5.0, momentum.inscribed * 5.0)
-    ax2.grid(True, axis="y", which="both", alpha=0.3)
+    _grid(ax2, which="both")
     ax2.legend(fontsize=8, loc="lower left")
     verdict_title(
         ax2,
-        f"{analysis.vehicle.name}: required momentum vs what the vehicle may use",
+        f"Required Momentum vs What the Vehicle May Use, {analysis.vehicle.name}",
         passed,
-        "a bar above the green line is a driver the certified envelope cannot hold",
+        "A bar above the usable-envelope line is a driver the certified "
+        "envelope cannot hold",
     )
     return save(fig, _prepare(out_dir) / "momentum_drivers.png")
 
@@ -283,13 +361,16 @@ def disturbance_figure(
     cyclic = np.array([t.cyclic_nm for t in terms]) * 1e6
 
     fig, (ax, ax2) = plt.subplots(1, 2, figsize=(12.5, 5.0))
-    ax.bar(positions, secular, color="#b3261e", label="secular (sizes desaturation)")
+    # Series colours, not verdict ones: secular and cyclic are two categories of
+    # the same measurement, and drawing a category in the FAIL red would read as
+    # a verdict this bar does not carry.
+    ax.bar(positions, secular, color=SERIES_1, label="Secular (sizes desaturation)")
     ax.bar(
         positions,
         cyclic,
         bottom=secular,
-        color="#1f4e79",
-        label="cyclic (sizes storage)",
+        color=SERIES_2,
+        label="Cyclic (sizes storage)",
     )
     for x, term in enumerate(terms):
         ax.text(
@@ -299,15 +380,18 @@ def disturbance_figure(
             ha="center",
             va="bottom",
             fontsize=8,
+            family=MONO,
         )
     ax.set_xticks(positions)
-    ax.set_xticklabels([t.name.replace(" ", "\n") for t in terms], fontsize=8)
-    ax.set_ylabel("disturbance torque [uN.m]")
-    ax.grid(True, axis="y", alpha=0.3)
+    ax.set_xticklabels(
+        [_upper_first(t.name).replace(" ", "\n") for t in terms], fontsize=8
+    )
+    ax.set_ylabel("Disturbance torque [\u00b5N\u00b7m]")
+    _grid(ax)
     ax.legend(fontsize=8)
     ax.set_title(
-        f"{analysis.vehicle.name} — disturbance-torque budget\n"
-        f"total {budget.total_nm * 1e6:.3g} uN.m = secular "
+        f"Disturbance-Torque Budget, {analysis.vehicle.name}\n"
+        f"Total {budget.total_nm * 1e6:.3g} \u00b5N\u00b7m = secular "
         f"{budget.secular_nm * 1e6:.3g} + cyclic {budget.cyclic_nm * 1e6:.3g}",
         fontsize=9,
     )
@@ -319,17 +403,17 @@ def disturbance_figure(
     ax2.bar([0, 1], [required, available], color=[verdict_color(ok)] * 2)
     ax2.set_xticks([0, 1])
     ax2.set_xticklabels(
-        [f"secular x {margin:g} margin", "rod average authority"], fontsize=9
+        [f"Secular \u00d7 {margin:g} margin", "Rod average authority"], fontsize=9
     )
     ax2.set_yscale("log")
-    ax2.set_ylabel("torque [uN.m], log scale")
-    ax2.grid(True, axis="y", which="both", alpha=0.3)
-    annotate_measurement(ax2, 1, available, f"{available:.3g} uN.m", ok)
+    ax2.set_ylabel("Torque [\u00b5N\u00b7m], log scale")
+    _grid(ax2, which="both")
+    annotate_measurement(ax2, 1, available, f"{available:.3g} \u00b5N\u00b7m", ok)
     verdict_title(
         ax2,
-        "M1 desaturation authority",
+        "M1 Desaturation Authority",
         ok,
-        "the rods must beat the secular torque, or the wheels saturate\n"
+        "The rods must beat the secular torque, or the wheels saturate\n"
         "whatever their size",
     )
     return save(fig, _prepare(out_dir) / "disturbance_budget.png")
@@ -365,17 +449,17 @@ def magnetorquer_figure(
     ax.bar([0, 1], [required, removable], color=[verdict_color(ok)] * 2)
     ax.set_xticks([0, 1])
     ax.set_xticklabels(
-        [f"tip-off momentum x {margin:g}", "removable in the budget"], fontsize=9
+        [f"Tip-off momentum \u00d7 {margin:g}", "Removable in the budget"], fontsize=9
     )
     ax.set_yscale("log")
-    ax.set_ylabel("momentum [N.m.s], log scale")
-    ax.grid(True, axis="y", which="both", alpha=0.3)
-    annotate_measurement(ax, 1, removable, f"{removable:.3g} N.m.s", ok)
+    ax.set_ylabel("Momentum [N\u00b7m\u00b7s], log scale")
+    _grid(ax, which="both")
+    annotate_measurement(ax, 1, removable, f"{removable:.3g} N\u00b7m\u00b7s", ok)
     verdict_title(
         ax,
-        f"{vehicle.name} — M2 detumble authority",
+        f"M2 Detumble Authority, {vehicle.name}",
         ok,
-        f"implied fast-phase duration {mtq.implied_detumble_s:.0f} s of a "
+        f"Implied fast-phase duration {mtq.implied_detumble_s:.0f} s of a "
         f"{mtq.detumble_budget_s:.0f} s budget",
     )
 
@@ -393,29 +477,76 @@ def magnetorquer_figure(
     ax2.bar(
         np.arange(3),
         rates,
-        color=[verdict_color(exit_ok), NEUTRAL_COLOR, NEUTRAL_COLOR],
+        color=[verdict_color(exit_ok), SERIES_1, SERIES_1],
     )
     threshold_line(
         ax2,
         rates[2],
-        f"noise floor at |B|_min ({rates[2]:.2f} deg/s)",
+        f"Noise floor at $|B|_{{min}}$ ({rates[2]:.2f} deg/s)",
+        # A threshold is structure, not a verdict: drawing it in the status red
+        # would read as a failure the line does not assert.
+        color=STRUCTURE_COLOR,
+        lw=LINE_WIDTH,
     )
     for x, value in enumerate(rates):
-        ax2.text(x, value, f"{value:.2f}", ha="center", va="bottom", fontsize=9)
+        ax2.text(
+            x, value, f"{value:.2f}", ha="center", va="bottom", fontsize=9, family=MONO
+        )
     ax2.set_xticks(np.arange(3))
     ax2.set_xticklabels(
-        ["DetumbleExitRadps", "floor at |B|_mean", "floor at |B|_min"], fontsize=8
+        ["DetumbleExitRadps", "Floor at $|B|_{mean}$", "Floor at $|B|_{min}$"],
+        fontsize=8,
     )
-    ax2.set_ylabel("body rate [deg/s]")
-    ax2.grid(True, axis="y", alpha=0.3)
+    ax2.set_ylabel("Body rate [deg/s]")
+    _grid(ax2)
     ax2.legend(fontsize=8, loc="upper left")
     verdict_title(
         ax2,
-        "M3 B-dot measurement floor",
+        "M3 B-dot Measurement Floor",
         exit_ok,
-        "an exit threshold under the floor declares detumble complete on noise",
+        "An exit threshold under the floor declares detumble complete on noise",
     )
     return save(fig, _prepare(out_dir) / "magnetorquer_sizing.png")
+
+
+def write_text_report(
+    analysis: SizingAnalysis,
+    out_dir: str | Path | None = None,
+    config_path: str | Path = "",
+) -> Path:
+    """Write ``<out_dir>/sizing_report.txt``: criteria, budget and justifications.
+
+    Split out of :func:`write_all` because the rendered report is **not** a
+    figure: it is the record, and a run that skips the figures must still leave
+    it behind. The CLI calls this directly under ``--no-plots``.
+
+    Parameters
+    ----------
+    analysis : SizingAnalysis
+        The computed analysis.
+    out_dir : str or pathlib.Path, optional
+        Destination directory; created if absent.
+    config_path : str or pathlib.Path, optional
+        The config the vehicle came from, recorded in the report's provenance.
+
+    Returns
+    -------
+    pathlib.Path
+        The file written.
+    """
+    report = sizing_report(
+        analysis.vehicle, config_path, analysis.assumptions, analysis
+    )
+    target = _prepare(out_dir) / "sizing_report.txt"
+    target.write_text(
+        report.format_text()
+        + "\n\n"
+        + format_budget(analysis)
+        + "\n\n"
+        + format_derived(analysis)
+        + "\n"
+    )
+    return target
 
 
 def write_all(
@@ -453,14 +584,4 @@ def write_all(
         disturbance_figure(analysis, directory),
         magnetorquer_figure(analysis, directory),
     ]
-    report = sizing_report(vehicle, config_path, analysis.assumptions, analysis)
-    target = directory / "sizing_report.txt"
-    target.write_text(
-        report.format_text()
-        + "\n\n"
-        + format_budget(analysis)
-        + "\n\n"
-        + format_derived(analysis)
-        + "\n"
-    )
-    return [*figures, target]
+    return [*figures, write_text_report(analysis, directory, config_path)]

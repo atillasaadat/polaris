@@ -327,3 +327,41 @@ before starting FDIR, estimator, or requirements work.
   a residual, the review question is "what ablation established that?" — a
   third independent implementation makes that ablation a two-minute
   experiment.
+
+## The same number written twice (P60, review)
+
+- **A quantity that exists on both sides of the flight/sim boundary drifts
+  silently, and no test you would think to write catches it.** Several physical
+  values live twice by design: as sim/hardware truth (`config/hardware/**`, a
+  `spacecraft.*` field) and as the `flight.*` parameter the FSW actually runs on.
+  Edit one and leave the other and *nothing happens*: the build is clean, the
+  suite is green, the SITL rows pass, and the flight software believes something
+  the vehicle is not. Push 60 re-sized the reference wheel to
+  `max_torque_nm: 0.002` and left `WheelMaxTorqueNm` at `0.025` — an FSW that
+  would command **12.5x more torque than the wheel can deliver**, with every
+  torque margin computed from that parameter optimistic by the same factor, and
+  saturation reported nowhere because as far as the FSW knew it never saturated.
+  It was caught by luck: a new analysis tool happened to read both. The earlier
+  `MtqAxesBody` vs `dipole_axis` mismatch is the same class one level down.
+  The rule: **every such pairing is enforced in `tools/configc`**, where the two
+  halves are in the same room and the check runs on every SITL row and every
+  flight parameter build — never in a unit test (which proves the drift is
+  *detectable*, not that it is *impossible to commit*), and never as a comment
+  asking the next engineer for care. When you add a `flight.*` parameter, the
+  review question is "what else in the config says this number?"
+- **The escape hatch has to be designed, or the check gets deleted instead of
+  obeyed.** Divergence is sometimes the design — the onboard model is
+  deliberately lower fidelity than truth (`sim/CLAUDE.md`), and derating a unit
+  below its catalog rating is a real decision. A check with no legitimate escape
+  is one the next engineer disables wholesale, taking the eleven cases that were
+  working with it. So divergence is *declarable* in the config
+  (`spacecraft.fsw_parameter_divergence`) — and deliberately not as a bare
+  opt-out: the entry restates the truth value it was written against, so the
+  waiver **expires when the hardware does** rather than outliving its subject,
+  and a waiver naming a parameter no check covers is itself an error. A skipped
+  check that can never come back is how a mechanism rots into decoration.
+- **"Mismatch" is not an error message.** A cross-check that fires costs the
+  reader more than it saves unless it names *both* values, *both* source
+  locations (which YAML, which key, which installed units), what physically goes
+  wrong if they stay apart, and the two ways out — fix the stale side, or declare
+  the divergence, with the declaration spelled out ready to paste.

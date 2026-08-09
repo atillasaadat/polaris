@@ -166,6 +166,42 @@ class InertiaTensor(_Strict):
     iyz: float = 0.0
 
 
+class ParameterDivergence(_Strict):
+    """A deliberate, declared disagreement between an FSW parameter and sim truth.
+
+    The compiler cross-checks every ``flight.*`` parameter that restates a
+    hardware-catalog or ``spacecraft.*`` number (design doc §19.3), because that
+    drift is invisible: nothing crashes and no test fails, the flight software
+    simply believes something the vehicle is not. But divergence is sometimes the
+    design — derating a wheel below its catalog peak is a real decision — so the
+    check has an escape hatch, and this is it.
+
+    It is deliberately *not* a bare opt-out. ``catalog_value`` restates the
+    truth-side number the divergence was written against, so the exemption
+    **expires when the hardware does**: re-size the part and the compiler fails
+    again, naming this entry, instead of silently carrying a waiver granted for a
+    unit no longer installed. A skipped check that never comes back is how the
+    next engineer ends up disabling the whole mechanism.
+    """
+
+    catalog_value: float | list[float] = Field(
+        description=(
+            "the sim-side value this divergence was declared against — the "
+            "catalog key or spacecraft.* field the check reads. The compiler "
+            "verifies it still matches, so the waiver lapses when the truth "
+            "changes rather than outliving it"
+        )
+    )
+    reason: str = Field(
+        min_length=20,
+        description=(
+            "why this vehicle deliberately flies a value other than truth, as a "
+            "sentence a reviewer can act on ('wheel derated to 60% of catalog "
+            "peak pending thermal qualification'), not a label"
+        ),
+    )
+
+
 class Spacecraft(_Strict):
     """Vehicle definition: mass properties + sensor/actuator suite + gains (§19.1)."""
 
@@ -193,6 +229,16 @@ class Spacecraft(_Strict):
             "free to drift. The compiler validates this map against the "
             "dictionary in both directions, so a typo and a missing value are "
             "both compile-time failures"
+        ),
+    )
+    fsw_parameter_divergence: dict[str, ParameterDivergence] = Field(
+        default_factory=dict,
+        description=(
+            "declared exemptions from the §19.3 flight/sim cross-checks, keyed by "
+            "the same fully-qualified parameter name as fsw_parameters. Empty on "
+            "a vehicle whose flight parameters describe the hardware it carries, "
+            "which is the normal case; see ParameterDivergence for why an entry "
+            "has to name the truth value it diverges from"
         ),
     )
     drag_area_m2: float = Field(

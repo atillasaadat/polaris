@@ -156,7 +156,7 @@ def test_every_derived_parameter_carries_its_justification(analysis, page):
     assert analysis.derived
     for parameter in analysis.derived:
         assert parameter.name in page
-        assert tex_html(parameter.formula) in page
+        assert tex_html(parameter.formula, parameter.formula_tex) in page
         for half in _both_halves(parameter.reasoning):
             assert half in page
 
@@ -174,18 +174,55 @@ def test_the_page_carries_no_em_dash(page):
 
 
 def test_every_formula_is_typeset_rather_than_approximated(analysis, page):
-    """Formulae render as LaTeX, and the page still fetches nothing to do it.
+    """Formulae are marked for KaTeX, and the library that sets them is in the file.
 
-    ``tests/analysis/test_sizing_texmath.py`` owns the coverage of the LaTeX
-    table; what matters here is that the page uses it, and that using it did
-    not smuggle in a remote asset (the fetch test above would catch a CDN, this
-    catches an SVG that was never rendered at all).
+    ``tests/analysis/test_sizing_texmath.py`` owns which objects must carry
+    LaTeX and whether that LaTeX renders; what matters here is that the page
+    actually emits the markup and ships the renderer with it. A page that marks
+    up seventy equations and forgets the script is a page of raw ASCII.
     """
     for parameter in analysis.derived:
-        assert tex_html(parameter.formula).startswith('<img class="tex"')
+        assert tex_html(parameter.formula, parameter.formula_tex) in page
     for term in analysis.budget.terms:
-        assert tex_html(term.formula) in page
-    assert page.count('<img class="tex"') >= len(analysis.derived)
+        assert tex_html(term.formula, term.formula_tex) in page
+    assert page.count('<span class="tex" data-tex=') >= len(analysis.derived)
+    assert "katex.render(" in page
+
+
+def test_the_typesetting_library_and_its_fonts_are_inlined_whole(page):
+    """KaTeX's stylesheet, script and every face it needs travel inside the file.
+
+    The stylesheet ships eight ``@font-face`` rules whose sources are relative
+    paths. Left alone, each is a fetch the emailed page cannot make, so each is
+    rewritten to a ``data:`` URI and any rule for a face that is not vendored is
+    dropped rather than left pointing at nothing.
+    """
+    assert page.count("@font-face") == 8
+    assert "url(fonts/" not in page
+    assert page.count("src:url(data:font/woff2;base64,") == 8
+    # The KaTeX license requires the notice to travel with the source, and the
+    # minified bundle carries it; its absence means the bundle is not really here.
+    assert "katex" in page.lower()
+
+
+def test_a_formula_with_no_latex_is_visibly_plain_rather_than_broken(
+    analysis, report, tmp_path
+):
+    """The degradation path, rendered through the real page writer.
+
+    A page that silently sets an unconvertible formula as pseudo-mathematics is
+    worse than one that admits it cannot typeset it, so the marker for "this had
+    no LaTeX" is a different element and this asserts the page emits it.
+    """
+    stripped = dataclasses.replace(analysis.budget.terms[0], formula_tex="")
+    budget = dataclasses.replace(
+        analysis.budget, terms=(stripped, *analysis.budget.terms[1:])
+    )
+    page = write_html(
+        dataclasses.replace(analysis, budget=budget), report, tmp_path
+    ).read_text(encoding="utf-8")
+    assert f'<span class="m">{math_html(stripped.formula)}</span>' in page
+    assert f'data-tex="{stripped.formula}"' not in page
 
 
 def test_no_browser_writes_the_page_without_opening_one(

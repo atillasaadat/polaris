@@ -209,7 +209,7 @@ def test_wheel_torque_is_judged_on_the_guaranteed_radius_not_the_body_axis(
     wheel changed from RW-X to RW-X in Push 60 and the ratio did not.
     """
     report = sizing_report(vehicle, reference_config)
-    torque = _criterion(report, "wheel torque")
+    torque = _criterion(report, "wheel torque, guaranteed")
     tau = vehicle.wheel_max_torque_nm
     assert torque.passes
     assert torque.measured == pytest.approx(4.0 * tau / np.sqrt(6.0), rel=1e-3)
@@ -219,7 +219,9 @@ def test_wheel_torque_is_judged_on_the_guaranteed_radius_not_the_body_axis(
     # scaled off the vehicle rather than a literal that stops biting on a
     # smaller wheel.
     weak = dataclasses.replace(vehicle, wheel_max_torque_nm=0.25 * tau)
-    assert not _criterion(sizing_report(weak, reference_config), "wheel torque").passes
+    assert not _criterion(
+        sizing_report(weak, reference_config), "wheel torque, guaranteed"
+    ).passes
 
 
 def test_the_commanded_torque_limit_may_not_exceed_the_installed_wheel(
@@ -233,7 +235,7 @@ def test_the_commanded_torque_limit_may_not_exceed_the_installed_wheel(
     nothing caught it; this is what catches it now.
     """
     report = sizing_report(vehicle, reference_config)
-    commanded = _criterion(report, "commanded torque limit")
+    commanded = _criterion(report, "commanded wheel torque")
     assert commanded.sense == "max"
     assert commanded.passes
     assert commanded.measured == vehicle.wheel_max_torque_nm
@@ -245,7 +247,7 @@ def test_the_commanded_torque_limit_may_not_exceed_the_installed_wheel(
         vehicle, wheel_max_torque_nm=2.0 * vehicle.wheel_catalog_torque_nm
     )
     assert not _criterion(
-        sizing_report(optimistic, reference_config), "commanded torque limit"
+        sizing_report(optimistic, reference_config), "commanded wheel torque"
     ).passes
 
 
@@ -259,7 +261,7 @@ def test_a_deep_derate_warns_rather_than_fails(vehicle, reference_config):
         vehicle, wheel_max_torque_nm=0.1 * vehicle.wheel_catalog_torque_nm
     )
     report = sizing_report(derated, reference_config)
-    assert _criterion(report, "commanded torque limit").passes
+    assert _criterion(report, "commanded wheel torque").passes
     assert [w for w in report.warnings if "derate" in w]
 
 

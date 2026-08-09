@@ -35,7 +35,11 @@
 > browser, and exits non-zero on any FAIL (`--no-browser` to write without
 > opening — what CI and the tests use; `--print` to also get the console report,
 > which is unchanged in content and still written to `<out>/sizing_report.txt`
-> either way). The page is the default because the headline result is a 3D
+> either way, `--no-plots` included, since the text rendering is the record and
+> not a figure). It runs on a config **anywhere on disk**: the hardware catalog
+> resolves to the sibling `config/hardware` when there is one and to this
+> repository's otherwise, located relative to the package rather than the working
+> directory. The page is the default because the headline result is a 3D
 > achievable set with the certified ceiling nested inside the hardware one, and
 > that is a shape a reviewer has to rotate rather than a table they can read.
 > It needs no bindings for the
@@ -55,6 +59,8 @@ Python tools for mission analysis: RW/CMG momentum budgeting & sizing, detumble-
 Dependencies live in the **`analysis` group** of `pyproject.toml` (`uv sync --group analysis`), deliberately not a default group: this is a ground-side lane, not build tooling. It is not optional for the test suite, though — the margin requirement REQ-ACTL-006 is verified by `uv run --group analysis pytest`, and CI runs it that way. The group is **numpy, scipy, matplotlib and plotly** (plus the config compiler's pydantic/pyyaml). Adding a domain library needs a reason bigger than convenience: `analysis/control/` owns its margin extraction and Gramians in ~200 lines of numpy because the library answer for a conditionally stable loop is a number the requirement cannot be written on anyway. What owning it costs is the obligation to prove it — see the closed-form validation cases in `tests/analysis/test_control_margins.py`.
 
 **plotly is the one library admitted on the opposite argument, and the boundary is that it renders nothing but what numpy computed.** `analysis/sizing/` reports a three-dimensional achievable set with a second surface nested inside it, and the reader has to rotate that to believe it; hand-rolling an interactive WebGL viewer is far more code than the dependency costs, and unlike a margin algorithm there is no correctness claim to own — a wrong picture of a right number is a rendering bug, not a wrong answer. It is emitted with `include_plotlyjs="inline"` so the report is one self-contained file that works offline and fetches nothing at runtime, and it stays on the ground-side lane: no flight or sim code imports it. The rule this keeps intact is the one above it — **the structured report object is still the verdict**, and the tests assert on that, never on the page.
+
+**KaTeX is admitted on the same argument and vendored rather than depended on.** The page typesets its formulae, and the alternatives were a lookup table feeding matplotlib mathtext (which is what Push 60 shipped, and which rotted the moment a formula string was reworded) or hand-rolled Unicode that cannot set a fraction. KaTeX 0.16.11 is committed **verbatim** under `analysis/sizing/vendor/katex/` with a `PROVENANCE.md` recording the version, the jsdelivr URLs and the MIT licence — the same convention §3.7 sets for external reference data, and for the same reason: the page inlines it, so the committed bytes must be reproducible from their source. It is not a Python dependency and adds nothing to the `analysis` group. The boundary is the same one plotly is held to: **it renders, it never computes.** Every symbol it sets comes from a `formula_tex` written beside the ASCII formula on the object that owns it, so a formula edited upstream carries its LaTeX with it, and one without a LaTeX form renders as plain text rather than as a guess.
 
 **`PYTHONPATH=tools` is not optional on these commands.** Every package here resolves its vehicle through
 `configc` (§19.3), which lives in `tools/` and is not an installed distribution — `pytest.ini` puts it on the

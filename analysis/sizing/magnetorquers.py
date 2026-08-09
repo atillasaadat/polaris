@@ -291,6 +291,11 @@ def criteria(
                 f"{sizing.field_min_t * 1e6:.1f} uT * {vehicle.mtq_duty_factor:g}; the "
                 "secular half of the disturbance budget is what it must beat"
             ),
+            formula="eta * m_in * |B|_min * duty",
+            formula_tex=(
+                r"\bar\tau_{\mathrm{mtq}} = \eta\,m_{\mathrm{in}}\,"
+                r"|B|_{\min}\,d_{\mathrm{duty}}"
+            ),
         ),
         Criterion(
             name="M2 detumble authority (momentum removable in budget)",
@@ -319,6 +324,10 @@ def criteria(
                 f"{np.degrees(floor.rate_worst_radps):.2f} deg/s at the orbit's "
                 f"weakest field, {np.degrees(floor.rate_mean_radps):.2f} deg/s at "
                 "the mean. Below the floor B-dot commands on noise"
+            ),
+            formula="floor = sigma*sqrt(2)/(dt*|B|)",
+            formula_tex=(
+                r"\omega_{\mathrm{floor}} = " r"\frac{\sigma\sqrt{2}}{\Delta t\,|B|}"
             ),
         ),
     ]

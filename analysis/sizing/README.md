@@ -21,9 +21,10 @@ browser.** The page is **light-themed unconditionally** — there is no
 `prefers-color-scheme` override, and the plotly figures set their own light
 background, axis and grid colours rather than inheriting. Two reviewers reading
 the same file see the same document; a design-review artifact whose appearance
-depends on the reader's OS setting is a liability. It is one self-contained file — plotly.js and the static figures are
-inlined, and there is no external stylesheet, web font or CDN, so it works
-offline and survives being emailed.
+depends on the reader's OS setting is a liability. It is one self-contained file — plotly.js, KaTeX and its
+fonts, and the static figures are all inlined, and there is no external
+stylesheet, remote web font or CDN, so it works offline and survives being
+emailed.
 
 **The hero is the thesis.** The page opens with one sentence saying what the
 analysis concluded — on a pass, that every sizing requirement fits inside the
@@ -40,7 +41,7 @@ vehicle, the verdict and the provenance; a section nav; the criteria table,
 control tuning), led inside each group by the tightest margin and sortable
 within it, with each margin shown in absolute *and* percentage terms in one
 cell; the remaining figures; the disturbance budget; the derived tuning with its
-justifications; and the assumptions and warnings.
+justifications; the nomenclature; and the assumptions and warnings.
 
 Typographically it is a memo, not an application: a serif body face, a
 sans display face for headings and eyebrows, and **every number, unit and
@@ -60,30 +61,61 @@ this report exists, they are simply one click away rather than between the
 reader and the next row.
 
 The console strings are set for a fixed-width terminal, so the page typesets
-them on the way in. **Formulae are real LaTeX**, rendered server-side to a tight
-transparent SVG by matplotlib mathtext in [`texmath.py`](texmath.py) and
-embedded as a `data:` URI, baseline-aligned and sized in `em` so an equation
-scales with the text around it. That keeps typeset mathematics without MathJax,
-KaTeX or a web font, so the page stays one offline file. The LaTeX comes from a
-lookup table keyed on the formula strings the report emits rather than from a
-parser guessing at ASCII math, and `tests/analysis/test_sizing_texmath.py`
-asserts the table covers every formula the analysis produces.
+them on the way in. **Formulae are real LaTeX, typeset by KaTeX**, and the
+LaTeX is carried by the object that carries the formula: every `MomentumDriver`,
+`DerivedParameter`, disturbance term, `SpecItem` and `Criterion` that has a
+closed form has a `formula_tex` written beside its ASCII string, at the point of
+construction. [`texmath.py`](texmath.py) only marks it up and ships the
+renderer; it reverse-engineers nothing.
+
+That is the architecture and not just a populated table. The previous design
+keyed a lookup off the ASCII formula strings, and it rotted every time a formula
+was reworded: the table matched nothing, the page still rendered, and the reader
+got raw words where mathematics was promised. Carrying the LaTeX on the object
+makes the two impossible to separate, and
+`tests/analysis/test_sizing_texmath.py` asserts every object that renders a
+formula has one — and then renders every string through the **vendored KaTeX
+itself** (under Node, skipped where there is none) so a construct KaTeX refuses
+fails the suite rather than a browser.
+
+KaTeX 0.16.11 is vendored verbatim under
+[`vendor/katex/`](vendor/katex/PROVENANCE.md) — the library, its stylesheet and
+the eight WOFF2 faces the report's mathematics reaches. All of it is inlined
+into the page, fonts base64'd into their `@font-face` rules, so the page still
+fetches nothing at runtime. That costs about 460 KB on a file already measured in
+megabytes; it buys real fractions, real radicals, and a **3×3 inertia tensor**
+in the provenance strip rather than the string `diag(0.12, 0.12, 0.1)`. The
+matrix is not decoration: every per-axis result on the page is valid *because*
+the products of inertia are zero, so the page shows the thing the analysis
+depends on instead of asserting it.
+
+**A formula with no `formula_tex` renders as plain styled text** — legible,
+visibly untypeset, and never pseudo-mathematics assembled from a guess. The same
+plain form is what a reader with JavaScript disabled sees for every formula: the
+ASCII is the element's content and the LaTeX rides in `data-tex`, and the page's
+script swaps one for the other on load.
 
 Everything else goes through [`mathfmt.py`](mathfmt.py): `N.m.s` becomes N·m·s,
 `wn` becomes ω<sub>n</sub>. It is conservative by construction, anything it does
 not recognise is passed through unchanged rather than guessed at, every string
-is HTML-escaped *before* substitution, and it is also the fallback whenever a
-formula has no LaTeX form or mathtext refuses one. Em dashes and `**emphasis**`
-are console conventions and are dropped at render time. **The report objects and
-the plain-text rendering keep their original strings**; nothing about the
-verdict changes.
+is HTML-escaped *before* substitution, and it is what the no-LaTeX and no-script
+cases above fall back to. Em dashes and `**emphasis**` are console conventions
+and are dropped at render time. **The report objects and the plain-text
+rendering keep their original strings**; nothing about the verdict changes.
+
+**Every symbol is defined.** A **Nomenclature** section near the end lists each
+symbol the page sets with its meaning, its units, and — where the symbol names a
+quantity the vehicle commits to — the flight parameter that carries it
+(`h_envelope` → `MomentumEnvelopeNms`, `k` → `BdotGainNms`). That last column is
+the link a reviewer most needs and the one no formula carries.
 
 | Flag | Effect |
 |---|---|
 | `--no-browser` | write the page, open nothing. What CI and the tests use. |
 | `--print` | also print the plain-text report, budget and justifications to stdout. |
 | `--out DIR` | where everything lands (default `build-artifacts/analysis/sizing`). |
-| `--no-plots` | skip the matplotlib figures; the HTML is still written, without the two static figures it would embed. |
+| `--no-plots` | skip the matplotlib figures; the HTML page **and** the text report are still written, the page without the two static figures it would embed. |
+| `--hardware DIR` | the hardware catalog `model_id`s resolve in. Defaults to `config/hardware` beside the config, and falls back to this repository's — so a config anywhere on disk works without the flag. |
 
 The plain-text rendering is always written to `<out>/sizing_report.txt` whether
 or not you ask for it on the console — it is the record, and it is what the
@@ -93,9 +125,20 @@ a problem arithmetic already knew about.
 
 ## Pointing it at your own vehicle
 
-Nothing in this package is specific to any spacecraft. Everything it can read
-comes from your `config/spacecraft/*.yaml` and the `config/hardware/` entries
-your `model_id`s resolve to:
+Nothing in this package is specific to any spacecraft, and
+`tests/analysis/test_sizing_modularity.py` is what keeps that true: it sizes a
+variant vehicle with a different name, mass and inertia and asserts that no
+constant of the committed reference survives into the report or the page.
+
+Your config does not have to live in this tree. The hardware catalog is looked
+for beside it first (the `config/spacecraft`, `config/hardware` sibling layout),
+then in this repository — located relative to the installed package, not the
+working directory — so `python -m analysis.sizing /anywhere/my_sat.yaml` works
+with no flag. `--hardware DIR` overrides both, and when neither exists the error
+names both paths it tried.
+
+Everything the tool reads comes from your `config/spacecraft/*.yaml` and the
+`config/hardware/` entries your `model_id`s resolve to:
 
 | From the config | Used for |
 |---|---|
@@ -152,7 +195,7 @@ print(report.format_text())
 | **D3 secular accumulation** | Can they hold what accumulates between desaturations, `τ_sec·T_desat`? |
 | **D4 slew agility** | Can they supply `|J·ω_slew|` for a commanded slew? *Only judged if you declare a slew rate.* |
 | **wheel torque** | Can the array deliver the commanded body torque **in every direction**, plus disturbance rejection? |
-| **commanded torque limit** | Does the flight parameter `WheelMaxTorqueNm` fit inside the installed wheel's catalog `max_torque_nm`? |
+| **commanded wheel torque within hardware capability** | Does the flight parameter `WheelMaxTorqueNm` fit inside the installed wheel's catalog `max_torque_nm`? **A margin of 0 % is the intended state here** — see below. |
 | **oversizing factor** | Is the capability within 10× the largest driver — or is this the wrong unit class? |
 
 Each momentum criterion is judged against the **usable** envelope,
@@ -173,6 +216,13 @@ torque margin built on it is optimistic by the same factor. The reverse, a fligh
 limit *below* the catalog value, is legitimate derating and passes; a gap of more
 than 2× raises a report **warning** instead, because authority the vehicle never
 commands is mass and power it is carrying for nothing.
+
+**Zero margin on this row is the target, not a near miss.** It is the only
+criterion here where equality is the design intent: `WheelMaxTorqueNm` equal to
+the catalog `max_torque_nm` means the design commands exactly the wheel it
+installed. Below is derating, above is broken, and the 30 % sizing convention
+does not apply — that convention is about a capability beating a driver, and
+this row compares a parameter against the hardware it describes.
 
 ### Magnetorquers
 
