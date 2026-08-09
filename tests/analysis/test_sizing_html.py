@@ -115,11 +115,16 @@ def test_a_failing_design_is_labelled_in_words_not_only_in_colour(
     assert not weak_report.passes  # asserted on the object, not the markup
 
     text = write_html(weak_analysis, weak_report, tmp_path).read_text(encoding="utf-8")
-    assert 'class="verdict-card fail"' in text
+    assert 'class="statement fail"' in text
     assert 'class="pill fail"' in text
     assert f"{len(weak_report.failures())} failing criteria" in text
     # The individual rows, not only the headline: a shaded row is not a verdict.
     assert text.count(">FAIL<") >= len(weak_report.failures())
+    # The thesis names the count and the worst criterion, so a reader knows
+    # what failed without opening the table.
+    worst = min(weak_report.failures(), key=lambda c: c.margin_pct)
+    assert f"{len(weak_report.failures())} criteria do not close" in text
+    assert math_html(sentence_case(worst.name)) in text
 
 
 def test_a_config_name_with_html_metacharacters_is_escaped(vehicle, analysis, tmp_path):

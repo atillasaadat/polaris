@@ -25,13 +25,33 @@ depends on the reader's OS setting is a liability. It is one self-contained file
 inlined, and there is no external stylesheet, web font or CDN, so it works
 offline and survives being emailed.
 
-It is laid out as an engineering document: a sticky header carrying the vehicle,
-the verdict and the provenance; a section nav; the rotatable momentum and torque
-envelopes; the disturbance budget; the criteria table, **grouped by family**
-(wheel momentum, wheel torque, magnetorquer authority, control tuning) and
-sortable within each group, with each margin shown in absolute *and* percentage
-terms in one cell; the assumptions and warnings; and the derived tuning with its
-justifications.
+**The hero is the thesis.** The page opens with one sentence saying what the
+analysis concluded — on a pass, that every sizing requirement fits inside the
+capability envelope with the design margin applied; on a failure, how many
+criteria do not close and which is worst — and directly beneath it the 3D
+momentum envelope, which is that sentence made visible: the requirement vectors
+drawn inside the nested capability surfaces. The vehicle summary follows as a
+compact spec strip rather than leading, because a reviewer arrives wanting the
+answer and reads the configuration once the answer is in hand.
+
+The rest is laid out as an engineering document: a sticky header carrying the
+vehicle, the verdict and the provenance; a section nav; the criteria table,
+**grouped by family** (wheel momentum, wheel torque, magnetorquer authority,
+control tuning), led inside each group by the tightest margin and sortable
+within it, with each margin shown in absolute *and* percentage terms in one
+cell; the remaining figures; the disturbance budget; the derived tuning with its
+justifications; and the assumptions and warnings.
+
+Typographically it is a memo, not an application: a serif body face, a
+sans display face for headings and eyebrows, and **every number, unit and
+identifier in a monospace face with tabular figures**, so a column of figures
+aligns and a parameter name never reads as prose. One structural hue, a deep
+slate, carries the section rules, table heads and card spines and is never used
+for data. Status colour is reserved for a verdict and always accompanied by the
+word PASS or FAIL; the figures' two categorical colours (blue, then orange, in a
+fixed order) are for series and are always directly labelled as well. Warnings
+are neutral slate with a triangle glyph rather than amber, because amber against
+this red is the one pairing that collapses under protanopia.
 
 **Scannable by default, complete on demand.** Each criterion row, card, caption
 and warning shows one sentence plus its numbers; anything longer collapses into
@@ -176,7 +196,7 @@ The headline figure in `index.html` is the momentum envelope in 3D — rotate it
 zoom it, and toggle any surface off in the legend. Four surfaces in body
 momentum space, plus the drivers:
 
-- **Blue hull, drawn with its edges — the zonotope.** Everything the array can
+- **Slate hull, drawn with its edges — the zonotope.** Everything the array can
   reach with each wheel inside its own limit; this is what the shipped L∞
   allocator delivers. The fill is nearly transparent and the **wireframe** is what
   gives it its shape, so the two surfaces nested inside it stay visible — the
@@ -194,8 +214,12 @@ momentum space, plus the drivers:
   Always inside the zonotope; if you switch `AllocMethodSel` to 0, this becomes
   your capability.
 - **Arrows — each momentum driver** at its ×1.3 margin, drawn along the array's
-  *weakest* direction, which is where `r_in` is attained. Green and inside, or
-  red and outside; the hover text says which in words.
+  *weakest* direction, which is where `r_in` is attained. Drawn in ink whatever
+  the verdict, deliberately: what the figure asks you to see is geometric,
+  whether the vector ends inside the surfaces or outside them, and colouring the
+  arrow by the answer would let a reader take the verdict from the legend
+  without ever looking at the geometry. The label and the hover text say which
+  in words.
 
 The gap between the hull and the blue sphere is the layout's anisotropy — on
 the reference four-wheel pyramid, the best direction reaches 1.15 N·m·s and the

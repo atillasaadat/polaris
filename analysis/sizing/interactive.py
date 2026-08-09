@@ -36,25 +36,39 @@ from analysis.common.report import AnalysisReport
 from analysis.sizing.envelope import Envelope
 from analysis.sizing.report import SizingAnalysis
 
-#: Verdict colours, matched to :mod:`analysis.common.plotting` so the HTML and
-#: the PNGs agree. Never load-bearing alone — every verdict is also a word.
-#: Chosen against the page's **white** background (see :mod:`analysis.sizing.html`):
-#: each is dark enough to hold contrast when drawn translucent over white, which
-#: a palette picked against a dark canvas is not.
-PASS_COLOR = "#1a7f37"
-FAIL_COLOR = "#b3261e"
-ZONOTOPE_COLOR = "#1f4e79"
+#: Verdict colours. Never load-bearing alone — every verdict is also a word.
+#: Reserved for a *verdict*: a bar that is a PASS or a FAIL, never a category
+#: and never a reference line. Chosen against the page's **white** background
+#: (see :mod:`analysis.sizing.html`), and checked to stay separable under
+#: protanopia and deuteranopia, where a green/amber pairing is not.
+PASS_COLOR = "#0d5226"
+FAIL_COLOR = "#e5484d"
+
+#: The categorical pair, assigned in a fixed order and never cycled: series 1 is
+#: always the first category a figure introduces, series 2 the second. Both
+#: figures that use them label their series directly as well, so the colour is
+#: an aid to grouping rather than the key to reading the chart.
+SERIES_1 = "#0969da"
+SERIES_2 = "#bc4c00"
+
+#: Structure, not data: the deep slate the page uses for its rules and table
+#: heads, here for the hardware zonotope, which is the frame the data sits in.
+STRUCTURE_COLOR = "#24364a"
+ZONOTOPE_COLOR = STRUCTURE_COLOR
+#: The L2 ellipsoid: a third surface, muted so it recedes behind the two the
+#: figure is actually comparing.
 ELLIPSOID_COLOR = "#6a3d9a"
-USABLE_COLOR = "#b26800"
+#: The certified ceiling, the second capability surface the reader compares.
+USABLE_COLOR = SERIES_2
 
 #: Light-theme figure furniture, so every figure agrees with the page and with
 #: each other regardless of the reader's OS colour-scheme setting.
-PAPER_BG = "#ffffff"
-PLOT_BG = "#fbfcfd"
-GRID_COLOR = "#dfe3e8"
-ZERO_COLOR = "#b9c1ca"
-FONT_COLOR = "#16191d"
-AXIS_COLOR = "#454b53"
+PAPER_BG = "#fcfcfb"
+PLOT_BG = "#ffffff"
+GRID_COLOR = "#e4e2dd"
+ZERO_COLOR = "#c9c6c0"
+FONT_COLOR = "#1a1d21"
+AXIS_COLOR = "#5b6470"
 
 #: Largest actuator count the zonotope hull is drawn for; the vertex set is
 #: :math:`2^N`. Mirrors ``plots.MAX_HULL_WHEELS``.
@@ -190,7 +204,14 @@ def _ellipsoid(env: Envelope, opacity: float = 0.28) -> go.Surface:
 def _demand_vector(
     direction: np.ndarray, magnitude: float, label: str, inside: bool, units: str
 ) -> go.Scatter3d:
-    """One requirement as a labelled arrow from the origin, verdict in words."""
+    """One requirement as a labelled arrow from the origin, verdict in words.
+
+    The arrow is drawn in ink whatever its verdict. What the figure asks the
+    reader to see is *geometric* — whether the vector ends inside the surfaces
+    or outside them — and colouring the vector by the answer would let a reader
+    take the verdict from the legend without ever looking at the geometry the
+    figure exists to show. The word is in the label and in the hover text.
+    """
     tip = np.asarray(direction, dtype=float) * magnitude
     verdict = "inside the usable envelope" if inside else "OUTSIDE the usable envelope"
     return go.Scatter3d(
@@ -203,8 +224,8 @@ def _demand_vector(
         textfont={"size": 10},
         # Thicker than any surface edge on the figure: the drivers are the data
         # and must read on top of the three translucent envelopes behind them.
-        line={"color": PASS_COLOR if inside else FAIL_COLOR, "width": 8},
-        marker={"size": [1, 6], "color": PASS_COLOR if inside else FAIL_COLOR},
+        line={"color": FONT_COLOR, "width": 8},
+        marker={"size": [1, 6], "color": FONT_COLOR},
         textfont_color=FONT_COLOR,
         name=f"{label}: {_num(magnitude)} {units}, {verdict}",
         hovertemplate=f"{label}<br>{_num(magnitude)} {units}<br>{verdict}<extra></extra>",
@@ -281,7 +302,7 @@ def momentum_envelope_figure(analysis: SizingAnalysis) -> go.Figure:
     traces.append(
         _sphere(
             env.inscribed,
-            ZONOTOPE_COLOR,
+            SERIES_1,
             f"hardware guarantee r_in = {_num(env.inscribed)} N.m.s",
             0.13,
         )
@@ -340,7 +361,9 @@ def torque_envelope_figure(analysis: SizingAnalysis) -> go.Figure:
     traces.append(
         _sphere(
             env.inscribed,
-            PASS_COLOR if env.inscribed >= required else FAIL_COLOR,
+            # A capability surface, so it takes a series colour and not a
+            # verdict one; the demand arrow's label carries the verdict.
+            SERIES_1,
             f"guarantee r_in = {_num(env.inscribed)} N.m",
             0.22,
         )
@@ -380,41 +403,70 @@ def disturbance_figure(analysis: SizingAnalysis) -> go.Figure:
     budget = analysis.budget
     names = [t.name for t in budget.terms]
     available = analysis.mtq.average_torque_nm * 1e6
+    secular = [t.secular_nm * 1e6 for t in budget.terms]
+    cyclic = [t.cyclic_nm * 1e6 for t in budget.terms]
+    # The log axis is set explicitly. Left to autorange it has to accommodate a
+    # text label on every bar as well as the authority line far above them, and
+    # plotly resolves that on a log scale by opening up dozens of empty decades,
+    # which flattens every bar to the axis.
+    drawn = [v for v in [*secular, *cyclic] if v > 0.0] + [available]
+    span = [math.log10(min(drawn) / 6.0), math.log10(max(drawn) * 4.0)]
+    # Direct labels, so the two series are told apart by reading rather than by
+    # matching a colour back to a legend swatch. A term with no contribution of
+    # that kind gets no label instead of a "0" cluttering the axis.
     fig = go.Figure(
         data=[
             go.Bar(
                 x=names,
-                y=[t.secular_nm * 1e6 for t in budget.terms],
+                y=secular,
                 name="secular (sizes desaturation)",
-                marker_color=FAIL_COLOR,
+                marker_color=SERIES_1,
+                text=[f"secular {v:.3g}" if v > 0.0 else "" for v in secular],
+                textposition="outside",
+                textangle=0,
+                textfont={"size": 10, "color": FONT_COLOR},
                 customdata=[t.formula for t in budget.terms],
                 hovertemplate="%{x} secular<br>%{y:.4g} uN.m<br>%{customdata}<extra></extra>",
             ),
             go.Bar(
                 x=names,
-                y=[t.cyclic_nm * 1e6 for t in budget.terms],
+                y=cyclic,
                 name="cyclic (sizes storage)",
-                marker_color=ZONOTOPE_COLOR,
+                marker_color=SERIES_2,
+                text=[f"cyclic {v:.3g}" if v > 0.0 else "" for v in cyclic],
+                textposition="outside",
+                textangle=0,
+                textfont={"size": 10, "color": FONT_COLOR},
                 customdata=[t.formula for t in budget.terms],
                 hovertemplate="%{x} cyclic<br>%{y:.4g} uN.m<br>%{customdata}<extra></extra>",
             ),
         ]
     )
+    # Ink, not a verdict colour: the rods' authority is the reference this chart
+    # is read against, and it is no more a PASS than an axis is.
     fig.add_hline(
         y=available,
-        line={"color": PASS_COLOR, "width": 2, "dash": "dash"},
+        line={"color": FONT_COLOR, "width": 2, "dash": "dash"},
         annotation_text=f"MTQ desaturation authority {available:.3g} uN.m "
         "(orbit-average, worst direction, weakest field)",
-        annotation_position="top left",
+        # Below the line, not above it: the line sits near the top of the range
+        # and an annotation above it lands outside the plotting area.
+        annotation_position="bottom left",
         annotation_font_size=11,
+        annotation_font_color=FONT_COLOR,
+        annotation_bgcolor=PAPER_BG,
     )
     fig.update_layout(
         barmode="group",
+        # Thin bars with a visible gap of surface between adjacent fills, so a
+        # pair reads as two marks rather than one two-tone block.
+        bargap=0.42,
+        bargroupgap=0.08,
         title={
             "text": f"Disturbance-torque budget: total {budget.total_nm * 1e6:.3g} "
             f"uN.m = secular {budget.secular_nm * 1e6:.3g} + cyclic "
-            f"{budget.cyclic_nm * 1e6:.3g}. The rods must beat the <b>secular "
-            "total</b>, or the wheels saturate whatever their size.",
+            f"{budget.cyclic_nm * 1e6:.3g} uN.m.<br>The rods must beat the "
+            "<b>secular total</b>, or the wheels saturate whatever their size.",
             "font": {"size": 13, "color": FONT_COLOR},
         },
         yaxis_title="disturbance torque [uN.m], log scale",
@@ -432,6 +484,10 @@ def disturbance_figure(analysis: SizingAnalysis) -> go.Figure:
         # quantity here, which is what a log axis shows.
         yaxis={
             "type": "log",
+            "range": span,
+            # Decades only: the 2 and 5 minor labels a log axis defaults to are
+            # noise on a chart whose point is the ratio between the bars.
+            "dtick": 1,
             "color": AXIS_COLOR,
             "gridcolor": GRID_COLOR,
             "zerolinecolor": ZERO_COLOR,
@@ -441,19 +497,27 @@ def disturbance_figure(analysis: SizingAnalysis) -> go.Figure:
     return fig
 
 
-def margin_figure(report: AnalysisReport) -> go.Figure:
+def margin_figure(report: AnalysisReport, order: list | None = None) -> go.Figure:
     """Every criterion's margin as a horizontal bar, zero marked, verdict in words.
 
     Parameters
     ----------
     report : analysis.common.report.AnalysisReport
         The structured report; the verdicts drawn are its own.
+    order : list of analysis.common.report.Criterion, optional
+        The criteria in the order the reader should meet them, top to bottom.
+        The page passes its own document order — grouped by family, worst margin
+        first inside each family — so the chart and the criteria table above it
+        tell the same story in the same sequence. Defaults to the report's own
+        order. Must be criteria of ``report``; nothing here is recomputed.
 
     Returns
     -------
     plotly.graph_objects.Figure
     """
-    criteria = list(report.criteria)[::-1]
+    # Plotly stacks a horizontal bar chart bottom-up, so the sequence is
+    # reversed to put the first criterion at the top.
+    criteria = list(order if order is not None else report.criteria)[::-1]
     # A margin of +4000 % and one of +40 % are both passes and a linear axis
     # renders the second as nothing, so the bars are clipped for *drawing* only
     # — the label beside each bar always carries the true number.
@@ -469,6 +533,7 @@ def margin_figure(report: AnalysisReport) -> go.Figure:
             marker_color=[PASS_COLOR if c.passes else FAIL_COLOR for c in criteria],
             text=labels,
             textposition="outside",
+            textfont={"size": 11, "color": FONT_COLOR},
             customdata=[
                 [
                     "PASS" if c.passes else "FAIL",
@@ -481,11 +546,15 @@ def margin_figure(report: AnalysisReport) -> go.Figure:
             "threshold %{customdata[1]}<br>measured %{customdata[2]}<extra></extra>",
         )
     )
-    fig.add_vline(x=0.0, line={"color": AXIS_COLOR, "width": 2})
+    # Zero is the threshold every bar is measured against, so it is drawn solid
+    # in ink rather than as another piece of grid.
+    fig.add_vline(x=0.0, line={"color": FONT_COLOR, "width": 2})
     fig.update_layout(
+        bargap=0.42,
         title={
-            "text": "Margin per criterion (bars clipped to ±400 % for legibility; "
-            "the label carries the true value)",
+            "text": "Margin per criterion, worst first within each family "
+            "(bars clipped to ±400 % for legibility; the label carries the "
+            "true value)",
             "font": {"size": 13, "color": FONT_COLOR},
         },
         xaxis_title="margin [% of threshold]",
