@@ -107,6 +107,17 @@ struct GnssSpec {
   /// filter two measurements it must then order and de-duplicate. A caller
   /// polling at or above the fix rate sees every solution; one polling slower
   /// sees the latest, which is the correct answer to the question it asked.
+  ///
+  /// **Caution: a caller polling more slowly than the latency gets a whole poll
+  /// of delay, not one latency.** The delay line can only deliver what it has
+  /// been given, so if `sample()` is called every 10 s with a 0.05 s latency,
+  /// the newest solution that is at least 0.05 s old is the one from the
+  /// *previous* call. The model is behaving correctly — it was never handed the
+  /// intermediate solutions a real 100 Hz receiver would have produced — but the
+  /// realised latency is the poll period. Either poll at something approaching
+  /// the fix rate, or set this to zero and verify the latency somewhere that
+  /// can resolve it. `tests/mc/orbit_od_mc.cpp` does the latter, and its comment
+  /// records the 76.7 km artifact that made the trap visible.
   double fix_latency_s = 0.0;
 
   /// Time-to-first-fix from a cold start [s] — the receiver is invalid for this
