@@ -21,9 +21,9 @@ Design doc §12, §19.3, §19.4; ``analysis/CLAUDE.md`` (the reporting conventio
 
 from __future__ import annotations
 
-import re
 import subprocess
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -73,6 +73,54 @@ def variant_config(tmp_path: Path, reference_config: Path) -> Path:
 # --------------------------------------------------------------------------
 
 
+class _ScriptStrippingParser(HTMLParser):
+    """Page text with every ``<script>`` body dropped.
+
+    The leak search below must look at *this report's* text and not at the
+    plotly bundle inlined beside it: that bundle's SVG path data contains
+    every short numeric string by coincidence, so searching it would be
+    searching a library.
+
+    Done with the stdlib parser rather than a regex deliberately. A regex over
+    HTML tags is the wrong tool and is wrong in ways that are easy to miss:
+    ``<script\b.*?</script>`` misses ``<SCRIPT>`` without IGNORECASE, and misses
+    ``</script >`` even with it, because the closing tag may carry whitespace.
+    Either miss leaves the bundle in the text and turns this test into a search
+    of a third-party library, which fails on that library rather than on the
+    report. CodeQL's ``py/bad-tag-filter`` flags exactly this class, and it was
+    right about the version that used to be here.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._chunks: list[str] = []
+        self._muted = 0
+
+    def handle_starttag(self, tag: str, attrs: object) -> None:
+        if tag in ("script", "style"):
+            self._muted += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("script", "style") and self._muted:
+            self._muted -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._muted:
+            self._chunks.append(data)
+
+    @property
+    def text(self) -> str:
+        return " ".join(self._chunks)
+
+
+def _page_text_without_scripts(html_text: str) -> str:
+    """Visible text of *html_text*, scripts and styles removed."""
+    parser = _ScriptStrippingParser()
+    parser.feed(html_text)
+    parser.close()
+    return parser.text
+
+
 def test_a_variant_vehicle_carries_its_own_numbers(variant_config, tmp_path):
     """The report and the page describe the config given, and nothing else.
 
@@ -105,12 +153,9 @@ def test_a_variant_vehicle_carries_its_own_numbers(variant_config, tmp_path):
     # inlined plotly bundle is stripped first: it is a third-party payload whose
     # SVG path data contains every short numeric string by coincidence, and
     # searching it would be searching a library, not this report.
-    page = write_html(analysis, report, tmp_path / "page").read_text(encoding="utf-8")
-    # IGNORECASE is load-bearing, not defensive style: a tag-stripping regex
-    # that misses <SCRIPT> leaves the bundle in the text, and the leak search
-    # below would then be scanning a third-party library and failing on its
-    # coincidental digits rather than on this report.
-    page = re.sub(r"<script\b.*?</script>", " ", page, flags=re.S | re.IGNORECASE)
+    page = _page_text_without_scripts(
+        write_html(analysis, report, tmp_path / "page").read_text(encoding="utf-8")
+    )
     for marker in COMMITTED_MARKERS:
         assert marker not in rendered, f"committed-vehicle value {marker!r} leaked"
         assert marker not in page, f"committed-vehicle value {marker!r} leaked"
