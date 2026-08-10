@@ -17,8 +17,15 @@ each writes its upstream file **verbatim** into `tests/golden/`:
 - `ephem/` — JPL **DE440** `.bsp` → geocentric Sun/Moon **Chebyshev** fit
   (`de440_bodies.cheb`), the fixture `sim/world/ephemeris_file` parses. The kernel
   is a fetch input, never committed.
-- `gravity/` — EGM2008 `.gfc` download and truncation to the committed
-  degree-200 window, in the native format.
+- `gravity/` — EGM2008 tooling, two subcommands. `truncate` downloads the full
+  `.gfc` and trims it to the committed degree-200 window **in the native
+  format** (the reference datum, §3.7). `cxx-header` derives the flight side's
+  `lib/gnc/egm2008_low_degree.hpp` from that committed file — truncating to
+  degree 8 and **de-normalizing**, because the onboard evaluator uses the
+  unnormalized Cunningham V/W recursion and doing the conversion in flight would
+  repeat a constant every cycle. The generated header is committed and
+  `tests/tools/test_gravity_cxxtable.py` regenerates and compares its
+  coefficients every run, so the derivation cannot drift from its source.
 - `igrf/` — IGRF-14 IAGA coefficient download, plus `golden` regeneration of the
   reference field fixture with the IAGA implementation.
 - `spaceweather/` — CelesTrak `SW-All.csv` download with a parse gate.

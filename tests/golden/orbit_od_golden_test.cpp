@@ -324,6 +324,7 @@ TEST(OrbitOdGolden, OnboardPropagatorMatchesGmatAtMatchedFidelity) {
 /// coast horizon needs is available.
 TEST(OrbitOdGolden, HarmonicFieldMatchesGmatAtMatchedDegreeAndBeatsTheJ2Model) {
   RecordProperty("verifies", "REQ-VV-002");
+  RecordProperty("verifies", "REQ-ODP-005");
 
   const json fixture = loadFixture();
   const json& cases = fixture.at("cases");

@@ -1211,6 +1211,7 @@ scenario::SimConfig truthConfig(const pt::Tai& epoch, const Eigen::Vector3d& r0,
 /// tightly would make every legitimate force-model improvement a test failure.
 TEST(OrbitOdConsistency, CoarseModelTruncationOverTheCoastHorizon) {
   RecordProperty("verifies", "REQ-ODP-001");
+  RecordProperty("verifies", "REQ-ODP-005");
   const OrbitOdConfig cfg = referenceConfig();
   Eigen::Vector3d r0;
   Eigen::Vector3d v0;
@@ -1495,7 +1496,7 @@ TEST(OrbitOdConsistency, MonteCarloNeesAndNisSitAtTheirStateAndMeasurementDimens
 /// regression that quietly dropped the correction could not pass by being
 /// "close enough".
 TEST(OrbitOdLatency, LatentFixIsAdvancedToTheFilterEpochRatherThanApplied) {
-  RecordProperty("verifies", "REQ-ODP-001");
+  RecordProperty("verifies", "REQ-ODP-006");
   const OrbitOdConfig cfg = referenceConfig();
   Eigen::Vector3d r0;
   Eigen::Vector3d v0;
@@ -1553,7 +1554,7 @@ TEST(OrbitOdLatency, LatentFixIsAdvancedToTheFilterEpochRatherThanApplied) {
 /// latency, and is refused. Checked either side of the boundary so the test
 /// pins the threshold rather than merely observing that some refusal happens.
 TEST(OrbitOdLatency, FixOlderThanTheBoundIsRefusedAndTheSolutionUntouched) {
-  RecordProperty("verifies", "REQ-ODP-001");
+  RecordProperty("verifies", "REQ-ODP-006");
   const OrbitOdConfig cfg = referenceConfig();
   Eigen::Vector3d r0;
   Eigen::Vector3d v0;
@@ -1596,7 +1597,7 @@ TEST(OrbitOdLatency, FixOlderThanTheBoundIsRefusedAndTheSolutionUntouched) {
 /// into a measurement required to be independent of it, which is how a
 /// consistent filter is made overconfident.
 TEST(OrbitOdLatency, LatentFixWithoutVelocityIsRefusedRatherThanAdvancedOnThePrior) {
-  RecordProperty("verifies", "REQ-ODP-001");
+  RecordProperty("verifies", "REQ-ODP-006");
   const OrbitOdConfig cfg = referenceConfig();
   Eigen::Vector3d r0;
   Eigen::Vector3d v0;
@@ -1636,7 +1637,7 @@ TEST(OrbitOdLatency, LatentFixWithoutVelocityIsRefusedRatherThanAdvancedOnThePri
 /// refused. The feature must be opt-in per config, not a relaxation every
 /// existing scenario silently inherits.
 TEST(OrbitOdLatency, ZeroBoundRefusesAnyFixBehindTheFilter) {
-  RecordProperty("verifies", "REQ-ODP-001");
+  RecordProperty("verifies", "REQ-ODP-006");
   OrbitOdConfig cfg = referenceConfig();
   cfg.max_fix_latency_s = 0.0;
   ASSERT_TRUE(cfg.isValid());

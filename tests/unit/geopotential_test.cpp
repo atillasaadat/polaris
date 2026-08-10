@@ -88,7 +88,7 @@ Eigen::Vector3d closedFormJ2(const Eigen::Vector3d& r) {
 /// and the closed forms above read the same table — and only this comparison
 /// against an independently-published constant would catch it.
 TEST(Geopotential, StoredCoefficientsCarryThePublishedZonalHarmonics) {
-  RecordProperty("verifies", "REQ-ODP-001");
+  RecordProperty("verifies", "REQ-ODP-005");
 
   // `constants::gravity::kJ_n` are the published unnormalized zonals the truth
   // sim's zonal field and the filter's closed-form J2 path both use. They come
@@ -132,7 +132,7 @@ TEST(Geopotential, StoredCoefficientsCarryThePublishedZonalHarmonics) {
 /// tests are written against the closed form, so any discrepancy here would
 /// show up there as a mysterious model difference.
 TEST(Geopotential, DegreeZeroIsExactlyPointMass) {
-  RecordProperty("verifies", "REQ-ODP-001");
+  RecordProperty("verifies", "REQ-ODP-005");
   for (const Eigen::Vector3d& r : testPositions()) {
     const Eigen::Vector3d a = pg::geopotentialAcceleration(r, 0, 0, kMu, kRe);
     const Eigen::Vector3d expected = pointMass(r);
@@ -144,7 +144,7 @@ TEST(Geopotential, DegreeZeroIsExactlyPointMass) {
 /// This is the pin that lets `orbit_od_test.cpp` keep testing its closed-form J2
 /// path analytically while the filter flies the harmonic one.
 TEST(Geopotential, DegreeTwoOrderZeroIsExactlyTheClosedFormJ2) {
-  RecordProperty("verifies", "REQ-ODP-001");
+  RecordProperty("verifies", "REQ-ODP-005");
   for (const Eigen::Vector3d& r : testPositions()) {
     const Eigen::Vector3d a = pg::geopotentialAcceleration(r, 2, 0, kMu, kRe);
     const Eigen::Vector3d expected = closedFormJ2(r);
@@ -165,7 +165,7 @@ TEST(Geopotential, DegreeTwoOrderZeroIsExactlyTheClosedFormJ2) {
 /// Note this compares `gradient()` output at the *same* degree AND order, so
 /// the tesseral machinery is under test, not just the zonals.
 TEST(Geopotential, MatchesTheTruthSimFieldAtMatchedDegreeAndOrder) {
-  RecordProperty("verifies", "REQ-ODP-001");
+  RecordProperty("verifies", "REQ-ODP-005");
   RecordProperty("verifies", "REQ-VV-002");
 
   pw::Egm2008Header header;
@@ -218,7 +218,7 @@ TEST(Geopotential, MatchesTheTruthSimFieldAtMatchedDegreeAndOrder) {
 /// infinity would defeat the filter's finiteness check by poisoning the state
 /// before it runs; returning zero keeps the failure visible and recoverable.
 TEST(Geopotential, DegenerateInputsReturnZeroRatherThanNonFinite) {
-  RecordProperty("verifies", "REQ-ODP-001");
+  RecordProperty("verifies", "REQ-ODP-005");
   const Eigen::Vector3d good(6778137.0, 0.0, 0.0);
   const double nan = std::numeric_limits<double>::quiet_NaN();
 
@@ -247,7 +247,7 @@ TEST(Geopotential, DegenerateInputsReturnZeroRatherThanNonFinite) {
 /// axisymmetric. Without this a bug that silently evaluated full order for every
 /// request would pass every test above — they all compare at matched order.
 TEST(Geopotential, OrderTruncationIsRealAndZonalFieldsAreAxisymmetric) {
-  RecordProperty("verifies", "REQ-ODP-001");
+  RecordProperty("verifies", "REQ-ODP-005");
   const double r_leo = 6778137.0;
   const Eigen::Vector3d r(r_leo * 0.6, r_leo * 0.5, r_leo * 0.6244997998398398);
 
