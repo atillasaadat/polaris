@@ -365,3 +365,47 @@ before starting FDIR, estimator, or requirements work.
   locations (which YAML, which key, which installed units), what physically goes
   wrong if they stay apart, and the two ways out — fix the stale side, or declare
   the divergence, with the declaration spelled out ready to paste.
+
+## A test whose reference stopped being above its subject (P63, measurement)
+
+Push 63 raised the onboard force model from closed-form J2 to an 8×8 EGM2008
+field. Two committed tests had characterised the old model's truncation against
+references that were *also* degree 8 — the truth sim's `gravity_degree: 8` and
+the GMAT fixture's `gravity_degree: 8`. Both kept passing. Both had become
+meaningless: the unit test's 3.59 m fell to **0.045 m** and the golden test's
+14.3 m to **1.2 cm**, not because the model got 100× better against full
+fidelity, but because it was now being compared against *itself* through a
+second implementation. The bounds were 5.0 m and 50 m, so nothing failed and
+nothing prompted a look.
+
+- **Improving a model can silently invalidate the test that characterised it.**
+  A test with an upper bound reports a *smaller* number when it goes vacuous,
+  which reads exactly like success. There is no failure mode here to catch it:
+  the assertion, the test name, and the recorded property all still make sense
+  as English. The only thing that changed is that the reference is no longer
+  above the subject.
+- **The review question is "what is this measured *against*, and is it still
+  better than what it measures?"** Ask it every time a model's fidelity moves.
+  For any characterisation test — truncation, model difference, residual budget
+  — the reference's fidelity is a load-bearing input that lives somewhere else
+  in the file (here, a `SimConfig` field 60 lines away and a JSON fixture's
+  `environment` block) and is not mentioned in the assertion that depends on it.
+- **State the reference's fidelity next to the number it produces.** Both tests
+  now say what truth they run against and why it is above the model, so the next
+  degree bump reads the constraint at the point it would break it rather than
+  discovering it by having a number get suspiciously good.
+- **Two honest repairs, and they are different.** Where a higher-fidelity
+  reference existed, it was *raised* (truth sim 8×8 → 32×32) and the number
+  re-derived — `q_a` moved with it, since it is sized from that measurement.
+  Where none existed (GMAT's fixture is degree 8 and regenerating it is a
+  separate job), the test was **repurposed to what it can now actually assert** —
+  a matched-degree cross-validation of two independent implementations, which
+  turned out to be *stronger* evidence than the truncation it replaced. Deleting
+  it or loosening the bound to keep it green would both have been worse than
+  either.
+- **Pin the improvement, not just the improved number.** Both tests now fly the
+  *old* model over the identical arc and assert the new one beats it. A
+  characterisation number drifts with the epoch and the vehicle; "the field beats
+  J2" is the claim that actually justifies the code, so that is what is asserted.
+  It also means a silent revert to the old model fails, which a one-sided bound
+  on the new model's error never would.
