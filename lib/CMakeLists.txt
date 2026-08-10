@@ -106,9 +106,11 @@ add_library(polaris::onboard ALIAS polaris_onboard)
 # redundancy-vote policy with its multi-IMU and multi-magnetometer wrappers, and
 # the commanded inter-star-tracker alignment calibration (§8.2). Phase 5 adds the
 # control half (§8.5): the B-dot detumble law, the quaternion-error PID and the
-# L2/L-infinity reaction-wheel allocation. Pure math on the canonical state — no
-# F´ types, no I/O; the F´ AttitudeEstimator and AttitudeController components
-# wrap it.
+# L2/L-infinity reaction-wheel allocation. Phase 6 adds the orbit half (§8.3):
+# the GNSS-aided orbit determination filter, which is also why this target links
+# polaris_frames — it owns the ECEF/GPS -> ECI/TAI ingest conversion. Pure math
+# on the canonical state — no F´ types, no I/O; the F´ AttitudeEstimator and
+# AttitudeController components wrap it.
 add_library(polaris_gnc
   gnc/triad.cpp
   gnc/davenport.cpp
@@ -126,10 +128,14 @@ add_library(polaris_gnc
   gnc/rw_friction.cpp
   gnc/momentum.cpp
   gnc/disturbance.cpp
-  gnc/dipole_estimation.cpp)
+  gnc/dipole_estimation.cpp
+  gnc/orbit_od.cpp)
 target_include_directories(polaris_gnc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+# polaris_frames is PUBLIC because the onboard OD filter (§8.3) takes EOP and
+# converts every GNSS fix from ECEF/GPS to ECI/TAI through the one reduction in
+# the repo (REQ-CONV-001/-002) — those types are in its public header.
 target_link_libraries(polaris_gnc
-  PUBLIC Eigen3::Eigen polaris_math polaris_time polaris_state polaris_constants
+  PUBLIC Eigen3::Eigen polaris_math polaris_time polaris_state polaris_constants polaris_frames
   PRIVATE polaris_flags)
 add_library(polaris::gnc ALIAS polaris_gnc)
 
