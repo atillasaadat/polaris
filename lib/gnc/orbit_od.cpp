@@ -79,6 +79,46 @@ bool OrbitOdConfig::isValid() const {
   if (!(mu_m3_per_s2 > 0.0) || zonal_j2 < 0.0 || drag_ballistic_coeff_m2_per_kg < 0.0) {
     return false;
   }
+  // --- Harmonic field ------------------------------------------------------
+  if (geopotential_degree < 0 || geopotential_degree > kGeopotentialMaxDegree) {
+    return false;
+  }
+  if (geopotential_order < 0 || geopotential_order > geopotential_degree) {
+    return false;
+  }
+  if (geopotential_degree > 0) {
+    // The harmonic field already contains the degree-2 zonal, so a config
+    // setting both is describing the same physics twice and getting one of them
+    // silently ignored. Refuse rather than pick.
+    if (zonal_j2 > 0.0) {
+      return false;
+    }
+    // The field carries its own GM and reference radius — the values the
+    // coefficients were *solved* with — and uses them regardless of what the
+    // config says. But `mu_m3_per_s2` and `reference_radius_m` still drive the
+    // drag altitude and every μ-dependent consumer, so a config that disagrees
+    // with the table is describing two different Earths. Requiring agreement
+    // here turns that into a construction-time failure rather than a
+    // sub-millimetre inconsistency nobody ever looks for.
+    //
+    // The band is loose enough to accept WGS84 against EGM2008's own constants
+    // (they differ by 7.5e-10 in GM, 0.3 m in radius) — which is a legitimate
+    // pairing — and tight enough to catch the mistakes that matter: a
+    // kilometre-vs-metre radius, or another body's μ.
+    constexpr double kConstantMatchTolerance = 1.0e-6;
+    const double mu_mismatch = std::abs(mu_m3_per_s2 - egm2008::kGm) / egm2008::kGm;
+    const double re_mismatch =
+        std::abs(reference_radius_m - egm2008::kReferenceRadius) / egm2008::kReferenceRadius;
+    if (!(mu_mismatch < kConstantMatchTolerance) || !(re_mismatch < kConstantMatchTolerance)) {
+      return false;
+    }
+  }
+  // A fix arriving behind the filter's own epoch is a *latency*, not a fault, up
+  // to this bound (see the header). Negative is meaningless; zero restores the
+  // strictly-forward behaviour.
+  if (!std::isfinite(max_fix_latency_s) || max_fix_latency_s < 0.0) {
+    return false;
+  }
   // A coefficient is only meaningful with the scale it is expressed against, so
   // the reference radius is required whenever a term that uses it is enabled
   // rather than defaulted to something plausible: a zero reference radius would
@@ -111,11 +151,11 @@ bool OrbitOdConfig::isValid() const {
 math::Vec3<math::frames::ECI> onboardAcceleration(const OrbitOdConfig& cfg,
                                                   const math::Vec3<math::frames::ECI>& position,
                                                   const math::Vec3<math::frames::ECI>& velocity,
-                                                  const math::Vec3<math::frames::ECI>& pole_eci) {
+                                                  const EarthOrientation& earth) {
   const Eigen::Vector3d r = position.eigen();
   const Eigen::Vector3d v = velocity.eigen();
-  const Eigen::Vector3d pole = pole_eci.eigen();
-  if (!r.allFinite() || !v.allFinite() || !pole.allFinite()) {
+  const Eigen::Vector3d pole = earth.pole();
+  if (!r.allFinite() || !v.allFinite() || !earth.eci_from_ecef.allFinite()) {
     return math::Vec3<math::frames::ECI>::Zero();
   }
   const double r_mag = r.norm();
@@ -123,21 +163,36 @@ math::Vec3<math::frames::ECI> onboardAcceleration(const OrbitOdConfig& cfg,
     return math::Vec3<math::frames::ECI>::Zero();
   }
 
-  // --- Point mass ----------------------------------------------------------
   const double r2 = r_mag * r_mag;
   const double r3 = r2 * r_mag;
-  Eigen::Vector3d a = -(cfg.mu_m3_per_s2 / r3) * r;
+  Eigen::Vector3d a;
 
-  // --- J2, about the true pole (see the file header) -----------------------
-  // a_J2 = -(3/2) J2 μ Re²/r⁴ [ (1 - 5s²) r̂ + 2s p̂ ], s = r̂·p̂. With p̂ = ẑ this
-  // is the textbook component form (Montenbruck & Gill §3.2, Eq. 3.30; Vallado
-  // §8.7): the z component reduces to s(3 - 5s²), which is the standard result.
-  if (cfg.zonal_j2 > 0.0) {
-    const Eigen::Vector3d r_hat = r / r_mag;
-    const double s = r_hat.dot(pole);
-    const double re = cfg.reference_radius_m;
-    const double k = -1.5 * cfg.zonal_j2 * cfg.mu_m3_per_s2 * re * re / (r2 * r2);
-    a += k * ((1.0 - 5.0 * s * s) * r_hat + 2.0 * s * pole);
+  if (cfg.geopotential_degree > 0) {
+    // --- Truncated EGM2008 field, evaluated in ECEF ------------------------
+    // The harmonic sum carries its own point-mass term (C_00 = 1), so this
+    // *replaces* the two-body and J2 branches below rather than perturbing
+    // them. Position rotates into ECEF and the acceleration rotates back: a
+    // tesseral field is not axisymmetric, so unlike the zonal branch there is no
+    // shortcut through the pole alone (see geopotential.hpp).
+    const Eigen::Vector3d r_ecef = earth.eci_from_ecef.transpose() * r;
+    a = earth.eci_from_ecef * geopotentialAcceleration(r_ecef, cfg.geopotential_degree,
+                                                       cfg.geopotential_order, egm2008::kGm,
+                                                       egm2008::kReferenceRadius);
+  } else {
+    // --- Point mass --------------------------------------------------------
+    a = -(cfg.mu_m3_per_s2 / r3) * r;
+
+    // --- J2, about the true pole (see the file header) ---------------------
+    // a_J2 = -(3/2) J2 μ Re²/r⁴ [ (1 - 5s²) r̂ + 2s p̂ ], s = r̂·p̂. With p̂ = ẑ this
+    // is the textbook component form (Montenbruck & Gill §3.2, Eq. 3.30; Vallado
+    // §8.7): the z component reduces to s(3 - 5s²), which is the standard result.
+    if (cfg.zonal_j2 > 0.0) {
+      const Eigen::Vector3d r_hat = r / r_mag;
+      const double s = r_hat.dot(pole);
+      const double re = cfg.reference_radius_m;
+      const double k = -1.5 * cfg.zonal_j2 * cfg.mu_m3_per_s2 * re * re / (r2 * r2);
+      a += k * ((1.0 - 5.0 * s * s) * r_hat + 2.0 * s * pole);
+    }
   }
 
   // --- Exponential-density drag --------------------------------------------
@@ -168,30 +223,27 @@ math::Vec3<math::frames::ECI> onboardAcceleration(const OrbitOdConfig& cfg,
   return math::Vec3<math::frames::ECI>(a);
 }
 
-bool polarAxisEci(const time::Tai& t, const frames::EopValue& eop,
-                  math::Vec3<math::frames::ECI>& out) {
+bool earthOrientationAt(const time::Tai& t, const frames::EopValue& eop, EarthOrientation& out) {
   math::Quat<math::frames::ECI, math::frames::ECEF> q_eci_ecef;
   if (!frames::eciFromEcef(t, eop, q_eci_ecef)) {
     return false;
   }
-  const math::Vec3<math::frames::ECI> pole =
-      q_eci_ecef.rotate(math::Vec3<math::frames::ECEF>(Eigen::Vector3d::UnitZ()));
-  if (!pole.isFinite()) {
+  const Eigen::Matrix3d a = q_eci_ecef.core().toRotationMatrix();
+  if (!a.allFinite()) {
     return false;
   }
-  out = pole;
+  out.eci_from_ecef = a;
   return true;
 }
 
 namespace {
 
 /// Derivative of the 6-state `[r; v]` under the onboard force model.
-Vec6 stateDerivative(const OrbitOdConfig& cfg, const Vec6& x,
-                     const math::Vec3<math::frames::ECI>& pole) {
+Vec6 stateDerivative(const OrbitOdConfig& cfg, const Vec6& x, const EarthOrientation& earth) {
   Vec6 dx;
   dx.head<3>() = x.tail<3>();
   dx.tail<3>() = onboardAcceleration(cfg, math::Vec3<math::frames::ECI>(x.head<3>()),
-                                     math::Vec3<math::frames::ECI>(x.tail<3>()), pole)
+                                     math::Vec3<math::frames::ECI>(x.tail<3>()), earth)
                      .eigen();
   return dx;
 }
@@ -200,7 +252,7 @@ Vec6 stateDerivative(const OrbitOdConfig& cfg, const Vec6& x,
 /// two are central differences of the acceleration (see the file header for why
 /// the analytic form was not written by hand).
 Eigen::Matrix<double, 6, 6> dynamicsJacobian(const OrbitOdConfig& cfg, const Vec6& x,
-                                             const math::Vec3<math::frames::ECI>& pole) {
+                                             const EarthOrientation& earth) {
   Eigen::Matrix<double, 6, 6> f = Eigen::Matrix<double, 6, 6>::Zero();
   f.block<3, 3>(0, 3) = Eigen::Matrix3d::Identity();
 
@@ -212,17 +264,17 @@ Eigen::Matrix<double, 6, 6> dynamicsJacobian(const OrbitOdConfig& cfg, const Vec
     Vec6 minus = x;
     plus(i) += r_step;
     minus(i) -= r_step;
-    f.block<3, 1>(3, i) =
-        (stateDerivative(cfg, plus, pole).tail<3>() - stateDerivative(cfg, minus, pole).tail<3>()) /
-        (2.0 * r_step);
+    f.block<3, 1>(3, i) = (stateDerivative(cfg, plus, earth).tail<3>() -
+                           stateDerivative(cfg, minus, earth).tail<3>()) /
+                          (2.0 * r_step);
 
     plus = x;
     minus = x;
     plus(3 + i) += v_step;
     minus(3 + i) -= v_step;
-    f.block<3, 1>(3, 3 + i) =
-        (stateDerivative(cfg, plus, pole).tail<3>() - stateDerivative(cfg, minus, pole).tail<3>()) /
-        (2.0 * v_step);
+    f.block<3, 1>(3, 3 + i) = (stateDerivative(cfg, plus, earth).tail<3>() -
+                               stateDerivative(cfg, minus, earth).tail<3>()) /
+                              (2.0 * v_step);
   }
   return f;
 }
@@ -308,11 +360,6 @@ OrbitOdRefusal OrbitOd::propagate(const time::Tai& epoch, const frames::EopValue
     return OrbitOdRefusal::kStepTooLong;
   }
 
-  math::Vec3<math::frames::ECI> pole;
-  if (!polarAxisEci(epoch, eop, pole)) {
-    return OrbitOdRefusal::kFrameConversion;
-  }
-
   const int substeps =
       std::min(kMaxSubsteps, std::max(1, static_cast<int>(std::ceil(dt_s / cfg_.max_step_s))));
   const double h = dt_s / static_cast<double>(substeps);
@@ -336,17 +383,31 @@ OrbitOdRefusal OrbitOd::propagate(const time::Tai& epoch, const frames::EopValue
   q_d.block<3, 3>(kVelocity, kVelocity) = (q_a * h) * id;
 
   for (int step = 0; step < substeps; ++step) {
+    // The Earth orientation is resolved **per sub-step**, not once per call. A
+    // zonal field only needed the pole, which moves ~50 arcsec/yr and could be
+    // held across any propagation; a tesseral field is fixed to the rotating
+    // Earth, and holding one rotation across a max_dt_s = 60 s step would smear
+    // it by 0.25° of longitude. Held *within* the sub-step across the RK4 stages,
+    // though: over h ≤ 1 s the Earth turns 6e-5 rad, which mis-orients a ~1e-5
+    // m/s² tesseral term by ~6e-10 m/s² — orders below the truncation itself.
+    const time::Tai sub_epoch =
+        last_epoch_ + time::Duration::fromSecondsF(static_cast<double>(step) * h);
+    EarthOrientation earth;
+    if (!earthOrientationAt(sub_epoch, eop, earth)) {
+      return OrbitOdRefusal::kFrameConversion;
+    }
+
     // Φ from the Jacobian at the sub-step start. The covariance does not need
     // the state's integration order: over h ≤ max_step_s the Jacobian's own
     // variation is O(nh) of a term that is already a small correction to I.
-    const Eigen::Matrix<double, 6, 6> f = dynamicsJacobian(cfg_, x, pole);
+    const Eigen::Matrix<double, 6, 6> f = dynamicsJacobian(cfg_, x, earth);
     const Covariance phi = Covariance::Identity() + f * h + 0.5 * (f * f) * (h * h);
 
     // Classical RK4 on the state.
-    const Vec6 k1 = stateDerivative(cfg_, x, pole);
-    const Vec6 k2 = stateDerivative(cfg_, Vec6(x + 0.5 * h * k1), pole);
-    const Vec6 k3 = stateDerivative(cfg_, Vec6(x + 0.5 * h * k2), pole);
-    const Vec6 k4 = stateDerivative(cfg_, Vec6(x + h * k3), pole);
+    const Vec6 k1 = stateDerivative(cfg_, x, earth);
+    const Vec6 k2 = stateDerivative(cfg_, Vec6(x + 0.5 * h * k1), earth);
+    const Vec6 k3 = stateDerivative(cfg_, Vec6(x + 0.5 * h * k2), earth);
+    const Vec6 k4 = stateDerivative(cfg_, Vec6(x + h * k3), earth);
     x += (h / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
 
     p = phi * p * phi.transpose() + q_d;
@@ -556,7 +617,10 @@ bool OrbitOd::ingest(const GnssFix& fix, const frames::EopValue& eop, OrbitOdRes
     return seed();
   }
 
-  // --- Propagate to the fix epoch ------------------------------------------
+  // --- Reconcile the fix epoch with the filter's ---------------------------
+  // Forward, the filter moves to the fix. Backward — a latent fix — the fix
+  // moves to the filter. Either way the two are at one epoch before the update.
+  double latency_s = 0.0;
   if (epoch > last_epoch_) {
     const OrbitOdRefusal r = propagate(epoch, eop);
     if (r == OrbitOdRefusal::kCoastExpired || r == OrbitOdRefusal::kFilterFault) {
@@ -571,15 +635,68 @@ bool OrbitOd::ingest(const GnssFix& fix, const frames::EopValue& eop, OrbitOdRes
       return false;
     }
   } else if (epoch < last_epoch_) {
-    // The filter has been propagated past this fix by the GNC cycle. Folding it
-    // in against a later state would apply the measurement at the wrong epoch,
-    // which is a position error of v·Δt — metres per millisecond in LEO.
-    out.refusal = OrbitOdRefusal::kNonMonotonicEpoch;
-    return false;
+    // --- Latent fix: forward-propagate the measurement, not the filter -------
+    // The GNC cycle has propagated past this fix, because the receiver's
+    // solution is valid at its measurement epoch but reaches the FSW a fix
+    // latency later. Folding it in against the later state unchanged would
+    // apply the measurement at the wrong epoch — a position error of v·Δt,
+    // ~7.6 m per millisecond in LEO, which is the single largest error this
+    // filter can carry and is why it is corrected rather than tolerated.
+    //
+    // The correction is on the *measurement*: advance the reported PVT to the
+    // filter's epoch on the receiver's own reported velocity plus the onboard
+    // acceleration, rather than retrodicting the filter (Bar-Shalom §5.6's
+    // out-of-sequence-measurement problem, in the benign case where the
+    // measurement determines the whole state). Two properties make the simple
+    // form exact enough: the fix carries velocity, so the linear term is
+    // measured rather than modelled; and the residual is O(τ³·jerk), which at
+    // τ ≤ 0.2 s is micrometres. This is the solution-domain analogue of the
+    // signal-transit-time correction Kim et al. (2025) apply to
+    // navigation-solution measurements [kim2025].
+    latency_s = (last_epoch_ - epoch).seconds();
+    if (!(latency_s <= cfg_.max_fix_latency_s)) {
+      out.refusal = OrbitOdRefusal::kNonMonotonicEpoch;
+      return false;
+    }
+    if (!fix.velocity_valid) {
+      // Without a velocity there is nothing to propagate the position on. The
+      // filter's own velocity is not a substitute: using it would fold the
+      // filter's current error into a measurement that is supposed to be
+      // independent of it, which is exactly how a consistent filter is made
+      // overconfident.
+      out.refusal = OrbitOdRefusal::kNonMonotonicEpoch;
+      return false;
+    }
+
+    EarthOrientation earth;
+    if (!earthOrientationAt(epoch, eop, earth)) {
+      out.refusal = OrbitOdRefusal::kFrameConversion;
+      return false;
+    }
+    const math::Vec3<math::frames::ECI> accel = onboardAcceleration(cfg_, r_eci, v_eci, earth);
+    const Eigen::Vector3d r_advanced =
+        r_eci.eigen() + v_eci.eigen() * latency_s + 0.5 * accel.eigen() * latency_s * latency_s;
+    const Eigen::Vector3d v_advanced = v_eci.eigen() + accel.eigen() * latency_s;
+    if (!r_advanced.allFinite() || !v_advanced.allFinite()) {
+      out.refusal = OrbitOdRefusal::kFrameConversion;
+      return false;
+    }
+    r_eci = math::Vec3<math::frames::ECI>(r_advanced);
+    v_eci = math::Vec3<math::frames::ECI>(v_advanced);
+
+    // The advance is not free of uncertainty: the reported velocity's own error
+    // integrates into position over the latency. Inflating R by (σ_v·τ)² keeps
+    // the covariance honest about a measurement that is now partly propagated.
+    // It is a small term — 3 mm at σ_v = 0.03 m/s and τ = 0.1 s against a ~1 m
+    // fix — and it is added rather than neglected because the alternative is a
+    // filter that gets quietly more confident the later its data arrives.
+    const double sigma_advance = fix.velocity_sigma_m_s * latency_s;
+    r_pos_eci += (sigma_advance * sigma_advance) * Eigen::Matrix3d::Identity();
   }
 
   have_fix_ = true;
   last_fix_epoch_ = epoch;
+  out.fix_latency_s = latency_s;
 
   // --- Sequential 3-row updates --------------------------------------------
   const bool pos_ok =

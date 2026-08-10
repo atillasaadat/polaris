@@ -82,6 +82,33 @@ struct GnssSpec {
   /// Native maximum position rate [Hz]; informational (the §2.4 buffer gates).
   double max_rate_hz = 0.0;
 
+  /// **Fix latency** [s]: the interval between the epoch a solution is *valid
+  /// at* and the epoch it reaches the FSW. A receiver does not publish its PVT
+  /// instantly — it correlates, solves, formats and clocks the message out — and
+  /// the bus and the scheduler add their own delay on top.
+  ///
+  /// This is a first-class error term, not a detail. At 7.6 km/s a fix delivered
+  /// 50 ms late describes a position 380 m behind where the vehicle now is, which
+  /// dwarfs the receiver's own ~1 m accuracy. Modelling it is what lets the
+  /// onboard filter's latency correction (`lib/gnc/orbit_od.hpp`, "Fix latency")
+  /// be tested against the thing it exists for; with the tag stamped at the
+  /// sample epoch, as this model originally did, the error is invisible and the
+  /// correction untestable.
+  ///
+  /// Realised as a delay line: `sample()` returns the **newest** buffered fix at
+  /// least this old, tagged at **its own** measurement epoch. Zero delivers each
+  /// fix immediately, which is the old behaviour.
+  ///
+  /// "Newest" is the rule, not "oldest": when more than one solution has come due
+  /// since the last poll, the older ones are superseded and discarded rather than
+  /// queued up to be handed over late. That is what a receiver's output register
+  /// does, and it is what a consumer wants — a stale fix carries strictly less
+  /// information than the fresh one behind it, and delivering both would hand the
+  /// filter two measurements it must then order and de-duplicate. A caller
+  /// polling at or above the fix rate sees every solution; one polling slower
+  /// sees the latest, which is the correct answer to the question it asked.
+  double fix_latency_s = 0.0;
+
   /// Time-to-first-fix from a cold start [s] — the receiver is invalid for this
   /// long after its first sample.
   double cold_start_s = 0.0;
@@ -188,8 +215,20 @@ class Gnss {
   Gnss(const GnssSpec& spec, std::uint64_t master_seed, std::uint64_t stream_id)
       : spec_(spec), rng_(random::streamRng(master_seed, stream_id)) {}
 
-  /// Produce the fix for truth state @p input at truth time @p epoch.
+  /// Produce the fix delivered at truth time @p epoch for truth state @p input.
+  ///
+  /// With @ref GnssSpec::fix_latency_s set, the returned fix is **not** the
+  /// solution for @p input: it is an earlier solution, tagged at its own
+  /// measurement epoch, that has now finished making its way out of the
+  /// receiver. Until the first one has, the fix is invalid — a receiver that has
+  /// not yet published anything has nothing to report, and that is the same
+  /// state a cold start leaves it in.
   GnssMeasurement sample(const time::Tai& epoch, const GnssInput& input);
+
+  /// Pending fixes discarded because the delay line was full. Non-zero means the
+  /// configured latency and rate together overrun @ref kMaxPending; a scenario
+  /// asserting graceful behaviour should assert this is zero.
+  std::uint64_t pendingDropped() const { return pending_dropped_; }
 
   // --- Fault injection (§9) --------------------------------------------------
 
@@ -230,6 +269,19 @@ class Gnss {
   bool prev_outage_ = false;
   time::Gps last_fix_time_{};
   GnssMeasurement last_fix_{};
+
+  /// Delay line for @ref GnssSpec::fix_latency_s. A fixed-capacity ring: the
+  /// entries are solutions already computed against truth at their own epoch and
+  /// waiting to be delivered. Sized so the deepest configured latency at the
+  /// fastest configured rate still fits — 100 Hz against a 0.25 s latency is 25
+  /// entries — with headroom. Overrunning it drops the *oldest* pending fix,
+  /// which is the honest failure (a receiver that far behind has lost the fix),
+  /// and `pendingDropped()` counts it so a mis-sized buffer cannot hide.
+  static constexpr std::size_t kMaxPending = 64;
+  GnssMeasurement pending_[kMaxPending]{};
+  std::int64_t pending_epoch_ns_[kMaxPending]{};  ///< GPS ns the fix was measured at
+  std::size_t pending_count_ = 0;
+  std::uint64_t pending_dropped_ = 0;
   /// GPS-time nanoseconds before which fixes stay invalid (cold-start acquisition
   /// or post-outage reacquisition). Set on the first sample and on each outage
   /// falling edge.

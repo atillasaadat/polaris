@@ -50,6 +50,8 @@ GnssSpec GnssSpec::fromParams(const std::map<std::string, double>& p) {
   s.max_rate_hz = get(p, "max_rate_hz");
   s.sample_period_s = (s.max_rate_hz > 0.0) ? 1.0 / s.max_rate_hz : 0.0;
 
+  s.fix_latency_s = get(p, "fix_latency_s");
+
   s.cold_start_s = get(p, "cold_start_s");
   s.hot_start_s = get(p, "hot_start_s");
   s.reacquisition_s = get(p, "reacquisition_s");
@@ -131,8 +133,65 @@ GnssMeasurement Gnss::sample(const time::Tai& epoch, const GnssInput& input) {
 
   has_sampled_ = true;
   last_fix_time_ = gps;
-  last_fix_ = m;
-  return m;
+
+  if (!(spec_.fix_latency_s > 0.0)) {
+    last_fix_ = m;
+    return m;
+  }
+
+  // --- Fix latency: the solution just computed is not the one delivered ------
+  // `m` describes the vehicle at `gps_ns` and enters the delay line; what leaves
+  // it is the newest solution that has been in there at least `fix_latency_s`.
+  // The tag stays at the *measurement* epoch — a receiver stamps when it
+  // measured, not when it finished talking — which is precisely what makes the
+  // latency correctable downstream instead of merely wrong.
+  if (pending_count_ == kMaxPending) {
+    for (std::size_t i = 1; i < kMaxPending; ++i) {
+      pending_[i - 1] = pending_[i];
+      pending_epoch_ns_[i - 1] = pending_epoch_ns_[i];
+    }
+    pending_count_ -= 1;
+    pending_dropped_ += 1;
+  }
+  pending_[pending_count_] = m;
+  pending_epoch_ns_[pending_count_] = gps_ns;
+  pending_count_ += 1;
+
+  const std::int64_t due_ns =
+      gps_ns - static_cast<std::int64_t>(std::llround(spec_.fix_latency_s * kNsPerSecond));
+  std::size_t ready = 0;
+  while (ready < pending_count_ && pending_epoch_ns_[ready] <= due_ns) {
+    ready += 1;
+  }
+  if (ready == 0) {
+    // Nothing has cleared the receiver yet. Report the sigmas and flags of a
+    // receiver with no solution rather than a stale or truth-exact position:
+    // this is the same "no fix available" state a cold start is in, and a
+    // consumer must treat it the same way.
+    GnssMeasurement none;
+    none.position_sigma_h_m = spec_.position_sigma_h_m;
+    none.position_sigma_v_m = spec_.position_sigma_v_m;
+    none.velocity_sigma_m_s = spec_.velocity_sigma_m_s;
+    none.time_sigma_s = spec_.time_sigma_s;
+    none.time_tag = gps;
+    none.fresh = true;
+    none.valid = false;
+    last_fix_ = none;
+    return none;
+  }
+
+  const GnssMeasurement delivered = pending_[ready - 1];
+  const std::size_t remaining = pending_count_ - ready;
+  for (std::size_t i = 0; i < remaining; ++i) {
+    pending_[i] = pending_[ready + i];
+    pending_epoch_ns_[i] = pending_epoch_ns_[ready + i];
+  }
+  pending_count_ = remaining;
+  // `last_fix_` is what the receiver last *reported*, not what it last computed:
+  // the sample-period repeat path above replays it, and replaying a solution
+  // still sitting in the delay line would deliver it early.
+  last_fix_ = delivered;
+  return delivered;
 }
 
 }  // namespace polaris::sim::sensors
