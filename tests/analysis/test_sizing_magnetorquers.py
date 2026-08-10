@@ -33,6 +33,7 @@ from analysis.sizing.assumptions import MTQ_ORBIT_EFFICIENCY, SizingAssumptions
 from analysis.sizing.disturbances import disturbance_budget
 from analysis.sizing.envelope import DegenerateArrayError, envelope
 from analysis.sizing.magnetorquers import bdot_noise_floor, criteria, mtq_sizing
+from analysis.sizing.report import sizing_report
 from analysis.sizing.wheels import wheel_sizing
 
 
@@ -353,3 +354,84 @@ def test_m1_is_written_on_the_secular_half_of_the_budget_only(vehicle):
         _criterion(criteria(vehicle, strict), "M1 desaturation").threshold
         > _criterion(criteria(vehicle, lenient), "M1 desaturation").threshold
     )
+
+
+# --------------------------------------------------------------------------
+# M4 — the saturated-gain convergence bound
+# --------------------------------------------------------------------------
+
+
+def test_the_saturated_convergence_rate_matches_its_closed_form(vehicle):
+    """``w_max = tau_mtq / (2 w_o (1 + sin xi) J_min)`` at the worst-case xi.
+
+    Avanzini & Giulietti's floor is stated for the unsaturated law; with the
+    rods railed the effective gain is ``m_sat|B|/omega`` and falls with rate,
+    so the floor becomes a ceiling on the rate the law can remove at all
+    [avanzini2012]. Checked against the closed form built from the vehicle's own
+    numbers, never a transcribed figure.
+    """
+    sizing = mtq_sizing(vehicle, disturbance_budget(vehicle))
+    j_min = float(np.min(vehicle.principal_moments_kgm2))
+    expected = sizing.average_torque_nm / (
+        2.0 * vehicle.orbit.mean_motion_rad_s * 2.0 * j_min
+    )
+    assert sizing.convergent_rate_max_radps == pytest.approx(expected, rel=1e-12)
+
+
+def test_the_bound_is_inverse_in_the_inertia_and_linear_in_the_dipole(vehicle):
+    """Scaling laws, which hold for any vehicle and cannot rot.
+
+    Doubling the smallest principal moment halves the removable rate; doubling
+    the rod dipole doubles it. Asserted as ratios so no magnitude is pinned.
+    """
+    budget = disturbance_budget(vehicle)
+    base = mtq_sizing(vehicle, budget).convergent_rate_max_radps
+
+    heavier = dataclasses.replace(vehicle, inertia_kgm2=2.0 * vehicle.inertia_kgm2)
+    assert mtq_sizing(
+        heavier, disturbance_budget(heavier)
+    ).convergent_rate_max_radps == pytest.approx(0.5 * base, rel=1e-9)
+
+    stronger = dataclasses.replace(
+        vehicle, mtq_max_dipole_am2=2.0 * vehicle.mtq_max_dipole_am2
+    )
+    assert mtq_sizing(
+        stronger, disturbance_budget(stronger)
+    ).convergent_rate_max_radps == pytest.approx(2.0 * base, rel=1e-9)
+
+
+def test_m4_catches_a_vehicle_that_m2_passes(vehicle, reference_config):
+    """The reason M4 exists, pinned as a regression.
+
+    M2 is an *impulse* bound (torque x time against momentum) and says nothing
+    about convergence. A 50 kg candidate for this bus passed M2 with margin and
+    had **no convergent detumble operating point at all** — its rods could not
+    remove rate above 0.37 deg/s, below even the rate the magnetometer can
+    resolve. That vehicle cost a full SITL investigation to diagnose; this test
+    is what makes the tool catch it instead.
+    """
+    heavy = dataclasses.replace(vehicle, inertia_kgm2=np.diag([4.71, 4.71, 4.08]))
+    rows = sizing_report(heavy, reference_config).criteria
+    m2 = _criterion(rows, "M2 detumble authority")
+    m4 = _criterion(rows, "M4 saturated")
+    assert m2.passes, "the premise of this test is that the impulse bound passes"
+    assert not m4.passes
+    # And the committed vehicle clears it, so the criterion is not simply strict.
+    assert _criterion(
+        sizing_report(vehicle, reference_config).criteria, "M4 saturated"
+    ).passes
+
+
+def test_the_bound_binds_on_the_smallest_principal_moment(vehicle):
+    """J_min, not J_max: the convergence condition binds on the easiest axis.
+
+    Using the largest moment would report a vehicle as convergent when the axis
+    that actually decides is not, which is the failure this criterion exists to
+    prevent.
+    """
+    skewed = dataclasses.replace(vehicle, inertia_kgm2=np.diag([10.0, 10.0, 0.10]))
+    sizing = mtq_sizing(skewed, disturbance_budget(skewed))
+    expected = sizing.average_torque_nm / (
+        2.0 * skewed.orbit.mean_motion_rad_s * 2.0 * 0.10
+    )
+    assert sizing.convergent_rate_max_radps == pytest.approx(expected, rel=1e-12)

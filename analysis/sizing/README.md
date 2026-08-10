@@ -251,6 +251,7 @@ this row compares a parameter against the hardware it describes.
 |---|---|
 | **M1 desaturation authority** | Do the rods beat the **secular** disturbance torque? This is where the disturbance budget lands: fail it and the wheels saturate no matter how large they are. |
 | **M2 detumble authority** | Can they remove the tip-off momentum inside the budget? The implied fast-phase duration is reported. |
+| **M4 saturated convergence** | Can B-dot converge at the tip-off rate *once the rods rail*? Its effective gain is `m_sat‖B‖/ω` and falls with rate, so above `ω_max = η·m·‖B‖_min·duty / (2ω_o(1+sin ξ)·J_min)` the law removes nothing. M2 is an impulse bound and cannot see this; a design can pass M2 and never converge. Binds on `J_min`. |
 | **M3 B-dot noise floor** | Is `DetumbleExitRadps` above `σ√2/(Δt·|B|)`, the rate at which B-dot's input is its own noise? |
 
 ### Derived tuning

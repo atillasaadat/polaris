@@ -294,7 +294,7 @@ _FAMILIES: tuple[tuple[str, str, tuple[str, ...], tuple[tuple[str, str], ...]], 
     (
         "Magnetorquer authority",
         "Can the rods desaturate the wheels and detumble the vehicle?",
-        ("M1 ", "M2 ", "M3 "),
+        ("M1 ", "M2 ", "M3 ", "M4 "),
         (
             (
                 "M1 · Desaturation authority",
@@ -309,6 +309,12 @@ _FAMILIES: tuple[tuple[str, str, tuple[str, ...], tuple[tuple[str, str], ...]], 
                 "M3 · Exit threshold",
                 "The committed exit rate against the B-dot measurement noise "
                 "floor; below it, B-dot commands on noise.",
+            ),
+            (
+                "M4 · Saturated convergence",
+                "The largest rate B-dot can remove at all once the rods rail. "
+                "M2 is an impulse bound and does not see this: a design can "
+                "pass M2 and still never converge.",
             ),
         ),
     ),
