@@ -16,6 +16,7 @@ import pytest
 from analysis.control.margins import axis_margins
 from analysis.control.vehicle import load_vehicle
 from analysis.control.plant import siso_coupling
+from analysis.sizing.assumptions import SizingAssumptions
 from analysis.sizing.parameters import (
     MAX_BANDWIDTH_FRACTION,
     implied_bandwidth,
@@ -224,6 +225,111 @@ def test_a_quiet_magnetometer_lets_the_momentum_bound_govern_instead(vehicle):
         / float(np.max(vehicle.principal_moments_kgm2))
     )
     assert "governs" in parameter.reasoning
+
+
+def test_the_desaturation_thresholds_are_derived_as_fractions_of_the_envelope(vehicle):
+    """``enter = 0.5 * envelope`` and ``exit = 0.3 * enter``, each off the vehicle.
+
+    The fractions are a margin choice and the tool says so; what it must not do
+    is derive one threshold from a *derived* other, which would make the pair
+    consistent with itself and with nothing else. Each row is written against the
+    committed value of the parameter above it, so a config whose entry threshold
+    is wrong shows up in the exit row too rather than being hidden by it.
+    """
+    analysis = sizing_analysis(vehicle)
+    enter = _derived(analysis, "MomentumDesatEnterNms")
+    exit_row = _derived(analysis, "MomentumDesatExitNms")
+    assert enter.derived == pytest.approx(0.5 * vehicle.momentum_envelope_nms)
+    assert exit_row.derived == pytest.approx(0.3 * vehicle.momentum_desat_enter_nms)
+    assert exit_row.derived < enter.derived < vehicle.momentum_envelope_nms
+    assert enter.ratio == pytest.approx(
+        vehicle.momentum_desat_enter_nms / enter.derived
+    )
+
+
+def test_the_bdot_gain_row_recommends_the_avanzini_floor_itself(
+    vehicle, reference_config
+):
+    """``derived = 2 omega_o (1 + sin xi) J_min`` at ``sin xi = 1`` — i.e. ``4 omega_o J_min``.
+
+    The recommendation is the convergence floor, not a tuned gain: everything
+    above it buys decay rate until the rods saturate, and only *below* it is an
+    error. So the derived value and the criterion threshold have to be the same
+    number, computed once — two copies of a floor are two chances to write the
+    worst-case :math:`\\xi` differently.
+    """
+    j_min = float(np.min(vehicle.principal_moments_kgm2))
+    floor = 4.0 * vehicle.orbit.mean_motion_rad_s * j_min
+    parameter = _derived(sizing_analysis(vehicle), "BdotGainNms")
+    assert parameter.derived == pytest.approx(floor)
+    assert _criterion(
+        sizing_report(vehicle, reference_config), "BdotGainNms above the Avanzini"
+    ).threshold == pytest.approx(parameter.derived)
+
+
+def test_the_detumble_handover_fraction_reaches_the_momentum_bound(vehicle):
+    """``f * h_usable / J_max`` — the fraction is an assumption and must be live.
+
+    Handing over at half the usable envelope leaves as much again for the
+    disturbance environment and the pointing transient; a mission that wants a
+    different split changes the assumption rather than the package. This asserts
+    the fraction actually multiplies the bound (and the recommendation follows it
+    while the momentum bound governs), on a vehicle made quiet enough that the
+    noise floor is out of the way.
+    """
+    quiet = dataclasses.replace(vehicle, mag_noise_t=1.0e-11)
+    j_max = float(np.max(vehicle.principal_moments_kgm2))
+    for fraction in (0.25, 0.5):
+        analysis = sizing_analysis(
+            quiet, SizingAssumptions(detumble_exit_fraction=fraction)
+        )
+        assert _derived(analysis, "DetumbleExitRadps").derived == pytest.approx(
+            fraction * analysis.wheels.usable_momentum_nms / j_max
+        )
+
+
+def test_the_handover_criterion_is_the_momentum_the_floor_forces_on_the_wheels(
+    vehicle, reference_config
+):
+    """``threshold = margin * J_max * omega_floor``, whatever the exit threshold is set to.
+
+    The criterion exists because the two bounds on ``DetumbleExitRadps`` are
+    independent: B-dot cannot certify a rate below its own noise floor, so the
+    wheels must be able to take :math:`J_{\\max}\\omega_{floor}` at handover even
+    if the committed threshold says otherwise. Writing it on the committed
+    threshold instead would let a too-low parameter excuse an undersized wheel.
+    """
+    analysis = sizing_analysis(vehicle)
+    row = _criterion(
+        sizing_report(vehicle, reference_config), "handover at the B-dot noise floor"
+    )
+    j_max = float(np.max(vehicle.principal_moments_kgm2))
+    assert row.threshold == pytest.approx(
+        1.3 * j_max * analysis.mtq.noise_floor.rate_worst_radps
+    )
+    assert row.measured == pytest.approx(analysis.wheels.usable_momentum_nms)
+
+    # Independent of the committed parameter: move it and the threshold does not.
+    moved = dataclasses.replace(
+        vehicle, detumble_exit_radps=10.0 * vehicle.detumble_exit_radps
+    )
+    assert _criterion(
+        sizing_report(moved, reference_config), "handover at the B-dot noise floor"
+    ).threshold == pytest.approx(row.threshold)
+
+
+def test_a_parameter_with_no_committed_counterpart_reports_no_ratio(vehicle):
+    """``ratio`` is ``nan`` rather than a number when there is nothing to compare to.
+
+    The comparison column is the whole point of the derivation table, and a
+    missing committed value must read as absent rather than as agreement. ``nan``
+    is the honest answer; zero or one would both be claims.
+    """
+    parameter = dataclasses.replace(
+        _derived(sizing_analysis(vehicle), "PidKpNmPerRad"), committed=float("nan")
+    )
+    assert np.isnan(parameter.ratio)
+    assert np.isnan(dataclasses.replace(parameter, derived=0.0).ratio)
 
 
 def test_every_derived_parameter_carries_its_justification(vehicle):

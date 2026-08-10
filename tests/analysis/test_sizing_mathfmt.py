@@ -17,12 +17,14 @@ import math
 import pytest
 
 from analysis.sizing.mathfmt import (
+    criterion_label,
     math_html,
     percent,
     provenance_label,
     sentence_case,
     signed,
     unit_html,
+    unit_scale,
 )
 
 
@@ -286,3 +288,76 @@ def test_percentages_stay_readable_across_five_orders_of_magnitude():
     assert percent(-18.5) == "-18.5%"
     assert percent(float("nan")) == "n/a"
     assert percent(math.inf) == "+∞%"
+
+
+# --------------------------------------------------------------------------
+# SI prefixes
+# --------------------------------------------------------------------------
+
+
+def test_a_small_momentum_is_set_with_a_milli_prefix():
+    """``0.0072 N·m·s`` is four leading zeros a reviewer has to count.
+
+    The reference vehicle's usable envelope is exactly this number, and it is
+    the one the report is read on more than any other.
+    """
+    scale = unit_scale("N.m.s", [0.0072, 0.005173, 0.002027])
+    assert scale.units == "mN.m.s"
+    assert scale.text(0.0072) == "7.2"
+    assert unit_html(scale.units) == "mN·m·s"
+
+
+def test_a_family_takes_one_prefix_and_not_one_per_value():
+    """Every value in a family is set through the same scale, outliers included.
+
+    Rescaling each cell to itself would put 7.2 mN·m·s beside 49 N·m·s in one
+    column, which is the mis-comparison the prefix exists to prevent.
+    """
+    values = [0.0072, 0.048990, 3.136e-05]
+    scale = unit_scale("N.m.s", values)
+    assert [scale.text(v) for v in values] == ["7.2", "48.99", "0.03136"]
+
+
+@pytest.mark.parametrize(
+    ("units", "values", "expected"),
+    [
+        # The magnetorquer torques: the median is microscale, and the tiny
+        # secular threshold stays honestly tiny rather than dragging the family.
+        ("N.m", [5.524e-09, 1.182e-04, 1.182e-04], "uN.m"),
+        # The disturbance budget lands a decade below micro on this vehicle.
+        ("N.m", [3.67e-08, 2.66e-08, 4.25e-09, 1.27e-07], "nN.m"),
+        # A dipole is already a readable size and takes no prefix.
+        ("A.m^2", [15.0, 15.0], "A.m^2"),
+        # Ratios, rates and periods are not prefixed at all.
+        ("x", [4.678], "x"),
+        ("deg/s", [1.9, 1.714], "deg/s"),
+        ("-", [0.7], "-"),
+    ],
+)
+def test_the_prefix_follows_the_magnitudes_the_family_actually_carries(
+    units, values, expected
+):
+    assert unit_scale(units, values).units == expected
+
+
+def test_a_family_with_nothing_to_scale_is_left_in_base_units():
+    """Zero, nan and an empty family are not magnitudes to choose a prefix from."""
+    assert unit_scale("N.m.s", []).units == "N.m.s"
+    assert unit_scale("N.m.s", [0.0, float("nan"), math.inf]).units == "N.m.s"
+    assert unit_scale("N.m.s", []).value(0.5) == 0.5
+
+
+def test_a_short_code_is_set_apart_from_the_words_that_expand_it():
+    """``D1b`` alone in a row leaves a first-time reader nothing to expand it from."""
+    assert (
+        criterion_label("usable momentum vs D1b post-B-dot handover")
+        == "usable momentum vs D1b · Post-B-dot handover"
+    )
+    assert (
+        criterion_label("M1 desaturation authority vs secular disturbance")
+        == "M1 · Desaturation authority vs secular disturbance"
+    )
+    # A name with no short code in it is not touched.
+    assert criterion_label("wheel momentum oversizing factor") == (
+        "wheel momentum oversizing factor"
+    )

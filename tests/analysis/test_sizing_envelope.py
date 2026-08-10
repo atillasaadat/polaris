@@ -197,6 +197,86 @@ def test_radii_scale_linearly_with_capacity():
     assert large.ellipsoid_semi_axes == pytest.approx(7.0 * small.ellipsoid_semi_axes)
 
 
+def test_the_inscribed_radius_does_not_depend_on_the_column_order():
+    """Permuting the wheel columns is relabelling, not a layout change.
+
+    The zonotope is a Minkowski sum, which is commutative, so every radius is
+    invariant to the order the generators are listed in. It is worth an assertion
+    because the facet enumeration walks *pairs* in index order and the minimum is
+    taken by ``argmin`` over that walk — a refactor that let the order leak into
+    the answer would be invisible on the symmetric layouts above and would still
+    produce a plausible number on an asymmetric one.
+    """
+    rng = np.random.default_rng(20260809)
+    axes = rng.normal(size=(3, 5))
+    axes /= np.linalg.norm(axes, axis=0)
+    reference = envelope(axes, 2.0)
+    for _ in range(5):
+        shuffled = envelope(axes[:, rng.permutation(5)], 2.0)
+        assert shuffled.inscribed == pytest.approx(reference.inscribed, rel=1e-12)
+        assert shuffled.circumscribed == pytest.approx(
+            reference.circumscribed, rel=1e-12
+        )
+        assert np.sort(shuffled.ellipsoid_semi_axes) == pytest.approx(
+            np.sort(reference.ellipsoid_semi_axes), rel=1e-12
+        )
+
+
+def test_a_redundant_parallel_actuator_buys_capability_along_its_own_axis_only():
+    """A fourth wheel parallel to x doubles the x reach and leaves ``r_in`` alone.
+
+    Redundancy is not capability. The extra unit adds :math:`h_{\\max}` to the
+    support in :math:`\\pm x` and contributes nothing in any direction orthogonal
+    to it, so the guaranteed radius — which is set by the *weakest* direction —
+    cannot improve. A sizing tool that reported the array as stronger for it
+    would be selling a spare as a margin.
+    """
+    triad = envelope(ORTHOGONAL, 1.0)
+    with_spare = envelope(np.column_stack((ORTHOGONAL, [1.0, 0.0, 0.0])), 1.0)
+    assert with_spare.n_actuators == 4
+    assert with_spare.per_body_axis[0] == pytest.approx(2.0)
+    assert with_spare.per_body_axis[1:] == pytest.approx(triad.per_body_axis[1:])
+    assert with_spare.inscribed == pytest.approx(triad.inscribed)
+
+
+def test_the_worst_direction_is_the_one_that_attains_the_inscribed_radius():
+    """``support(axes, cap, worst_direction) == inscribed``, and nothing beats it.
+
+    The reported direction is what a layout change acts on, so it has to be the
+    argument of the minimum and not merely near it. The second half — that a
+    dense sample finds nothing weaker — is what makes the first a minimum rather
+    than a coincidence.
+    """
+    for axes in (ORTHOGONAL, PYRAMID):
+        result = envelope(axes, 1.5)
+        assert support(axes, 1.5, result.worst_direction) == pytest.approx(
+            result.inscribed
+        )
+        assert np.min(support(axes, 1.5, fibonacci_sphere(20000))) >= (
+            result.inscribed - 1e-12
+        )
+
+
+def test_the_guaranteed_radius_is_bounded_by_the_ellipsoid_and_the_body_axes():
+    """``ellipsoid_inscribed <= inscribed <= min(per_body_axis) <= circumscribed``.
+
+    The chain of the module's four reported figures, on arrays with no symmetry
+    to rescue it. Sizing is done against the second, and the ordering is what
+    makes the other three safe to *report* beside it: whichever one a reader
+    reaches for by mistake, they are either being conservative (the L2 ellipsoid,
+    which is what a minimum-norm allocator reaches) or visibly reading a
+    best-direction figure.
+    """
+    rng = np.random.default_rng(20260809)
+    for _ in range(10):
+        axes = rng.normal(size=(3, 4))
+        axes /= np.linalg.norm(axes, axis=0)
+        result = envelope(axes, 0.8)
+        assert result.ellipsoid_inscribed <= result.inscribed + 1e-12
+        assert result.inscribed <= float(np.min(result.per_body_axis)) + 1e-12
+        assert float(np.max(result.per_body_axis)) <= result.circumscribed + 1e-12
+
+
 def test_the_fibonacci_sphere_is_unit_and_deterministic():
     """Directions are unit vectors and do not depend on an RNG."""
     first = fibonacci_sphere(500)

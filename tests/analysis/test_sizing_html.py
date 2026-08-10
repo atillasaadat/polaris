@@ -18,8 +18,8 @@ from pathlib import Path
 import pytest
 
 from analysis.control.vehicle import load_vehicle
-from analysis.sizing.html import _plain, _prose, _split, write_html
-from analysis.sizing.mathfmt import math_html, sentence_case
+from analysis.sizing.html import _criterion_name, _plain, _prose, _split, write_html
+from analysis.sizing.mathfmt import math_html, unit_scale
 from analysis.sizing.plots import driver_figure
 from analysis.sizing.report import sizing_analysis, sizing_report
 from analysis.sizing.texmath import tex_html
@@ -87,17 +87,71 @@ def test_every_criterion_appears_with_the_verdict_the_report_gives_it(report, pa
 
     "The report object's words" allows for the presentation layer setting them
     for a document rather than a terminal — sentence case, ``N·m·s`` for
-    ``N.m.s``. What it does not allow is a criterion going missing, so the
-    comparison is against :func:`~analysis.sizing.mathfmt.math_html` of the
-    name, which is the identity on anything the formatter does not recognise.
+    ``N.m.s``, and setting a short code apart from the words that expand it
+    (``D1b · Post-B-dot handover``). What it does not allow is a criterion going
+    missing, so the comparison is against the page's own label rendering.
     """
     for criterion in report.criteria:
-        assert math_html(sentence_case(criterion.name)) in page
+        assert _criterion_name(criterion) in page
     # The overall verdict banner, and one FAIL/PASS cell per criterion. The
     # verdict counts come from the structured report, never from the markup.
     assert page.count(">PASS<") >= sum(1 for c in report.criteria if c.passes)
     assert page.count(">FAIL<") >= sum(1 for c in report.criteria if not c.passes)
     assert f"{len(report.failures())} failing criteria" in page
+
+
+def test_a_rows_threshold_measured_and_margin_are_all_in_one_unit(page):
+    """The three numbers a row is read across must not need converting between.
+
+    Every numeric cell states its unit and the three in a row state the same
+    one, so "does the measured value clear the threshold, and by how much" is a
+    comparison the reader makes by looking rather than by multiplying.
+    """
+    rows = re.findall(r"<tr class=\"[^\"]*\">(.*?)</tr>", page, flags=re.S)
+    trios = 0
+    for row in rows:
+        cells = re.findall(r'<td class="n"[^>]*>(.*?)</td>', row, flags=re.S)
+        if len(cells) != 3:
+            continue
+        units = [re.findall(r'<span class="u">(.*?)</span>', cell) for cell in cells]
+        # A dimensionless criterion shows no unit at all, in all three cells.
+        assert len({tuple(u) for u in units}) == 1, row
+        trios += 1
+    assert trios >= 10
+
+
+def test_a_small_momentum_is_readable_rather_than_a_string_of_zeros(page, report):
+    """The reference vehicle's envelope reads as 7.2 mN·m·s, not 0.0072 N·m·s.
+
+    Asserted against the number the report object carries, scaled the way the
+    page says it scales it — the page is never the source of the value.
+    """
+    usable = next(c for c in report.criteria if "D1b" in c.name and c.units == "N.m.s")
+    scale = unit_scale("N.m.s", (usable.threshold, usable.measured, usable.margin))
+    assert scale.units == "mN.m.s"
+    assert f'{scale.text(usable.measured)} <span class="u">mN·m·s</span>' in page
+    # And the SI spelling of that same value is gone from the numeric cells.
+    assert '<span class="u">N·m·s</span>' not in page
+
+
+def test_no_value_cell_carries_a_sentence(page):
+    """A value cell holds a number, a unit or an identifier. Never prose.
+
+    The motivating defect: the binding-limit quantity rendered as
+    ``MomentumEnvelopeNms, the flight ceiling binds`` — an explanation sitting
+    in a cell sized for an identifier. The explanation belongs in the group's
+    caption, which is where it now is.
+    """
+    cells = re.findall(r'<span class="qv">(.*?)</span>', page, flags=re.S)
+    assert cells
+    for cell in cells:
+        text = re.sub(r"<[^>]+>", "", cell).strip()
+        # An inertia matrix is set as KaTeX and legitimately long; everything
+        # else is a scalar, a unit and at most a short identifier.
+        if "bmatrix" in cell or "diag(" in text:
+            continue
+        assert len(text.split()) <= 4, cell
+        assert "," not in text.rstrip(","), cell
 
 
 def test_a_failing_design_is_labelled_in_words_not_only_in_colour(
@@ -124,7 +178,7 @@ def test_a_failing_design_is_labelled_in_words_not_only_in_colour(
     # what failed without opening the table.
     worst = min(weak_report.failures(), key=lambda c: c.margin_pct)
     assert f"{len(weak_report.failures())} criteria do not close" in text
-    assert math_html(sentence_case(worst.name)) in text
+    assert _criterion_name(worst) in text
 
 
 def test_a_config_name_with_html_metacharacters_is_escaped(vehicle, analysis, tmp_path):

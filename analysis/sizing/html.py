@@ -34,14 +34,30 @@ Self-explaining, not self-evident
 ---------------------------------
 The report's short codes are its own: D1 through D4 name the wheel momentum
 drivers, M1 through M3 the magnetorquer criteria, and a reader meeting them for
-the first time cannot expand either from the row. Each family subhead therefore
-carries a glossary (:func:`_glossary`), said once per family rather than repeated
-on every row, and the criteria section opens with :data:`_HOW_TO_READ_A_ROW` —
+the first time cannot expand either from the row. Two things fix that, and both
+are needed: the code is expanded **in the criterion label itself**
+(:func:`analysis.sizing.mathfmt.criterion_label` sets ``D1b · Post-B-dot
+handover``), so the code is never the only identifier a row carries; and each
+family opens with a **visible** one-line definition per code
+(:func:`_glossary`), said once per family rather than repeated on every row. It
+was a disclosure and stayed shut, which is the same as not being there. The
+criteria section opens with :data:`_HOW_TO_READ_A_ROW` —
 what threshold, measured and margin mean for a minimum-sense criterion against a
 maximum-sense one, and which rows the 30 % convention actually governs. One row,
 the commanded wheel torque against the installed unit, is *designed* to land on
 its threshold at 0 % margin, and says so in its own note rather than leaving the
 reader to read a zero as a near miss.
+
+Prefixed units, chosen per family
+---------------------------------
+``0.0072 N·m·s`` is a number a reviewer has to count zeros in. Every numeric
+block on the page therefore picks one SI prefix for each units string it carries
+(:func:`analysis.sizing.mathfmt.unit_scale`) and sets every value in that block
+through it, so the figure reads ``7.2 mN·m·s`` and the threshold it is compared
+against reads in the same unit. Per family and never per cell: a column whose
+cells each chose their own prefix would be unreadable and would invite exactly
+the mis-comparison the prefix was meant to prevent. The scaling is presentation
+only; the report objects and the plain-text rendering keep SI base units.
 
 The provenance strip is a table, not a string
 ---------------------------------------------
@@ -116,13 +132,16 @@ from analysis.sizing.interactive import (
     torque_envelope_figure,
 )
 from analysis.sizing.mathfmt import (
+    UnitScale,
     _num,
+    criterion_label,
     math_html,
     percent,
     provenance_label,
     sentence_case,
     signed,
     unit_html,
+    unit_scale,
 )
 from analysis.sizing.report import SizingAnalysis, SpecItem, spec_groups
 from analysis.sizing.texmath import (
@@ -241,29 +260,28 @@ _FAMILIES: tuple[tuple[str, str, tuple[str, ...], tuple[tuple[str, str], ...]], 
         ("D1", "D2", "D3", "oversizing", "handover"),
         (
             (
-                "D1 tip-off absorption",
-                "The raw body momentum at separation, which the wheels must "
-                "absorb if nothing else removes it first.",
+                "D1 · Raw tip-off absorption",
+                "Momentum if the wheels catch the separation tumble unaided.",
             ),
             (
-                "D1b post-B-dot handover",
-                "What is left for the wheels once the magnetorquers have "
-                "detumbled, which is the driver that binds when M2 passes.",
+                "D1b · Post-B-dot handover",
+                "Momentum at the rate B-dot actually hands over at "
+                "(DetumbleExitRadps).",
             ),
             (
-                "D2 cyclic storage",
-                "The momentum the orbit-periodic disturbance torques park in "
-                "the wheels over a quarter of a lap, and take back out.",
+                "D2 · Cyclic storage",
+                "Momentum stored over a quarter orbit by a disturbance that "
+                "reverses.",
             ),
             (
-                "D3 secular accumulation",
-                "The momentum the non-cancelling torques build up between one "
-                "desaturation and the next.",
+                "D3 · Secular accumulation",
+                "Momentum built between desaturations by the non-reversing "
+                "disturbance.",
             ),
             (
-                "D4 slew agility",
-                "The momentum a commanded slew rate implies. Reported "
-                "parametrically, and judged only when a slew rate is given.",
+                "D4 · Slew agility",
+                "Momentum at the commanded slew rate; judged only when the "
+                "config gives one.",
             ),
         ),
     ),
@@ -279,21 +297,18 @@ _FAMILIES: tuple[tuple[str, str, tuple[str, ...], tuple[tuple[str, str], ...]], 
         ("M1 ", "M2 ", "M3 "),
         (
             (
-                "M1 desaturation authority",
-                "The orbit-average magnetic torque the rods produce, against "
-                "the secular disturbance torque they have to beat. Losing this "
-                "one saturates the wheels whatever their size.",
+                "M1 · Desaturation authority",
+                "Rod torque must beat the secular disturbance, or the wheels "
+                "saturate whatever their size.",
             ),
             (
-                "M2 detumble authority",
-                "The body momentum the rods can remove inside the detumble "
-                "budget, against the tip-off momentum they must remove.",
+                "M2 · Detumble authority",
+                "Momentum the rods can remove inside the detumble budget.",
             ),
             (
-                "M3 detumble exit threshold",
-                "The committed exit rate against the slowest rotation B-dot "
-                "can distinguish from magnetometer noise. Below that floor, "
-                "B-dot is commanding on noise.",
+                "M3 · Exit threshold",
+                "The committed exit rate against the B-dot measurement noise "
+                "floor; below it, B-dot commands on noise.",
             ),
         ),
     ),
@@ -520,7 +535,13 @@ nav.sections a:hover { color: var(--slate); border-bottom-color: var(--slate); }
   font-size: 1rem;
 }
 
+/* A quantity that needs a sentence gets it here, under the group. A value cell
+   holds a number, a unit or an identifier; prose in one is a defect. */
+.spec .qnote { margin: .35rem 0 0; font-size: .78rem; color: var(--muted);
+  max-width: 60ch; }
+
 /* ---- glossary and the reading guide ---- */
+p.xref { margin: .35rem 0 0; font-size: .78rem; color: var(--muted); }
 dl.glossary { margin: .1rem 0 0; display: grid; gap: .1rem .8rem; }
 @media (min-width: 700px) {
   dl.glossary { grid-template-columns: 15rem minmax(0, 1fr); }
@@ -752,7 +773,58 @@ document.querySelectorAll('table.sortable').forEach(function (table) {
 """
 
 
-def _criterion_note(criterion: Criterion) -> str:
+#: A number with one of the report's prefixable units attached, as the measuring
+#: modules write it into a note (``0.00398 N.m.s``, ``4.25e-09 N.m``). Tight on
+#: purpose: it matches a value and a whole unit or nothing, so the failure mode
+#: is a number left in SI rather than a corrupted sentence.
+_QUANTITY = re.compile(
+    r"(?<![\w.])(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s(N\.m\.s|N\.m|A\.m\^2)(?![\w.^])"
+)
+
+
+def _rescale(text: str, scales: dict[str, UnitScale]) -> str:
+    """Put the quantities inside a note in the same units as the row above it.
+
+    A row whose threshold reads ``0.2487 mN·m·s`` and whose note reads
+    ``2.487e-04 N·m·s`` is asking the reader to convert, which is the thing the
+    prefix was introduced to stop. The row's own scale is used where the note's
+    unit is one the family carries; where it is not (a torque quoted inside a
+    momentum criterion's note), the note is treated as its own family, since a
+    sentence is compared against itself and against nothing in the table.
+
+    Presentation only, and on strings this package wrote: nothing here parses a
+    rendered value back into a verdict.
+
+    Parameters
+    ----------
+    text : str
+        The note, before any math substitution.
+    scales : dict
+        The row's family scales, keyed by units string.
+
+    Returns
+    -------
+    str
+    """
+    found: dict[str, list[float]] = {}
+    for value, units in _QUANTITY.findall(text):
+        found.setdefault(units, []).append(float(value))
+    if not found:
+        return text
+    chosen = {
+        units: scales.get(units) or unit_scale(units, values)
+        for units, values in found.items()
+    }
+    return _QUANTITY.sub(
+        lambda m: (
+            f"{chosen[m.group(2)].text(float(m.group(1)), 3)} "
+            f"{chosen[m.group(2)].units}"
+        ),
+        text,
+    )
+
+
+def _criterion_note(criterion: Criterion, scales: dict[str, UnitScale]) -> str:
     """A criterion's note, scannable: the equation and its numbers, then a disclosure.
 
     The measuring modules write a note as "<formula> = <value> (<inputs>)" and
@@ -768,6 +840,7 @@ def _criterion_note(criterion: Criterion) -> str:
     text = _plain(criterion.note)
     for clause in _BOILERPLATE:
         text = text.replace(clause, "")
+    text = _rescale(text, scales)
     formula = ""
     if criterion.formula and text.startswith(criterion.formula):
         formula = tex_html(criterion.formula, criterion.formula_tex)
@@ -778,12 +851,19 @@ def _criterion_note(criterion: Criterion) -> str:
 
 
 def _glossary(entries: tuple[tuple[str, str], ...]) -> str:
-    """What a family's short codes mean, collapsed under its subhead.
+    """What a family's short codes mean, in the open at the head of the family.
 
     D1 through D4 and M1 through M3 are the report's own labels for the sizing
     drivers and the magnetorquer criteria, and a reader meeting them for the
-    first time has no way to expand them from the row alone. The expansion is
-    said once per family rather than repeated on every row.
+    first time has no way to expand them from the row alone. This was a
+    disclosure and stayed shut, which is the same as not being there — so it is
+    now visible by default, one line per code, said once per family rather than
+    repeated on every row. Each code is also expanded in the criterion label
+    itself (:func:`analysis.sizing.mathfmt.criterion_label`), so the code is
+    never the only identifier a row carries.
+
+    What a code *demands* is here; what its symbols *are* is in the Nomenclature
+    section, and is not repeated.
     """
     if not entries:
         return ""
@@ -791,7 +871,40 @@ def _glossary(entries: tuple[tuple[str, str], ...]) -> str:
         f"<dt>{math_html(term)}</dt><dd>{_prose(meaning)}</dd>"
         for term, meaning in entries
     )
-    return _why(f'<dl class="glossary">{items}</dl>', "What these mean")
+    return (
+        f'<dl class="glossary">{items}</dl>'
+        '<p class="xref">Symbols are defined in <a href="#nomenclature">'
+        "Nomenclature</a>.</p>"
+    )
+
+
+def _family_scales(criteria: list[Criterion]) -> dict[str, UnitScale]:
+    """One SI prefix per units string across a family of criteria.
+
+    The family, not the whole table and not the individual row: the rows a
+    reader compares are the ones sitting under the same subhead, and one prefix
+    over the whole table would have to serve both a wheel torque in millinewton
+    metres and a secular disturbance torque five decades under it.
+
+    Parameters
+    ----------
+    criteria : list of analysis.common.report.Criterion
+        One family, in document order.
+
+    Returns
+    -------
+    dict
+        Units string to the scale every cell in that unit is set through.
+    """
+    families: dict[str, list[float]] = {}
+    for c in criteria:
+        families.setdefault(c.units, []).extend((c.threshold, c.measured, c.margin))
+    return {units: unit_scale(units, values) for units, values in families.items()}
+
+
+def _criterion_name(criterion: Criterion) -> str:
+    """A criterion's name, its short code set apart from the words expanding it."""
+    return math_html(sentence_case(criterion_label(criterion.name)))
 
 
 def _criteria_table(grouped: list[list[Criterion]]) -> str:
@@ -803,6 +916,12 @@ def _criteria_table(grouped: list[list[Criterion]]) -> str:
     Margin is one cell carrying both the absolute figure and the percentage,
     because they answer the same question and separating them makes the reader
     do the division.
+
+    Units are prefixed per family, not per cell (:func:`_family_scales`), so the
+    threshold, the measured value and the margin of one row are always in the
+    same unit and the rows of one family are directly comparable. Every one of
+    the three cells states that unit: a trio that shares a unit silently is a
+    trio a reader has to take on trust.
     """
     head = (
         "<thead><tr><th>Requirement</th><th>Criterion</th>"
@@ -813,6 +932,7 @@ def _criteria_table(grouped: list[list[Criterion]]) -> str:
     for (title, why, _, glossary), criteria in zip(_FAMILIES, grouped):
         if not criteria:
             continue
+        scales = _family_scales(criteria)
         failing = sum(1 for c in criteria if not c.passes)
         noun = "criterion" if len(criteria) == 1 else "criteria"
         tally = (
@@ -829,19 +949,23 @@ def _criteria_table(grouped: list[list[Criterion]]) -> str:
         for c in criteria:
             verdict = "PASS" if c.passes else "FAIL"
             sense = "≥" if c.sense == "min" else "≤"
-            note = _criterion_note(c) if c.note else ""
+            note = _criterion_note(c, scales) if c.note else ""
+            scale = scales[c.units]
+            units = _unit(scale.units)
             blocks.append(
                 f'<tr class="{"fail" if not c.passes else ""}">'
                 # No requirement ID is the normal case here and says something:
                 # nothing in the baseline is written on actuator sizing. "None"
                 # states that; a lower-case "n/a" reads as a missing field.
                 f'<td class="req">{_esc(c.requirement) if c.requirement else "None"}</td>'
-                f'<td><span class="crit">{math_html(sentence_case(c.name))}</span>{note}</td>'
-                f'<td class="n" data-sort="{c.threshold}">{sense} {_esc(_num(c.threshold))}'
-                f"{_unit(c.units)}</td>"
-                f'<td class="n" data-sort="{c.measured}">{_esc(_num(c.measured))}</td>'
-                f'<td class="n" data-sort="{c.margin}">{_esc(signed(c.margin))}'
-                f'{_unit(c.units)} <span class="pct">({_esc(percent(c.margin_pct))})</span></td>'
+                f'<td><span class="crit">{_criterion_name(c)}</span>{note}</td>'
+                f'<td class="n" data-sort="{c.threshold}">{sense} '
+                f"{_esc(scale.text(c.threshold))}{units}</td>"
+                f'<td class="n" data-sort="{c.measured}">'
+                f"{_esc(scale.text(c.measured))}{units}</td>"
+                f'<td class="n" data-sort="{c.margin}">'
+                f"{_esc(signed(scale.value(c.margin)))}{units} "
+                f'<span class="pct">({_esc(percent(c.margin_pct))})</span></td>'
                 f'<td class="verdict {verdict.lower()}">{verdict}</td></tr>'
             )
         blocks.append("</tbody>")
@@ -861,9 +985,22 @@ def _spec_items(items: tuple[SpecItem, ...]) -> str:
     typeset, and its value with the units attached in the tabular face. A
     reviewer looking for the inscribed radius should find it on a line of its
     own, not fifth in a semicolon-separated string.
+
+    The prefix is chosen once per group per units string, so the six wheel
+    quantities are comparable at a glance rather than each scaled to itself. An
+    item carrying a :attr:`~analysis.sizing.report.SpecItem.note` renders it as a
+    caption under the group; notes never enter a value cell.
     """
-    rows = []
+    families: dict[str, list[float]] = {}
     for item in items:
+        if item.si is not None:
+            families.setdefault(item.units, []).append(item.si)
+    scales = {units: unit_scale(units, values) for units, values in families.items()}
+    rows = []
+    notes = []
+    for item in items:
+        if item.note:
+            notes.append(f"{_prose(item.label)}: {_prose(item.note)}.")
         if item.value_tex:
             # The inertia tensor is the one quantity here that is not a scalar,
             # and it is the quantity the per-axis analysis depends on: every
@@ -878,25 +1015,39 @@ def _spec_items(items: tuple[SpecItem, ...]) -> str:
                 f"{_unit(item.units)}</span></div>"
             )
             continue
+        scale = scales.get(item.units)
+        value, units = (
+            (scale.text(item.si), scale.units)
+            if scale is not None and item.si is not None
+            else (item.value, item.units)
+        )
         rows.append(
             '<div class="q">'
             f'<span class="ql">{_esc(item.label)}</span>'
             f'<span class="qs">{_math(item.symbol) if item.symbol else ""}</span>'
-            f'<span class="qv">{math_html(item.value)}{_unit(item.units)}</span>'
+            f'<span class="qv">{math_html(value)}{_unit(units)}</span>'
             "</div>"
         )
-    return f'<div class="quantities">{"".join(rows)}</div>'
+    caption = f'<p class="qnote">{" ".join(notes)}</p>' if notes else ""
+    return f'<div class="quantities">{"".join(rows)}</div>{caption}'
 
 
 def _derived_cards(analysis: SizingAnalysis) -> str:
-    """The derived tuning as cards — the justification, not a dump."""
+    """The derived tuning as cards — the justification, not a dump.
+
+    The prefix is chosen per card from the pair the card exists to compare, so
+    the derived and the committed value are always in the same unit; the
+    comparison is the card's whole point and two prefixes would break it.
+    """
     cards = []
     for p in analysis.derived:
+        scale = unit_scale(p.units, [p.derived, p.committed])
+        units = _unit(scale.units)
         if math.isnan(p.committed):
             committed = '<span class="v">&ndash;</span>'
             delta = '<div class="d">No committed value in the config.</div>'
         else:
-            committed = f'<span class="v">{_esc(_num(p.committed))}</span>'
+            committed = f'<span class="v">{_esc(scale.text(p.committed))}</span>'
             difference = (
                 float("nan") if math.isnan(p.ratio) else 100.0 * (p.ratio - 1.0)
             )
@@ -913,8 +1064,8 @@ def _derived_cards(analysis: SizingAnalysis) -> str:
             f'<div class="card"><h3>{_esc(p.name)}</h3>'
             '<div class="compare">'
             '<div class="k">Derived</div><div class="k">Committed</div>'
-            f'<div><span class="v">{_esc(_num(p.derived))}</span>{_unit(p.units)}</div>'
-            f"<div>{committed}{_unit(p.units) if not math.isnan(p.committed) else ''}</div>"
+            f'<div><span class="v">{_esc(scale.text(p.derived))}</span>{units}</div>'
+            f"<div>{committed}{units if not math.isnan(p.committed) else ''}</div>"
             f"{delta}</div>"
             f'<div class="row"><span class="k">Formula</span>'
             f'<span class="formula">{tex_html(p.formula, p.formula_tex)}</span></div>'
@@ -925,31 +1076,42 @@ def _derived_cards(analysis: SizingAnalysis) -> str:
     return '<div class="cards">' + "".join(cards) + "</div>"
 
 
-def _budget_table(analysis: SizingAnalysis) -> str:
-    """The disturbance budget with its formulae, beside the interactive bars."""
+def _budget_table(analysis: SizingAnalysis) -> tuple[str, str]:
+    """The disturbance budget with its formulae, beside the interactive bars.
+
+    Returns the table and the display units its three numeric columns are in,
+    so the section lede can name that unit once instead of the table repeating
+    it on every cell.
+    """
+    budget = analysis.budget
+    scale = unit_scale(
+        "N.m",
+        [t.torque_nm for t in budget.terms] + [budget.total_nm],
+    )
+    units = unit_html(scale.units)
     rows = [
-        '<thead><tr><th>Term</th><th class="n">Torque</th><th class="n">Secular</th>'
-        '<th class="n">Cyclic</th><th>Formula and inputs</th></tr></thead><tbody>'
+        f'<thead><tr><th>Term</th><th class="n">Torque [{units}]</th>'
+        f'<th class="n">Secular [{units}]</th><th class="n">Cyclic [{units}]</th>'
+        "<th>Formula and inputs</th></tr></thead><tbody>"
     ]
-    for t in analysis.budget.terms:
+    for t in budget.terms:
         rows.append(
             f'<tr><td><span class="crit">{_esc(sentence_case(t.name))}</span></td>'
-            f'<td class="n">{_esc(_num(t.torque_nm * 1e6))}{_unit("uN.m")}</td>'
-            f'<td class="n">{_esc(_num(t.secular_nm * 1e6))}</td>'
-            f'<td class="n">{_esc(_num(t.cyclic_nm * 1e6))}</td>'
+            f'<td class="n">{_esc(scale.text(t.torque_nm))}</td>'
+            f'<td class="n">{_esc(scale.text(t.secular_nm))}</td>'
+            f'<td class="n">{_esc(scale.text(t.cyclic_nm))}</td>'
             f"<td>{tex_html(t.formula, t.formula_tex)}"
             f'<div class="note">{_prose(t.inputs)}</div></td></tr>'
         )
-    budget = analysis.budget
     rows.append(
         "</tbody><tfoot><tr><td>Total</td>"
-        f'<td class="n">{_esc(_num(budget.total_nm * 1e6))}{_unit("uN.m")}</td>'
-        f'<td class="n">{_esc(_num(budget.secular_nm * 1e6))}</td>'
-        f'<td class="n">{_esc(_num(budget.cyclic_nm * 1e6))}</td>'
+        f'<td class="n">{_esc(scale.text(budget.total_nm))}</td>'
+        f'<td class="n">{_esc(scale.text(budget.secular_nm))}</td>'
+        f'<td class="n">{_esc(scale.text(budget.cyclic_nm))}</td>'
         '<td class="note">Summed, not RSS: worst cases can coincide.</td>'
         "</tr></tfoot>"
     )
-    return '<div class="scroll"><table>' + "".join(rows) + "</table></div>"
+    return '<div class="scroll"><table>' + "".join(rows) + "</table></div>", units
 
 
 def _embed_png(path: Path) -> str:
@@ -1000,7 +1162,7 @@ def _thesis(analysis: SizingAnalysis, report: AnalysisReport) -> str:
     noun = "criterion does" if len(failures) == 1 else "criteria do"
     return (
         f"<b>{len(failures)} {noun} not close.</b> The worst is "
-        f"{math_html(sentence_case(worst.name))}, short by "
+        f"{_criterion_name(worst)}, short by "
         # The magnitude, unsigned: "short by" already carries the direction, and
         # percent() writes a leading "+" that would contradict it.
         f"{_esc(percent(abs(worst.margin_pct)).lstrip('+'))}."
@@ -1434,6 +1596,7 @@ def write_html(
     warnings = "".join(
         f"<li>{_lead_and_why(w, 'Detail')}</li>" for w in report.warnings
     )
+    budget_table, budget_units = _budget_table(analysis)
     thesis = _thesis(analysis, report)
     nav = "".join(
         f'<li><a href="#{anchor}">{_esc(label)}</a></li>' for anchor, label in _SECTIONS
@@ -1481,8 +1644,9 @@ def write_html(
 <section id="criteria"><h2>Criteria</h2>
 <p class="lede">Criteria are grouped by what they judge and led by the tightest
 margin in each group. Click a column heading to sort within a family; failing
-rows are shaded <b>and</b> say FAIL. Each family subhead carries a
-<b>What these mean</b> disclosure expanding the short codes it uses.</p>
+rows are shaded <b>and</b> say FAIL. Each family opens with a one-line
+definition of every short code it uses, and each row's threshold, measured value
+and margin are stated in one shared unit so the comparison is direct.</p>
 {_HOW_TO_READ_A_ROW}
 {_criteria_table(grouped)}
 </section>
@@ -1492,8 +1656,9 @@ rows are shaded <b>and</b> say FAIL. Each family subhead carries a
 </section>
 
 <section id="budget"><h2>Disturbance-torque budget</h2>
-<p class="lede">Worst case at a static attitude, analytic. Torques in µN·m.</p>
-{_budget_table(analysis)}
+<p class="lede">Worst case at a static attitude, analytic. Every torque column is
+in {budget_units}.</p>
+{budget_table}
 </section>
 
 <section id="derived"><h2>Derived flight parameters</h2>

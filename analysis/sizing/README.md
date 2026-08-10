@@ -103,6 +103,27 @@ cases above fall back to. Em dashes and `**emphasis**` are console conventions
 and are dropped at render time. **The report objects and the plain-text
 rendering keep their original strings**; nothing about the verdict changes.
 
+**Small numbers carry an SI prefix.** `0.0072 N·m·s` is four leading zeros a
+reviewer has to count, so every numeric block on the page picks one prefix per
+units string from the magnitudes it carries (`mathfmt.unit_scale`) and sets
+every value in that block through it: the wheel envelope reads **7.2 mN·m·s**,
+the disturbance budget in nN·m, the rod authority in µN·m. **Per family, never
+per cell** — a column whose cells each chose their own prefix would be
+unreadable and would invite the mis-comparison the prefix exists to prevent — so
+a criterion row's threshold, measured value and margin are always in one unit,
+and all three state it. The same scaling drives the figures' axes, annotations
+and hover text. It is presentation only: the report objects and the plain-text
+rendering keep SI base units.
+
+**Every short code is expanded twice over.** `D1`…`D4` and `M1`…`M3` are this
+report's own labels, and a reader meeting `D1b` in a row has no way to expand it
+there. So the code is set apart from the words that expand it in the criterion
+label itself (**D1b · Post-B-dot handover**), and each criterion family opens
+with a **visible** one-line definition of every code it uses — what the code
+demands, in one clause. It was a disclosure once and stayed shut, which is the
+same as not being there. What the *symbols* mean is not repeated: the family
+list links to Nomenclature.
+
 **Every symbol is defined.** A **Nomenclature** section near the end lists each
 symbol the page sets with its meaning, its units, and — where the symbol names a
 quantity the vehicle commits to — the flight parameter that carries it
@@ -303,7 +324,8 @@ SI throughout: momentum N·m·s, torque N·m, dipole A·m², field T, rates rad/
 inertia kg·m², lengths m. Every vector is **body frame**; wheel spin axes and rod
 dipole axes are unit vectors in build order. Friendly units (deg/s, µN·m, µT)
 appear only in the report and on the figures, which is the presentation
-boundary. No quaternion, frame transform or propagation is computed anywhere in
+boundary — as do the SI prefixes the HTML page and the figures choose per
+quantity family (mN·m·s, µN·m, nN·m), which change no computed value. No quaternion, frame transform or propagation is computed anywhere in
 this package — see `analysis/CLAUDE.md` for why that boundary matters.
 
 ## What this tool is not

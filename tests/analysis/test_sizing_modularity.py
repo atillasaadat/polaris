@@ -106,7 +106,11 @@ def test_a_variant_vehicle_carries_its_own_numbers(variant_config, tmp_path):
     # SVG path data contains every short numeric string by coincidence, and
     # searching it would be searching a library, not this report.
     page = write_html(analysis, report, tmp_path / "page").read_text(encoding="utf-8")
-    page = re.sub(r"<script\b.*?</script>", " ", page, flags=re.S)
+    # IGNORECASE is load-bearing, not defensive style: a tag-stripping regex
+    # that misses <SCRIPT> leaves the bundle in the text, and the leak search
+    # below would then be scanning a third-party library and failing on its
+    # coincidental digits rather than on this report.
+    page = re.sub(r"<script\b.*?</script>", " ", page, flags=re.S | re.IGNORECASE)
     for marker in COMMITTED_MARKERS:
         assert marker not in rendered, f"committed-vehicle value {marker!r} leaked"
         assert marker not in page, f"committed-vehicle value {marker!r} leaked"

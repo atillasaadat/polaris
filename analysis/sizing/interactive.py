@@ -16,7 +16,11 @@ label and in the hover text.
 
 Units at the presentation boundary
 ----------------------------------
-SI internally; N·m·s, µN·m and deg/s on the figures.
+SI internally; the figures pick an SI prefix per axis from the magnitudes they
+carry (:func:`analysis.sizing.mathfmt.unit_scale`), so a wheel envelope is drawn
+in mN·m·s rather than in four leading zeros, and rates are in deg/s. One prefix
+per figure: the surfaces and the arrows on an envelope figure are compared by
+eye and must therefore be compared in one unit.
 
 References
 ----------
@@ -34,7 +38,13 @@ from scipy.spatial import ConvexHull
 
 from analysis.common.report import AnalysisReport
 from analysis.sizing.envelope import Envelope
-from analysis.sizing.mathfmt import _num, sentence_case
+from analysis.sizing.mathfmt import (
+    _num,
+    criterion_label,
+    sentence_case,
+    unit_html,
+    unit_scale,
+)
 from analysis.sizing.report import SizingAnalysis
 
 #: Verdict colours. Never load-bearing alone — every verdict is also a word.
@@ -123,12 +133,19 @@ def _hull_edge_lines(vertices: np.ndarray, hull: ConvexHull) -> go.Scatter3d:
     )
 
 
-def _zonotope_mesh(env: Envelope, name: str) -> list[go.Mesh3d | go.Scatter3d]:
-    """The achievable set as a translucent hull **and its edges**, or nothing if too large."""
+def _zonotope_mesh(
+    env: Envelope, name: str, factor: float = 1.0
+) -> list[go.Mesh3d | go.Scatter3d]:
+    """The achievable set as a translucent hull **and its edges**, or nothing if too large.
+
+    @p factor scales the geometry into the axis units the figure declares; it is
+    a change of prefix and nothing else, so every shape on the figure takes the
+    same one.
+    """
     if env.n_actuators > MAX_HULL_ACTUATORS:  # pragma: no cover - no such vehicle
         return []
     signs = np.array(list(product((-1.0, 1.0), repeat=env.n_actuators)))
-    vertices = env.capacity * signs @ env.axes.T
+    vertices = factor * env.capacity * signs @ env.axes.T
     hull = ConvexHull(vertices)
     return [
         go.Mesh3d(
@@ -168,14 +185,14 @@ def _sphere(radius: float, color: str, name: str, opacity: float) -> go.Surface:
     )
 
 
-def _ellipsoid(env: Envelope, opacity: float = 0.28) -> go.Surface:
+def _ellipsoid(env: Envelope, opacity: float = 0.28, factor: float = 1.0) -> go.Surface:
     """The L2 (minimum-norm) allocator's reach, inscribed in the zonotope.
 
     The opacity is per-figure: the three nested surfaces have to stay tellable
     apart at a glance, and how transparent the middle one must be depends on how
     many surfaces sit outside it.
     """
-    semi = env.ellipsoid_semi_axes
+    semi = factor * env.ellipsoid_semi_axes
     u = np.linspace(0.0, 2.0 * np.pi, 60)
     v = np.linspace(0.0, np.pi, 30)
     return go.Surface(
@@ -192,9 +209,18 @@ def _ellipsoid(env: Envelope, opacity: float = 0.28) -> go.Surface:
 
 
 def _demand_vector(
-    direction: np.ndarray, magnitude: float, label: str, inside: bool, units: str
+    direction: np.ndarray,
+    magnitude: float,
+    label: str,
+    inside: bool,
+    units: str,
+    tip_label: str = "",
 ) -> go.Scatter3d:
     """One requirement as a labelled arrow from the origin, verdict in words.
+
+    @p tip_label is what is written at the arrow's point, where three overlapping
+    vectors leave room for a short code and nothing more; @p label is the full
+    name, which the legend and the hover text carry.
 
     The arrow is drawn in ink whatever its verdict. What the figure asks the
     reader to see is *geometric* — whether the vector ends inside the surfaces
@@ -213,7 +239,7 @@ def _demand_vector(
         y=[0.0, tip[1]],
         z=[0.0, tip[2]],
         mode="lines+markers+text",
-        text=["", label],
+        text=["", tip_label or label],
         textposition="top center",
         textfont={"size": 10},
         # Thicker than any surface edge on the figure: the drivers are the data
@@ -288,29 +314,44 @@ def momentum_envelope_figure(analysis: SizingAnalysis) -> go.Figure:
     wheels = analysis.wheels
     env = wheels.momentum
     margin = analysis.assumptions.margin
+    # One prefix for the whole figure: the surfaces and the driver arrows are
+    # compared by eye, so they must be compared in one unit.
+    scale = unit_scale(
+        "N.m.s",
+        [
+            env.circumscribed,
+            env.inscribed,
+            env.ellipsoid_inscribed,
+            wheels.usable_momentum_nms,
+            *(margin * d.required_nms for d in wheels.drivers if d.judged),
+        ],
+    )
+    units = unit_html(scale.units)
     traces: list[go.Scatter3d | go.Surface | go.Mesh3d] = list(
         _zonotope_mesh(
-            env, f"Wheel zonotope, hardware, best {_num(env.circumscribed)} N·m·s"
+            env,
+            f"Wheel zonotope, hardware, best {scale.text(env.circumscribed)} {units}",
+            scale.factor,
         )
     )
     traces.append(
         _sphere(
-            env.inscribed,
+            scale.value(env.inscribed),
             SERIES_1,
-            f"Hardware guarantee rᵢₙ = {_num(env.inscribed)} N·m·s",
+            f"Hardware guarantee rᵢₙ = {scale.text(env.inscribed)} {units}",
             0.13,
         )
     )
     traces.append(
         _sphere(
-            wheels.usable_momentum_nms,
+            scale.value(wheels.usable_momentum_nms),
             USABLE_COLOR,
-            f"Usable envelope = {_num(wheels.usable_momentum_nms)} N·m·s"
+            f"Usable envelope = {scale.text(wheels.usable_momentum_nms)} {units}"
             + (" (MomentumEnvelopeNms binds)" if wheels.envelope_limited else ""),
             0.6,
         )
     )
-    traces.append(_ellipsoid(env))
+    traces.append(_ellipsoid(env, factor=scale.factor))
     for driver in wheels.drivers:
         if not driver.judged:
             continue
@@ -318,10 +359,11 @@ def momentum_envelope_figure(analysis: SizingAnalysis) -> go.Figure:
         traces.append(
             _demand_vector(
                 env.worst_direction,
-                required,
-                driver.name.split(" ")[0],
+                scale.value(required),
+                criterion_label(driver.name),
                 wheels.usable_momentum_nms >= required,
-                "N·m·s",
+                units,
+                tip_label=driver.name.split(" ")[0],
             )
         )
     return go.Figure(
@@ -329,7 +371,7 @@ def momentum_envelope_figure(analysis: SizingAnalysis) -> go.Figure:
         layout=_scene(
             f"Wheel momentum envelope, {analysis.vehicle.name} "
             f"(drivers at ×{margin:g} margin, along the weakest direction)",
-            "h<sub>{}</sub> [N·m·s]",
+            f"h<sub>{{}}</sub> [{units}]",
         ),
     )
 
@@ -349,27 +391,35 @@ def torque_envelope_figure(analysis: SizingAnalysis) -> go.Figure:
     env = analysis.wheels.torque
     margin = analysis.assumptions.margin
     required = margin * analysis.wheels.required_torque_nm
+    scale = unit_scale(
+        "N.m", [env.circumscribed, env.inscribed, env.ellipsoid_inscribed, required]
+    )
+    units = unit_html(scale.units)
     traces: list[go.Scatter3d | go.Surface | go.Mesh3d] = list(
-        _zonotope_mesh(env, f"Torque zonotope, best {_num(env.circumscribed)} N·m")
+        _zonotope_mesh(
+            env,
+            f"Torque zonotope, best {scale.text(env.circumscribed)} {units}",
+            scale.factor,
+        )
     )
     traces.append(
         _sphere(
-            env.inscribed,
+            scale.value(env.inscribed),
             # A capability surface, so it takes a series colour and not a
             # verdict one; the demand arrow's label carries the verdict.
             SERIES_1,
-            f"Guarantee rᵢₙ = {_num(env.inscribed)} N·m",
+            f"Guarantee rᵢₙ = {scale.text(env.inscribed)} {units}",
             0.22,
         )
     )
-    traces.append(_ellipsoid(env, opacity=0.34))
+    traces.append(_ellipsoid(env, opacity=0.34, factor=scale.factor))
     traces.append(
         _demand_vector(
             env.worst_direction,
-            required,
+            scale.value(required),
             "Torque demand",
             env.inscribed >= required,
-            "N·m",
+            units,
         )
     )
     return go.Figure(
@@ -377,7 +427,7 @@ def torque_envelope_figure(analysis: SizingAnalysis) -> go.Figure:
         layout=_scene(
             f"Wheel torque envelope, {analysis.vehicle.name} "
             f"(demand = PidMaxTorqueNm + disturbance, ×{margin:g} margin)",
-            "\u03c4<sub>{}</sub> [N·m]",
+            f"\u03c4<sub>{{}}</sub> [{units}]",
         ),
     )
 
@@ -398,9 +448,18 @@ def disturbance_figure(analysis: SizingAnalysis) -> go.Figure:
     # Capitalised here rather than in the budget: these are axis labels on a
     # figure, and the term names are written for a console table.
     names = [t.name[:1].upper() + t.name[1:] for t in budget.terms]
-    available = analysis.mtq.average_torque_nm * 1e6
-    secular = [t.secular_nm * 1e6 for t in budget.terms]
-    cyclic = [t.cyclic_nm * 1e6 for t in budget.terms]
+    # One prefix for the axis, chosen from the bars themselves rather than fixed
+    # at micro: a quieter vehicle's budget lands a decade down and would read as
+    # a column of zeros.
+    scale = unit_scale(
+        "N.m",
+        [t.torque_nm for t in budget.terms]
+        + [budget.total_nm, analysis.mtq.average_torque_nm],
+    )
+    units = unit_html(scale.units)
+    available = scale.value(analysis.mtq.average_torque_nm)
+    secular = [scale.value(t.secular_nm) for t in budget.terms]
+    cyclic = [scale.value(t.cyclic_nm) for t in budget.terms]
     # The log axis is set explicitly. Left to autorange it has to accommodate a
     # text label on every bar as well as the authority line far above them, and
     # plotly resolves that on a log scale by opening up dozens of empty decades,
@@ -422,8 +481,8 @@ def disturbance_figure(analysis: SizingAnalysis) -> go.Figure:
                 textangle=0,
                 textfont={"size": 10, "color": FONT_COLOR},
                 customdata=[t.formula for t in budget.terms],
-                hovertemplate="<b>%{x}</b><br>Secular %{y:.4g} µN·m<br>%{customdata}"
-                "<extra></extra>",
+                hovertemplate=f"<b>%{{x}}</b><br>Secular %{{y:.4g}} {units}"
+                "<br>%{customdata}<extra></extra>",
             ),
             go.Bar(
                 x=names,
@@ -435,8 +494,8 @@ def disturbance_figure(analysis: SizingAnalysis) -> go.Figure:
                 textangle=0,
                 textfont={"size": 10, "color": FONT_COLOR},
                 customdata=[t.formula for t in budget.terms],
-                hovertemplate="<b>%{x}</b><br>Cyclic %{y:.4g} µN·m<br>%{customdata}"
-                "<extra></extra>",
+                hovertemplate=f"<b>%{{x}}</b><br>Cyclic %{{y:.4g}} {units}"
+                "<br>%{customdata}<extra></extra>",
             ),
         ]
     )
@@ -445,7 +504,7 @@ def disturbance_figure(analysis: SizingAnalysis) -> go.Figure:
     fig.add_hline(
         y=available,
         line={"color": FONT_COLOR, "width": 2, "dash": "dash"},
-        annotation_text=f"Magnetorquer desaturation authority {available:.3g} µN·m "
+        annotation_text=f"Magnetorquer desaturation authority {available:.3g} {units} "
         "(orbit-average, worst direction, weakest field)",
         # Below the line, not above it: the line sits near the top of the range
         # and an annotation above it lands outside the plotting area.
@@ -461,13 +520,13 @@ def disturbance_figure(analysis: SizingAnalysis) -> go.Figure:
         bargap=0.42,
         bargroupgap=0.08,
         title={
-            "text": f"Disturbance-torque budget: total {budget.total_nm * 1e6:.3g} "
-            f"µN·m = secular {budget.secular_nm * 1e6:.3g} + cyclic "
-            f"{budget.cyclic_nm * 1e6:.3g} µN·m.<br>The rods must beat the "
+            "text": f"Disturbance-torque budget: total {scale.text(budget.total_nm, 3)} "
+            f"{units} = secular {scale.text(budget.secular_nm, 3)} + cyclic "
+            f"{scale.text(budget.cyclic_nm, 3)} {units}.<br>The rods must beat the "
             "<b>secular total</b>, or the wheels saturate whatever their size.",
             "font": {"size": 13, "color": FONT_COLOR},
         },
-        yaxis_title="Disturbance torque [µN·m], log scale",
+        yaxis_title=f"Disturbance torque [{units}], log scale",
         height=460,
         margin={"l": 60, "r": 20, "t": 70, "b": 40},
         paper_bgcolor=PAPER_BG,
@@ -520,25 +579,32 @@ def margin_figure(report: AnalysisReport, order: list | None = None) -> go.Figur
     # renders the second as nothing, so the bars are clipped for *drawing* only
     # — the label beside each bar always carries the true number.
     clipped = [max(-200.0, min(400.0, c.margin_pct)) for c in criteria]
+    hover_scales = [
+        unit_scale(c.units, (c.threshold, c.measured, c.margin)) for c in criteria
+    ]
     labels = [
         f"{'PASS' if c.passes else 'FAIL'} {_num(c.margin_pct, 3)} %" for c in criteria
     ]
     fig = go.Figure(
         go.Bar(
             x=clipped,
-            y=[sentence_case(c.name) for c in criteria],
+            y=[sentence_case(criterion_label(c.name)) for c in criteria],
             orientation="h",
             marker_color=[PASS_COLOR if c.passes else FAIL_COLOR for c in criteria],
             text=labels,
             textposition="outside",
             textfont={"size": 11, "color": FONT_COLOR},
+            # One scale per criterion, so a row's threshold and measured value
+            # are always quoted in the same unit and the comparison in the
+            # hover is direct.
             customdata=[
                 [
                     "PASS" if c.passes else "FAIL",
-                    f"{'≥' if c.sense == 'min' else '≤'} {_num(c.threshold)} {c.units}",
-                    f"{_num(c.measured)} {c.units}",
+                    f"{'≥' if c.sense == 'min' else '≤'} {scale.text(c.threshold)}"
+                    f" {unit_html(scale.units)}",
+                    f"{scale.text(c.measured)} {unit_html(scale.units)}",
                 ]
-                for c in criteria
+                for c, scale in zip(criteria, hover_scales, strict=True)
             ],
             hovertemplate="%{y}<br><b>%{customdata[0]}</b><br>"
             "Threshold %{customdata[1]}<br>Measured %{customdata[2]}<extra></extra>",

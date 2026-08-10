@@ -28,8 +28,9 @@ it is the record, so a run that skips the figures still writes it.
 
 Units at the presentation boundary
 ----------------------------------
-SI internally; the figures use N·m·s, µN·m and deg/s, which is where a reader's
-intuition lives, set with the unit symbols rather than the console's dotted
+SI internally; the figures pick an SI prefix per axis from the magnitudes they
+carry (:func:`analysis.sizing.mathfmt.unit_scale`) and state rates in deg/s,
+which is where a reader's intuition lives, set with the unit symbols rather than the console's dotted
 convention.
 
 The same palette as the page
@@ -65,6 +66,7 @@ from analysis.common.plotting import (
 )
 from analysis.control.vehicle import Vehicle
 from analysis.sizing.assumptions import SizingAssumptions
+from analysis.sizing.mathfmt import unit_html, unit_scale
 from analysis.sizing.interactive import (
     ELLIPSOID_COLOR,
     GRID_COLOR,
@@ -176,11 +178,18 @@ def envelope_figure(
         The file written.
     """
     momentum = analysis.wheels.momentum
+    # One prefix for the whole figure: three nested surfaces compared by eye
+    # have to be compared in one unit.
+    scale = unit_scale(
+        "N.m.s",
+        [momentum.circumscribed, momentum.inscribed, momentum.ellipsoid_inscribed],
+    )
+    units = unit_html(scale.units)
     fig = plt.figure(figsize=(7.6, 7.0))
     ax = fig.add_subplot(1, 1, 1, projection="3d")
 
     if momentum.n_actuators <= MAX_HULL_WHEELS:
-        vertices = _zonotope_vertices(momentum.axes, momentum.capacity)
+        vertices = scale.factor * _zonotope_vertices(momentum.axes, momentum.capacity)
         hull = ConvexHull(vertices)
         ax.plot_trisurf(
             vertices[:, 0],
@@ -203,7 +212,7 @@ def envelope_figure(
         )
 
     sx, sy, sz = _unit_sphere()
-    semi = momentum.ellipsoid_semi_axes
+    semi = scale.factor * momentum.ellipsoid_semi_axes
     ax.plot_wireframe(
         semi[0] * sx,
         semi[1] * sy,
@@ -213,15 +222,16 @@ def envelope_figure(
         rstride=4,
         cstride=4,
     )
+    inscribed = scale.value(momentum.inscribed)
     ax.plot_surface(
-        momentum.inscribed * sx,
-        momentum.inscribed * sy,
-        momentum.inscribed * sz,
+        inscribed * sx,
+        inscribed * sy,
+        inscribed * sz,
         alpha=0.22,
         color=SERIES_1,
         linewidth=0,
     )
-    worst = momentum.worst_direction * momentum.inscribed
+    worst = momentum.worst_direction * inscribed
     ax.plot(
         [0.0, worst[0]],
         [0.0, worst[1]],
@@ -231,16 +241,16 @@ def envelope_figure(
         zorder=10,
     )
     ax.text(worst[0], worst[1], worst[2], "  Weakest direction", fontsize=8)
-    ax.set_xlabel("$h_x$ [N\u00b7m\u00b7s]")
-    ax.set_ylabel("$h_y$ [N\u00b7m\u00b7s]")
-    ax.set_zlabel("$h_z$ [N\u00b7m\u00b7s]")
+    ax.set_xlabel(f"$h_x$ [{units}]")
+    ax.set_ylabel(f"$h_y$ [{units}]")
+    ax.set_zlabel(f"$h_z$ [{units}]")
     ax.set_box_aspect((1.0, 1.0, 1.0))
     ax.set_title(
         f"Wheel Momentum Envelope, {analysis.vehicle.name}\n"
-        f"Zonotope (slate hull) reaches {momentum.circumscribed:.3g} at best and "
-        f"guarantees $r_{{in}}$ = {momentum.inscribed:.3g} (blue sphere);\n"
-        f"the L2 ellipsoid (violet wireframe) guarantees "
-        f"{momentum.ellipsoid_inscribed:.3g} N\u00b7m\u00b7s. "
+        f"Zonotope (slate hull) reaches {scale.text(momentum.circumscribed, 3)} at "
+        f"best and guarantees $r_{{in}}$ = {scale.text(momentum.inscribed, 3)} "
+        f"(blue sphere);\nthe L2 ellipsoid (violet wireframe) guarantees "
+        f"{scale.text(momentum.ellipsoid_inscribed, 3)} {units}. "
         "Sizing uses the blue radius.",
         fontsize=9,
     )
@@ -274,10 +284,22 @@ def driver_figure(analysis: SizingAnalysis, out_dir: str | Path | None = None) -
         for d in drivers
     )
 
+    scale = unit_scale(
+        "N.m.s",
+        [
+            momentum.inscribed,
+            wheels.usable_momentum_nms,
+            *(analysis.assumptions.margin * d.required_nms for d in drivers),
+        ],
+    )
+    units = unit_html(scale.units)
     fig, ax2 = plt.subplots(figsize=(9.0, 5.4))
     positions = np.arange(len(drivers))
-    required = [analysis.assumptions.margin * d.required_nms for d in drivers]
-    verdicts = [wheels.usable_momentum_nms >= r for r in required]
+    required = [
+        scale.value(analysis.assumptions.margin * d.required_nms) for d in drivers
+    ]
+    usable = scale.value(wheels.usable_momentum_nms)
+    verdicts = [usable >= r for r in required]
     ax2.bar(
         positions,
         required,
@@ -286,16 +308,16 @@ def driver_figure(analysis: SizingAnalysis, out_dir: str | Path | None = None) -
     )
     threshold_line(
         ax2,
-        wheels.usable_momentum_nms,
-        f"Usable envelope {wheels.usable_momentum_nms:.3g} N\u00b7m\u00b7s",
+        usable,
+        f"Usable envelope {scale.text(wheels.usable_momentum_nms, 3)} {units}",
         color=STRUCTURE_COLOR,
         ls="-",
         lw=LINE_WIDTH,
     )
     threshold_line(
         ax2,
-        momentum.inscribed,
-        f"Wheel hardware $r_{{in}}$ {momentum.inscribed:.3g} N\u00b7m\u00b7s",
+        scale.value(momentum.inscribed),
+        f"Wheel hardware $r_{{in}}$ {scale.text(momentum.inscribed, 3)} {units}",
         color=SERIES_1,
         lw=LINE_WIDTH,
     )
@@ -306,7 +328,7 @@ def driver_figure(analysis: SizingAnalysis, out_dir: str | Path | None = None) -
             ax2,
             x,
             value,
-            f"{driver.required_nms:.2e} N\u00b7m\u00b7s",
+            f"{scale.text(driver.required_nms, 3)} {units}",
             ok,
             offset=(4, 6),
         )
@@ -323,8 +345,8 @@ def driver_figure(analysis: SizingAnalysis, out_dir: str | Path | None = None) -
         ],
         fontsize=8,
     )
-    ax2.set_ylabel("Momentum [N\u00b7m\u00b7s], log scale")
-    ax2.set_ylim(min(required) / 5.0, momentum.inscribed * 5.0)
+    ax2.set_ylabel(f"Momentum [{units}], log scale")
+    ax2.set_ylim(min(required) / 5.0, scale.value(momentum.inscribed) * 5.0)
     _grid(ax2, which="both")
     ax2.legend(fontsize=8, loc="lower left")
     verdict_title(
@@ -357,8 +379,12 @@ def disturbance_figure(
     budget = analysis.budget
     terms = budget.terms
     positions = np.arange(len(terms))
-    secular = np.array([t.secular_nm for t in terms]) * 1e6
-    cyclic = np.array([t.cyclic_nm for t in terms]) * 1e6
+    # Chosen from the bars rather than fixed at micro: a quieter vehicle's
+    # budget lands a decade down and would read as a row of zeros.
+    scale = unit_scale("N.m", [t.torque_nm for t in terms] + [budget.total_nm])
+    units = unit_html(scale.units)
+    secular = np.array([scale.value(t.secular_nm) for t in terms])
+    cyclic = np.array([scale.value(t.cyclic_nm) for t in terms])
 
     fig, (ax, ax2) = plt.subplots(1, 2, figsize=(12.5, 5.0))
     # Series colours, not verdict ones: secular and cyclic are two categories of
@@ -375,8 +401,8 @@ def disturbance_figure(
     for x, term in enumerate(terms):
         ax.text(
             x,
-            (term.torque_nm) * 1e6,
-            f"{term.torque_nm * 1e6:.3g}",
+            scale.value(term.torque_nm),
+            scale.text(term.torque_nm, 3),
             ha="center",
             va="bottom",
             fontsize=8,
@@ -386,19 +412,24 @@ def disturbance_figure(
     ax.set_xticklabels(
         [_upper_first(t.name).replace(" ", "\n") for t in terms], fontsize=8
     )
-    ax.set_ylabel("Disturbance torque [\u00b5N\u00b7m]")
+    ax.set_ylabel(f"Disturbance torque [{units}]")
     _grid(ax)
     ax.legend(fontsize=8)
     ax.set_title(
         f"Disturbance-Torque Budget, {analysis.vehicle.name}\n"
-        f"Total {budget.total_nm * 1e6:.3g} \u00b5N\u00b7m = secular "
-        f"{budget.secular_nm * 1e6:.3g} + cyclic {budget.cyclic_nm * 1e6:.3g}",
+        f"Total {scale.text(budget.total_nm, 3)} {units} = secular "
+        f"{scale.text(budget.secular_nm, 3)} + cyclic "
+        f"{scale.text(budget.cyclic_nm, 3)}",
         fontsize=9,
     )
 
     margin = analysis.assumptions.margin
-    required = margin * budget.secular_nm * 1e6
-    available = analysis.mtq.average_torque_nm * 1e6
+    authority = unit_scale(
+        "N.m", [margin * budget.secular_nm, analysis.mtq.average_torque_nm]
+    )
+    authority_units = unit_html(authority.units)
+    required = authority.value(margin * budget.secular_nm)
+    available = authority.value(analysis.mtq.average_torque_nm)
     ok = available >= required
     ax2.bar([0, 1], [required, available], color=[verdict_color(ok)] * 2)
     ax2.set_xticks([0, 1])
@@ -406,9 +437,9 @@ def disturbance_figure(
         [f"Secular \u00d7 {margin:g} margin", "Rod average authority"], fontsize=9
     )
     ax2.set_yscale("log")
-    ax2.set_ylabel("Torque [\u00b5N\u00b7m], log scale")
+    ax2.set_ylabel(f"Torque [{authority_units}], log scale")
     _grid(ax2, which="both")
-    annotate_measurement(ax2, 1, available, f"{available:.3g} \u00b5N\u00b7m", ok)
+    annotate_measurement(ax2, 1, available, f"{available:.3g} {authority_units}", ok)
     verdict_title(
         ax2,
         "M1 Desaturation Authority",
@@ -446,15 +477,27 @@ def magnetorquer_figure(
     removable = mtq.removable_momentum_nms
     required = margin * mtq.tipoff_momentum_nms
     ok = removable >= required
-    ax.bar([0, 1], [required, removable], color=[verdict_color(ok)] * 2)
+    scale = unit_scale("N.m.s", [removable, required])
+    units = unit_html(scale.units)
+    ax.bar(
+        [0, 1],
+        [scale.value(required), scale.value(removable)],
+        color=[verdict_color(ok)] * 2,
+    )
     ax.set_xticks([0, 1])
     ax.set_xticklabels(
         [f"Tip-off momentum \u00d7 {margin:g}", "Removable in the budget"], fontsize=9
     )
     ax.set_yscale("log")
-    ax.set_ylabel("Momentum [N\u00b7m\u00b7s], log scale")
+    ax.set_ylabel(f"Momentum [{units}], log scale")
     _grid(ax, which="both")
-    annotate_measurement(ax, 1, removable, f"{removable:.3g} N\u00b7m\u00b7s", ok)
+    annotate_measurement(
+        ax,
+        1,
+        scale.value(removable),
+        f"{scale.text(removable, 3)} {units}",
+        ok,
+    )
     verdict_title(
         ax,
         f"M2 Detumble Authority, {vehicle.name}",

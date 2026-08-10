@@ -162,6 +162,18 @@ class SpecItem:
         inertia tensor, which the page sets as a matrix. Empty everywhere else,
         and the console never sees it — :meth:`one_line` renders
         :attr:`value` exactly as before.
+    si : float or None
+        The same quantity as a bare SI number, when it is one. Carried beside
+        the formatted :attr:`value` so a rendering that wants to choose its own
+        SI prefix (the page does; see
+        :func:`analysis.sizing.mathfmt.unit_scale`) has the number rather than a
+        string to re-parse. ``None`` for a count, a matrix or an identifier —
+        anything a prefix would be meaningless on.
+    note : str
+        What the value means, when that needs a sentence. It is rendered as a
+        caption beneath the group, **never inside the value cell**: a value cell
+        holds a number, a unit or an identifier, and prose that leaks into one
+        makes a table unreadable and unsortable.
     """
 
     label: str
@@ -169,12 +181,15 @@ class SpecItem:
     value: str
     units: str
     value_tex: str = ""
+    si: float | None = None
+    note: str = ""
 
     def one_line(self) -> str:
         """The item as the console report writes it: label, symbol, value, units."""
         head = f"{self.label} {self.symbol}".strip()
         tail = f"{self.value} {self.units}".strip()
-        return f"{head} {tail}".strip()
+        line = f"{head} {tail}".strip()
+        return f"{line} ({self.note})" if self.note else line
 
 
 def _inertia_item(tensor: np.ndarray) -> SpecItem:
@@ -244,10 +259,12 @@ def spec_groups(
     mtq = analysis.mtq
     budget = analysis.budget
     floor = mtq.noise_floor
-    binding = (
-        "MomentumEnvelopeNms, the flight ceiling binds"
+    # The identifier alone in the value; what binding *means* is a sentence and
+    # belongs in the group's caption, where a sentence can be read.
+    binding, binding_note = (
+        ("MomentumEnvelopeNms", "the certified flight ceiling binds, not the hardware")
         if wheel.envelope_limited
-        else "the wheel zonotope, the hardware binds"
+        else ("r_in", "the wheel zonotope binds: the hardware is the smaller limit")
     )
     return (
         (
@@ -259,27 +276,35 @@ def spec_groups(
                     "",
                     f"{vehicle.wheel_max_momentum_nms:g}",
                     "N.m.s",
+                    si=vehicle.wheel_max_momentum_nms,
                 ),
                 SpecItem(
-                    "Torque per wheel", "", f"{vehicle.wheel_max_torque_nm:g}", "N.m"
+                    "Torque per wheel",
+                    "",
+                    f"{vehicle.wheel_max_torque_nm:g}",
+                    "N.m",
+                    si=vehicle.wheel_max_torque_nm,
                 ),
                 SpecItem(
                     "Zonotope inscribed radius",
                     "r_in",
                     f"{wheel.momentum.inscribed:.4g}",
                     "N.m.s",
+                    si=wheel.momentum.inscribed,
                 ),
                 SpecItem(
                     "Zonotope circumscribed radius",
                     "r_out",
                     f"{wheel.momentum.circumscribed:.4g}",
                     "N.m.s",
+                    si=wheel.momentum.circumscribed,
                 ),
                 SpecItem(
                     "L2 ellipsoid radius",
                     "",
                     f"{wheel.momentum.ellipsoid_inscribed:.4g}",
                     "N.m.s",
+                    si=wheel.momentum.ellipsoid_inscribed,
                 ),
             ),
         ),
@@ -287,9 +312,13 @@ def spec_groups(
             "usable",
             (
                 SpecItem(
-                    "Usable momentum", "", f"{wheel.usable_momentum_nms:.4g}", "N.m.s"
+                    "Usable momentum",
+                    "",
+                    f"{wheel.usable_momentum_nms:.4g}",
+                    "N.m.s",
+                    si=wheel.usable_momentum_nms,
                 ),
-                SpecItem("Binding limit", "", binding, ""),
+                SpecItem("Binding limit", "", binding, "", note=binding_note),
             ),
         ),
         (
@@ -297,7 +326,11 @@ def spec_groups(
             (
                 SpecItem("Units installed", "", f"{mtq.dipole.n_actuators}", ""),
                 SpecItem(
-                    "Dipole per rod", "", f"{vehicle.mtq_max_dipole_am2:g}", "A.m^2"
+                    "Dipole per rod",
+                    "",
+                    f"{vehicle.mtq_max_dipole_am2:g}",
+                    "A.m^2",
+                    si=vehicle.mtq_max_dipole_am2,
                 ),
                 SpecItem("Duty factor", "", f"{vehicle.mtq_duty_factor:g}", ""),
                 SpecItem(
@@ -305,8 +338,15 @@ def spec_groups(
                     "m_in",
                     f"{mtq.dipole.inscribed:g}",
                     "A.m^2",
+                    si=mtq.dipole.inscribed,
                 ),
-                SpecItem("Average torque", "", f"{mtq.average_torque_nm:.3g}", "N.m"),
+                SpecItem(
+                    "Average torque",
+                    "",
+                    f"{mtq.average_torque_nm:.3g}",
+                    "N.m",
+                    si=mtq.average_torque_nm,
+                ),
             ),
         ),
         (
@@ -343,9 +383,23 @@ def spec_groups(
         (
             "disturbance",
             (
-                SpecItem("Total torque", "", f"{budget.total_nm:.3g}", "N.m"),
-                SpecItem("Secular", "", f"{budget.secular_nm:.3g}", "N.m"),
-                SpecItem("Cyclic", "", f"{budget.cyclic_nm:.3g}", "N.m"),
+                SpecItem(
+                    "Total torque",
+                    "",
+                    f"{budget.total_nm:.3g}",
+                    "N.m",
+                    si=budget.total_nm,
+                ),
+                SpecItem(
+                    "Secular",
+                    "",
+                    f"{budget.secular_nm:.3g}",
+                    "N.m",
+                    si=budget.secular_nm,
+                ),
+                SpecItem(
+                    "Cyclic", "", f"{budget.cyclic_nm:.3g}", "N.m", si=budget.cyclic_nm
+                ),
             ),
         ),
         (

@@ -15,6 +15,16 @@ plus web fonts and buys nothing here: every formula in this report is a product
 of subscripted symbols, and ``ω<sub>n</sub>²`` is exact, tiny, and still
 copy-pasteable.
 
+Prefixes are chosen per family, never per cell
+----------------------------------------------
+:func:`unit_scale` picks one SI prefix for a whole block of quantities in the
+same units — a criterion family, a provenance group, one figure's axis — so
+``0.0072 N·m·s`` reads as ``7.2 mN·m·s`` and everything it is compared against
+reads in the same unit. Scaling each cell to its own magnitude would make a
+column unreadable and invite the mis-comparison the prefix exists to prevent.
+The scaling is presentation only: the report objects and
+:meth:`AnalysisReport.format_text` keep SI base units.
+
 Conservative by construction
 ----------------------------
 :func:`math_html` **escapes first** and then substitutes only tokens it
@@ -101,6 +111,7 @@ _TOKENS = {
     "w_crossover": "ω<sub>crossover</sub>",
     "uT": "µT",
     "uN": "µN",
+    "uA": "µA",
     "uPa": "µPa",
 }
 
@@ -122,7 +133,9 @@ _SUPERSCRIPT = {
 #: Unit symbols recognised in a dotted product (``N.m.s``, ``kg.m^2``). Kept to
 #: an explicit list so ``leo_smallsat.yaml`` is never mistaken for a unit.
 #: Longest-first where one is a prefix of another (``km`` before ``m``).
-_UNIT_ATOM = r"(?:kg|nT|uT|uN|deg|rad|km|mm|Pa|Hz|W|N|m|s|A|T|V|K|C|J|g)"
+_UNIT_ATOM = (
+    r"(?:kg|nT|uT|kN|mN|uN|nN|kA|mA|uA|nA|deg|rad|km|mm|Pa|Hz|W|N|m|s|A|T|V|K|C|J|g)"
+)
 _EXPONENT = r"(?:\^-?\d+)?"
 
 #: One ordered pass. First alternative that matches at a position wins, so the
@@ -242,6 +255,110 @@ def math_html(text: object) -> str:
     return _MATH.sub(_substitute, _html.escape(str(text), quote=True))
 
 
+#: The SI prefixes the report will attach, with the power of ten each names.
+#: Deliberately short: a sizing report spans nano to kilo and nothing outside it,
+#: and a prefix a reader has to look up costs more than the zeros it saves.
+_PREFIXES = ((3, "k"), (0, ""), (-3, "m"), (-6, "u"), (-9, "n"))
+
+#: Units a prefix may be attached to, spelled exactly as the report declares
+#: them. An explicit set rather than a rule: ``deg/s`` and ``km`` already carry
+#: their own scaling, ``x`` and ``of envelope`` are ratios, and a generic
+#: "prefix the first token" rule would happily produce ``mkg`` or ``mdeg/s``.
+#: The prefix goes on the leading atom, which is why every member starts with an
+#: unprefixed SI symbol.
+_PREFIXABLE = frozenset({"N.m.s", "N.m", "A.m^2", "N.m/rad", "N.m/(rad/s)"})
+
+
+class UnitScale:
+    """One display prefix, chosen for a family of quantities and shared by them.
+
+    Rescaling each cell independently would make a column unreadable — 7.2 mN·m·s
+    beside 0.049 N·m·s invites exactly the mis-comparison the prefix was meant to
+    prevent — so a scale is chosen once for a whole block (a criterion family, a
+    provenance group, one figure's axis) and every number in it is set through
+    the same instance.
+
+    Attributes
+    ----------
+    factor : float
+        Multiply an SI value by this to get the number displayed.
+    units : str
+        The display units, prefix attached, in the report's dotted convention
+        (``mN.m.s``). Pass through :func:`unit_html` to set it.
+    """
+
+    __slots__ = ("factor", "units")
+
+    def __init__(self, factor: float, units: str) -> None:
+        self.factor = factor
+        self.units = units
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, UnitScale)
+            and other.factor == self.factor
+            and other.units == self.units
+        )
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostics only
+        return f"UnitScale({self.factor!r}, {self.units!r})"
+
+    def value(self, si: float) -> float:
+        """@p si expressed in :attr:`units`."""
+        return si * self.factor
+
+    def text(self, si: float, digits: int = 4) -> str:
+        """@p si expressed in :attr:`units` and formatted by :func:`_num`."""
+        return _num(self.value(si), digits)
+
+
+def unit_scale(units: object, values: object) -> UnitScale:
+    """Pick one SI prefix for a family of quantities in the same units.
+
+    The prefix is chosen from the **median** magnitude present, not the largest
+    or the smallest: a family whose values span decades (the magnetorquer torques
+    do) has no prefix that flatters all of them, and the median keeps the typical
+    row readable while the outliers stay honestly small or large.
+
+    Parameters
+    ----------
+    units : object
+        The declared display units. Anything outside :data:`_PREFIXABLE` is
+        returned unscaled, so a ratio or an already-scaled unit passes through.
+    values : object
+        An iterable of SI values in those units. Zero and non-finite entries are
+        ignored; an empty family is returned unscaled.
+
+    Returns
+    -------
+    UnitScale
+
+    Examples
+    --------
+    >>> unit_scale("N.m.s", [0.0072, 0.005]).text(0.0072)
+    '7.2'
+    >>> unit_scale("N.m.s", [0.0072]).units
+    'mN.m.s'
+    >>> unit_scale("x", [4.678]).units
+    'x'
+    """
+    text = str(units).strip()
+    if text not in _PREFIXABLE:
+        return UnitScale(1.0, text)
+    magnitudes = sorted(
+        abs(float(v)) for v in values if math.isfinite(float(v)) and float(v) != 0.0
+    )
+    if not magnitudes:
+        return UnitScale(1.0, text)
+    median = magnitudes[len(magnitudes) // 2]
+    exponent, prefix = _PREFIXES[-1]
+    for power, symbol in _PREFIXES:
+        if median * 10.0**-power >= 1.0:
+            exponent, prefix = power, symbol
+            break
+    return UnitScale(10.0**-exponent, prefix + text)
+
+
 #: Units whose rendering is not a matter of symbols. ``"-"`` is the report's
 #: dimensionless marker and reads better as nothing at all.
 _UNIT_OVERRIDES = {"-": "", "": "", "x": "×"}
@@ -293,6 +410,33 @@ def sentence_case(text: str) -> str:
     if head in _GREEK or head in _TOKENS or len(head) == 1:
         return text
     return text[0].upper() + text[1:]
+
+
+#: A short code at the head of the name it abbreviates: ``D1``, ``D1b``, ``M3``.
+#: Matched with the word that follows so the two can be set apart.
+_SHORT_CODE = re.compile(r"\b([DM]\d[a-z]?)\s+(\w)")
+
+
+def criterion_label(name: str) -> str:
+    """Set a criterion's short code apart from the words that expand it.
+
+    ``"M1 desaturation authority"`` becomes ``"M1 · Desaturation authority"``.
+    The codes are this report's own and a reader meeting ``D1b`` in a row has no
+    way to expand it; the expansion is already in the name, so all this does is
+    stop the two running together as one phrase. The definition list at the head
+    of each family says what the code *demands*, and the Nomenclature section
+    defines the symbols — neither is duplicated here.
+
+    Parameters
+    ----------
+    name : str
+        The criterion's name as its measuring module wrote it.
+
+    Returns
+    -------
+    str
+    """
+    return _SHORT_CODE.sub(lambda m: f"{m.group(1)} · {m.group(2).upper()}", str(name))
 
 
 #: Provenance keys as a reader should see them. The report's keys are terse
