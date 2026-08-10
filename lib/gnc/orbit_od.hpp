@@ -33,8 +33,10 @@
 /// not hold for the two things the dynamics is actually load-bearing for —
 /// **coasting through an outage**, and **onboard ephemeris prediction** (§20
 /// pass planning, eclipse prediction, maneuver targeting) — where the J2-only
-/// truncation was the whole error budget: 3.59 m over the 300 s coast horizon
-/// and 14.3 m over 699 s, led by the degree-3+ zonals and the tesserals.
+/// truncation was the whole error budget: **3.17 m** over the 300 s coast
+/// horizon against a 32x32 truth, and **14.3 m** over 699 s against GMAT, led by
+/// the degree-3+ zonals and the tesserals. The same arcs with this field:
+/// **1.28 m** and **1.2 cm**.
 ///
 /// The objection the original argument raised against a table was cost, and the
 /// measured cost is small enough to overrule it: 8×8 is 45 coefficient pairs
@@ -151,13 +153,22 @@
 /// propagator against the GMAT-validated truth sim over the horizon and asserts
 /// the result stays under the value `q_a` was sized from, so a force-model
 /// regression fails CI rather than quietly invalidating the tuning. For the
-/// reference vehicle (12 kg, 400 km, 51.6°) that measurement is **3.59 m over
-/// 300 s**, carried at 5.0 m with ~40% margin, giving
-/// `q_a = 2.8e-6 m²/s³`. Design doc §8.3 records both.
+/// reference vehicle (12 kg, 400 km, 51.6°) that measurement is **1.28 m over
+/// 300 s**, carried at 1.8 m with ~40% margin, giving
+/// `q_a = 3.6e-7 m²/s³`. Design doc §8.3 records both.
+///
+/// **The reference has to stay above the model, and that is a live constraint,
+/// not a footnote.** This measurement used to read 3.59 m against an *8x8*
+/// truth — which the onboard model now matches, and an 8x8-vs-8x8 comparison
+/// reports 0.045 m: a passing test that asserts nothing, because it is measuring
+/// two implementations of one field rather than a truncation. The truth degree
+/// was raised to 32x32 rather than the smaller number banked. Any future
+/// increase in `geopotential_degree` has to check the same thing before trusting
+/// the number this paragraph quotes.
 ///
 /// State the approximation honestly: the truncation is a *systematic*, not white
-/// noise — and the same measurement says so, since it grows as `t²` (0.037 m at
-/// 30 s against 3.59 m at 300 s) where white noise would grow as `t^{3/2}`.
+/// noise — and the same measurement says so, since it grows as `t²` (0.0138 m at
+/// 30 s against 1.280 m at 300 s) where white noise would grow as `t^{3/2}`.
 /// Matching a white model to it **at** `T` therefore makes the filter
 /// conservative for `t < T` and optimistic beyond `T`, which is exactly why the
 /// solution is declared invalid at `T` rather than left to coast on a covariance

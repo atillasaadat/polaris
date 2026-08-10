@@ -3,9 +3,10 @@
 ///
 /// `gmat_propagation_golden_test.cpp` compares the *truth sim's* propagator
 /// against the same fixture. This file does the other half: the deliberately
-/// coarse force model the flight software flies (`gnc::OrbitOd`, two-body + J2 +
-/// exponential drag) against the same GMAT reference states, and it splits the
-/// question into the two different things a coarse model has to answer.
+/// coarse force model the flight software flies (`gnc::OrbitOd`: an 8x8 EGM2008
+/// truncation + exponential drag) against the same GMAT reference states, and it
+/// splits the question into the two different things a coarse model has to
+/// answer.
 ///
 /// **1. At matched fidelity, agreement is a correctness question.** The
 /// `two_body` and `zonal_j2` fixture cases are exactly the force models the
@@ -18,20 +19,27 @@
 /// conservation property can see, because a wrong-but-smooth field is still
 /// perfectly conservative.
 ///
-/// **2. Against full fidelity, divergence is a characterisation, not a
-/// failure.** Run the same propagator against the 8×8-geopotential LEO cases and
-/// the gap is the model truncation the design deliberately bought (§8.3), which
-/// is the design input for the filter's process noise `q_a`. It is asserted here
-/// only as an upper bound — a live gate, so a force-model regression fails CI
-/// rather than silently invalidating the tuning — and the *number* is reported
-/// through `RecordProperty`. The tighter, denser measurement that actually sizes
-/// `q_a` (at the coast horizon, against the truth sim, which GMAT validates and
-/// which can be sampled anywhere) lives in `tests/unit/orbit_od_test.cpp`; the
-/// fixture's LEO cases are sampled only every 600–700 s, well past the horizon.
+/// **2. Against the LEO cases, the question changed when the model improved.**
+/// These fixture cases fly `gravity_degree: 8`, and the second test here used to
+/// measure the J2-only model's truncation against them under an asserted upper
+/// bound. The filter now flies 8x8 itself, so that comparison is **matched
+/// fidelity** and a bound on it would bound nothing — it reports 1.2 cm and
+/// passes a 50 m gate without asserting anything at all. The test was repurposed
+/// rather than left to pass: it now checks that GMAT's EGM96 and Polaris's
+/// EGM2008, both at degree 8 and by completely unrelated code, agree to the
+/// EGM96/EGM2008 coefficient separation, and it flies the J2-only model over the
+/// identical arcs so the improvement stays anchored to an independent tool. See
+/// that test's own comment for the full argument.
+///
+/// The *truncation* characterisation that sizes `q_a` needs a reference above
+/// the model, and there is one — the truth sim at 32x32, densely samplable, GMAT-
+/// validated — so it lives in `tests/unit/orbit_od_test.cpp`. The fixture's LEO
+/// cases are sampled only every 600-700 s, well past the coast horizon, which is
+/// the other reason it could never have lived here.
 ///
 /// Both use the same committed fixture and the same committed IERS EOP file the
-/// truth-sim comparison does, so the pole the onboard J2 is referenced to is the
-/// pole the reference states were generated under.
+/// truth-sim comparison does, so the Earth orientation the onboard field is
+/// referenced to is the one the reference states were generated under.
 
 #include <gtest/gtest.h>
 

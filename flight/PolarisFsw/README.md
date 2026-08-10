@@ -346,9 +346,11 @@ IAGA coefficient file (default `tests/golden/igrf14coeffs.txt`, override with
 emits `IgrfLoadFailed` and the estimator can still publish body rate but cannot
 acquire attitude. The telemetered reference grade is the **worse** of the
 ephemeris and EOP grades, with edge-gated `ReferenceDegraded`/`ReferenceRecovered`
-events. Position is **GNSS-only** until the §8.3 orbit filter exists: a GNSS
-outage costs the magnetic reference and the estimator gyro-coasts, flagged by an
-edge-gated `PositionUnavailable` warning.
+events. Position is **GNSS-only** until the §8.3 orbit filter is *wired*: the filter
+itself now exists (`lib/gnc/orbit_od`, with an 8x8 EGM2008 force model and a
+fix-latency correction), but its F´ component seam is a separate push, so until
+that lands a GNSS outage still costs the magnetic reference and the estimator
+gyro-coasts, flagged by an edge-gated `PositionUnavailable` warning.
 
 **Tuning is ParameterDb, with no defaults, behind two flight validity gates and
 one command-time gate.** The

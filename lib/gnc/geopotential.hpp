@@ -7,10 +7,11 @@
 ///
 /// The force model the onboard orbit filter (@ref polaris::gnc::OrbitOd)
 /// propagates on. It replaces that filter's original closed-form two-body + J2
-/// term, which was the dominant error in its coast: measured against the
-/// full-fidelity truth sim, the J2-only model diverged 3.59 m over the 300 s
-/// coast horizon and 14.3 m over 699 s, an error budget led entirely by the
-/// degree-3+ zonals and the tesserals this file adds.
+/// term, which was the dominant error in its coast. On the same arcs, the
+/// J2-only model diverges **3.17 m** over the 300 s coast horizon against a
+/// 32x32 truth sim and **14.3 m** over 699 s against GMAT, where this field
+/// gives **1.28 m** and **1.2 cm** — a budget led entirely by the degree-3+
+/// zonals and the tesserals this file adds.
 ///
 /// ## Why a second implementation, when `sim/world/gravity_field` exists
 ///
