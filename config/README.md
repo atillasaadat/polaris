@@ -16,7 +16,7 @@ analysis inputs — don't hand-edit derived params.
   ├── sun_sensor/       # GomSpace NanoSense FSS, coarse + fine templates
   ├── magnetometer/     # generic three-axis
   ├── gnss/             # NovAtel OEM7600, generic
-  ├── reaction_wheel/   # RW-0.4, RW-X generic
+  ├── reaction_wheel/   # RW-0.4, RW-X generic (30 mN·m·s)
   ├── magnetorquer/     # NSS Taurus, MTQ800, generic
   └── payload_sensor/   # generic imager
   ```
@@ -29,6 +29,17 @@ analysis inputs — don't hand-edit derived params.
   add-a-part walkthrough: [`hardware/README.md`](hardware/README.md).
 - `spacecraft/` — vehicle definitions (mass/inertia, sensor & actuator suite, gains,
   scenario/environment block). `leo_smallsat.yaml` is the ready-to-compile template.
+
+  Some `fsw_parameters` entries **restate** a number that also lives in the hardware
+  catalog or in `spacecraft.*` — the wheel's peak torque and bearing friction, its
+  rotor inertia, the rod's rated dipole, the body inertia diagonal, the residual
+  dipole. The compiler cross-checks every one of them and refuses a config where the
+  two disagree (design doc §19.3): that drift is invisible otherwise, since nothing
+  crashes and no test fails when the FSW is simply told the wrong vehicle. If a
+  divergence is deliberate — a derated unit, say — declare it under
+  `spacecraft.fsw_parameter_divergence` with the truth value it was written against
+  and a reason, rather than loosening the check. Naming the truth value is what
+  makes the waiver lapse when the hardware changes instead of outliving it.
 - `scenarios/` — scenario side-data: GNSS-jamming region KMLs (`jamming/`), and
   future scenario/dispersion sets (§13).
 - `claude/` — committed snapshot of the global `~/.claude` Claude Code development

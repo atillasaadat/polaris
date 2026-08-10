@@ -487,9 +487,15 @@ def loop_margins(loop: Loop, axis: str = "-") -> AxisMargins:
             phase_crossings.extend(_crossings(omega, phase_deg, target, phase_at))
     # A sampled loop can *touch* the negative real axis at Nyquist rather than
     # cross it; a sign-change search never sees that, and the loop nonetheless
-    # has a finite upward gain margin there.
-    if abs(_wrap_deg(phase_deg[-1] + 180.0)) < 1.0e-6:
-        phase_crossings.append(float(omega[-1]))
+    # has a finite upward gain margin there. Only add it when the sweep above did
+    # not already find it: a loop whose phase reaches -180 + 360k *at* the last
+    # sample is both a crossing and a touch, and reporting it twice would claim a
+    # crossover the loop does not have.
+    end = float(omega[-1])
+    if abs(_wrap_deg(phase_deg[-1] + 180.0)) < 1.0e-6 and not any(
+        math.isclose(w, end, rel_tol=1.0e-9) for w in phase_crossings
+    ):
+        phase_crossings.append(end)
     phase_crossings.sort()
 
     _check_grid_window(loop, omega, gain_crossings, phase_crossings)

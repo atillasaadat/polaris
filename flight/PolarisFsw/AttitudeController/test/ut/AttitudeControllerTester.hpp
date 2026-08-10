@@ -90,6 +90,15 @@ class AttitudeControllerTester : public AttitudeControllerGTestBase {
   //! back. FORCE is a permission, so it commands nothing without a field.
   void testDesatGroundOverride();
 
+  //! §8.5 drive friction feedforward (REQ-ACTL-010): on a spinning array the
+  //! commanded wheel torque is the allocation's demand plus the modelled
+  //! friction, the two are separable from telemetry, disabling the feedforward
+  //! puts the demand back exactly, a wheel with no usable tachometer is passed
+  //! through uncompensated rather than given a guessed sign, and a missing
+  //! friction coefficient refuses the whole configuration rather than flying the
+  //! feedforward silently off.
+  void testWheelFrictionFeedforward();
+
   //! Stored momentum past the envelope raises the §9 event once and recovers on
   //! the same comparison; a wheel with no usable speed refuses the momentum sum
   //! rather than understating it, and holds the latch where it was.
@@ -116,8 +125,10 @@ class AttitudeControllerTester : public AttitudeControllerGTestBase {
   // ----------------------------------------------------------------------
 
   //! Load a complete, self-consistent tuning set. @p dutyFactor and @p settleSec
-  //! are exposed because the schedule tests vary them.
-  void setValidParameters(F64 dutyFactor = 0.5, F64 settleSec = 0.03);
+  //! are exposed because the schedule tests vary them. @p withFriction drops the
+  //! §8.5 friction coefficients, for the one test that has to see a vehicle whose
+  //! friction model is missing refused rather than flown.
+  void setValidParameters(F64 dutyFactor = 0.5, F64 settleSec = 0.03, bool withFriction = true);
 
   //! Publish one estimate and run one control cycle at @p taiNs.
   void runCycleAt(I64 taiNs);

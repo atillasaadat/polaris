@@ -238,6 +238,38 @@ bool AttitudeController ::applyParameters() {
                               : polaris::gnc::RwAllocationMethod::kMinNorm;
   }
 
+  // --- Wheel-drive friction feedforward (§8.5; REQ-ACTL-010) ---------------
+  // Read and validated whether or not it is enabled: a vehicle whose friction
+  // model is missing is a vehicle nobody has characterised, and flying it with
+  // the feedforward silently off would hide that behind 3 deg of pointing error
+  // nobody could attribute.
+  polaris::gnc::RwFrictionConfig friction;
+  friction.wheel_count = alloc.wheel_count;
+  POLARIS_GET(friction.dry_friction_nm, paramGet_WheelDryFrictionNm, "WheelDryFrictionNm");
+  POLARIS_GET(friction.viscous_friction_nm_s, paramGet_WheelViscousFrictionNmS,
+              "WheelViscousFrictionNmS");
+  POLARIS_GET(friction.deadband_radps, paramGet_WheelFrictionDeadbandRadps,
+              "WheelFrictionDeadbandRadps");
+  {
+    Fw::ParamValid v = Fw::ParamValid::INVALID;
+    const U8 enable = this->paramGet_WheelFrictionEnable(v);
+    if (v != Fw::ParamValid::VALID || enable > 1) {
+      return fail("WheelFrictionEnable");
+    }
+    this->friction_enabled_ = enable != 0;
+    const F64PerUnit scale = this->paramGet_WheelFrictionScale(v);
+    if (v != Fw::ParamValid::VALID) {
+      return fail("WheelFrictionScale");
+    }
+    for (U32 i = 0; i < this->wheel_count_; ++i) {
+      friction.scale[i] = scale[i];
+      // The torque box the compensated command is clamped to is the allocation's
+      // own, read once above — two limits for one drive is two ways to describe
+      // the same hardware and one of them would eventually be wrong.
+      friction.max_torque_nm[i] = wheel_max_torque;
+    }
+  }
+
   {
     Fw::ParamValid v = Fw::ParamValid::INVALID;
     const U32 count = this->paramGet_MtqCount(v);
@@ -398,6 +430,9 @@ bool AttitudeController ::applyParameters() {
   if (!alloc.isValid()) {
     return fail("Wheel array is degenerate or its limits are out of range");
   }
+  if (!friction.isValid()) {
+    return fail("Wheel friction model out of range (coefficients, deadband or scale)");
+  }
   if (!momentum.isValid()) {
     return fail("Momentum tuning out of range (thresholds, envelope or wheel inertia)");
   }
@@ -412,6 +447,7 @@ bool AttitudeController ::applyParameters() {
   this->bdot_ = polaris::gnc::BdotController(bdot);
   this->pid_ = polaris::gnc::AttitudePid(pid);
   this->allocator_ = polaris::gnc::RwAllocator(alloc);
+  this->friction_ = polaris::gnc::RwFrictionCompensator(friction);
   this->rate_hysteresis_ = polaris::gnc::RateHysteresis(hysteresis);
   this->momentum_ = polaris::gnc::MomentumManager(momentum);
   this->observer_ = polaris::gnc::DisturbanceObserver(observer);
@@ -719,6 +755,38 @@ bool AttitudeController ::runPoint(double dtSec, double* wheelTorque, CtrlRefusa
     wheelTorque[i] = alloc.torque_nm[i];
   }
 
+  // Drive friction feedforward (§8.5; REQ-ACTL-010), applied **after** the
+  // allocation and **before** the command so the *net* rotor torque is the one
+  // the allocation asked for. It belongs here and not inside the allocation
+  // because friction is a property of a drive, not of the array geometry:
+  // folding it in would make the pseudo-inverse a function of wheel speed.
+  //
+  // It is also not the disturbance feedforward that enters the PID upstream, and
+  // deliberately so. That term is a *body* torque the control law must supply;
+  // this one is a *per-wheel* torque that never reaches the body at all — it is
+  // spent inside the bearings — so adding it to the demand the PID saturates and
+  // anti-windup against would charge the control law for authority it never got.
+  if (this->friction_enabled_) {
+    polaris::gnc::RwFrictionResult ff;
+    // The tachometer verdict is this cycle's, from `updateMomentum`: valid *and*
+    // fresh. A wheel without one is passed through uncompensated rather than
+    // given a guessed sign — half the time that guess is a torque pushing the
+    // wrong way, which is worse than the vehicle this feature exists to improve.
+    if (this->friction_.compensate(wheelTorque, this->wheel_speed_radps_, this->wheel_speed_fresh_,
+                                   ff)) {
+      for (U32 i = 0; i < this->wheel_count_; ++i) {
+        wheelTorque[i] = ff.torque_nm[i];
+        if (ff.compensated[i]) {
+          this->friction_nm_[i] = ff.compensation_nm[i];
+        }
+      }
+    }
+    // A refused compensation is not a refused control cycle: the uncompensated
+    // demand is exactly what the vehicle flew before this feature existed, so
+    // falling through with `wheelTorque` untouched degrades to that rather than
+    // dropping the pointing command. The NaN telemetry says it happened.
+  }
+
   if (pid.saturated || alloc.saturated) {
     ++this->saturation_streak_;
     if (this->alertDue(this->saturation_streak_)) {
@@ -886,6 +954,13 @@ void AttitudeController ::commandActuators(I64 nowNs, const pm::Vec3<Body>& dipo
     wheel_tlm[i] = i < WheelTorqueSet::SIZE ? wheels[i] : 0.0;
   }
   this->tlmWrite_WheelTorque(wheel_tlm);
+  F64PerUnit friction_tlm;
+  for (U32 i = 0; i < F64PerUnit::SIZE; ++i) {
+    friction_tlm[i] = i < static_cast<U32>(polaris::gnc::kMaxWheels)
+                          ? this->friction_nm_[i]
+                          : std::numeric_limits<F64>::quiet_NaN();
+  }
+  this->tlmWrite_WheelFrictionNm(friction_tlm);
   this->tlmWrite_MtqInterlockHealthy(!this->stuck_confirmed_);
   this->tlmWrite_MtqStuckMask(this->stuck_mask_);
 }
@@ -893,6 +968,13 @@ void AttitudeController ::commandActuators(I64 nowNs, const pm::Vec3<Body>& dipo
 void AttitudeController ::run_handler(FwIndexType portNum, U32 context) {
   const I64 nowNs = this->currentTaiNs();
   ++this->cycles_run_;
+
+  // Nothing has been friction-compensated yet this cycle. Reset before the first
+  // path that can publish, so a cycle that commands no wheel torque reports "no
+  // compensation" rather than repeating the last cycle's number.
+  for (U32 i = 0; i < polaris::gnc::kMaxWheels; ++i) {
+    this->friction_nm_[i] = kNoValue;
+  }
 
   // §7 timing check. The quiet window is computed from the **declared** control
   // period, so a real period that differs from it puts the window somewhere no
@@ -1027,6 +1109,10 @@ void AttitudeController ::run_handler(FwIndexType portNum, U32 context) {
     // lost its estimate keeps torquing toward where the vehicle used to be.
     for (U32 i = 0; i < polaris::gnc::kMaxWheels; ++i) {
       wheel_torque[i] = 0.0;
+      // The friction record follows the command it accompanied (the same rule
+      // the magnetic-torque record below is written on): a cycle that commands
+      // zero torque compensated nothing, whatever was computed before it failed.
+      this->friction_nm_[i] = kNoValue;
     }
     dipole = pm::Vec3<Body>(Eigen::Vector3d::Zero());
     rods_active = false;

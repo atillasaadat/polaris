@@ -1,5 +1,5 @@
 /// @file Unit tests for the §8.5 control laws (lib/gnc/bdot, attitude_pid,
-/// rw_allocation). REQ-ACTL-001, REQ-ACTL-002.
+/// rw_allocation, rw_friction). REQ-ACTL-001, REQ-ACTL-002, REQ-ACTL-010.
 ///
 /// These pin the *math*, off-target and without an F´ topology: the component
 /// tests (flight/PolarisFsw/AttitudeController/test/ut) then only have to cover
@@ -16,6 +16,7 @@
 #include "gnc/attitude_pid.hpp"
 #include "gnc/bdot.hpp"
 #include "gnc/rw_allocation.hpp"
+#include "gnc/rw_friction.hpp"
 #include "math/frames.hpp"
 #include "math/quaternion.hpp"
 #include "math/typed_vector.hpp"
@@ -604,6 +605,255 @@ TEST(RwAllocation, NonFiniteCommandsAreRefused) {
   for (int i = 0; i < 4; ++i) {
     EXPECT_EQ(r.torque_nm[i], 0.0);
   }
+}
+
+// ======================================================================
+// Wheel-drive friction feedforward (REQ-ACTL-010; tightens REQ-ACTL-002)
+// ======================================================================
+
+/// The reference vehicle's RW-X coefficients, straight from
+/// config/hardware/reaction_wheel/rwx.yaml, with the deadband and trim the
+/// spacecraft config flies.
+constexpr double kDryNm = 1.0e-4;
+constexpr double kViscousNmS = 5.0e-6;
+constexpr double kDeadbandRadps = 0.1;
+
+gnc::RwFrictionConfig frictionConfig(double scale = 1.0, double limit = 0.025) {
+  gnc::RwFrictionConfig c;
+  c.wheel_count = 4;
+  c.dry_friction_nm = kDryNm;
+  c.viscous_friction_nm_s = kViscousNmS;
+  c.deadband_radps = kDeadbandRadps;
+  for (int i = 0; i < 4; ++i) {
+    c.max_torque_nm[i] = limit;
+    c.scale[i] = scale;
+  }
+  return c;
+}
+
+/// The plant's rundown model, `sim/actuators/reaction_wheel.cpp`
+/// `ReactionWheel::frictionTorque` with the catalog's zero aero coefficient —
+/// signed, opposing the spin. This is the truth the feedforward is inverting, so
+/// it is written out here rather than reused: a test that shares the model with
+/// the thing under test proves only that they agree with each other.
+double truthFriction(double omega) {
+  const double sgn = (omega > 0.0) - (omega < 0.0);
+  return -sgn * (kDryNm + kViscousNmS * std::abs(omega));
+}
+
+TEST(RwFriction, BlendIsBoundedOddAndContinuousThroughZero) {
+  const gnc::RwFrictionCompensator f(frictionConfig());
+  ASSERT_TRUE(f.isConfigured());
+
+  EXPECT_EQ(f.blend(0.0), 0.0);
+  // Bounded and odd everywhere, including far outside the band.
+  for (double w = -5.0; w <= 5.0; w += 0.01) {
+    EXPECT_LE(std::abs(f.blend(w)), 1.0);
+    EXPECT_NEAR(f.blend(w), -f.blend(-w), 1e-15);
+  }
+  // Saturated to the full sign outside the band — the compensation is complete
+  // at every speed the vehicle actually operates the wheels at.
+  EXPECT_DOUBLE_EQ(f.blend(kDeadbandRadps), 1.0);
+  EXPECT_DOUBLE_EQ(f.blend(50.0), 1.0);
+  EXPECT_DOUBLE_EQ(f.blend(-50.0), -1.0);
+
+  // Continuity, stated as the property that matters: no step anywhere, and in
+  // particular none at zero. A sign() feedforward would jump by 2 here.
+  const double step = 1.0e-4;
+  double previous = f.blend(-1.0);
+  for (double w = -1.0 + step; w <= 1.0; w += step) {
+    const double now = f.blend(w);
+    EXPECT_LE(std::abs(now - previous), step / kDeadbandRadps + 1e-12);
+    previous = now;
+  }
+}
+
+TEST(RwFriction, CompensationCancelsTheRotorFrictionOutsideTheBand) {
+  const gnc::RwFrictionCompensator f(frictionConfig());
+  const double demand[4] = {1.0e-3, -2.0e-3, 5.0e-4, 0.0};
+  const double speed[4] = {12.0, -30.0, 0.5, -0.2};
+  const bool valid[4] = {true, true, true, true};
+
+  gnc::RwFrictionResult r;
+  ASSERT_TRUE(f.compensate(demand, speed, valid, r));
+  ASSERT_TRUE(r.valid);
+  EXPECT_FALSE(r.saturated);
+  for (int i = 0; i < 4; ++i) {
+    EXPECT_TRUE(r.compensated[i]);
+    // The whole point: net rotor torque (command + friction) is the torque the
+    // allocation asked for, so the body reaction -I*omega_dot is the commanded
+    // one and the pointing loop is not fighting the bearings.
+    EXPECT_NEAR(r.torque_nm[i] + truthFriction(speed[i]), demand[i], 1e-15);
+  }
+}
+
+TEST(RwFriction, CompensationNeverExceedsTheModelledFriction) {
+  const gnc::RwFrictionCompensator f(frictionConfig());
+  const bool valid[4] = {true, true, true, true};
+  // Sweep across the zero crossing and out to a wheel near its rated speed.
+  for (double w = -700.0; w <= 700.0; w += 0.37) {
+    const double demand[4] = {0.0, 0.0, 0.0, 0.0};
+    const double speed[4] = {w, w, w, w};
+    gnc::RwFrictionResult r;
+    ASSERT_TRUE(f.compensate(demand, speed, valid, r));
+    // At scale <= 1 the bound is unconditional: |c| <= |tau_f|, which is what
+    // makes partial compensation monotonically helpful (armstrong1994 5.1).
+    EXPECT_LE(std::abs(r.compensation_nm[0]), std::abs(truthFriction(w)) + 1e-18);
+    // ... and it opposes the friction rather than adding to it.
+    EXPECT_LE(r.compensation_nm[0] * truthFriction(w), 0.0);
+  }
+}
+
+TEST(RwFriction, InsideTheDeadbandCompensationIsPartialNotChattering) {
+  const gnc::RwFrictionCompensator f(frictionConfig());
+  const bool valid[4] = {true, true, true, true};
+  const double demand[4] = {0.0, 0.0, 0.0, 0.0};
+
+  // A wheel dithering about zero: alternating tachometer signs at a speed far
+  // below the deadband. A sign() feedforward would swing the full 2*tau_c
+  // (2.0e-4 N.m) every sample; the blend keeps the swing proportional to the
+  // dither, which is the trade the deadband buys.
+  const double dither = 1.0e-3 * kDeadbandRadps;
+  double previous = 0.0;
+  double worst_swing = 0.0;
+  for (int k = 0; k < 20; ++k) {
+    const double w = (k % 2 == 0) ? dither : -dither;
+    const double speed[4] = {w, w, w, w};
+    gnc::RwFrictionResult r;
+    ASSERT_TRUE(f.compensate(demand, speed, valid, r));
+    if (k > 0) {
+      worst_swing = std::max(worst_swing, std::abs(r.compensation_nm[0] - previous));
+    }
+    previous = r.compensation_nm[0];
+  }
+  // Three orders below the 2.0e-4 N.m a sign() feedforward would inject.
+  EXPECT_LT(worst_swing, 1.0e-6);
+
+  // The honest cost, asserted rather than only claimed: inside the band the
+  // Coulomb friction is deliberately *under*-compensated, linearly in speed.
+  const double half = 0.5 * kDeadbandRadps;
+  const double speed[4] = {half, half, half, half};
+  gnc::RwFrictionResult r;
+  ASSERT_TRUE(f.compensate(demand, speed, valid, r));
+  EXPECT_NEAR(r.compensation_nm[0], 0.5 * kDryNm + kViscousNmS * half, 1e-18);
+  EXPECT_LT(r.compensation_nm[0], std::abs(truthFriction(half)));
+}
+
+TEST(RwFriction, SaturationTruncatesTheCompensationAndNotTheDemand) {
+  const gnc::RwFrictionCompensator f(frictionConfig());
+  const double limit = f.config().max_torque_nm[0];
+  const bool valid[4] = {true, true, true, true};
+  // Wheel 0 is commanded at its box while spinning the way that needs help;
+  // wheel 1 is at its box in the direction where the compensation fits.
+  const double demand[4] = {limit, -limit, 0.0, 0.0};
+  const double speed[4] = {20.0, 20.0, 20.0, 20.0};
+
+  gnc::RwFrictionResult r;
+  ASSERT_TRUE(f.compensate(demand, speed, valid, r));
+  EXPECT_TRUE(r.saturated);
+  // The demand survives intact on every wheel; only the open-loop refinement is
+  // what the box removed.
+  EXPECT_DOUBLE_EQ(r.torque_nm[0], limit);
+  EXPECT_EQ(r.compensation_nm[0], 0.0);
+  EXPECT_NEAR(r.torque_nm[1], -limit - truthFriction(speed[1]), 1e-15);
+  for (int i = 0; i < 4; ++i) {
+    EXPECT_LE(std::abs(r.torque_nm[i]), limit + 1e-18);
+    // Never further from the demand than the compensation asked for, and never
+    // on the other side of it.
+    EXPECT_LE(std::abs(r.torque_nm[i] - demand[i]), std::abs(truthFriction(speed[i])) + 1e-18);
+  }
+}
+
+TEST(RwFriction, ScaleTrimsProportionallyAndPartialCompensationIsMonotone) {
+  const bool valid[4] = {true, true, true, true};
+  const double demand[4] = {0.0, 0.0, 0.0, 0.0};
+  const double speed[4] = {40.0, 40.0, 40.0, 40.0};
+  const double friction = truthFriction(speed[0]);
+
+  double previous_residual = std::abs(friction);  // k = 0 is the uncompensated vehicle
+  for (const double k : {0.25, 0.5, 0.8, 1.0}) {
+    const gnc::RwFrictionCompensator f(frictionConfig(k));
+    gnc::RwFrictionResult r;
+    ASSERT_TRUE(f.compensate(demand, speed, valid, r));
+    EXPECT_NEAR(r.compensation_nm[0], -k * friction, 1e-18);
+    // What the rotor is left with: the residual shrinks with k and never
+    // changes sign, which is the property that lets a flight campaign trim the
+    // model up from a conservative start without ever making the vehicle worse.
+    const double residual = friction + r.compensation_nm[0];
+    EXPECT_LT(std::abs(residual), previous_residual);
+    EXPECT_GE(residual * friction, 0.0);
+    previous_residual = std::abs(residual);
+  }
+  // A zero trim is the documented way to disable one wheel's compensation, and
+  // it must leave the demand exactly alone rather than refuse.
+  const gnc::RwFrictionCompensator off(frictionConfig(0.0));
+  gnc::RwFrictionResult r;
+  ASSERT_TRUE(off.compensate(demand, speed, valid, r));
+  EXPECT_EQ(r.compensation_nm[0], 0.0);
+  EXPECT_TRUE(r.compensated[0]);
+}
+
+TEST(RwFriction, AWheelWithoutATachometerPassesItsDemandThrough) {
+  const gnc::RwFrictionCompensator f(frictionConfig());
+  const double demand[4] = {1.0e-3, 1.0e-3, 1.0e-3, 1.0e-3};
+  const double speed[4] = {25.0, 25.0, 25.0, 25.0};
+  const bool valid[4] = {true, false, true, true};
+
+  gnc::RwFrictionResult r;
+  ASSERT_TRUE(f.compensate(demand, speed, valid, r));
+  // Not a refusal: the other three wheels are still compensated, and the one
+  // without a speed keeps the uncompensated behaviour rather than being handed a
+  // guessed sign.
+  EXPECT_FALSE(r.compensated[1]);
+  EXPECT_EQ(r.compensation_nm[1], 0.0);
+  EXPECT_DOUBLE_EQ(r.torque_nm[1], demand[1]);
+  EXPECT_TRUE(r.compensated[0]);
+  // Spinning positive, so the bearings drag negative and the motor is asked for
+  // more positive torque than the allocation demanded.
+  EXPECT_GT(r.compensation_nm[0], 0.0);
+  EXPECT_NEAR(r.compensation_nm[0], -truthFriction(speed[0]), 1e-18);
+}
+
+TEST(RwFriction, BadConfigsAndBadInputsAreRefused) {
+  gnc::RwFrictionResult r;
+  const double demand[4] = {0.0, 0.0, 0.0, 0.0};
+  const double speed[4] = {1.0, 1.0, 1.0, 1.0};
+  const bool valid[4] = {true, true, true, true};
+
+  // A zero deadband is the discontinuous sign() the design refuses, not "no
+  // blending"; an inert compensator refuses every call so the caller falls back
+  // to the uncompensated demand.
+  gnc::RwFrictionConfig no_band = frictionConfig();
+  no_band.deadband_radps = 0.0;
+  EXPECT_FALSE(no_band.isValid());
+  const gnc::RwFrictionCompensator inert(no_band);
+  EXPECT_FALSE(inert.isConfigured());
+  EXPECT_FALSE(inert.compensate(demand, speed, valid, r));
+  EXPECT_EQ(r.refusal, gnc::RwFrictionRefusal::kUnconfigured);
+
+  gnc::RwFrictionConfig negative = frictionConfig();
+  negative.scale[2] = -1.0;
+  EXPECT_FALSE(negative.isValid());
+
+  // A trim above one is *not* refused: it is a decision an operator may have
+  // flight data for, and the <= 1 policy is documented rather than enforced.
+  EXPECT_TRUE(frictionConfig(1.5).isValid());
+
+  const gnc::RwFrictionCompensator f(frictionConfig());
+  const double bad_demand[4] = {std::nan(""), 0.0, 0.0, 0.0};
+  EXPECT_FALSE(f.compensate(bad_demand, speed, valid, r));
+  EXPECT_EQ(r.refusal, gnc::RwFrictionRefusal::kBadInput);
+  EXPECT_EQ(r.torque_nm[0], 0.0);
+
+  // A speed the caller flagged usable that is not finite is a broken gate, not a
+  // wheel to reason about.
+  const double bad_speed[4] = {1.0, std::nan(""), 1.0, 1.0};
+  EXPECT_FALSE(f.compensate(demand, bad_speed, valid, r));
+  EXPECT_EQ(r.refusal, gnc::RwFrictionRefusal::kBadInput);
+  // The same non-finite speed, correctly flagged unusable, is simply not read.
+  const bool gated[4] = {true, false, true, true};
+  EXPECT_TRUE(f.compensate(demand, bad_speed, gated, r));
+  EXPECT_FALSE(r.compensated[1]);
 }
 
 }  // namespace

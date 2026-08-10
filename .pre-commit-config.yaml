@@ -7,24 +7,28 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
-      # Committed reference data in its native upstream format (IERS finals; the
-      # EGM2008 .gfc degree-window) is kept byte-stable so it stays reproducible
-      # from its tool — excluded from the whitespace/size normalizers.
+      # Committed external files in their native upstream format are kept
+      # byte-stable so each stays reproducible from its source: the reference
+      # data (IERS finals, the EGM2008 .gfc degree-window, the space-weather
+      # table) and the vendored KaTeX build the sizing report inlines
+      # (analysis/sizing/vendor/katex/PROVENANCE.md records where each came
+      # from). Normalizing whitespace in a minified bundle would fork it from
+      # the published artifact, which is the one thing vendoring must not do.
       - id: trailing-whitespace
         args: [--markdown-linebreak-ext=md]
-        exclude: '^(LICENSE|tests/golden/(finals\.all\.iau2000\.txt|EGM2008_to200\.gfc|SW-All\.csv))$'
+        exclude: '^(LICENSE|(tests/golden/(finals\.all\.iau2000\.txt|EGM2008_to200\.gfc|SW-All\.csv)|analysis/sizing/vendor/.*))$'
       - id: end-of-file-fixer
-        exclude: '^(LICENSE|tests/golden/(finals\.all\.iau2000\.txt|EGM2008_to200\.gfc|SW-All\.csv))$'
+        exclude: '^(LICENSE|(tests/golden/(finals\.all\.iau2000\.txt|EGM2008_to200\.gfc|SW-All\.csv)|analysis/sizing/vendor/.*))$'
       - id: check-yaml
       - id: check-toml
       - id: check-added-large-files
         args: [--maxkb=2048]
         # Static reference data, not source (REQ-CONV-002 / REQ-SIM-002).
-        exclude: '^tests/golden/(finals\.all\.iau2000\.txt|EGM2008_to200\.gfc|SW-All\.csv)$'
+        exclude: '^(tests/golden/(finals\.all\.iau2000\.txt|EGM2008_to200\.gfc|SW-All\.csv)|analysis/sizing/vendor/.*)$'
       - id: check-merge-conflict
       - id: mixed-line-ending
         args: [--fix=lf]
-        exclude: '^tests/golden/(finals\.all\.iau2000\.txt|EGM2008_to200\.gfc|SW-All\.csv)$'
+        exclude: '^(tests/golden/(finals\.all\.iau2000\.txt|EGM2008_to200\.gfc|SW-All\.csv)|analysis/sizing/vendor/.*)$'
 
   # C++ formatting — pinned clang-format wheel (matches .clang-format, target 18).
   - repo: https://github.com/pre-commit/mirrors-clang-format

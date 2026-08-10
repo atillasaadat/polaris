@@ -31,6 +31,7 @@
 #include "gnc/disturbance.hpp"
 #include "gnc/momentum.hpp"
 #include "gnc/rw_allocation.hpp"
+#include "gnc/rw_friction.hpp"
 #include "math/frames.hpp"
 #include "math/quaternion.hpp"
 #include "math/typed_vector.hpp"
@@ -248,6 +249,7 @@ class AttitudeController final : public AttitudeControllerComponentBase {
   polaris::gnc::BdotController bdot_{};
   polaris::gnc::AttitudePid pid_{};
   polaris::gnc::RwAllocator allocator_{};
+  polaris::gnc::RwFrictionCompensator friction_{};
   polaris::gnc::RateHysteresis rate_hysteresis_{};
   polaris::gnc::MomentumManager momentum_{};
   polaris::gnc::DisturbanceObserver observer_{};
@@ -265,6 +267,13 @@ class AttitudeController final : public AttitudeControllerComponentBase {
   F64 wheel_speed_radps_[polaris::gnc::kMaxWheels] = {};
   bool wheel_speed_valid_[polaris::gnc::kMaxWheels] = {};
   I64 wheel_speed_time_ns_[polaris::gnc::kMaxWheels] = {};
+
+  //! This cycle's per-wheel "valid **and** fresh" verdict on the tachometers,
+  //! computed once in @ref updateMomentum and read again by the friction
+  //! feedforward. One question, one answer: a second staleness gate for the same
+  //! sensors is a second chance for the two to disagree about which wheels the
+  //! vehicle can currently reason about.
+  bool wheel_speed_fresh_[polaris::gnc::kMaxWheels] = {};
 
   //! This cycle's momentum state and whether it is usable.
   polaris::gnc::MomentumState momentum_state_{};
@@ -309,6 +318,10 @@ class AttitudeController final : public AttitudeControllerComponentBase {
   U32 alert_cycles_{0};
   U32 wheel_count_{0};
   polaris::gnc::RwAllocationMethod alloc_method_{polaris::gnc::RwAllocationMethod::kMinNorm};
+  //! Whether the §8.5 drive friction feedforward is applied. Its coefficients are
+  //! read and validated whatever this says, so a configuration missing the
+  //! friction model is refused rather than quietly flown with it disabled.
+  bool friction_enabled_{false};
 
   //! Momentum-management tuning the cycle reads directly.
   F64 wheel_inertia_kgm2_{0.0};
@@ -328,6 +341,14 @@ class AttitudeController final : public AttitudeControllerComponentBase {
   //! alongside the allocator's *negated* copy because momentum and torque
   //! authority genuinely differ by that sign (see gnc/momentum.hpp).
   Eigen::Vector3d wheel_axes_[polaris::gnc::kMaxWheels] = {};
+
+  //! Friction feedforward applied to each wheel this cycle [N*m], or NaN where
+  //! none was (feedforward off, no usable tachometer, a refused compensation, or
+  //! a cycle that commanded no wheel torque at all). Reset every cycle and
+  //! published by @ref commandActuators rather than by the pointing law, so the
+  //! channel describes what was **commanded** on every path — including the
+  //! refusal paths, where the honest answer is "none".
+  F64 friction_nm_[polaris::gnc::kMaxWheels] = {};
 
   //! Rod dipole axes, body frame, unit norm. Index i is rod i's command axis.
   Eigen::Vector3d rod_axes_[kRodCount] = {Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(),

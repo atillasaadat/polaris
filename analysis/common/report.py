@@ -58,6 +58,15 @@ class Criterion:
         One of :data:`SENSES`.
     note : str
         Optional one-line context carried into the rendering.
+    formula : str
+        The closed form :attr:`note` opens with, when it opens with one, exactly
+        as it is spelled there (``"tau_secular * T_desat"``). Empty when the note
+        is prose. Carried so a rendering can lift the equation out of the
+        sentence without pattern-matching its own output back into structure.
+    formula_tex : str
+        The same formula as LaTeX, written beside it at its source. Empty means
+        the formula has no typeset form and must be set as plain text — never
+        guessed at. Presentation only; no verdict depends on it.
     """
 
     name: str
@@ -67,6 +76,8 @@ class Criterion:
     units: str
     sense: str = "min"
     note: str = ""
+    formula: str = ""
+    formula_tex: str = ""
 
     def __post_init__(self) -> None:
         if self.sense not in SENSES:

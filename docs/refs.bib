@@ -527,6 +527,30 @@
   note      = {\S11.4: integrator windup and the standard remedies --- clamping the integrator state and suspending integration while the actuator is saturated. Both are implemented in lib/gnc/attitude_pid}
 }
 
+@article{armstrong1994,
+  author  = {Armstrong-H{\'e}louvry, Brian and Dupont, Pierre and Canudas de Wit, Carlos},
+  title   = {A Survey of Models, Analysis Tools and Compensation Methods for the Control of Machines with Friction},
+  journal = {Automatica},
+  volume  = {30},
+  number  = {7},
+  pages   = {1083--1138},
+  year    = {1994},
+  doi     = {10.1016/0005-1098(94)90209-7},
+  note    = {\S2: the Coulomb-plus-viscous friction model. \S5.1: model-based friction compensation, and the asymmetry that makes it safe --- under-compensation leaves a smaller residual of the same sign, over-compensation reverses it and past a factor of two makes it larger than doing nothing. The source for the scale-factor policy in lib/gnc/rw\_friction}
+}
+
+@article{karnopp1985,
+  author  = {Karnopp, Dean},
+  title   = {Computer Simulation of Stick-Slip Friction in Mechanical Dynamic Systems},
+  journal = {Journal of Dynamic Systems, Measurement, and Control},
+  volume  = {107},
+  number  = {1},
+  pages   = {100--103},
+  year    = {1985},
+  doi     = {10.1115/1.3140698},
+  note    = {The zero-velocity band that replaces the discontinuous sgn(omega) in a Coulomb friction model, so a numerical or control law crossing zero speed does not chatter. lib/gnc/rw\_friction applies it in feedforward form, where the band's cost is deliberate under-compensation at low wheel speed}
+}
+
 @book{jackson1999,
   author    = {Jackson, John David},
   title     = {Classical Electrodynamics},
@@ -590,4 +614,48 @@
   year    = {1980},
   doi     = {10.2514/3.19725},
   note    = {The cross-product magnetic unloading law m = k (dh x B)/||B||^2 and its orbit-averaged convergence: an instantaneous magnetic torque cannot remove the momentum component parallel to the field, so unloading is a property of the field direction turning over the orbit rather than of any one command. The source for lib/gnc/momentum}
+}
+
+@article{wilks1941,
+  author  = {Wilks, S. S.},
+  title   = {Determination of Sample Sizes for Setting Tolerance Limits},
+  journal = {The Annals of Mathematical Statistics},
+  volume  = {12},
+  number  = {1},
+  pages   = {91--96},
+  year    = {1941},
+  doi     = {10.1214/aoms/1177731788},
+  note    = {The distribution-free order-statistic tolerance interval: the k-th largest of N samples bounds the p-quantile at confidence gamma when sum_{i<k} C(N,i)(1-p)^i p^{N-i} <= 1-gamma. This is what sizes the Polaris detumble Monte Carlo campaign (analysis/detumble/statistics), where the tail duration is set by orbital geometry and has no reason to be normal}
+}
+
+@book{conover1999,
+  author    = {Conover, W. J.},
+  title     = {Practical Nonparametric Statistics},
+  edition   = {3rd},
+  publisher = {Wiley},
+  year      = {1999},
+  isbn      = {978-0-471-16068-7},
+  note      = {\S3.3: distribution-free tolerance limits, including the sample-size tables the Wilks condition reproduces (N=59 for a 95/95 bound from the sample maximum, N=93 from the second largest)}
+}
+
+@article{inamori2011,
+  author  = {Inamori, Takaya and Sako, Nobutada and Nakasuka, Shinichi},
+  title   = {Magnetic dipole moment estimation and compensation for an accurate attitude control in nano-satellite missions},
+  journal = {Acta Astronautica},
+  volume  = {68},
+  number  = {9--10},
+  pages   = {2038--2046},
+  year    = {2011},
+  doi     = {10.1016/j.actaastro.2010.10.022},
+  note    = {On-orbit identification of a spacecraft's residual magnetic moment from the m x B torque signature, and its use as attitude-control feedforward. The source for the \S8.5 tier-3 measurement model in lib/gnc/dipole\_estimation, including the point that the moment varies with the vehicle's power state}
+}
+
+@book{ljung1999,
+  author    = {Ljung, Lennart},
+  title     = {System Identification: Theory for the User},
+  edition   = {2nd},
+  publisher = {Prentice Hall},
+  year      = {1999},
+  isbn      = {978-0-13-656695-3},
+  note      = {\S11.2: recursive least squares in information form with exponential forgetting, the steady state the forgetting factor drives the information matrix to, and the persistent-excitation condition its convergence requires. The source for the accumulator and the observability gating in lib/gnc/dipole\_estimation}
 }

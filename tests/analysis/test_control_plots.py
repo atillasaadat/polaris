@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 
 from analysis.control import load_vehicle
 from analysis.control.plots import write_all
@@ -43,8 +44,18 @@ def test_the_vehicle_is_loaded_from_the_committed_config(vehicle):
     assert vehicle.wheel_spin_axes.shape == (3, 4)
     assert vehicle.mtq_axes.shape == (3, 3)
     # Momentum capacity is read from the hardware catalog the model_id resolves
-    # to (RW-X, 0.5 N.m.s), not restated here — the SISO boundary depends on it.
-    assert vehicle.wheel_max_momentum_nms == pytest.approx(0.5)
+    # to, read from the catalog rather than restated — the SISO boundary depends
+    # on it, and the part changed (RW-X -> RW-X) in Push 60. What this asserts is
+    # that the loader resolves the model_id through the catalog at all, which a
+    # transcribed number could not distinguish from a hard-coded default.
+    catalog = yaml.safe_load(
+        (
+            REFERENCE_CONFIG.parent.parent / "hardware" / "reaction_wheel" / "rwx.yaml"
+        ).read_text()
+    )
+    assert vehicle.wheel_max_momentum_nms == pytest.approx(
+        catalog["params"]["max_momentum_nms"]
+    )
     # Spin axes are unit vectors on the body diagonals; the torque authority is
     # their negation, which is the one sign the controller applies.
     assert np.linalg.norm(vehicle.wheel_spin_axes, axis=0) == pytest.approx(

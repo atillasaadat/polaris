@@ -308,6 +308,64 @@ module flight {
     @ is larger than one dimension, rather than pretending.
     param AllocMethodSel: U8
 
+    # --- Wheel-drive friction feedforward (§8.5; REQ-ACTL-010) -------------
+    #
+    # A torque-mode drive delivers the commanded motor torque, but the body sees
+    # the *net* rotor torque, so the allocation is wrong by the bearing friction
+    # on every spinning wheel. On a loaded array that error is secular and, on
+    # this vehicle, larger than the pointing integrator's whole authority. These
+    # five parameters are the model that is fed forward to cancel it; the law is
+    # `lib/gnc/rw_friction`, and it is applied per wheel after the allocation and
+    # before the drive command.
+
+    @ Enable the drive friction feedforward: 0 = off, 1 = on. Switchable for the
+    @ same reason the disturbance-feedforward tiers are — flying the *same*
+    @ vehicle with and without it is the only way to measure what it buys — and
+    @ **the coefficients below are read and validated either way**, so a
+    @ configuration missing its friction model is refused rather than quietly
+    @ flown with the feedforward disabled.
+    param WheelFrictionEnable: U8
+
+    @ Coulomb (dry) friction torque magnitude [N*m] of one wheel, from its
+    @ hardware-catalog entry (`dry_friction_nm`). One value, because the reference
+    @ vehicle flies four identical wheels — the same reason WheelInertiaKgm2 and
+    @ WheelMaxTorqueNm are scalars, and a mixed array needs all three per-unit.
+    @ The config compiler checks this against the installed units' catalog values,
+    @ so the number here cannot drift from the hardware it describes.
+    param WheelDryFrictionNm: F64
+
+    @ Viscous friction coefficient [N*m/(rad/s)] of one wheel, from its catalog
+    @ entry (`viscous_friction_nm_s`). Continuous through zero speed, so it needs
+    @ no deadband; compensated because leaving out a modelled, exactly-known term
+    @ would be arbitrary, not because it is large (~5e-6 N*m at 1 rad/s here).
+    param WheelViscousFrictionNmS: F64
+
+    @ Blend half-width [rad/s] for the Coulomb term's sign. Friction is
+    @ -sgn(omega)*tau_c, and a feedforward built on a bare sign() chatters at low
+    @ wheel speed — injecting a square wave of amplitude 2*tau_c at exactly the
+    @ operating point where the vehicle is otherwise quietest. The compensation
+    @ therefore ramps linearly from zero at omega = 0 to full magnitude at
+    @ |omega| = this. **The cost is stated rather than hidden**: inside the band
+    @ the friction is deliberately under-compensated. It is bounded above by the
+    @ vehicle's own wheel-speed range — a band covering a large fraction of the
+    @ speeds the array actually runs at under-compensates across the flight
+    @ envelope rather than only at a zero crossing — and below by the
+    @ tachometer's resolution and noise, since under those the *sign* of omega is
+    @ not a measurement. Must be positive; zero is the discontinuous sign() this
+    @ exists to avoid and is refused.
+    param WheelFrictionDeadbandRadps: F64
+
+    @ Per-wheel trim on the modelled friction, dimensionless, in vehicle build
+    @ order. **Policy: at or below 1.** Feedforward against a modelled disturbance
+    @ helps monotonically only while the model does not exceed the truth —
+    @ compensating a fraction k <= 1 leaves (1-k) of the friction, same sign,
+    @ never worse — whereas over-compensating reverses the residual's sign and
+    @ past k = 2 makes it larger than doing nothing. A flight campaign that
+    @ measures the real rundown trims *down* toward it. The value is **not**
+    @ clamped in flight: silently rewriting a commanded trim would hide the one
+    @ case an operator needs to see. Zero disables compensation on that wheel.
+    param WheelFrictionScale: F64PerUnit
+
     # --- MTQ/MAG duty-cycle interlock (§7) ---------------------------------
 
     @ Number of installed magnetorquer rods. This push drives an orthogonal triad
@@ -458,8 +516,18 @@ module flight {
     @ Commanded body dipole [A*m^2] during the on-window (DETUMBLE only).
     telemetry DipoleCmd: Vec3F64
 
-    @ Per-wheel commanded torque [N*m], in vehicle build order.
+    @ Per-wheel commanded torque [N*m], in vehicle build order. This is what the
+    @ drives are told — the allocation's demand **plus** the friction feedforward.
     telemetry WheelTorque: F64PerUnit
+
+    @ Friction feedforward actually applied per wheel [N*m], in vehicle build
+    @ order, after the torque-box clamp. NaN on a wheel with no usable tachometer
+    @ (no speed, no sign, no feedforward — that wheel keeps the uncompensated
+    @ behaviour), and NaN on every wheel when the feedforward is disabled or the
+    @ law refused. Subtract it from WheelTorque to recover the allocation's
+    @ demand, which is what makes the two channels together an ablation an
+    @ operator can read without a ground model.
+    telemetry WheelFrictionNm: F64PerUnit
 
     @ Largest |wheel torque| in this cycle's allocation [N*m] — the quantity the
     @ L-infinity allocation minimises, so the two methods are comparable in flight.

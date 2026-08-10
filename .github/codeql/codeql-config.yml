@@ -1,0 +1,13 @@
+# CodeQL configuration (default setup reads this automatically).
+#
+# Vendored third-party assets are excluded from analysis. `analysis/sizing`
+# inlines KaTeX into its self-contained HTML report, so `katex.min.js` is
+# committed verbatim under `vendor/` with its provenance and license — it is a
+# dependency we ship, not code we maintain. Scanning a minified library reports
+# findings against upstream's shipped bundle, which we can neither fix nor
+# meaningfully triage, and which drowns the alerts that are about our own code.
+# Upstream security is tracked by pinning the version in
+# `analysis/sizing/vendor/katex/PROVENANCE.md`, not by re-analysing the minifier
+# output here.
+paths-ignore:
+  - analysis/sizing/vendor/**

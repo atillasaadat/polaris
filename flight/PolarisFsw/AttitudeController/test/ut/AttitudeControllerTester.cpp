@@ -43,6 +43,11 @@ constexpr U32 kWheelCount = 4;
 constexpr F64 kWheelMaxTorqueNm = 0.025;
 constexpr F64 kAllocMinConditioning = 0.05;
 constexpr U32 kMtqCount = 3;
+//! Wheel-drive friction feedforward (§8.5, REQ-ACTL-010) — the RW-X catalog
+//! rundown coefficients and the deadband the reference vehicle flies.
+constexpr F64 kWheelDryFrictionNm = 1.0e-4;
+constexpr F64 kWheelViscousFrictionNmS = 5.0e-6;
+constexpr F64 kFrictionDeadbandRadps = 0.1;
 constexpr F64 kStuckResidualT = 8.0e-6;
 constexpr F64 kWindowToleranceSec = 0.001;
 constexpr U32 kStuckConfirmCycles = 5;
@@ -117,7 +122,8 @@ void AttitudeControllerTester ::from_mtqActuationOut_handler(FwIndexType portNum
 // Helpers
 // ----------------------------------------------------------------------
 
-void AttitudeControllerTester ::setValidParameters(F64 dutyFactor, F64 settleSec) {
+void AttitudeControllerTester ::setValidParameters(F64 dutyFactor, F64 settleSec,
+                                                   bool withFriction) {
   this->paramSet_ControlPeriodSec(kPeriodSec, Fw::ParamValid::VALID);
   this->paramSet_MaxEstimateAgeSec(kMaxEstimateAgeSec, Fw::ParamValid::VALID);
   this->paramSet_MaxAttSigmaRad(kMaxAttSigmaRad, Fw::ParamValid::VALID);
@@ -152,6 +158,21 @@ void AttitudeControllerTester ::setValidParameters(F64 dutyFactor, F64 settleSec
     }
   }
   this->paramSet_WheelAxesBody(wheel_axes, Fw::ParamValid::VALID);
+
+  // Wheel-drive friction feedforward (§8.5). Enabled by default: it is what the
+  // vehicle flies, so a test that silently ran without it would be testing a
+  // different vehicle from the one the SITL rows measure.
+  const Fw::ParamValid::T friction_valid =
+      withFriction ? Fw::ParamValid::VALID : Fw::ParamValid::INVALID;
+  this->paramSet_WheelFrictionEnable(1, friction_valid);
+  this->paramSet_WheelDryFrictionNm(kWheelDryFrictionNm, friction_valid);
+  this->paramSet_WheelViscousFrictionNmS(kWheelViscousFrictionNmS, friction_valid);
+  this->paramSet_WheelFrictionDeadbandRadps(kFrictionDeadbandRadps, friction_valid);
+  F64PerUnit friction_scale;
+  for (U32 i = 0; i < F64PerUnit::SIZE; ++i) {
+    friction_scale[i] = i < kWheelCount ? 1.0 : 0.0;
+  }
+  this->paramSet_WheelFrictionScale(friction_scale, friction_valid);
 
   Vec3F64PerUnit rod_axes;
   for (U32 i = 0; i < Vec3F64PerUnit::SIZE; ++i) {
@@ -802,6 +823,124 @@ void AttitudeControllerTester ::testDesatGroundOverride() {
   this->runCycleAt(t);
   EXPECT_EQ(this->last_on_window_s_, 0.0);
   ASSERT_EVENTS_DesatDisengaged_SIZE(1);
+}
+
+void AttitudeControllerTester ::testWheelFrictionFeedforward() {
+  const double angle = 10.0 * M_PI / 180.0;
+  const double speed = 20.0;
+  // Spinning positive, so the bearings drag negative and the drive is asked for
+  // more positive torque than the allocation demanded.
+  const double expected = kWheelDryFrictionNm + kWheelViscousFrictionNmS * speed;
+  const pm::Quaternion attitude =
+      pm::Quaternion::FromAxisAngle(Eigen::Vector3d::UnitX(), angle).canonical();
+  const double s = 1.0 / std::sqrt(3.0);
+  const double signs[4][3] = {{1, 1, 1}, {-1, 1, 1}, {-1, -1, 1}, {1, -1, 1}};
+
+  I64 t = kStartTaiNs;
+
+  // (1) A vehicle whose friction model is missing is refused outright, before
+  //     anything else — it is a vehicle nobody has characterised, and flying it
+  //     with the feedforward quietly off would hide that behind pointing error
+  //     nobody could attribute. The coefficients are therefore read and validated
+  //     whether or not the feedforward is enabled.
+  this->setValidParameters(0.5, 0.03, /*withFriction=*/false);
+  this->setEstimate(attitude, Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_ConfigInvalid_SIZE(1);
+  ASSERT_TLM_CtrlModeTlm(0, AttitudeController::CtrlMode::IDLE);
+  for (U32 i = 0; i < WheelTorqueSet::SIZE; ++i) {
+    EXPECT_EQ(this->last_wheels_[i], 0.0);
+  }
+
+  // A 10 degree error about body +X on a **spinning** array — the operating
+  // point the whole feature is about. 20 rad/s is two hundred times the
+  // deadband, so the Coulomb term is at full magnitude and the blend is not what
+  // is under test here.
+  this->clearHistory();
+  this->setValidParameters();
+  this->setWheelSpeeds(speed);
+  t += kPeriodNs;
+  this->setEstimate(attitude, Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->runCycleAt(t);
+  this->sendCmd_CTRL_SET_TARGET_Q(0, 0, 1.0, 0.0, 0.0, 0.0);
+  this->sendCmd_CTRL_MODE_SET(0, 0, AttitudeController::CtrlMode::POINT);
+  this->clearHistory();
+
+  t += kPeriodNs;
+  this->setEstimate(attitude, Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->runCycleAt(t);
+
+  // (2) Each wheel carries the allocation's demand *plus* the modelled friction,
+  //     and the two are separable from telemetry alone — which is what makes the
+  //     WheelTorque/WheelFrictionNm pair an ablation an operator can read without
+  //     a ground model.
+  ASSERT_TLM_WheelFrictionNm_SIZE(1);
+  F64PerUnit friction;
+  friction = this->tlmHistory_WheelFrictionNm->at(0).arg;
+  for (U32 i = 0; i < kWheelCount; ++i) {
+    EXPECT_NEAR(friction[i], expected, 1.0e-15);
+  }
+
+  // (3) Subtracting it recovers the commanded body torque exactly: the friction
+  //     term is spent inside the bearings and must not appear in the delivered
+  //     body torque the allocation solved for.
+  ASSERT_TLM_TorqueCmd_SIZE(1);
+  Vec3F64 torque;
+  torque = this->tlmHistory_TorqueCmd->at(0).arg;
+  Eigen::Vector3d delivered = Eigen::Vector3d::Zero();
+  for (U32 i = 0; i < kWheelCount; ++i) {
+    const Eigen::Vector3d axis(-signs[i][0] * s, -signs[i][1] * s, -signs[i][2] * s);
+    delivered += axis * (this->last_wheels_[i] - friction[i]);
+  }
+  EXPECT_NEAR(delivered.x(), torque[0], 1.0e-12);
+  EXPECT_NEAR(delivered.y(), torque[1], 1.0e-12);
+  EXPECT_NEAR(delivered.z(), torque[2], 1.0e-12);
+
+  // (4) A wheel whose tachometer is not usable is passed through uncompensated
+  //     rather than handed a guessed sign — and the others are still helped, so
+  //     one dead tach costs one wheel's compensation and not the feature.
+  this->wheel_speed_valid_[2] = false;
+  this->clearHistory();
+  t += kPeriodNs;
+  this->setEstimate(attitude, Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->runCycleAt(t);
+  friction = this->tlmHistory_WheelFrictionNm->at(0).arg;
+  EXPECT_TRUE(std::isnan(friction[2]));
+  EXPECT_NEAR(friction[0], expected, 1.0e-15);
+  this->wheel_speed_valid_[2] = true;
+
+  // (5) Disabling the feedforward puts the uncompensated vehicle back exactly —
+  //     the ablation the SITL rows fly to measure what it buys. Sent through the
+  //     parameter *port* rather than staged in the harness table, because that is
+  //     the path an uplink takes and the only one that re-reads the tuning.
+  this->paramSet_WheelFrictionEnable(0, Fw::ParamValid::VALID);
+  this->paramSend_WheelFrictionEnable(0, 0);
+  this->sendCmd_CTRL_SET_TARGET_Q(0, 0, 1.0, 0.0, 0.0, 0.0);
+  this->sendCmd_CTRL_MODE_SET(0, 0, AttitudeController::CtrlMode::POINT);
+  this->clearHistory();
+  t += kPeriodNs;
+  this->setEstimate(attitude, Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->runCycleAt(t);
+  friction = this->tlmHistory_WheelFrictionNm->at(0).arg;
+  torque = this->tlmHistory_TorqueCmd->at(0).arg;
+  delivered = Eigen::Vector3d::Zero();
+  for (U32 i = 0; i < kWheelCount; ++i) {
+    EXPECT_TRUE(std::isnan(friction[i]));
+    const Eigen::Vector3d axis(-signs[i][0] * s, -signs[i][1] * s, -signs[i][2] * s);
+    delivered += axis * this->last_wheels_[i];
+  }
+  EXPECT_NEAR(delivered.x(), torque[0], 1.0e-12);
+
+  // (6) A zero deadband is the discontinuous sign() the design rejects, not "no
+  //     blending wanted", and it takes the whole configuration down rather than
+  //     being silently reinterpreted.
+  this->paramSet_WheelFrictionDeadbandRadps(0.0, Fw::ParamValid::VALID);
+  this->clearHistory();
+  this->paramSend_WheelFrictionDeadbandRadps(0, 0);
+  t += kPeriodNs;
+  this->setEstimate(attitude, Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_ConfigInvalid_SIZE(1);
 }
 
 void AttitudeControllerTester ::testMomentumEnvelopeAndWheelDropout() {
