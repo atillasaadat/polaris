@@ -45,6 +45,28 @@ the standing caveat that B-dot damps only the rate perpendicular to the field
 and the residual spin about the field line unwinds over *orbits* (REQ-ACTL-001's
 recorded finding), so this is a bound on the fast phase and not a detumble time.
 
+**M4 — the saturated-gain convergence bound, and why M2 is not enough.** M2 is
+an *impulse* bound: torque times time against momentum. It says nothing about
+whether the law converges, and it passed a candidate vehicle that had no
+convergent detumble operating point at all (design doc §8.5). Avanzini &
+Giulietti's floor :math:`k \\ge 2\\omega_o(1+\\sin\\xi)J_{\\min}` [avanzini2012] is
+stated for the **unsaturated** law. A vehicle whose rods rail for the whole
+detumble is not running at gain :math:`k`: the commanded dipole is clipped at
+:math:`m_{sat}`, so the *effective* gain is :math:`m_{sat}\\lVert B\\rVert/\\omega`,
+which **falls as the vehicle spins faster**. Substituting it into the floor gives
+the largest rate the law can remove at all,
+
+.. math::
+
+    \\omega_{\\max} = \\frac{\\eta\\,m\\,\\lVert B\\rVert_{\\min}\\,d_{duty}}
+                          {2\\,\\omega_o\\,(1+\\sin\\xi)\\,J_{\\min}},
+
+and the tip-off must sit inside it. This is the criterion that catches "the rods
+are the wrong class for this bus" before a simulation spends an hour flattening
+out at a rate nobody expected. Note it depends on :math:`J_{\\min}`, not on the
+wheels: it is a statement about the *rods against the body*, which is why a
+vehicle can pass every wheel criterion and still fail here.
+
 **M3 — the B-dot noise floor.** B-dot differentiates the measured field over the
 control period. Two samples each carrying :math:`\\sigma` of noise give a
 derivative noise :math:`\\sigma\\sqrt2/\\Delta t`, and the true signal is
@@ -179,6 +201,12 @@ class MtqSizing:
         The time allowed to remove it [s].
     noise_floor : BdotNoiseFloor
         The B-dot measurement floor.
+    convergent_rate_max_radps : float
+        The largest body rate the **saturated** B-dot law can still remove
+        [rad/s]; see M4 above. Depends on the smallest principal moment, not on
+        the wheels.
+    tipoff_rate_radps : float
+        The tip-off rate M4 judges against [rad/s].
     """
 
     dipole: Envelope
@@ -189,6 +217,8 @@ class MtqSizing:
     tipoff_momentum_nms: float
     detumble_budget_s: float
     noise_floor: BdotNoiseFloor
+    convergent_rate_max_radps: float
+    tipoff_rate_radps: float
 
     @property
     def implied_detumble_s(self) -> float:
@@ -201,6 +231,57 @@ class MtqSizing:
     def removable_momentum_nms(self) -> float:
         """Momentum removable inside the detumble budget [N·m·s]."""
         return self.average_torque_nm * self.detumble_budget_s
+
+
+#: Worst-case field inclination to the orbit plane, ``sin xi = 1``
+#: ([avanzini2012]). Taken rather than computed: it is the right assumption for
+#: a near-polar orbit and the conservative one everywhere else.
+_SIN_XI_WORST = 1.0
+
+
+def _saturated_convergence_rate(
+    average_torque_nm: float, min_inertia_kgm2: float, vehicle: Vehicle
+) -> float:
+    r"""Largest body rate the saturated B-dot law can still remove [rad/s].
+
+    Avanzini & Giulietti's convergence floor ``k >= 2 w_o (1 + sin xi) J_min``
+    [avanzini2012] is stated for the **unsaturated** law. With the rods railed
+    the effective gain is not the commanded ``k`` but ``m_sat*|B|/omega``, which
+    falls as the vehicle spins faster; substituting it and solving for the rate
+    gives
+
+    .. math::
+
+        \omega_{\max} = \frac{\bar\tau_{mtq}}
+                              {2\,\omega_o\,(1+\sin\xi)\,J_{\min}},
+
+    where :math:`\bar\tau_{mtq} = \eta\,m\,\lVert B\rVert_{\min}\,d_{duty}`
+    is the same orbit-average authority M1 and M2 use, so the three criteria
+    cannot disagree about what the rods can do.
+
+    Parameters
+    ----------
+    average_torque_nm : float
+        Orbit-average magnetic torque at the weakest field [N·m].
+    min_inertia_kgm2 : float
+        Smallest principal moment [kg·m²]. The *smallest* because it is the axis
+        the convergence condition binds on, and using the largest would report a
+        vehicle as convergent when its easiest axis is not.
+    vehicle : analysis.control.vehicle.Vehicle
+        Read for the orbit's mean motion.
+
+    Returns
+    -------
+    float
+        The bound [rad/s]; ``inf`` when the orbit rate is zero (no field
+        rotation to outrun), ``0.0`` when the rods produce no torque.
+    """
+    denominator = (
+        2.0 * vehicle.orbit.mean_motion_rad_s * (1.0 + _SIN_XI_WORST) * min_inertia_kgm2
+    )
+    if denominator <= 0.0:
+        return float("inf")
+    return float(average_torque_nm) / denominator
 
 
 def mtq_sizing(
@@ -246,6 +327,10 @@ def mtq_sizing(
         tipoff_momentum_nms=worst_inertia * assumptions.tipoff_rate_radps,
         detumble_budget_s=assumptions.detumble_budget(vehicle.orbit.period_s),
         noise_floor=bdot_noise_floor(vehicle, budget),
+        convergent_rate_max_radps=_saturated_convergence_rate(
+            average, float(np.min(vehicle.principal_moments_kgm2)), vehicle
+        ),
+        tipoff_rate_radps=assumptions.tipoff_rate_radps,
     )
 
 
@@ -309,6 +394,30 @@ def criteria(
                 f"against a {sizing.detumble_budget_s:.0f} s budget; the residual "
                 "spin about the field line unwinds over orbits and is not covered "
                 "by this bound (REQ-ACTL-001)"
+            ),
+        ),
+        Criterion(
+            name="M4 saturated B-dot converges at the tip-off rate",
+            requirement="",
+            # Sense "min": the capability (the largest removable rate) must
+            # exceed the demand (the tip-off), like every other sizing row.
+            threshold=margin * float(np.degrees(sizing.tipoff_rate_radps)),
+            measured=float(np.degrees(sizing.convergent_rate_max_radps)),
+            units="deg/s",
+            sense="min",
+            note=(
+                f"w_max = tau_mtq / (2*w_o*(1 + sin xi)*J_min) = "
+                f"{np.degrees(sizing.convergent_rate_max_radps):.2f} deg/s at "
+                f"sin xi = 1, the worst case [avanzini2012]. The rods rail for "
+                f"the whole detumble, so the effective gain is m_sat*|B|/omega "
+                f"and falls as the vehicle spins faster; above this rate the law "
+                f"cannot remove rate at all. M2 is an impulse bound and does not "
+                f"see it: a vehicle can pass M2 and still never converge"
+            ),
+            formula="w_max = tau_mtq / (2*w_o*(1 + sin xi)*J_min)",
+            formula_tex=(
+                r"\omega_{\max} = \frac{\bar\tau_{\mathrm{mtq}}}"
+                r"{2\,\omega_o\,(1+\sin\xi)\,J_{\min}}"
             ),
         ),
         Criterion(
