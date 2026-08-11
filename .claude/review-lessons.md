@@ -451,3 +451,38 @@ and only the first announced itself.
   datasheet value armed at a cadence that cannot see it does not model the effect
   conservatively — it models a different, much larger effect, and reports it as
   the filter's error.
+
+## The band that was the only gate, sized as if it were the second (P63, measurement)
+
+Building the OD campaign's report surfaced this from a scenario that was
+*passing*. `bad_data` injects fixes at geostationary radius and its stated
+intent is that they be refused on the §9.1 plausibility band "before the filter
+sees it". They were being refused — as `measurement_rejected`, by the NIS gate,
+one layer further in. The band, configured `6.4e6` to `5.0e7` m on a 400 km
+vehicle, admits everything from just above the surface to beyond GEO and caught
+nothing.
+
+- **A seed has no prior, so it has no innovation, so it has no gate.** On the
+  update path the NIS test is a genuine second line of defence and it worked.
+  On the *seed* path — a cold filter, or one whose solution the coast horizon
+  has just dropped — the plausibility band is the only thing between a wire
+  value and the state the vehicle then flies on. Measured: a GEO-radius fix
+  seeded the LEO filter outright, `seeded == true`, refusal `kNone`. The
+  `outage_long` scenario drops the solution three times a week, so the seed path
+  is not a cold-start curiosity; it is a path the vehicle takes in flight.
+- **A trust boundary sized to "any Earth orbit" is not a trust boundary.** The
+  band's job is to exclude what this vehicle cannot be doing, and a smallsat at
+  400 km cannot be at geostationary radius under any dispersion. Re-sized to
+  6.5e6–8.0e6 m (roughly 120–1600 km altitude): the whole LEO band with room for
+  decay and dispersion, with MEO, GTO and GEO all outside it.
+- **A defence that is passing because a *different* defence caught the case is
+  not passing.** Nothing failed here — the fix was rejected, the campaign was
+  green, and the scenario's own comment said what was supposed to happen. The
+  only way to see it was to read *which* refusal came back, which is why the
+  driver now emits the refusal by name rather than as an integer. Ask of any
+  layered check: which layer actually fired, and is the one being tested the one
+  that did?
+- **Emit the reason, not the outcome.** Had the record carried only
+  `fix_accepted: 0` this would have been invisible for as long as anyone cared
+  to look. The name cost a few bytes on ~1 % of rows and is what made the
+  finding legible at a glance.

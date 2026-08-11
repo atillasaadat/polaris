@@ -186,8 +186,11 @@ pg::OrbitOdConfig filterConfig() {
   cfg.max_dt_s = 60.0;
   cfg.max_step_s = 10.0;
   cfg.max_fix_latency_s = kMaxFixLatencyS;
-  cfg.min_radius_m = 6.4e6;
-  cfg.max_radius_m = 5.0e7;
+  // The band is sized to *this vehicle's* orbit, not to Earth orbits in general.
+  // It is the only check on the seed path, where there is no prior and so no NIS
+  // gate; see `OrbitOdConfig::min_radius_m`. 120 km to 1600 km altitude.
+  cfg.min_radius_m = 6.5e6;
+  cfg.max_radius_m = 8.0e6;
   return cfg;
 }
 
@@ -267,12 +270,53 @@ struct Record {
   bool fix_accepted{false};
   double age_s{0.0};
   std::uint32_t rejected_total{0};
-  int refusal{0};
+  pg::OrbitOdRefusal refusal{pg::OrbitOdRefusal::kNone};
   const char* regime{"nominal"};
 };
 
+/// A string as a JSON string body. The intents are our own English, but they
+/// are long prose with punctuation and one of them will eventually contain a
+/// quote; emitting it raw would produce a file the analysis cannot parse, and
+/// the failure would land in the campaign rather than here.
+std::string jsonEscaped(const std::string& text) {
+  std::string out;
+  out.reserve(text.size() + 8);
+  for (const char c : text) {
+    switch (c) {
+      case '"':
+        out += "\\\"";
+        break;
+      case '\\':
+        out += "\\\\";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      default:
+        out += c;
+    }
+  }
+  return out;
+}
+
+/// One header line per (run, scenario), carrying what the samples cannot.
+///
+/// The scenario's *intent* is the argument for why it is flown, written once in
+/// `orbit_od_scenarios.hpp`; the report quotes it. Emitting it here rather than
+/// transcribing it into the Python is the point — a scenario whose rationale is
+/// reworded takes the report's wording with it, and there is no second copy to
+/// go stale. The cadence and latency come along because a reader of a shard has
+/// no other way to know a 30000-sample file is ten minutes rather than a week.
+void writeMeta(std::ostream& out, int run, const mco::Scenario& scenario, double cycle_s,
+               double duration_s) {
+  out << "{\"kind\":\"meta\",\"run\":" << run << ",\"scenario\":\"" << jsonEscaped(scenario.name)
+      << "\",\"intent\":\"" << jsonEscaped(scenario.intent) << "\",\"cycle_period_s\":" << cycle_s
+      << ",\"fix_latency_s\":" << scenario.fix_latency_s << ",\"duration_s\":" << duration_s
+      << "}\n";
+}
+
 void writeRecord(std::ostream& out, int run, const std::string& scenario, const Record& r) {
-  out << "{\"run\":" << run << ",\"scenario\":\"" << scenario << "\""
+  out << "{\"kind\":\"sample\",\"run\":" << run << ",\"scenario\":\"" << scenario << "\""
       << ",\"t_s\":" << r.t_s << ",\"regime\":\"" << r.regime << "\""
       << ",\"pos_err_m\":" << r.pos_err_m << ",\"vel_err_mps\":" << r.vel_err_mps
       << ",\"pos_sigma_m\":" << r.pos_sigma_m << ",\"vel_sigma_mps\":" << r.vel_sigma_mps
@@ -283,7 +327,16 @@ void writeRecord(std::ostream& out, int run, const std::string& scenario, const 
   out << ",\"solution_valid\":" << (r.solution_valid ? 1 : 0)
       << ",\"fix_valid\":" << (r.fix_valid ? 1 : 0)
       << ",\"fix_accepted\":" << (r.fix_accepted ? 1 : 0) << ",\"age_s\":" << r.age_s
-      << ",\"rejected_total\":" << r.rejected_total << ",\"refusal\":" << r.refusal << "}\n";
+      << ",\"rejected_total\":" << r.rejected_total;
+  // The refusal is written as its own name rather than as the enum's integer.
+  // An integer would oblige the analysis to carry a copy of the enum, which is
+  // the same list written twice and drifts the first time a value is inserted;
+  // `pg::refusalName` lives beside the enum and is compiler-checked exhaustive.
+  // Omitted when there was nothing to refuse, which is most rows.
+  if (r.refusal != pg::OrbitOdRefusal::kNone) {
+    out << ",\"refusal\":\"" << pg::refusalName(r.refusal) << "\"";
+  }
+  out << "}\n";
 }
 
 }  // namespace
@@ -401,6 +454,7 @@ RunResult flyOne(int run, const mco::Scenario& scenario, double duration_s,
   if (!runner.runAt(times, truth, error)) {
     return result;
   }
+  writeMeta(out, run, scenario, cycle_s, duration_s);
 
   for (std::size_t i = 0; i < truth.size(); ++i) {
     const double t_s = times[i];
@@ -446,7 +500,7 @@ RunResult flyOne(int run, const mco::Scenario& scenario, double duration_s,
     // dead code. It is also the quantity that matters: "where am I *now*" is
     // what pointing, pass planning and maneuver targeting all ask.
     const pg::OrbitOdRefusal pr = filter.propagate(now, eop_table, leap);
-    rec.refusal = static_cast<int>(pr);
+    rec.refusal = pr;
 
     if (m.valid) {
       pg::GnssFix fix;
@@ -463,7 +517,7 @@ RunResult flyOne(int run, const mco::Scenario& scenario, double duration_s,
 
       pg::OrbitOdResult res;
       rec.fix_accepted = filter.ingest(fix, eop, res);
-      rec.refusal = static_cast<int>(res.refusal);
+      rec.refusal = res.refusal;
       if (res.position.accepted) {
         rec.nis = res.position.nis;
         rec.nis_valid = true;

@@ -433,6 +433,20 @@ struct OrbitOdConfig {
   /// the receiver is not trusted: an unchecked position does not fail loudly
   /// downstream, it poisons the propagation while every validity flag still
   /// reads true. Must satisfy `0 < min < max`.
+  ///
+  /// **Size this to the vehicle's own orbit regime, not to "an Earth orbit".**
+  /// The band is the *only* check a fix passes on the seed path: a cold filter,
+  /// or one whose solution the coast horizon has just dropped, has no prior, so
+  /// it has no innovation and the NIS gate does not exist. A fix that clears the
+  /// band there becomes the state the vehicle flies on, outright. On the update
+  /// path the gate is a second line of defence; on the seed path there is no
+  /// second line. A band wide enough to admit geostationary radius on a 400 km
+  /// vehicle therefore admits a GEO fix as a seed — measured, and pinned by
+  /// `OrbitOdRefusals.AGeoRadiusFixCannotSeedTheFilterOnALeoVehicle`.
+  ///
+  /// The reference LEO vehicle uses 6.5e6 m to 8.0e6 m (roughly 120 km to
+  /// 1600 km altitude): wide enough for the whole LEO band and any dispersion or
+  /// decay within it, narrow enough that MEO, GTO and GEO are all outside.
   double min_radius_m{0.0};
   double max_radius_m{0.0};
 
@@ -461,6 +475,45 @@ enum class OrbitOdRefusal : std::uint8_t {
   kMeasurementRejected,  ///< the NIS gate refused the fix
   kFilterFault,          ///< non-finite internal result; the solution was dropped
 };
+
+/// The refusal's own name, for a log line, a report or a test failure message.
+///
+/// Beside the enum on purpose: a mapping kept anywhere else is the same list
+/// written twice, and the two drift the first time a value is added. Here the
+/// switch is exhaustive and `-Wswitch` fails the build when it stops being so,
+/// which is the property that makes the mapping worth having at all. No storage,
+/// no allocation, nothing that would keep it off the flight path.
+[[nodiscard]] constexpr const char* refusalName(OrbitOdRefusal refusal) {
+  switch (refusal) {
+    case OrbitOdRefusal::kNone:
+      return "none";
+    case OrbitOdRefusal::kUnconfigured:
+      return "unconfigured";
+    case OrbitOdRefusal::kUninitialised:
+      return "uninitialised";
+    case OrbitOdRefusal::kNonMonotonicEpoch:
+      return "non_monotonic_epoch";
+    case OrbitOdRefusal::kStepTooLong:
+      return "step_too_long";
+    case OrbitOdRefusal::kCoastExpired:
+      return "coast_expired";
+    case OrbitOdRefusal::kFixNotFinite:
+      return "fix_not_finite";
+    case OrbitOdRefusal::kFixImplausible:
+      return "fix_implausible";
+    case OrbitOdRefusal::kFixSigmaInvalid:
+      return "fix_sigma_invalid";
+    case OrbitOdRefusal::kFrameConversion:
+      return "frame_conversion";
+    case OrbitOdRefusal::kNoVelocityForSeed:
+      return "no_velocity_for_seed";
+    case OrbitOdRefusal::kMeasurementRejected:
+      return "measurement_rejected";
+    case OrbitOdRefusal::kFilterFault:
+      return "filter_fault";
+  }
+  return "unknown";
+}
 
 /// Diagnostics from one 3-row measurement update. Populated whether or not the
 /// measurement was accepted, so the NIS of a *rejected* fix reaches telemetry

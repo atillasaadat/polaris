@@ -186,8 +186,11 @@ OrbitOdConfig referenceConfig() {
   cfg.max_dt_s = 10.0;
   cfg.max_step_s = 1.0;
   cfg.max_fix_latency_s = kMaxFixLatencyS;
-  cfg.min_radius_m = 6.4e6;
-  cfg.max_radius_m = 5.0e7;
+  // The band is sized to *this vehicle's* orbit, not to Earth orbits in general.
+  // It is the only check on the seed path, where there is no prior and so no NIS
+  // gate; see `OrbitOdConfig::min_radius_m`. 120 km to 1600 km altitude.
+  cfg.min_radius_m = 6.5e6;
+  cfg.max_radius_m = 8.0e6;
   return cfg;
 }
 
@@ -771,6 +774,53 @@ TEST(OrbitOdRefusals, UninitialisedPropagationRefusesRatherThanGuessing) {
   EXPECT_EQ(filter.propagate(advance(epoch0, 1.0), eopAt(epoch0)), OrbitOdRefusal::kUninitialised);
   EXPECT_FALSE(filter.isInitialised());
   EXPECT_FALSE(filter.solutionValid());
+}
+
+TEST(OrbitOdRefusals, AGeoRadiusFixCannotSeedTheFilterOnALeoVehicle) {
+  RecordProperty("verifies", "REQ-ODP-001");
+  // A cold filter has no prior, so it has no innovation and therefore no NIS
+  // gate: the plausibility band in `OrbitOdConfig` is the *only* thing standing
+  // between a wire value and the state the vehicle then flies on. That makes
+  // the band's width a real decision rather than a formality — it must be sized
+  // to the orbit this vehicle is on, not to every orbit that exists. Sized to
+  // admit GEO on a 400 km vehicle, this fix would be accepted whole.
+  //
+  // The update path is checked as well, because the two refuse for different
+  // reasons and only one of them is the trust boundary: an initialised filter
+  // would also reject this on the innovation, which is defence in depth and not
+  // a substitute — it is unavailable at exactly the moment the band matters.
+  const OrbitOdConfig cfg = referenceConfig();
+  Eigen::Vector3d r0;
+  Eigen::Vector3d v0;
+  circularState(kAltitudeM, kInclinationRad, cfg.mu_m3_per_s2, r0, v0);
+
+  const pt::Tai epoch0 = testEpoch();
+  const pf::EopValue eop = eopAt(epoch0);
+
+  // Geostationary radius, the `bad_data` campaign scenario's injected value.
+  constexpr double kGeoRadiusM = 4.2164e7;
+  const Eigen::Vector3d r_geo = r0.normalized() * kGeoRadiusM;
+
+  OrbitOd cold(cfg);
+  OrbitOdResult out;
+  EXPECT_FALSE(cold.ingest(fixFrom(epoch0, r_geo, v0, eop), eop, out));
+  EXPECT_EQ(out.refusal, OrbitOdRefusal::kFixImplausible);
+  EXPECT_FALSE(cold.isInitialised());
+  EXPECT_FALSE(out.seeded);
+
+  OrbitOd warm(cfg);
+  ASSERT_TRUE([&] {
+    OrbitOdResult seed;
+    return warm.ingest(fixFrom(epoch0, r0, v0, eop), eop, seed) && seed.seeded;
+  }());
+  EXPECT_FALSE(warm.ingest(fixFrom(advance(epoch0, 10.0), r_geo, v0, eop), eop, out));
+  EXPECT_EQ(out.refusal, OrbitOdRefusal::kFixImplausible);
+  // Still on its own orbit rather than anywhere near the fix it refused. Not
+  // asserted as "unchanged": `ingest` propagates to the fix epoch before it
+  // judges the measurement, so the state has legitimately moved ten seconds
+  // along the trajectory. What must not have happened is the 35000 km jump.
+  EXPECT_TRUE(warm.solutionValid());
+  EXPECT_NEAR(warm.position().eigen().norm(), r0.norm(), 1.0e3);
 }
 
 TEST(OrbitOdRefusals, NonFiniteFixIsRefusedWithoutTouchingTheSolution) {
