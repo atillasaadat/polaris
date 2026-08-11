@@ -35,6 +35,12 @@
 ///    reaches the filter as a monotonicity or latency violation rather than as
 ///    an innovation. It is the fault most likely to be silently absorbed by a
 ///    filter that trusts its epochs.
+///  - **Fix latency** is not a fault at all — it is the receiver behaving exactly
+///    as specified, and it is the largest error the filter can carry (~7.6 m of
+///    along-track position per millisecond in LEO). It gets its own scenario
+///    because it is the only one whose *cadence* differs: at the campaign's 10 s
+///    cycle a 50 ms latency is not resolvable, so it is flown at 50 Hz over a
+///    short arc where it is.
 ///  - **Degraded sigmas** are the honest-receiver failure: the fix is real but
 ///    the receiver says it is bad. The filter must de-weight it rather than
 ///    reject it, and a campaign that only ever sees nominal sigmas never checks
@@ -93,6 +99,27 @@ struct Scenario {
   std::string name;
   std::string intent;  ///< one line, carried into the JSONL so the report can quote it
   std::vector<FaultEvent> events;
+
+  /// GNC cycle period [s]; zero takes the driver's campaign default. This is the
+  /// rate the filter is propagated *and* the receiver polled at, because in
+  /// flight they are the same cycle.
+  ///
+  /// It is per-scenario because the receiver's fix latency is only observable at
+  /// a cadence that can resolve it: the delay-line model delivers the newest
+  /// solution at least one latency old, so polling slower than the latency makes
+  /// the realised delay a whole *poll* rather than the datasheet's. See
+  /// @ref fix_latency_s.
+  double cycle_period_s{0.0};
+
+  /// Receiver fix latency [s]; see `GnssSpec::fix_latency_s`. Left at zero on
+  /// the long arcs, whose 10 s cadence cannot resolve 50 ms, and set to the
+  /// datasheet value only on a scenario whose @ref cycle_period_s can.
+  double fix_latency_s{0.0};
+
+  /// Cap on arc length [s]; zero means the campaign duration. A fast-cadence
+  /// scenario is bounded here rather than by the campaign flag, so `--duration-s
+  /// 7d` does not silently turn a 50 Hz scenario into 30 million samples.
+  double max_duration_s{0.0};
 };
 
 /// Seconds, for readability in the table below.
@@ -190,6 +217,17 @@ inline std::vector<Scenario> scenarios() {
            {FaultKind::kRadiusJump, 5.5 * kDay, 30.0, 4.2164e7, 0.0},
            {FaultKind::kSigmaDegrade, 6.0 * kDay, 2.0 * kHour, 50.0, 0.0},
        }},
+
+      {"latency_fast",
+       "The only scenario that exercises the fix-latency correction. Polls at 50 Hz over ten "
+       "minutes with the OEM7600's 50 ms latency armed, so the delivered fix is genuinely ~50 ms "
+       "behind the filter's own epoch and the latent-fix branch fires on every update. The long "
+       "arcs cannot do this: at their 10 s cadence the delivered fix is a whole poll old, which "
+       "models a 10 s latency rather than the receiver's.",
+       {},
+       /*cycle_period_s=*/0.02,
+       /*fix_latency_s=*/0.05,
+       /*max_duration_s=*/10.0 * kMinute},
   };
 }
 

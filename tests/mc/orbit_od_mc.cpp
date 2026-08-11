@@ -34,13 +34,31 @@
 /// flight. `orbit_od_scenarios.hpp` carries the timelines and the argument for
 /// each one.
 ///
-/// **The fix cadence is 10 s, and that is a conservative choice.** The reference
-/// receiver runs to 100 Hz and the flown case is ~1 Hz; 10 s is well inside the
-/// 300 s coast horizon, so every policy under test still behaves the same way,
-/// but the filter gets two orders less information than it will fly with. The
-/// campaign therefore *over*-states the error, which is the right direction for
-/// a bound. It is also what makes a 7-day arc affordable: the truth sim is
-/// re-entered once per fix, and at 1 Hz that would be 604800 re-entries per run.
+/// **Each cycle propagates to *now* and only then ingests.** That is the order
+/// the FSW runs in, and it is load-bearing rather than cosmetic. Ingesting first
+/// leaves the filter's epoch at the fix's own, so every later fix looks *forward*
+/// and the latent-fix correction is never reached — a campaign in that order
+/// cannot exercise the branch it most needs to. It is also the quantity that
+/// matters: "where am I now" is what pointing, pass planning and maneuver
+/// targeting all ask, and it is not the same as "where was I at the last fix".
+///
+/// **The default cadence is 10 s, and that is a conservative choice.** The
+/// reference receiver runs to 100 Hz and the flown case is ~1 Hz; 10 s is well
+/// inside the 300 s coast horizon, so every policy under test still behaves the
+/// same way, but the filter gets two orders less information than it will fly
+/// with. The campaign therefore *over*-states the error, which is the right
+/// direction for a bound. It is also what makes a 7-day arc affordable: the
+/// truth sim is re-entered once per cycle, and at 1 Hz that would be 604800
+/// re-entries per run.
+///
+/// **One scenario opts out of that cadence, and must.** A 10 s cycle cannot
+/// resolve the receiver's 50 ms fix latency — the delay line delivers the newest
+/// solution at least one latency old, so at 10 s the delivered fix is a whole
+/// *poll* old and the datasheet value would model a 10 s delay rather than a
+/// 50 ms one. `latency_fast` therefore runs 50 Hz over ten minutes with the real
+/// latency armed, which is the only place in the campaign where the latent-fix
+/// branch fires. `Scenario::cycle_period_s` and friends carry the per-scenario
+/// override.
 ///
 /// Usage (see `analysis/od/README.md` for the full recipe):
 /// @code
@@ -127,25 +145,24 @@ constexpr double kInitialPosSigmaM = 5.0e3;
 constexpr double kInitialVelSigmaMps = 5.0;
 
 /// Receiver spec keys, mirroring `config/hardware/gnss/novatel_oem7600.yaml`.
-psen::GnssSpec receiverSpec() {
+///
+/// **Latency is the one value not taken from the catalog**, because it is only
+/// meaningful relative to the poll cadence and the cadence is per-scenario. The
+/// catalog carries `fix_latency_s: 0.05`; the delay-line model delivers the
+/// newest solution *at least* one latency old, so a scenario that polls slower
+/// than the latency gets a fix a whole poll old rather than 50 ms old. Flying
+/// the datasheet value at the long arcs' 10 s cadence therefore models a 10 s
+/// latency — measured, a constant 76.7 km of along-track offset that the filter
+/// tracks perfectly, because it is consistent and simply not the trajectory the
+/// record compares against. So the long arcs pass zero and `latency_fast` polls
+/// at 50 Hz with the real value. See `GnssSpec::fix_latency_s`.
+psen::GnssSpec receiverSpec(double fix_latency_s) {
   return psen::GnssSpec::fromParams({
       {"horizontal_position_rms_m", 1.2},
       {"velocity_accuracy_m_s_rms", 0.03},
       {"time_accuracy_ns_rms", 5.0},
       {"max_rate_hz", 100.0},
-      // **Latency is deliberately zero here, and that is not the datasheet
-      // value.** The catalog carries `fix_latency_s: 0.05`, and the filter's
-      // correction for it is verified in `tests/unit/orbit_od_test.cpp` where
-      // the poll rate can resolve 50 ms. This campaign polls every 10 s, which
-      // cannot: the receiver's delay line delivers the newest solution at least
-      // one latency old, so when the poll period exceeds the latency the
-      // delivered fix is a whole *poll* old rather than 50 ms old. Flying the
-      // datasheet value at this cadence therefore models a 10 s latency, not a
-      // 50 ms one — measured, a constant 76.7 km of along-track offset that the
-      // filter tracks perfectly, because it is consistent and simply not the
-      // trajectory the record compares against. Zero is the honest setting at a
-      // cadence that cannot see the effect. See GnssSpec::fix_latency_s.
-      {"fix_latency_s", 0.0},
+      {"fix_latency_s", fix_latency_s},
       {"cold_start_s", 34.0},
       {"hot_start_s", 20.0},
       {"reacquisition_s", 0.5},
@@ -228,6 +245,7 @@ ps::SimConfig truthConfig(const pt::Tai& epoch, const Eigen::Vector3d& r0,
   c.propagation.rel_tol = 1.0e-11;
   c.propagation.max_step_s = 60.0;
   c.propagation.duration_s = duration_s;
+  // Only a hint: the arc is sampled through `runAt` at the cycle epochs.
   c.propagation.output_step_s = kFixPeriodS;
   return c;
 }
@@ -341,6 +359,13 @@ RunResult flyOne(int run, const mco::Scenario& scenario, double duration_s,
                  const pf::EopTable<24576>& eop_table, const pt::LeapSecondTable& leap,
                  const psen::JammingRegions* jamming, std::ostream& out, std::string* error) {
   RunResult result;
+  // The scenario owns its cadence and its arc length; the campaign flags are the
+  // default and the ceiling, not an override. A fast-cadence scenario capped at
+  // ten minutes must stay ten minutes when `--duration-s` asks for seven days.
+  const double cycle_s = scenario.cycle_period_s > 0.0 ? scenario.cycle_period_s : kFixPeriodS;
+  if (scenario.max_duration_s > 0.0) {
+    duration_s = std::min(duration_s, scenario.max_duration_s);
+  }
   const std::uint64_t seed = 0x0D0DULL * 1000003ULL + static_cast<std::uint64_t>(run);
   polaris::random::SplitMix64 rng = polaris::random::streamRng(seed, 1);
 
@@ -365,11 +390,11 @@ RunResult flyOne(int run, const mco::Scenario& scenario, double duration_s,
     return result;
   }
 
-  psen::Gnss rx(receiverSpec(), seed, 0x9E3779B97F4A7C15ULL);
+  psen::Gnss rx(receiverSpec(scenario.fix_latency_s), seed, 0x9E3779B97F4A7C15ULL);
   pg::OrbitOd filter(cfg);
 
   std::vector<double> times;
-  for (double t = kFixPeriodS; t <= duration_s + 1.0e-9; t += kFixPeriodS) {
+  for (double t = cycle_s; t <= duration_s + 1.0e-9; t += cycle_s) {
     times.push_back(t);
   }
   std::vector<ps::TrajectorySample> truth;
@@ -411,6 +436,18 @@ RunResult flyOne(int run, const mco::Scenario& scenario, double duration_s,
     rec.regime = regime;
     rec.fix_valid = m.valid;
 
+    // --- The GNC cycle, in flight order --------------------------------------
+    // Propagate to *now* first, unconditionally, then fold in whatever the
+    // receiver has. This is the order the FSW runs in and it is not cosmetic:
+    // it is what puts the filter's epoch ahead of an arriving fix, so a latent
+    // fix is genuinely latent and the correction for it is exercised rather than
+    // bypassed. Ingesting first would leave the filter sitting at the fix's own
+    // epoch, where every subsequent fix looks forward and the latent branch is
+    // dead code. It is also the quantity that matters: "where am I *now*" is
+    // what pointing, pass planning and maneuver targeting all ask.
+    const pg::OrbitOdRefusal pr = filter.propagate(now, eop_table, leap);
+    rec.refusal = static_cast<int>(pr);
+
     if (m.valid) {
       pg::GnssFix fix;
       fix.time_tag = m.time_tag;
@@ -431,11 +468,6 @@ RunResult flyOne(int run, const mco::Scenario& scenario, double duration_s,
         rec.nis = res.position.nis;
         rec.nis_valid = true;
       }
-    } else {
-      // No fix: the filter still has to march its own clock, which is where the
-      // coast horizon is enforced.
-      const pg::OrbitOdRefusal r = filter.propagate(now, eop_table, leap);
-      rec.refusal = static_cast<int>(r);
     }
 
     rec.solution_valid = filter.solutionValid();

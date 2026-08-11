@@ -409,3 +409,45 @@ nothing prompted a look.
   J2" is the claim that actually justifies the code, so that is what is asserted.
   It also means a silent revert to the old model fails, which a one-sided bound
   on the new model's error never would.
+
+## A harness whose cycle order made a flight branch unreachable (P63, measurement)
+
+The orbit-OD Monte Carlo driver polled the GNSS delay-line model once per 10 s
+fix period and, on a valid fix, called `ingest()` alone. Two things followed,
+and only the first announced itself.
+
+- **A delay-line model polled slower than its own delay realises the poll
+  period, not the delay.** `Gnss::sample()` returns the newest solution at least
+  `fix_latency_s` old, and it only knows about solutions it was handed. Polled
+  every 10 s with the datasheet's 50 ms, the newest one old enough is the
+  *previous poll's* — so the campaign flew a 10 s latency. Measured: a constant
+  **76.7 km** of along-track offset (10 s × 7.669 km/s), with the covariance
+  sitting at 0.68 m and 354 of 355 fixes accepted. The tell was the shape, not
+  the size: a diverging filter does not look like that. The filter was tracking
+  its own trajectory perfectly and simply answering for an epoch 10 s behind the
+  one the record scored it against. **When an error is constant and the
+  covariance is healthy, suspect the epoch before the math.**
+- **Ingest-only means the filter's epoch is always the last fix's, so an
+  arriving fix is always *forward* and the latent-fix branch is dead code.**
+  This is the one that stayed silent. Every guard the latency correction owns —
+  `max_fix_latency_s`, the no-velocity refusal, the O(τ³) advance — had zero
+  campaign coverage, and nothing failed to say so, because unreachable code
+  reports no error. The gated unit tests exercised it; the campaign that was
+  supposed to be the open-ended check did not.
+- **A harness must march the real cycle order, not a convenient one.** The FSW
+  propagates to *now* every cycle and then folds in whatever arrived; that
+  ordering is what makes a latent fix latent. Reordering the driver to match
+  changed nothing about the zero-latency arcs' numbers (2.01 m worst, identical)
+  and turned a dead branch into a measured one — which is the signature of a
+  harness bug rather than a model bug: the fix is invisible where the harness was
+  already right.
+- **"Where am I now" and "where was I at the last fix" are different questions.**
+  Pointing, pass planning and maneuver targeting all ask the first. A harness
+  that only ever evaluates the estimate at fix epochs never measures the quantity
+  the vehicle actually uses.
+- **When a modelled effect cannot be resolved at the campaign's cadence, give it
+  its own scenario rather than arming it everywhere.** `latency_fast` runs 50 Hz
+  over ten minutes with the real 50 ms; the long arcs pass zero. Leaving a
+  datasheet value armed at a cadence that cannot see it does not model the effect
+  conservatively — it models a different, much larger effect, and reports it as
+  the filter's error.

@@ -116,8 +116,13 @@ struct GnssSpec {
   /// intermediate solutions a real 100 Hz receiver would have produced — but the
   /// realised latency is the poll period. Either poll at something approaching
   /// the fix rate, or set this to zero and verify the latency somewhere that
-  /// can resolve it. `tests/mc/orbit_od_mc.cpp` does the latter, and its comment
-  /// records the 76.7 km artifact that made the trap visible.
+  /// can resolve it — never leave a datasheet value armed at a cadence that
+  /// cannot see it. `tests/mc/orbit_od_mc.cpp` does both: its long arcs poll
+  /// every 10 s and pass zero, and its `latency_fast` scenario polls at 50 Hz
+  /// with the real value. Flying the datasheet latency on the 10 s arcs was
+  /// measured as a constant 76.7 km along-track offset — a 10 s delay, tracked
+  /// perfectly by a filter that was never wrong about anything except which
+  /// epoch it was answering for. That artifact is what made this trap visible.
   double fix_latency_s = 0.0;
 
   /// Time-to-first-fix from a cold start [s] — the receiver is invalid for this
