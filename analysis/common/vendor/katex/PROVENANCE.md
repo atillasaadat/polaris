@@ -20,7 +20,7 @@ Downloaded from the jsDelivr mirror of the npm package `katex@0.16.11`:
 Nothing is pre-processed: the `.js` and `.css` are the published minified
 artifacts and the `.woff2` files are the published fonts. The base64 `@font-face`
 rewrite that makes the page self-contained is computed **from these files at
-render time** (`analysis/sizing/texmath.py`), never committed in place of them.
+render time** (`analysis/common/texmath.py`), never committed in place of them.
 
 ## Which fonts, and why only eight
 

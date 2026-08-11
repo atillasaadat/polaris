@@ -22,7 +22,7 @@ from analysis.sizing.html import _criterion_name, _plain, _prose, _split, write_
 from analysis.sizing.mathfmt import math_html, unit_scale
 from analysis.sizing.plots import driver_figure
 from analysis.sizing.report import sizing_analysis, sizing_report
-from analysis.sizing.texmath import tex_html
+from analysis.common.texmath import tex_html
 
 
 def _both_halves(text: str) -> tuple[str, ...]:
@@ -301,7 +301,12 @@ def test_no_browser_writes_the_page_without_opening_one(
     # and hands the page to the Windows shell instead), and a test that pins the
     # mechanism fails on the platform the feature was fixed for.
     opened: list[Path] = []
-    monkeypatch.setattr(cli, "_open_in_browser", opened.append)
+
+    def record(page: Path, *, enabled: bool = True) -> None:
+        if enabled:
+            opened.append(page)
+
+    monkeypatch.setattr(cli, "open_in_browser", record)
     monkeypatch.setattr(sys, "argv", ["analysis.sizing"])
 
     status = cli.main(
@@ -315,3 +320,33 @@ def test_no_browser_writes_the_page_without_opening_one(
     assert status == expected
     assert len(opened) == 1
     assert opened[0].name == "index.html"
+
+
+def test_polaris_no_browser_suppresses_every_report_cli(tmp_path, monkeypatch):
+    """The environment override is the one a caller cannot forget to pass.
+
+    ``--no-browser`` protects the callers that remember it. An agent or a script
+    regenerating a page in a loop is exactly the caller that will not, so the
+    switch that matters is the one set once for a whole environment — and it must
+    win over an explicit ``enabled=True``, never the other way round.
+    """
+    from analysis.common import report_html
+
+    reached: list[str] = []
+    monkeypatch.setattr(report_html, "_is_wsl", lambda: reached.append("wsl") or False)
+    monkeypatch.setattr(
+        report_html.webbrowser, "open", lambda url: reached.append(url) or True
+    )
+    page = tmp_path / "index.html"
+    page.write_text("<html></html>", encoding="utf-8")
+
+    monkeypatch.setenv("POLARIS_NO_BROWSER", "1")
+    report_html.open_in_browser(page, enabled=True)
+    assert reached == []
+
+    monkeypatch.delenv("POLARIS_NO_BROWSER")
+    report_html.open_in_browser(page, enabled=False)
+    assert reached == []
+
+    report_html.open_in_browser(page, enabled=True)
+    assert reached and reached[0] == "wsl"

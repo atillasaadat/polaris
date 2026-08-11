@@ -7,7 +7,7 @@
 # findings against upstream's shipped bundle, which we can neither fix nor
 # meaningfully triage, and which drowns the alerts that are about our own code.
 # Upstream security is tracked by pinning the version in
-# `analysis/sizing/vendor/katex/PROVENANCE.md`, not by re-analysing the minifier
+# `analysis/common/vendor/katex/PROVENANCE.md`, not by re-analysing the minifier
 # output here.
 paths-ignore:
-  - analysis/sizing/vendor/**
+  - analysis/common/vendor/**

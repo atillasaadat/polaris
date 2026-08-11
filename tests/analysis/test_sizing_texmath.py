@@ -31,7 +31,7 @@ import pytest
 from analysis.sizing.html import _NOMENCLATURE
 from analysis.sizing.mathfmt import math_html
 from analysis.sizing.report import sizing_analysis, sizing_report, spec_groups
-from analysis.sizing.texmath import _VENDOR, tex_html, tex_symbol, tex_value
+from analysis.common.texmath import _VENDOR, tex_html, tex_symbol, tex_value
 
 #: Renders every string through the vendored KaTeX exactly as the page does,
 #: except with ``throwOnError`` on: the page must degrade, a test must not.
