@@ -7,6 +7,7 @@
 # so they load the checked-in fixtures at runtime.
 add_executable(polaris_golden_tests
   gmat_propagation_golden_test.cpp
+  orbit_od_golden_test.cpp
   time_scales_golden_test.cpp
   eop_golden_test.cpp
   egm2008_golden_test.cpp)
@@ -18,7 +19,8 @@ target_link_libraries(polaris_golden_tests
   PRIVATE
     polaris::time  # transitively brings polaris::constants
     polaris::frames  # ECI<->ECEF reduction + EopTable (eop_golden_test)
-    polaris::world  # EGM2008 loader + gravity (egm2008_golden_test)
+    polaris::world  # EGM2008 loader + gravity (egm2008_golden_test), finals.all parser
+    polaris::gnc  # onboard OD propagator (orbit_od_golden_test)
     polaris::scenario  # SimRunner, for the GMAT propagation cross-validation
     polaris_test_flags
     nlohmann_json::nlohmann_json

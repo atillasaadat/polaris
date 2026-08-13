@@ -40,6 +40,71 @@ inline constexpr double kEarthRate = 7.292'115e-5;
 
 }  // namespace wgs84
 
+/// @brief Earth zonal geopotential coefficients (EGM96/EGM2008 agree to the
+/// digits carried here).
+///
+/// Unnormalized physical zonal harmonics \f$J_n\f$; the unnormalized zonal
+/// \f$C_{n,0} = -J_n\f$, and the fully-normalized \f$\bar C_{n,0} = -J_n /
+/// \sqrt{2n+1}\f$. They live in the shared registry rather than in either
+/// consumer because **both** sides need them: the truth sim builds its zonal
+/// coefficient table from these (`sim/world/gravity_field.hpp`), and the onboard
+/// orbit filter's deliberately-coarse force model uses \f$J_2\f$ directly
+/// (`lib/gnc/orbit_od.hpp`, design doc §8.3). Two copies of a geopotential
+/// coefficient is exactly the "same number written twice" failure the truth-vs-
+/// flight parameter checks exist to prevent, one level below the config.
+///
+/// **A harmonic coefficient is meaningless without the scale it was solved
+/// with**, so the reference radius travels with it here rather than being
+/// supplied by whichever `R_e` the caller had lying around. These values are
+/// EGM96's (`J_2 = -\sqrt5\,\bar C_{20}` with
+/// \f$\bar C_{20} = -4.84165371736\times10^{-4}\f$), and EGM96 — like EGM2008 —
+/// is referenced to `kReferenceRadius = 6378136.3 m`, **not** to WGS84's
+/// `kSemiMajorAxis = 6378137.0 m`. The 0.7 m difference looks negligible and is
+/// not: the `J_2` term scales as `(R_e/r)²`, so substituting the WGS84 radius
+/// rescales it by 2.2e-7, which is 3.3e-9 m/s² of acceleration and **~4.8 cm of
+/// LEO position error per 1.5 revolutions**. That is a systematic that conserves
+/// energy perfectly and therefore survives every self-consistency check; it was
+/// found in the onboard propagator by the GMAT cross-validation
+/// (`tests/golden/orbit_od_golden_test.cpp`), which is the same way the truth
+/// sim's version of the mistake was found — see the note in
+/// `sim/scenario/sim_runner.cpp` about using the model's own GM and radius.
+///
+/// [bibkey: vallado2013] (Table, zonal coefficients); [bibkey: pavlis2012]
+/// (EGM2008, and the EGM96 lineage of the scale below).
+namespace gravity {
+
+inline constexpr double kJ2 = 1.082'626'683'5e-3;
+inline constexpr double kJ3 = -2.532'656'485'3e-6;
+inline constexpr double kJ4 = -1.619'621'591'4e-6;
+inline constexpr double kJ5 = -2.272'721'801'1e-7;
+inline constexpr double kJ6 = 5.406'815'991'0e-7;
+
+/// Reference radius \f$R_e\f$ [m] the coefficients above are scaled to (EGM96 /
+/// EGM2008). Pair it with them; see the namespace comment for what pairing them
+/// with `wgs84::kSemiMajorAxis` instead costs.
+inline constexpr double kReferenceRadius = 6'378'136.3;
+
+/// Gravitational parameter GM [m³/s²] the coefficients above were solved with
+/// (EGM96 / EGM2008; the value in the `.gfc` header's
+/// `earth_gravity_constant`). It differs from `wgs84::kGM` by 7.5e-10 relative,
+/// which is ~5 cm of LEO along-track drift per 1.5 revolutions.
+///
+/// **Use this one whenever a zonal term is switched on**, and `wgs84::kGM` only
+/// for a pure point mass. A geopotential model is a single fit of GM *and* the
+/// harmonics together, and mixing one model's GM with another's coefficients is
+/// the same class of error as mixing reference radii. GMAT behaves this way too,
+/// which is how the pairing was confirmed rather than assumed: the
+/// `tests/golden/orbit_od_golden_test.cpp` ablation shows its `zonal_j2` case is
+/// propagated on the potential file's GM and not on the `Earth.Mu = 398600.4418`
+/// its own script sets, and swapping this constant in moves the onboard
+/// propagator's agreement with that case from 6.9 cm to 1.0 cm — while the same
+/// swap *degrades* the file-less `two_body` case from 3.5 mm to 6.1 cm. The
+/// truth sim reaches the same place by reading the header (see
+/// `sim/scenario/sim_runner.cpp`).
+inline constexpr double kGM = 3.986'004'415e14;
+
+}  // namespace gravity
+
 /// @brief Third-body gravitational parameters and scale (JPL DE440 / IAU).
 ///
 /// GM values consistent with the JPL DE440 ephemeris, for third-body point-mass

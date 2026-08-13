@@ -75,11 +75,17 @@ namespace polaris::sim::world {
 /// EGM/JGM). The unnormalized zonal C_{n,0} = -J_n; `earthZonal()` converts these
 /// to the FULLY-NORMALIZED Cbar_{n,0} = -J_n / sqrt(2n+1) actually stored. Only
 /// these are embedded until an EGM2008 file loader lands.
-inline constexpr double kJ2 = 1.082'626'683'5e-3;
-inline constexpr double kJ3 = -2.532'656'485'3e-6;
-inline constexpr double kJ4 = -1.619'621'591'4e-6;
-inline constexpr double kJ5 = -2.272'721'801'1e-7;
-inline constexpr double kJ6 = 5.406'815'991'0e-7;
+///
+/// They are **aliases**, not copies: the values live in the shared constants
+/// registry (`constants::gravity`) because the onboard orbit filter's coarse
+/// force model (§8.3) needs J2 too, and a geopotential coefficient written twice
+/// is a number that can drift between the truth model and the flight model with
+/// nothing to catch it.
+inline constexpr double kJ2 = constants::gravity::kJ2;
+inline constexpr double kJ3 = constants::gravity::kJ3;
+inline constexpr double kJ4 = constants::gravity::kJ4;
+inline constexpr double kJ5 = constants::gravity::kJ5;
+inline constexpr double kJ6 = constants::gravity::kJ6;
 
 /// Dense FULLY-NORMALIZED coefficient table: `C[n][m]` = Cbar_{n,m}, `S[n][m]` =
 /// Sbar_{n,m} for n in [0,nmax], m in [0,n]. `C[0][0] = 1` is the point-mass term.
