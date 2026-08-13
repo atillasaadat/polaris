@@ -74,6 +74,7 @@
 #include <cstdio>
 #include <cstring>
 #include <Eigen/Core>
+#include <Eigen/Geometry>  // Vector3d::cross, for the RIC frame
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -253,6 +254,31 @@ ps::SimConfig truthConfig(const pt::Tai& epoch, const Eigen::Vector3d& r0,
   return c;
 }
 
+/// The rotation from ECI into the truth RIC (radial / in-track / cross-track)
+/// frame, as a matrix whose *rows* are the three unit vectors.
+///
+/// Built from the truth state rather than the estimate on purpose: the frame
+/// the analysis resolves errors in must not itself depend on the quantity being
+/// judged, or a filter that is wrong about where it is would also be wrong
+/// about which direction "in-track" points, and the error would partly rotate
+/// out of view.
+///
+/// Cross-track is `r × v` normalised, radial is `r` normalised, and in-track
+/// completes the right-handed set. In-track is only exactly the velocity
+/// direction on a circular orbit — on an eccentric one it is perpendicular to
+/// radial within the orbit plane, which is the standard definition and the one
+/// the covariance is conventionally quoted in.
+Eigen::Matrix3d ricFromEci(const Eigen::Vector3d& r, const Eigen::Vector3d& v) {
+  const Eigen::Vector3d radial = r.normalized();
+  const Eigen::Vector3d cross = r.cross(v).normalized();
+  const Eigen::Vector3d in_track = cross.cross(radial);
+  Eigen::Matrix3d m;
+  m.row(0) = radial;
+  m.row(1) = in_track;
+  m.row(2) = cross;
+  return m;
+}
+
 /// One sample's worth of record. Written as one JSONL object per accepted
 /// sample; `analysis/od` is the only consumer and the schema is documented in
 /// `analysis/od/records.py`.
@@ -262,6 +288,19 @@ struct Record {
   double vel_err_mps{0.0};
   double pos_sigma_m{0.0};  ///< sqrt(trace) of the position covariance block
   double vel_sigma_mps{0.0};
+  /// Position error resolved in the truth RIC frame: radial, in-track,
+  /// cross-track [m]. Signed, unlike the norm above, because the ensemble
+  /// covariance the analysis builds from these needs the sign.
+  double err_ric_m[3]{0.0, 0.0, 0.0};
+  /// The filter's own 1σ on the same three axes [m], i.e. the square roots of
+  /// the diagonal of `M P_rr Mᵀ`. Recorded beside the error so the analysis can
+  /// compare the *ensemble* spread against the *reported* spread per axis —
+  /// a check on the covariance that never consults the filter's own opinion of
+  /// its error, unlike NEES. Per axis and not as a trace because orbit
+  /// uncertainty is overwhelmingly in-track: a covariance with the right trace
+  /// and the wrong split between these three is wrong in the way that matters,
+  /// and a scalar cannot see it.
+  double sigma_ric_m[3]{0.0, 0.0, 0.0};
   double nees{0.0};
   double nis{0.0};
   bool nis_valid{false};
@@ -320,6 +359,10 @@ void writeRecord(std::ostream& out, int run, const std::string& scenario, const 
       << ",\"t_s\":" << r.t_s << ",\"regime\":\"" << r.regime << "\""
       << ",\"pos_err_m\":" << r.pos_err_m << ",\"vel_err_mps\":" << r.vel_err_mps
       << ",\"pos_sigma_m\":" << r.pos_sigma_m << ",\"vel_sigma_mps\":" << r.vel_sigma_mps
+      << ",\"err_ric_m\":[" << r.err_ric_m[0] << "," << r.err_ric_m[1] << "," << r.err_ric_m[2]
+      << "]"
+      << ",\"sigma_ric_m\":[" << r.sigma_ric_m[0] << "," << r.sigma_ric_m[1] << ","
+      << r.sigma_ric_m[2] << "]"
       << ",\"nees\":" << r.nees;
   if (r.nis_valid) {
     out << ",\"nis\":" << r.nis;
@@ -534,6 +577,17 @@ RunResult flyOne(int run, const mco::Scenario& scenario, double duration_s,
       const pg::OrbitOd::Covariance& p = filter.covariance();
       rec.pos_sigma_m = std::sqrt(p.block<3, 3>(0, 0).trace());
       rec.vel_sigma_mps = std::sqrt(p.block<3, 3>(3, 3).trace());
+
+      const Eigen::Matrix3d ric = ricFromEci(r_true, v_true);
+      const Eigen::Vector3d err_ric = ric * (filter.position().eigen() - r_true);
+      const Eigen::Matrix3d p_ric = ric * p.block<3, 3>(0, 0) * ric.transpose();
+      for (int i = 0; i < 3; ++i) {
+        rec.err_ric_m[i] = err_ric(i);
+        // The diagonal of a rotated covariance is non-negative in exact
+        // arithmetic; clamp anyway, because a sqrt of -1e-30 is a NaN in the
+        // record and the analysis would carry it into a mean.
+        rec.sigma_ric_m[i] = std::sqrt(std::max(0.0, p_ric(i, i)));
+      }
       double nees = 0.0;
       if (filter.nees(pm::Vec3<pmf::ECI>(r_true), pm::Vec3<pmf::ECI>(v_true), nees)) {
         rec.nees = nees;
