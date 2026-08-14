@@ -36,6 +36,20 @@ import numpy as np
 import plotly.graph_objects as go
 from scipy.spatial import ConvexHull
 
+from analysis.common.figures import (
+    AXIS_COLOR,
+    FAIL_COLOR,
+    FONT_COLOR,
+    GRID_COLOR,
+    PAPER_BG,
+    PASS_COLOR,
+    PLOT_BG,
+    SERIES_1,
+    SERIES_2,
+    SERIES_3,
+    STRUCTURE_COLOR,
+    ZERO_COLOR,
+)
 from analysis.common.report import AnalysisReport
 from analysis.sizing.envelope import Envelope
 from analysis.sizing.mathfmt import (
@@ -47,39 +61,19 @@ from analysis.sizing.mathfmt import (
 )
 from analysis.sizing.report import SizingAnalysis
 
-#: Verdict colours. Never load-bearing alone — every verdict is also a word.
-#: Reserved for a *verdict*: a bar that is a PASS or a FAIL, never a category
-#: and never a reference line. Chosen against the page's **white** background
-#: (see :mod:`analysis.sizing.html`), and checked to stay separable under
-#: protanopia and deuteranopia, where a green/amber pairing is not.
-PASS_COLOR = "#0d5226"
-FAIL_COLOR = "#e5484d"
-
-#: The categorical pair, assigned in a fixed order and never cycled: series 1 is
-#: always the first category a figure introduces, series 2 the second. Both
-#: figures that use them label their series directly as well, so the colour is
-#: an aid to grouping rather than the key to reading the chart.
-SERIES_1 = "#0969da"
-SERIES_2 = "#bc4c00"
-
-#: Structure, not data: the deep slate the page uses for its rules and table
-#: heads, here for the hardware zonotope, which is the frame the data sits in.
-STRUCTURE_COLOR = "#24364a"
+# The palette and the light-theme furniture are the page's, not this module's:
+# two figures on one page must agree about what white is, and about which colour
+# means a verdict. `analysis.common.figures` states them once.
+#
+# Two names stay local because they are sizing's own vocabulary rather than the
+# shared palette: which *surface* gets which series is a fact about the momentum
+# envelope figure and means nothing to another report.
 ZONOTOPE_COLOR = STRUCTURE_COLOR
 #: The L2 ellipsoid: a third surface, muted so it recedes behind the two the
 #: figure is actually comparing.
-ELLIPSOID_COLOR = "#6a3d9a"
+ELLIPSOID_COLOR = SERIES_3
 #: The certified ceiling, the second capability surface the reader compares.
 USABLE_COLOR = SERIES_2
-
-#: Light-theme figure furniture, so every figure agrees with the page and with
-#: each other regardless of the reader's OS colour-scheme setting.
-PAPER_BG = "#fcfcfb"
-PLOT_BG = "#ffffff"
-GRID_COLOR = "#e4e2dd"
-ZERO_COLOR = "#c9c6c0"
-FONT_COLOR = "#1a1d21"
-AXIS_COLOR = "#5b6470"
 
 #: Largest actuator count the zonotope hull is drawn for; the vertex set is
 #: :math:`2^N`. Mirrors ``plots.MAX_HULL_WHEELS``.
