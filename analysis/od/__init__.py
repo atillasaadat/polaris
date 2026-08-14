@@ -23,6 +23,7 @@ See ``analysis/od/README.md`` for how to fly the campaign.
 
 from __future__ import annotations
 
+from analysis.od.ensemble import EnsembleAxis, ensemble_covariance
 from analysis.od.records import Campaign, ScenarioRun, load_campaign
 from analysis.od.report import od_report
 from analysis.od.statistics import (
@@ -39,11 +40,13 @@ __all__ = [
     "Campaign",
     "CampaignStatistics",
     "ConsistencyInterval",
+    "EnsembleAxis",
     "ErrorSummary",
     "RegimeSummary",
     "ScenarioRun",
     "ScenarioStatistics",
     "consistency_interval",
+    "ensemble_covariance",
     "load_campaign",
     "od_report",
     "summarise",

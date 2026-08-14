@@ -123,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
 
     stats = summarise(campaign)
     source = ", ".join(str(p) for p in campaign.paths)
-    report = od_report(stats, source)
+    report = od_report(stats, source, campaign.truncated)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     text = report.format_text()

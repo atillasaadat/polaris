@@ -75,14 +75,25 @@ ff -dal                      # deactivate — returns the seat
 
 Hard-won facts about this project's single Mission-tier key:
 
-- **One machine at a time** ("Max. Instances: 2" is concurrent engine
-  processes, not machines).
-- **Device transfers are finitely limited**, and the allowance is already
-  exhausted (activate-WSL → deactivate → activate-Windows burned it,
-  2026-08-05; error code 9). The seat currently lives on WSL. Moving it —
-  including to the Windows install or a CI runner — needs a transfer reset
-  from fflicense@ai-solutions.com. Same-device reactivation does *not* count
-  as a transfer.
+- **Two counters, and the one that blocks us is not the one `-rli` prints.**
+  The report shows `max_instances: 2`; the vendor also meters **device
+  transfers**, separately, and that budget is exhausted. Activation is refused
+  on the transfer counter whether or not an instance slot is free, so
+  `max_instances` tells you nothing about whether a second machine can be
+  licensed today.
+- **The transfer allowance is spent** (activate-WSL → deactivate →
+  activate-Windows burned it, 2026-08-05). The seat lives on WSL. Re-confirmed
+  2026-08-12 by attempting the Windows activation **without** deactivating WSL
+  first: refused with *"This license has already been transferred the maximum
+  number of times. Code: 9."* while the WSL seat stayed valid — so the
+  refusal is not a seat-availability problem and not a stale binding. Moving
+  the seat, or lighting up a second machine, needs a transfer reset from
+  fflicense@ai-solutions.com. Same-device reactivation does *not* count as a
+  transfer.
+- **Try the additive activation, never the deactivate-first one.** A refused
+  activation costs nothing and leaves the working seat untouched; `ff -dal`
+  gives up a seat that the transfer counter may not let you get back. The
+  2026-08-05 loss came from deactivating first.
 - The Runtime API needs the **Mission** tier (we have it; expires
   2027-01-15).
 - Containers are licensed via a network license server only, per vendor

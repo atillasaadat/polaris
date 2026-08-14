@@ -54,6 +54,8 @@ Design doc §8.3 (onboard OD), §9.2 (GNSS FDIR), §13, §22.2 (margin reporting
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
+from pathlib import Path
 
 from analysis.common.report import AnalysisReport, Criterion
 from analysis.od.statistics import CampaignStatistics, ScenarioStatistics
@@ -265,7 +267,11 @@ def _integrity(stats: CampaignStatistics) -> list[Criterion]:
     ]
 
 
-def od_report(stats: CampaignStatistics, records_path: str) -> AnalysisReport:
+def od_report(
+    stats: CampaignStatistics,
+    records_path: str,
+    truncated: Sequence[Path] = (),
+) -> AnalysisReport:
     """Build the campaign report.
 
     Parameters
@@ -273,6 +279,11 @@ def od_report(stats: CampaignStatistics, records_path: str) -> AnalysisReport:
     stats : analysis.od.statistics.CampaignStatistics
     records_path : str
         Where the records were read from, for provenance.
+    truncated : sequence of pathlib.Path
+        Shards whose final record was a partial write — see
+        :attr:`analysis.od.records.Campaign.truncated`. Carried into the
+        warnings so a report read off a still-flying campaign says so; without
+        it a half-finished campaign renders identically to a finished one.
 
     Returns
     -------
@@ -338,7 +349,7 @@ def od_report(stats: CampaignStatistics, records_path: str) -> AnalysisReport:
         provenance=provenance,
         assumptions=_assumptions(stats),
         criteria=tuple(criteria),
-        warnings=_warnings(stats),
+        warnings=_warnings(stats, truncated),
     )
 
 
@@ -373,9 +384,21 @@ def _assumptions(stats: CampaignStatistics) -> tuple[str, ...]:
     )
 
 
-def _warnings(stats: CampaignStatistics) -> tuple[str, ...]:
+def _warnings(
+    stats: CampaignStatistics, truncated: Sequence[Path] = ()
+) -> tuple[str, ...]:
     """Measurements that qualify the campaign without failing it."""
     notes: list[str] = []
+
+    if truncated:
+        notes.append(
+            f"{len(truncated)} shard{'' if len(truncated) == 1 else 's'} ended in a "
+            f"partial record and were read short: "
+            f"{', '.join(str(p) for p in truncated)}. Either the campaign is still "
+            f"flying or a driver was killed. Every number below is computed over the "
+            f"records that exist, so the arcs are shorter than the campaign was asked "
+            f"for and the run count may be too."
+        )
 
     for entry in stats.scenarios:
         spoof = entry.regimes.get("spoof")

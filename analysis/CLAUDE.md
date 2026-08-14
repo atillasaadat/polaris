@@ -51,6 +51,24 @@
 > `sim/world/atmosphere.cpp` rather than transcribing it. See
 > `analysis/sizing/README.md`.
 >
+> **`od/` is live as of Push 63** — the 7-day orbit-determination Monte Carlo
+> (§8.3, §9.2, §13, §23.2). Same shape as `detumble/`: the runs are C++
+> (`tests/mc/orbit_od_mc.cpp` → `polaris_orbit_od_mc`, driving the real
+> `gnc::OrbitOd` against the real receiver model), and this package owns the
+> statistics, the figures and the verdict.
+> `PYTHONPATH=tools uv run --group analysis python -m analysis.od <records>`
+> writes the interactive page, prints the report and exits non-zero on any FAIL.
+> Its centre of gravity is that a covariance can be wrong in three separable
+> ways, so it carries three checks: NEES and NIS (self-normalised, in
+> `statistics.py`) and the **ensemble spread against the reported σ per RIC
+> axis** (`ensemble.py`), which estimates the covariance a second time from
+> truth alone and is the only one of the three that can see an error and a
+> covariance wrong by the same factor. Two more live on the C++ side and need no
+> campaign — `tests/unit/orbit_od_covariance_test.cpp` bounds the propagated
+> covariance against a finite-difference STM and against Liouville volume
+> conservation, both with no reference implementation. See
+> `analysis/od/README.md`.
+>
 > `contacts/`, `linkbudget/` and `postproc/` are still placeholders and wait on
 > `bindings/` exposing the C++ they must reuse (§13/§21.4, Phase 11).
 

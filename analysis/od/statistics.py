@@ -18,7 +18,10 @@ over :math:`N` independent samples falls inside
 :math:`[\\chi^2_{dN}(\\alpha/2), \\chi^2_{dN}(1-\\alpha/2)]/N` with probability
 :math:`1-\\alpha`. That interval is a property of the chi-square distribution, not
 a tuning knob — which is what makes it usable as a criterion here, where no
-requirement writes a number on filter accuracy.
+requirement writes a number on filter accuracy. Both tests normalise the error
+by the covariance under test and so cannot see a filter wrong about the two
+together; :mod:`analysis.od.ensemble` is the second, truth-derived estimate that
+closes that gap, and :func:`summarise` reports it alongside these.
 
 **Do the gates fire, and does the right one fire?** The NIS gate is configured at
 the 99.9 % point of :math:`\\chi^2_3`, so under nominal conditions it should
@@ -64,6 +67,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import stats
 
+from analysis.od.ensemble import EnsembleAxis, ensemble_covariance
 from analysis.od.records import Campaign, ScenarioRun
 
 __all__ = [
@@ -310,114 +314,6 @@ class CampaignStatistics:
             if entry.scenario == scenario:
                 return entry
         return None
-
-
-#: Axis names of the RIC decomposition, in the order the driver records them.
-RIC_AXES = ("radial", "in_track", "cross_track")
-
-
-@dataclass(frozen=True)
-class EnsembleAxis:
-    """The ensemble spread against the reported spread, on one RIC axis.
-
-    Attributes
-    ----------
-    axis : str
-        ``"radial"``, ``"in_track"`` or ``"cross_track"``.
-    ensemble_sigma_m : float
-        The **truth-derived** 1σ: the spread of the actual error across
-        independent runs, pooled over the nominal stretch. Computed from truth
-        alone — the filter's covariance is never consulted.
-    reported_sigma_m : float
-        The mean 1σ the filter claimed over the same samples.
-    ratio : float
-        ``ensemble_sigma_m / reported_sigma_m``. One is a covariance that
-        matches reality. Above one the filter is optimistic — the real spread
-        is wider than it admits, which is the unsafe direction. Below one it is
-        pessimistic.
-    runs : int
-        Independent runs the ensemble spread was estimated from.
-    """
-
-    axis: str
-    ensemble_sigma_m: float
-    reported_sigma_m: float
-    ratio: float
-    runs: int
-
-
-def ensemble_covariance(runs: tuple[ScenarioRun, ...]) -> tuple[EnsembleAxis, ...]:
-    """Compare the spread of the true error across runs against the reported 1σ.
-
-    This is the only check in the package that does **not** consult the filter's
-    own opinion of its error. NEES normalises the error by the very covariance
-    under test, so a filter wrong about both in the same direction passes it;
-    here the spread is estimated from the ensemble of truth errors, and the
-    covariance is then held up against it. Truth is the arbiter.
-
-    Restricted to the **nominal** regime and to cycles with a valid solution: a
-    covariance is only meaningful where the filter is claiming one, and the
-    fault stretches are deliberately not drawn from the distribution the
-    covariance describes.
-
-    Parameters
-    ----------
-    runs : tuple of ScenarioRun
-        Every run of one scenario. Runs are the independent samples; cycles
-        within a run are correlated over the filter's own time constants.
-
-    Returns
-    -------
-    tuple of EnsembleAxis
-        One entry per RIC axis. Empty when fewer than two runs carry usable RIC
-        records — a spread cannot be estimated from one sample, and a stale
-        shard written before the decomposition existed carries NaN.
-
-    Notes
-    -----
-    At ``N`` runs the sample standard deviation itself carries a relative
-    uncertainty of about ``1 / sqrt(2 (N - 1))`` — roughly 13 % at 30 runs. The
-    ratio is therefore a check on the *size* of the covariance to within tens of
-    percent, not a precision measurement, and the acceptance band in
-    :mod:`analysis.od.report` is set accordingly.
-    """
-    usable = [r for r in runs if r.err_ric_m.size and np.isfinite(r.err_ric_m).any()]
-    if len(usable) < 2:
-        return ()
-
-    out: list[EnsembleAxis] = []
-    for index, axis in enumerate(RIC_AXES):
-        errors: list[np.ndarray] = []
-        sigmas: list[np.ndarray] = []
-        for run in usable:
-            keep = run.mask("nominal") & run.solution_valid
-            err = run.err_ric_m[keep, index]
-            sig = run.sigma_ric_m[keep, index]
-            good = np.isfinite(err) & np.isfinite(sig) & (sig > 0.0)
-            errors.append(err[good])
-            sigmas.append(sig[good])
-
-        pooled_err = np.concatenate(errors) if errors else np.array([])
-        pooled_sigma = np.concatenate(sigmas) if sigmas else np.array([])
-        if pooled_err.size < 2 or pooled_sigma.size == 0:
-            continue
-
-        # The ensemble spread about zero rather than about the sample mean: the
-        # error is *supposed* to be zero-mean, and a filter with a real bias
-        # must be caught by this rather than have the bias subtracted out
-        # before it is looked at.
-        ensemble = float(np.sqrt(np.mean(pooled_err**2)))
-        reported = float(np.sqrt(np.mean(pooled_sigma**2)))
-        out.append(
-            EnsembleAxis(
-                axis=axis,
-                ensemble_sigma_m=ensemble,
-                reported_sigma_m=reported,
-                ratio=ensemble / reported if reported > 0.0 else float("nan"),
-                runs=len(usable),
-            )
-        )
-    return tuple(out)
 
 
 def _regime_summary(regime: str, runs: tuple[ScenarioRun, ...]) -> RegimeSummary:
