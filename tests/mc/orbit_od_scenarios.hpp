@@ -129,11 +129,34 @@ inline constexpr double kDay = 86400.0;
 
 /// The campaign's scenarios.
 ///
-/// Event times are spread across the 7-day arc rather than clustered, so each
-/// fault lands at a different point in the orbit's precession and in the
+/// Event times are spread across each scenario's arc rather than clustered, so
+/// every fault lands at a different point in the orbit's precession and in the
 /// day/night cycle, and so recovery transients do not overlap. A run shorter
-/// than 7 days simply sees the prefix of this timeline that fits, which is what
+/// than the arc simply sees the prefix of this timeline that fits, which is what
 /// makes the `--duration-s` smoke case meaningful rather than a different test.
+///
+/// Only `nominal` flies the full campaign duration
+/// ---------------------------------------------------
+/// The week-long arc exists to answer one question — does the estimate stay
+/// bounded, and the covariance honest, over a long coast against a truth model
+/// the filter does not carry — and that question is asked of the un-faulted
+/// filter. It is also the only scenario the consistency and ensemble statistics
+/// are measured on (`analysis/od/statistics.py`), for the separate reason that a
+/// fault stretch is not drawn from the distribution the covariance describes.
+///
+/// The fault scenarios ask a different kind of question: does the right layer
+/// refuse, does the coast policy hold at its boundary, how far does a slow spoof
+/// walk the estimate. Those resolve within a fault and its recovery transient —
+/// minutes to hours — and what more arc buys is repetitions, not new
+/// information. So each is capped at a day and its events compressed into it,
+/// preserving the count, the magnitudes and the spacing that keeps transients
+/// apart. A day is 15 orbits at the reference vehicle's 5677 s period, so the
+/// phase diversity the spreading exists for survives the compression.
+///
+/// This is worth 4x the campaign: 56 spacecraft-days per run became 14, and the
+/// 30-run campaign went from ~170 CPU-hours to ~43. The cost is fewer samples in
+/// the fault regimes' error distributions, which no criterion is short of — the
+/// band-refusal check wants refusals, and a day supplies them.
 inline std::vector<Scenario> scenarios() {
   return {
       {"nominal",
@@ -146,12 +169,15 @@ inline std::vector<Scenario> scenarios() {
        "recover without being dropped, and the covariance must grow and re-shrink.",
        {
            {FaultKind::kOutage, 2.0 * kHour, 30.0, 0.0, 0.0},
-           {FaultKind::kOutage, 8.0 * kHour, 60.0, 0.0, 0.0},
-           {FaultKind::kOutage, 20.0 * kHour, 120.0, 0.0, 0.0},
-           {FaultKind::kOutage, 1.5 * kDay, 60.0, 0.0, 0.0},
-           {FaultKind::kOutage, 3.0 * kDay, 30.0, 0.0, 0.0},
-           {FaultKind::kOutage, 5.0 * kDay, 120.0, 0.0, 0.0},
-       }},
+           {FaultKind::kOutage, 5.0 * kHour, 60.0, 0.0, 0.0},
+           {FaultKind::kOutage, 9.0 * kHour, 120.0, 0.0, 0.0},
+           {FaultKind::kOutage, 13.0 * kHour, 60.0, 0.0, 0.0},
+           {FaultKind::kOutage, 17.0 * kHour, 30.0, 0.0, 0.0},
+           {FaultKind::kOutage, 21.0 * kHour, 120.0, 0.0, 0.0},
+       },
+       /*cycle_period_s=*/0.0,
+       /*fix_latency_s=*/0.0,
+       /*max_duration_s=*/1.0 * kDay},
 
       {"outage_horizon",
        "Dropouts straddling the 300 s horizon — 280 s must coast through, 320 s must drop the "
@@ -159,20 +185,26 @@ inline std::vector<Scenario> scenarios() {
        "with the wrong policy.",
        {
            {FaultKind::kOutage, 3.0 * kHour, 280.0, 0.0, 0.0},
-           {FaultKind::kOutage, 12.0 * kHour, 320.0, 0.0, 0.0},
-           {FaultKind::kOutage, 2.0 * kDay, 280.0, 0.0, 0.0},
-           {FaultKind::kOutage, 4.0 * kDay, 320.0, 0.0, 0.0},
-       }},
+           {FaultKind::kOutage, 8.0 * kHour, 320.0, 0.0, 0.0},
+           {FaultKind::kOutage, 14.0 * kHour, 280.0, 0.0, 0.0},
+           {FaultKind::kOutage, 20.0 * kHour, 320.0, 0.0, 0.0},
+       },
+       /*cycle_period_s=*/0.0,
+       /*fix_latency_s=*/0.0,
+       /*max_duration_s=*/1.0 * kDay},
 
       {"outage_long",
        "Losses far past the horizon, up to six hours. The solution must be declared invalid and "
        "dropped, stay dropped, and re-acquire from the first fix back rather than blending "
        "against a prior that has stopped meaning anything.",
        {
-           {FaultKind::kOutage, 6.0 * kHour, 30.0 * kMinute, 0.0, 0.0},
-           {FaultKind::kOutage, 1.0 * kDay, 2.0 * kHour, 0.0, 0.0},
-           {FaultKind::kOutage, 3.5 * kDay, 6.0 * kHour, 0.0, 0.0},
-       }},
+           {FaultKind::kOutage, 2.0 * kHour, 30.0 * kMinute, 0.0, 0.0},
+           {FaultKind::kOutage, 7.0 * kHour, 2.0 * kHour, 0.0, 0.0},
+           {FaultKind::kOutage, 14.0 * kHour, 6.0 * kHour, 0.0, 0.0},
+       },
+       /*cycle_period_s=*/0.0,
+       /*fix_latency_s=*/0.0,
+       /*max_duration_s=*/1.0 * kDay},
 
       {"spoof_step",
        "A 5 km position step that stays valid. Large enough that the NIS gate should reject it "
@@ -180,8 +212,11 @@ inline std::vector<Scenario> scenarios() {
        "solution survives untouched.",
        {
            {FaultKind::kSpoof, 5.0 * kHour, 20.0 * kMinute, 5000.0, 0.0},
-           {FaultKind::kSpoof, 2.5 * kDay, 20.0 * kMinute, 5000.0, 0.0},
-       }},
+           {FaultKind::kSpoof, 16.0 * kHour, 20.0 * kMinute, 5000.0, 0.0},
+       },
+       /*cycle_period_s=*/0.0,
+       /*fix_latency_s=*/0.0,
+       /*max_duration_s=*/1.0 * kDay},
 
       {"spoof_ramp",
        "The hard one: 2 km walked in over an hour, ~0.55 m/s. Each successive innovation is small "
@@ -189,19 +224,26 @@ inline std::vector<Scenario> scenarios() {
        "off its true trajectory without ever tripping an alarm. What is measured is how far it "
        "gets and whether it is caught at all.",
        {
-           {FaultKind::kSpoof, 10.0 * kHour, 2.0 * kHour, 2000.0, 1.0 * kHour},
-           {FaultKind::kSpoof, 4.5 * kDay, 2.0 * kHour, 2000.0, 1.0 * kHour},
-       }},
+           {FaultKind::kSpoof, 6.0 * kHour, 2.0 * kHour, 2000.0, 1.0 * kHour},
+           {FaultKind::kSpoof, 16.0 * kHour, 2.0 * kHour, 2000.0, 1.0 * kHour},
+       },
+       /*cycle_period_s=*/0.0,
+       /*fix_latency_s=*/0.0,
+       /*max_duration_s=*/1.0 * kDay},
 
       {"jamming",
-       "The committed geographic jamming map, armed for a day at a time. Dropouts recur at the "
-       "same longitudes every orbit, so the recovery transients correlate with orbital phase "
+       "The committed geographic jamming map, armed for eight hours at a time. Dropouts recur at "
+       "the same longitudes every orbit, so the recovery transients correlate with orbital phase "
        "instead of averaging out — a different signature from a random dropout of the same "
-       "duty cycle.",
+       "duty cycle. Eight hours is five orbits, so the map is revisited enough times for that "
+       "correlation to be the thing the record shows.",
        {
-           {FaultKind::kJam, 12.0 * kHour, 1.0 * kDay, 0.0, 0.0},
-           {FaultKind::kJam, 4.0 * kDay, 1.0 * kDay, 0.0, 0.0},
-       }},
+           {FaultKind::kJam, 1.0 * kHour, 8.0 * kHour, 0.0, 0.0},
+           {FaultKind::kJam, 14.0 * kHour, 8.0 * kHour, 0.0, 0.0},
+       },
+       /*cycle_period_s=*/0.0,
+       /*fix_latency_s=*/0.0,
+       /*max_duration_s=*/1.0 * kDay},
 
       {"bad_data",
        "Wire data that is not a plausible measurement at all: single fixes displaced to GEO "
@@ -210,13 +252,16 @@ inline std::vector<Scenario> scenarios() {
        "*absorbed* through R rather than rejected, since it is a real fix from an honest "
        "receiver having a bad day.",
        {
-           {FaultKind::kRadiusJump, 4.0 * kHour, 30.0, 4.2164e7, 0.0},
-           {FaultKind::kSigmaDegrade, 16.0 * kHour, 2.0 * kHour, 50.0, 0.0},
-           {FaultKind::kRadiusJump, 2.2 * kDay, 30.0, 4.2164e7, 0.0},
-           {FaultKind::kClockJump, 3.2 * kDay, 10.0 * kMinute, 5.0, 0.0},
-           {FaultKind::kRadiusJump, 5.5 * kDay, 30.0, 4.2164e7, 0.0},
-           {FaultKind::kSigmaDegrade, 6.0 * kDay, 2.0 * kHour, 50.0, 0.0},
-       }},
+           {FaultKind::kRadiusJump, 2.0 * kHour, 30.0, 4.2164e7, 0.0},
+           {FaultKind::kSigmaDegrade, 5.0 * kHour, 2.0 * kHour, 50.0, 0.0},
+           {FaultKind::kRadiusJump, 9.0 * kHour, 30.0, 4.2164e7, 0.0},
+           {FaultKind::kClockJump, 12.0 * kHour, 10.0 * kMinute, 5.0, 0.0},
+           {FaultKind::kSigmaDegrade, 15.0 * kHour, 2.0 * kHour, 50.0, 0.0},
+           {FaultKind::kRadiusJump, 19.0 * kHour, 30.0, 4.2164e7, 0.0},
+       },
+       /*cycle_period_s=*/0.0,
+       /*fix_latency_s=*/0.0,
+       /*max_duration_s=*/1.0 * kDay},
 
       {"latency_fast",
        "The only scenario that exercises the fix-latency correction. Polls at 50 Hz over ten "

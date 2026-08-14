@@ -37,11 +37,18 @@ uv run cmake --build build-fprime-automatic-native-ut \
     --out build-artifacts/mc/od_smoke.jsonl
 ```
 
-**The full campaign — 30 runs × 7 days.** Runs are sequential within one
-process; parallelise by sharding across processes. Each shard is a whole run
-(all nine scenarios) and is independently restartable. Budget about **430 MB
-RSS and four hours per shard**, so the concurrency ceiling is whichever of
-cores and memory runs out first.
+**The full campaign — 30 runs.** Runs are sequential within one process;
+parallelise by sharding across processes. Each shard is a whole run (all nine
+scenarios) and is independently restartable. Budget about **430 MB RSS and
+80 minutes per shard**, so the concurrency ceiling is whichever of cores and
+memory runs out first.
+
+Only `nominal` flies the full seven days; the fault scenarios are capped at a
+day each by `max_duration_s` in `orbit_od_scenarios.hpp`, and `latency_fast` at
+ten minutes. That is 14 spacecraft-days per run rather than 56 — the week-long
+arc answers a question about the *un-faulted* filter, and it is the only
+scenario the consistency and ensemble statistics are measured on anyway. See
+that header for the full argument; the campaign is 4× cheaper for it.
 
 ```bash
 JOBS=$(nproc)
@@ -95,7 +102,12 @@ written to demand ten.
 | `spoof_ramp` | A slow walk, each innovation inside a gate sized for one fix's noise. How far it gets is the campaign's headline measurement. |
 | `jamming` | The geographic jamming map (`config/scenarios/jamming/`), so degraded and absent fixes arrive where geography puts them. Skipped with a note if the KML is unreadable. |
 | `bad_data` | Clock jumps, geostationary-radius fixes and inflated reported sigmas — the receiver lying rather than going quiet. |
-| `latency_fast` | The only scenario with fix latency armed, at 50 Hz. The long arcs pass zero: at a 10 s cadence the delay line realises a whole poll rather than the datasheet's 50 ms. |
+| `latency_fast` | The only scenario with fix latency armed, at 50 Hz over ten minutes. The long arcs pass zero: at a 10 s cadence the delay line realises a whole poll rather than the datasheet's 50 ms. |
+
+Every fault scenario's events are spread across its arc rather than clustered,
+so each lands at a different point in the orbit's precession and the day/night
+cycle and recovery transients do not overlap. A day is 15 orbits at the
+reference vehicle's 5677 s period, which is what makes a day enough.
 
 ## Three ways to be wrong about a covariance
 
