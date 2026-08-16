@@ -486,3 +486,58 @@ nothing.
   `fix_accepted: 0` this would have been invisible for as long as anyone cared
   to look. The name cost a few bytes on ~1 % of rows and is what made the
   finding legible at a glance.
+
+## A label that records the cause ending, not the effect ending (P63, campaign)
+
+The OD campaign's per-cycle `regime` tag flips back to `nominal` the instant a
+fault window closes. The estimate does not: after a spoof the filter is still
+kilometres out with its gate refusing honest fixes for tens of minutes. The
+campaign-wide NEES gate pooled every scenario's nominal-*regime* cycles, so the
+recovery tails — labelled nominal, drawn from no distribution the covariance
+claims — put it at 2.5e6 against a ceiling of 7.3 on a healthy filter.
+
+- **Armed and contaminated are different predicates.** A tag that records
+  whether the fault generator is running says nothing about whether the state
+  it corrupted has relaxed. Any statistic gated on "nominal" must decide which
+  of the two it means, and a transient-bearing system means the second.
+- **Three checks that can disagree are worth two that cannot.** NEES screamed
+  while the truth-derived ensemble ratio read 0.98 and NIS passed. The
+  contradiction did not just flag the defect, it *localised* it: the ensemble
+  check was already scoped to the nominal scenario, so the difference between
+  the populations was the entire suspect list.
+- **Quadratic statistics have no breakdown resistance.** A mean of squares is
+  moved arbitrarily far by arbitrarily few samples; 3k contaminated cycles
+  outvoted 2.2M healthy ones. Pool into a quadratic form only what the claim
+  under test covers.
+
+## Margin stored in a tuning constant instead of on its fence (P63, campaign)
+
+`q_a` is derived from the measured force-model truncation, which was carried at
+1.8 m against a 1.28 m measurement so the CI assertion would not flap with the
+epoch. The campaign then measured the filter conservative — NEES 4.22 under a
+4.83 floor, all velocity — and a sweep across the margin (4.68/5.28/6.81 at
+1.5/1.28/1.0 m) was consistent only at the measurement.
+
+- **Headroom belongs on the assertion, not in the value.** One constant served
+  two masters: a CI fence that wants slack and a flight tuning that wants the
+  truth. Split them (`kTruncationAtHorizonM` = measurement,
+  `kTruncationFenceM` = fence) so margin can never again ride silently into
+  the covariance.
+- **"Conservative" is a measured defect, not a virtue.** The pessimistic half
+  of the chi-square interval exists because an over-budgeted filter discards
+  information it has; the gate flagging it is the gate working.
+
+## An MC driver built in the tree the framework sanitizes (P63, campaign)
+
+The campaign ran 1.64x slow for a day because the driver was built into
+`build-fprime-automatic-native-ut`, where F´'s own `cmake/sanitizers.cmake`
+adds ASan+UBSan regardless of the project's `POLARIS_SANITIZE` option (OFF in
+both caches — checking it proves nothing). `analysis/detumble/README.md`
+already warned about exactly this; the new package's README documented the
+wrong tree anyway.
+
+- **Verify instrumentation on the binary, not in the cache:**
+  `nm -C <bin> | grep -c __asan` answers it in one line.
+- **A convention that lives only in a sibling's README is not a convention.**
+  The warning existed and was re-learned at full price; it is now beside the
+  build command in every campaign README.
