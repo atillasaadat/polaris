@@ -93,12 +93,16 @@ constexpr double kCoastHorizonS = 300.0;
 /// the process noise, and nothing else may set it.
 ///
 /// Measured at **1.28 m** by `CoarseModelTruncationOverTheCoastHorizon` below,
-/// against the GMAT-validated truth sim at 32x32 gravity; carried here at 1.8 m,
-/// ~40% above it. The margin is deliberate and follows the house rule that a
-/// committed threshold sitting within noise of its own measurement is too tight:
-/// the measurement moves with the epoch (the geopotential residual depends on
-/// where in the orbit the arc starts) and with any legitimate truth-model
-/// improvement, and `q_a` should not have to be re-derived every time it does.
+/// against the GMAT-validated truth sim at 32x32 gravity, and carried **at the
+/// measurement**. It used to be carried at 1.8 m, ~40% above it, and that
+/// margin was the process noise being over-budgeted: the OD Monte Carlo
+/// (`analysis/od`) measured the campaign NEES at 4.22 against a 95% floor of
+/// 4.83, all of it velocity, and re-flying the nominal scenario across the
+/// margin put NEES at 4.68 / 5.28 / 6.81 for 1.5 / 1.28 / 1.0 m — consistent
+/// only at the measurement. The margin was there so the CI fence below does not
+/// flap with the epoch, and it belongs on the fence, not on the flight tuning;
+/// hence `kTruncationFenceM` beside this, which is the only place headroom is
+/// added.
 ///
 /// **This value dropped from 5.0 m when the onboard force model gained the 8x8
 /// EGM2008 field**, and the drop is smaller than the field's own contribution
@@ -117,7 +121,17 @@ constexpr double kCoastHorizonS = 300.0;
 /// not noise, and therefore why the CWNA fit below is documented as an
 /// approximation matched at the horizon rather than as a description. Improving
 /// the field did not change that character; it lowered the coefficient.
-constexpr double kTruncationAtHorizonM = 1.8;
+constexpr double kTruncationAtHorizonM = 1.28;
+
+/// The CI fence on that measurement [m]: `CoarseModelTruncationOverTheCoastHorizon`
+/// fails above it. Sits ~17% over the measurement so a shift in epoch (the
+/// geopotential residual depends on where in the orbit the arc starts) or a
+/// legitimate truth-model improvement does not fail the build, and low enough
+/// that a force-model regression the process noise no longer covers is caught
+/// long before it reaches the ensemble check's ~13% noise floor at 30 runs. The
+/// epoch sensitivity itself is unmeasured; 17% is a judgement, not a number, and
+/// is not fed into anything the filter flies with.
+constexpr double kTruncationFenceM = 1.5;
 
 /// Process-noise acceleration PSD [m²/s³], from the CWNA position spread
 /// `σ_r(T) = √(q_a T³/3)` matched to the truncation at the horizon:
@@ -1340,10 +1354,11 @@ TEST(OrbitOdConsistency, CoarseModelTruncationOverTheCoastHorizon) {
       << "earning its keep";
   EXPECT_GT(divergence_at_horizon, 0.0) << "a coarse model that matched truth exactly would mean "
                                            "the two propagators are not actually different";
-  EXPECT_LT(divergence_at_horizon, kTruncationAtHorizonM)
+  EXPECT_LT(divergence_at_horizon, kTruncationFenceM)
       << "the coarse force model diverges from truth by more over the coast horizon than the "
-         "value q_a was sized from — §8.3's process noise no longer covers its own truncation "
-         "and must be re-derived";
+         "fence above the value q_a was sized from ("
+      << kTruncationAtHorizonM
+      << " m) — §8.3's process noise no longer covers its own truncation and must be re-derived";
 }
 
 namespace {

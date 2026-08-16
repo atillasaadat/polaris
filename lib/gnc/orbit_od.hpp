@@ -154,8 +154,13 @@
 /// the result stays under the value `q_a` was sized from, so a force-model
 /// regression fails CI rather than quietly invalidating the tuning. For the
 /// reference vehicle (12 kg, 400 km, 51.6°) that measurement is **1.28 m over
-/// 300 s**, carried at 1.8 m with ~40% margin, giving
-/// `q_a = 3.6e-7 m²/s³`. Design doc §8.3 records both.
+/// 300 s**, carried at the measurement, giving `q_a = 1.8e-7 m²/s³`. It is
+/// carried *without* margin on purpose: the OD Monte Carlo (`analysis/od`)
+/// measured a 40% margin here as covariance pessimism — NEES 4.22 against a
+/// 95% floor of 4.83, all of it velocity — and consistent only at the
+/// measurement. Headroom against the measurement moving with the epoch belongs
+/// on the CI fence in `orbit_od_test.cpp`, not in the tuning. Design doc §8.3
+/// records the number, its reference, and that history.
 ///
 /// **The reference has to stay above the model, and that is a live constraint,
 /// not a footnote.** This measurement used to read 3.59 m against an *8x8*

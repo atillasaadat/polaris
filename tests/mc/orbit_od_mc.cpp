@@ -130,8 +130,12 @@ constexpr double kFixPeriodS = 10.0;
 
 /// Filter tuning, from `tests/unit/orbit_od_test.cpp` — the same values the
 /// gated tests use, so a campaign result and a test result are about one filter.
+/// The truncation is the *measured* figure, not the CI fence above it: this
+/// campaign is what showed the fence's headroom leaking into the covariance as
+/// a 30% velocity-σ over-budget (NEES 4.22 against a 4.83 floor), which is why
+/// the two are now separate constants there.
 constexpr double kCoastHorizonS = 300.0;
-constexpr double kTruncationAtHorizonM = 1.8;
+constexpr double kTruncationAtHorizonM = 1.28;
 constexpr double kAccelPsd = 3.0 * kTruncationAtHorizonM * kTruncationAtHorizonM /
                              (kCoastHorizonS * kCoastHorizonS * kCoastHorizonS);
 constexpr double kChi2_3_999 = 16.266;
