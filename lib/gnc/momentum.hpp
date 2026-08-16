@@ -123,10 +123,11 @@ struct MtqDesatResult {
   /// factor. **Unclamped** — the caller clamps per rod (see the file comment).
   math::Vec3<math::frames::Body> dipole_am2{};
 
-  /// The body torque this dipole would produce, \f$\mathbf m\times\mathbf B\f$
-  /// [N·m]. A diagnostic: it is what the wheels will have to take up, so it is
-  /// the number that says whether the unloading is competing with the pointing
-  /// law for authority.
+  /// The **on-window instantaneous** body torque this dipole would produce,
+  /// \f$\mathbf m\times\mathbf B\f$ [N·m] — the dipole is already scaled up by
+  /// 1/duty, so multiply by the duty factor for the period-average torque,
+  /// which is what the wheels take up over a control period (and what
+  /// `AttitudeControllerMomentum` computes for itself).
   math::Vec3<math::frames::Body> torque_nm{};
 
   /// @ref dipole_am2 is usable.
@@ -167,7 +168,7 @@ struct MomentumConfig {
   /// allocation layer uses, since both describe one array.
   int wheel_count = 0;
 
-  /// Column `i` is wheel `i`'s **spin axis** in body frame — the sim's `W`
+  /// Column `i` is wheel `i`'s **unit** spin axis in body frame — the sim's `W`
   /// matrix (§7), *not* the negated torque-authority axes
   /// `gnc::RwAllocationConfig::axes` carries. The sign difference is real and
   /// deliberate: a wheel spinning along \f$+\hat a\f$ stores momentum along

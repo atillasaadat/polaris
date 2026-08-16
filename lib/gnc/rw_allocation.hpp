@@ -107,8 +107,11 @@ struct RwAllocationConfig {
 
   /// Column `i` is the body-frame torque wheel `i` produces per unit commanded
   /// wheel torque — the **negated** spin axis (see the file comment). Columns
-  /// past `wheel_count` are ignored. Need not be unit norm; a non-unit column
-  /// simply scales that wheel's contribution.
+  /// past `wheel_count` are ignored. Keep the columns unit norm: the
+  /// allocation itself would merely rescale under a non-unit column, but the
+  /// per-wheel clamp compares the commanded torque against `max_torque_nm` in
+  /// N·m, and a column of length 2 would let the clamp fire at twice the
+  /// wheel's real limit.
   Eigen::Matrix<double, 3, kMaxWheels> axes = Eigen::Matrix<double, 3, kMaxWheels>::Zero();
 
   /// Per-wheel commanded-torque limit [N·m], indexed as the columns. Each must be
