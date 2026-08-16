@@ -541,3 +541,26 @@ wrong tree anyway.
 - **A convention that lives only in a sibling's README is not a convention.**
   The warning existed and was re-learned at full price; it is now beside the
   build command in every campaign README.
+
+## Code and docs written before a lesson do not re-sweep themselves (P64, audit)
+
+Five independent review lanes over main converged on one signature. The JPL
+audit found the P46 concurrency class alive in `OnboardTables` — the one
+component written before that lesson landed, while its two siblings enacted
+it. The flight-standard audit found the P60 same-number class displaced onto
+flight FDIR: a χ² gate hard-coded in one file and parameterised in another,
+five copies, two spellings. The docs audit found every stale figure traceable
+to a push that re-measured a number and swept *most* of its citations.
+
+- **A lesson is enacted at a point in time; the tree is not.** Appending a
+  class to this catalog fixes the instance that taught it and everything
+  written afterwards. Everything written before it keeps the defect until
+  someone re-sweeps, and nothing in the process forces that.
+- **The re-sweep is cheap once the class is named.** Each of the audits
+  found its instances with a grep and an afternoon; the expensive part was
+  ever learning the class, which was already paid.
+- **Corollary for figures in prose:** a number quoted in a comment with no
+  link to the constant it describes is a stale-docs defect waiting for its
+  push. The OD area's pattern — declare the design input once, compute the
+  derived constant from it, cite rather than restate — is what came through
+  the audit clean.
