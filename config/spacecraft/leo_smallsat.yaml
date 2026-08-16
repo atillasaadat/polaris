@@ -696,6 +696,16 @@ spacecraft:
     # three monitors — they answer the same operational question, and three tunings
     # for one question is three chances to set two of them wrong.
     flight.attitudeEstimator.MonitorAlertCycles: 50        # [cycles]
+    # Coarse-agreement admission gate for re-seeding from a refused star tracker:
+    # chi-square(3) at 0.999 — the same quantile MekfAttNisGate carries, kept as
+    # a parameter so the two cannot drift apart in code. Permissive on purpose:
+    # wrongly admitting a unit costs one re-seed, wrongly refusing one costs the
+    # vehicle's finest attitude source.
+    flight.attitudeEstimator.StCoarseAgreementGate: 16.266  # [-]
+    # Cycles of agreement that end a star-tracker exclusion. Deliberately NOT
+    # MonitorAlertCycles (the residual monitors' reporting cadence): quieting a
+    # noisy monitor must not lengthen an FDIR parole sentence.
+    flight.attitudeEstimator.StReadmitCycles: 50            # [cycles]
     # --- Earth-albedo correction of the sun vector (§8.1) ------------------
     # Not a commanded calibration: a model, always on wherever the geometry
     # supports it. The peak and the field of view describe the GS-NANOSENSE-FSS

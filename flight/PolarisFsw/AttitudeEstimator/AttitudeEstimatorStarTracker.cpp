@@ -45,14 +45,6 @@ constexpr I64 kNsPerSecond = 1000000000LL;
 //! Not a value, for telemetry channels with nothing to report this cycle.
 const double kNoValueSt = std::numeric_limits<double>::quiet_NaN();
 
-//! Containment the coarse-agreement test admits a star tracker at: the χ²
-//! quantile for **3** degrees of freedom at 0.999. Three because an attitude
-//! error is three-axis; 0.999 because this decides whether to adopt a better
-//! source, so the cost of admitting one that did not belong is one re-seed while
-//! the cost of refusing one that did is the vehicle's finest rung — the errors
-//! are not symmetric and the gate is set on the permissive side deliberately.
-constexpr double kCoarseAgreementGate = 16.266;
-
 //! True if @p timeTagNs is within @p maxAgeS of @p nowTaiNs (§9.1). Duplicated
 //! from the other two translation units deliberately: it is four lines, and a
 //! shared internal header for it would be more machinery than the rule it
@@ -162,6 +154,21 @@ bool AttitudeEstimator ::refreshStConfig() {
     return false;
   }
 
+  Fw::ParamValid gate_valid = Fw::ParamValid::INVALID;
+  const F64 agreement_gate = this->paramGet_StCoarseAgreementGate(gate_valid);
+  if (gate_valid != Fw::ParamValid::VALID || !std::isfinite(agreement_gate) ||
+      !(agreement_gate > 0.0)) {
+    this->failStConfig("StCoarseAgreementGate missing or not positive");
+    return false;
+  }
+
+  Fw::ParamValid readmit_valid = Fw::ParamValid::INVALID;
+  const U32 readmit_cycles = this->paramGet_StReadmitCycles(readmit_valid);
+  if (readmit_valid != Fw::ParamValid::VALID || readmit_cycles == 0) {
+    this->failStConfig("StReadmitCycles missing or zero");
+    return false;
+  }
+
   Fw::ParamValid boresights_valid = Fw::ParamValid::INVALID;
   const Vec3F64PerUnit boresights = this->paramGet_StBoresightsBody(boresights_valid);
   if (boresights_valid != Fw::ParamValid::VALID) {
@@ -172,11 +179,12 @@ bool AttitudeEstimator ::refreshStConfig() {
   // the array until that unit delivered a solution, and then silently drop it from
   // the fusion on a cycle nobody was watching.
   for (FwIndexType i = 0; i < NUM_STARTRACKERIN_INPUT_PORTS * 3; ++i) {
-    if (!std::isfinite(boresights[i])) {
+    const FwSizeType slot = static_cast<FwSizeType>(i);
+    if (!std::isfinite(boresights[slot])) {
       this->failStConfig("StBoresightsBody contains a non-finite component");
       return false;
     }
-    this->st_boresights_[i] = boresights[i];
+    this->st_boresights_[slot] = boresights[slot];
   }
 
   this->st_king_unit_ = static_cast<FwIndexType>(king);
@@ -186,6 +194,8 @@ bool AttitudeEstimator ::refreshStConfig() {
   this->monitor_threshold_rad_[ResidualMonitor::MAGNETOMETER] = values[3];
   this->monitor_threshold_rad_[ResidualMonitor::SUN_CROSS_UNIT] = values[4];
   this->monitor_alert_cycles_ = monitor_cycles;
+  this->st_coarse_agreement_gate_ = agreement_gate;
+  this->st_readmit_cycles_ = readmit_cycles;
   this->st_configured_ = true;
   this->st_config_invalid_flagged_ = false;
   return true;
@@ -427,7 +437,7 @@ bool AttitudeEstimator ::arbitrateRejectedTrackers(const polaris::time::Tai& epo
       continue;
     }
 
-    if (mahalanobis > kCoarseAgreementGate) {
+    if (mahalanobis > this->st_coarse_agreement_gate_) {
       // Outside what the vector data supports. **Nothing is latched.** An
       // exclusion here would be convicted on agreement with the *coarse* solution
       // and paroled on agreement with the *fine* one (readmitStarTrackers), and a
@@ -521,7 +531,7 @@ void AttitudeEstimator ::readmitStarTrackers(I64 nowTaiNs) {
     const double angle = 2.0 * std::atan2(error.vec().norm(), std::fabs(error.scalar()));
     if (angle <= readmit_threshold) {
       ++this->st_accepted_streak_[i];
-      if (this->st_accepted_streak_[i] >= this->monitor_alert_cycles_) {
+      if (this->st_accepted_streak_[i] >= this->st_readmit_cycles_) {
         this->st_excluded_[i] = false;
         this->st_nis_streak_[i] = 0;
         this->st_accepted_streak_[i] = 0;
@@ -732,8 +742,8 @@ void AttitudeEstimator ::ST_ALIGN_CAL_START_cmdHandler(FwOpcodeType opCode, U32 
   bool boresight_usable = false;
   if (boresights_valid == Fw::ParamValid::VALID && index >= 0 &&
       index < NUM_STARTRACKERIN_INPUT_PORTS) {
-    const FwIndexType base = static_cast<FwIndexType>(index * 3);
-    const Eigen::Vector3d v(boresights[base], boresights[base + 1], boresights[base + 2]);
+    const FwSizeType base = static_cast<FwSizeType>(index) * 3u;
+    const Eigen::Vector3d v(boresights[base], boresights[base + 1u], boresights[base + 2u]);
     pm::Vec3<Body> direction;
     boresight_usable = v.allFinite() && pm::Vec3<Body>(v).normalized(direction);
   }

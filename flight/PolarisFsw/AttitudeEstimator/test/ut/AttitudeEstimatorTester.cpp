@@ -138,6 +138,9 @@ constexpr F64 kMonitorSunResidualRad = 0.15;
 constexpr F64 kMonitorMagResidualRad = 0.2;
 constexpr F64 kMonitorSunCrossUnitRad = 0.15;
 constexpr U32 kMonitorAlertCycles = 3;
+//! The chi-square(3) 0.999 quantile, as the flight parameter carries it.
+constexpr F64 kStCoarseAgreementGate = 16.266;
+constexpr U32 kStReadmitCycles = 3;
 
 //! Inter-tracker alignment gates. The sample floor is 20 rather than the flight
 //! 100 so a window closes inside a short harness run; the residual and eigen-gap
@@ -277,6 +280,8 @@ void AttitudeEstimatorTester ::setValidParameters(bool withFine, bool withAlbedo
     this->paramSet_MonitorMagResidualRad(kMonitorMagResidualRad, Fw::ParamValid::VALID);
     this->paramSet_MonitorSunCrossUnitRad(kMonitorSunCrossUnitRad, Fw::ParamValid::VALID);
     this->paramSet_MonitorAlertCycles(kMonitorAlertCycles, Fw::ParamValid::VALID);
+    this->paramSet_StCoarseAgreementGate(kStCoarseAgreementGate, Fw::ParamValid::VALID);
+    this->paramSet_StReadmitCycles(kStReadmitCycles, Fw::ParamValid::VALID);
     Vec3F64PerUnit boresights;
     for (FwIndexType i = 0; i < static_cast<FwIndexType>(this->st_boresights_.size()); ++i) {
       boresights[i] = this->st_boresights_[static_cast<std::size_t>(i)];

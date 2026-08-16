@@ -784,6 +784,10 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! persistence every monitor shares.
   F64 monitor_threshold_rad_[kMonitorCount]{};
   U32 monitor_alert_cycles_{0};
+  //! Coarse-agreement admission gate (StCoarseAgreementGate), chi-square(3).
+  F64 st_coarse_agreement_gate_{0.0};
+  //! Cycles of agreement that end a star-tracker exclusion (StReadmitCycles).
+  U32 st_readmit_cycles_{0};
 
   //! Consecutive cycles each monitor has been over threshold, and whether it is
   //! currently in the alerted state (which is what makes the alert an edge and the
