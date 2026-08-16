@@ -2,8 +2,8 @@
 
 The console rendering (:meth:`analysis.common.report.AnalysisReport.format_text`)
 stays the record the tests assert on. This is the second rendering, for the case
-the text serves badly — and for a week-long campaign across eight fault
-scenarios that case is the normal one: the claim is a shape over time, an error
+the text serves badly — and for a multi-day campaign across seven fault
+scenarios (plus the latency case) that case is the normal one: the claim is a shape over time, an error
 staying inside a covariance envelope through outages and spoofs, and no table
 shows that.
 

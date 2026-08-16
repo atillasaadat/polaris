@@ -18,7 +18,7 @@
 ///
 ///  - **Bias** — a fixed per-unit offset (alignment and calibration residual).
 ///    It does not average down, and a pointing budget must carry it in full. On
-///    the Auriga it is 0.017° worst case, ~60× the temporal noise: for a
+///    the Auriga it is 0.017° worst case, ~6× the temporal noise: for a
 ///    long-exposure imaging mission it, not the noise, sets the error budget.
 ///  - **Low-frequency spatial (FOV) error** — optical distortion residual that
 ///    depends on *where in the field* the identified stars fall. It changes as

@@ -27,9 +27,9 @@ Usage
 -----
 .. code-block:: bash
 
-   # Fly a campaign shard (C++; minutes per 7-day run)
-   ./build-fprime-automatic-native-ut/bin/Linux/polaris_orbit_od_mc \\
-       --first-run 0 --runs 4 --duration-s 604800 \\
+   # Fly a campaign shard (C++; built in the unsanitized tree -- see the README)
+   ./build-fprime-automatic-native/bin/Linux/polaris_orbit_od_mc \\
+       --first-run 0 --runs 4 --duration-s 86400 \\
        --out build-artifacts/orbit-od-mc/shard-0.jsonl
 
    # Read every shard and produce the verdict

@@ -38,7 +38,7 @@ The same, headless, with the console report as well::
 
 Size the same vehicle for a harsher tip-off and twice-per-orbit unloading::
 
-    uv run --group analysis python -m analysis.sizing \\
+    PYTHONPATH=tools uv run --group analysis python -m analysis.sizing \\
         config/spacecraft/leo_smallsat.yaml --tipoff-deg-s 10 --desat-orbits 0.5
 
 Notes

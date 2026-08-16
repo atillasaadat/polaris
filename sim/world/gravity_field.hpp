@@ -35,7 +35,7 @@
 /// is half true and the wrong half was assumed: a zonal field is invariant under
 /// rotation ABOUT ITS OWN AXIS — Earth's diurnal spin, harmlessly — but ECI is
 /// J2000 mean equator while ECEF follows the TRUE pole, and precession plus
-/// nutation separate the two by ~0.37 deg by 2026. Evaluating zonally in ECI
+/// nutation separate the two by ~0.36 deg by 2026. Evaluating zonally in ECI
 /// therefore tilts the J2 bulge by that angle, worth ~100 m per revolution in
 /// LEO. Because a mis-axed field is still perfectly conservative, it conserves
 /// energy and angular momentum exactly and no self-consistency test can see it;

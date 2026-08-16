@@ -48,7 +48,8 @@ class EphemerisTable {
   /// Number of loaded segments.
   std::size_t size() const { return count_; }
 
-  /// True if no segment covers @p t (query would fail).
+  /// True when the table holds no segments at all. A non-empty table can
+  /// still refuse a query outside its span; check positionAt's return.
   bool empty() const { return count_ == 0; }
 
   /// Position of the body at @p t in ECI [m]. Returns false and leaves @p pos_out

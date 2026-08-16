@@ -15,7 +15,7 @@
 /// pure functions of the ECI position/velocity — no EOP, no time — so they are
 /// exact and available whenever a valid orbit state exists. The full,
 /// time-dependent ECI↔ECEF reduction (IAU 2006/2000A) is a separate transform
-/// (REQ-CONV-002) landing with the GMAT-validated frames library (Push 5).
+/// (REQ-CONV-002), shipped in `lib/frames/eci_ecef.cpp`.
 ///
 /// Flight-safe: no heap, no exceptions, fixed-size Eigen. Degenerate inputs
 /// (non-finite, zero radius, or radial-parallel-to-velocity so the orbit normal

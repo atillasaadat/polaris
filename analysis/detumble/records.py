@@ -2,9 +2,9 @@
 
 The C++ driver (``tests/mc/detumble_mc.cpp``) writes one JSON object per line —
 JSONL rather than CSV because a run carries a nested dispersion block and a
-variable-length rate profile, and because appending a line under a mutex from
-several worker threads is atomic enough to survive a campaign that is killed
-half way. The file lands under ``build-artifacts/`` and is a derived artifact:
+variable-length rate profile, and because a file of independent lines survives
+a campaign that is killed half way. (The driver is single-threaded; campaigns
+parallelise by sharding across processes.) The file lands under ``build-artifacts/`` and is a derived artifact:
 never committed.
 
 Reproducibility
@@ -128,7 +128,7 @@ def load_records(path: str | Path) -> list[RunRecord]:
     Returns
     -------
     list of RunRecord
-        Sorted by ``run_index``. Worker threads interleave their writes, so file
+        Sorted by ``run_index``. Shards are read in directory order, so file
         order is not run order and anything downstream that pairs a record with
         its draw would otherwise be reading a different run's geometry.
 

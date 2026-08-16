@@ -82,7 +82,8 @@ namespace polaris::gnc {
 enum class AttitudePidRefusal : std::uint8_t {
   kNone = 0,         ///< a torque was produced
   kUnconfigured,     ///< built with an invalid config
-  kBadInput,         ///< non-finite/non-unit quaternion, non-finite rate, or dt out of range
+  kBadInput,         ///< non-finite/non-unit quaternion or non-finite rate/dt (an out-of-range
+                     ///< but finite dt only suppresses integration; see `dt_s`)
   kNonFiniteOutput,  ///< the computed torque failed its finiteness guard
 };
 

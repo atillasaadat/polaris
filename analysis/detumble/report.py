@@ -21,7 +21,7 @@ large enough for the bound claimed — *is* checkable, and those are criteria.
 
 References
 ----------
-Design doc §13 (analysis), §22.2 (requirements and margin reporting), §23.2
+Design doc §12 (analysis tools), §22.2 (requirements and margin reporting), §13
 (Monte Carlo). REQ-ACTL-001 (``docs/requirements/adcs_control.rst``).
 """
 

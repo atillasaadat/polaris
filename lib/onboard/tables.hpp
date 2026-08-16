@@ -11,9 +11,10 @@
 ///  - the **IERS EOP** table (`frames::EopTable`), and
 ///  - the **Chebyshev ephemeris** of the Sun and Moon
 ///    (`ephemeris::EphemerisTable`) —
-/// loads them from disk, validates them, and answers point queries against
-/// them. It only ever *wraps* the `lib/` tables and evaluators; the parsing here
-/// fills them through their public `addEntry`/`addSegment` contracts.
+/// loads the file-backed ones from disk (the leap-second table is compiled in),
+/// validates them, and answers point queries against them. It only ever *wraps* the `lib/` tables
+/// and evaluators; the parsing here fills them through their public `addEntry`/`addSegment`
+/// contracts.
 ///
 /// Flight discipline (§3.6): no heap and no exceptions in steady state.
 /// Fixed-capacity tables, fixed-size line buffers, `<cstdio>` for the file read

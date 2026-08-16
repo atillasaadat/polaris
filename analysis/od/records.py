@@ -11,7 +11,7 @@ Two record kinds
 ``kind: "meta"`` opens each (run, scenario) and carries what a sample cannot: the
 scenario's *intent*, written once in ``tests/mc/orbit_od_scenarios.hpp`` and
 quoted by the report rather than transcribed here, plus the cadence and latency
-that make a 30000-line shard legible as ten minutes rather than a week.
+that make a 6000-line shard legible as two minutes rather than a day.
 
 ``kind: "sample"`` is one GNC cycle. The driver emits one per cycle whether or
 not a fix arrived, because the interesting rows are the ones where none did.

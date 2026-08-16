@@ -137,7 +137,7 @@ inline constexpr double kDay = 86400.0;
 ///
 /// Only `nominal` flies the full campaign duration
 /// ---------------------------------------------------
-/// The week-long arc exists to answer one question — does the estimate stay
+/// The long nominal arc exists to answer one question — does the estimate stay
 /// bounded, and the covariance honest, over a long coast against a truth model
 /// the filter does not carry — and that question is asked of the un-faulted
 /// filter. It is also the only scenario the consistency and ensemble statistics

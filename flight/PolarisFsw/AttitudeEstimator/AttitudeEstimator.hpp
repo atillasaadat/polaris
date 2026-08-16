@@ -314,7 +314,7 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
 
   //! **Best-illuminated** valid, fresh sun sensor: of the units reporting the
   //! sun in view with a usable sigma, the one with the smallest realised
-  //! `sigmaRad` (§6.4) — which is the incidence-cosine criterion expressed in
+  //! `sigmaRad` (§6.2) — which is the incidence-cosine criterion expressed in
   //! the quantity the estimator consumes. Ties break to the lowest index, so the
   //! choice is deterministic. Returns nullptr when nothing is selectable, and
   //! writes the chosen port index to @p index (unchanged when none).

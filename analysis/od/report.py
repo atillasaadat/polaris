@@ -46,8 +46,8 @@ the detumble campaign gives its handover-time proposal.
 
 References
 ----------
-Design doc §8.3 (onboard OD), §9.2 (GNSS FDIR), §13, §22.2 (margin reporting),
-§23.2 (Monte Carlo). REQ-ODP-001, REQ-ODP-005, REQ-ODP-006
+Design doc §8.3 (onboard OD), §9.2 (GNSS FDIR), §13 (Monte Carlo), §22.2 (margin
+reporting). REQ-ODP-001, REQ-ODP-005, REQ-ODP-006
 (``docs/requirements/orbit_od_propagation.rst``).
 """
 

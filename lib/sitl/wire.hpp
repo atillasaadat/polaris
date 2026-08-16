@@ -116,7 +116,7 @@ struct StarTrackerRecord {
 
 static_assert(sizeof(StarTrackerRecord) == 56);
 
-/// Latest sun-sensor sample. Carries both interfaces (§6.4): per-diode counts
+/// Latest sun-sensor sample. Carries both interfaces (§6.2): per-diode counts
 /// for an analogue part (first `n_counts` entries), the processed unit vector
 /// for a digital part. Truth diagnostics (incidence, shadow, albedo split) stay
 /// sim-side.

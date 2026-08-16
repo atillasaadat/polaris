@@ -65,7 +65,7 @@ them on the way in. **Formulae are real LaTeX, typeset by KaTeX**, and the
 LaTeX is carried by the object that carries the formula: every `MomentumDriver`,
 `DerivedParameter`, disturbance term, `SpecItem` and `Criterion` that has a
 closed form has a `formula_tex` written beside its ASCII string, at the point of
-construction. [`texmath.py`](texmath.py) only marks it up and ships the
+construction. [`texmath.py`](../common/texmath.py) only marks it up and ships the
 renderer; it reverse-engineers nothing.
 
 That is the architecture and not just a populated table. The previous design
@@ -79,7 +79,7 @@ itself** (under Node, skipped where there is none) so a construct KaTeX refuses
 fails the suite rather than a browser.
 
 KaTeX 0.16.11 is vendored verbatim under
-[`vendor/katex/`](vendor/katex/PROVENANCE.md) — the library, its stylesheet and
+[`vendor/katex/`](../common/vendor/katex/PROVENANCE.md) — the library, its stylesheet and
 the eight WOFF2 faces the report's mathematics reaches. All of it is inlined
 into the page, fonts base64'd into their `@font-face` rules, so the page still
 fetches nothing at runtime. That costs about 460 KB on a file already measured in
@@ -154,8 +154,9 @@ constant of the committed reference survives into the report or the page.
 Your config does not have to live in this tree. The hardware catalog is looked
 for beside it first (the `config/spacecraft`, `config/hardware` sibling layout),
 then in this repository — located relative to the installed package, not the
-working directory — so `python -m analysis.sizing /anywhere/my_sat.yaml` works
-with no flag. `--hardware DIR` overrides both, and when neither exists the error
+working directory. The atmosphere band table and the geomagnetic coefficients
+are still read relative to the repository root, so run the tool from there
+(or pass `--hardware`); a config file, though, can live anywhere. `--hardware DIR` overrides both, and when neither exists the error
 names both paths it tried.
 
 Everything the tool reads comes from your `config/spacecraft/*.yaml` and the
@@ -279,7 +280,7 @@ momentum space, plus the drivers:
 - **Orange sphere — the *usable* envelope, `MomentumEnvelopeNms`.** What the
   certified analysis covers. **This is the distinction the figure exists to
   carry**: "the wheels can hold it" and "the analysis covers it" are different
-  claims, and on the reference vehicle they differ by two orders of magnitude.
+  claims, and on the reference vehicle they differ by a factor of about seven.
   Every momentum criterion is judged on the smaller of the two, because momentum
   the vehicle raises an envelope event over is momentum it does not have.
 - **Purple ellipsoid — the L2 allocator's reach** under an RMS command limit.
@@ -294,8 +295,8 @@ momentum space, plus the drivers:
   in words.
 
 The gap between the hull and the blue sphere is the layout's anisotropy — on
-the reference four-wheel pyramid, the best direction reaches 1.15 N·m·s and the
-guarantee is 0.82, a 29 % difference. A per-body-axis sizing check would have
+the reference four-wheel pyramid, the best direction reaches 69.3 mN·m·s and
+the guarantee is 49.0, a 29 % difference. A per-body-axis sizing check would have
 quoted the larger number.
 
 The drivers on this class of vehicle are orders of magnitude below the envelope,
@@ -338,5 +339,7 @@ truncation of IGRF. That is the right fidelity for sizing — a bound in closed
 form beats a time history you have to interpret — but when a criterion is
 *close*, the answer is a simulation, not a wider analytic margin.
 
-No requirement in the baseline is written on actuator sizing, so no criterion
-here carries a requirement ID; the report says so in a standing warning.
+No requirement in the baseline is written on actuator sizing, so the sizing
+criteria carry no requirement ID; the report says so in a standing warning.
+(The one exception is the derived-parameter check against REQ-ACTL-009's
+momentum envelope, which is a behaviour requirement, not a sizing one.)

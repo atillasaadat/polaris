@@ -23,7 +23,7 @@ a report is a presentation boundary, so dB, degrees and percent belong here.
 
 References
 ----------
-Design doc §13 (analysis), §22.2 (requirements and margin reporting).
+Design doc §12 (analysis tools), §22.2 (requirements and margin reporting).
 """
 
 from __future__ import annotations

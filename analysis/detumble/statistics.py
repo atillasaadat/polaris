@@ -44,7 +44,7 @@ Conover, *Practical Nonparametric Statistics*, 3rd ed., Wiley, 1999, §3.3
 [conover1999] — the distribution-free tolerance-limit tables this reproduces.
 Avanzini & Giulietti, "Magnetic Detumbling of a Rigid Spacecraft," *JGCD*
 35(4):1326-1334, 2012 [avanzini2012] — the asymptotic convergence the tail is.
-Design doc §13 (analysis), §22.2 (margin reporting), §23.2 (Monte Carlo).
+Design doc §12 (analysis tools), §22.2 (margin reporting), §13 (Monte Carlo).
 
 Units
 -----

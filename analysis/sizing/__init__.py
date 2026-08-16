@@ -50,7 +50,7 @@ assumptions block. See ``analysis/sizing/README.md``.
 
 Run the gate::
 
-    uv run --group analysis python -m analysis.sizing \\
+    PYTHONPATH=tools uv run --group analysis python -m analysis.sizing \\
         config/spacecraft/leo_smallsat.yaml
 """
 

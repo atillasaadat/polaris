@@ -15,7 +15,7 @@ constexpr double kNanoteslaToTesla = 1.0e-9;
 /// Below this |sin θ| a point counts as being *at* a pole and the B_φ terms are
 /// taken in the limit instead of dividing. Chosen well under the smallest
 /// colatitude any caller would plausibly mean as "not the pole" (1e-12 rad is
-/// ~6 nm of surface displacement), so ordinary near-polar queries still take the
+/// ~6 um of surface displacement), so ordinary near-polar queries still take the
 /// exact ratio and only a true pole hits the limit branch.
 constexpr double kPoleSinTolerance = 1.0e-12;
 

@@ -55,7 +55,7 @@
 /// resolve the receiver's 50 ms fix latency — the delay line delivers the newest
 /// solution at least one latency old, so at 10 s the delivered fix is a whole
 /// *poll* old and the datasheet value would model a 10 s delay rather than a
-/// 50 ms one. `latency_fast` therefore runs 50 Hz over ten minutes with the real
+/// 50 ms one. `latency_fast` therefore runs 50 Hz over two minutes with the real
 /// latency armed, which is the only place in the campaign where the latent-fix
 /// branch fires. `Scenario::cycle_period_s` and friends carry the per-scenario
 /// override.
@@ -349,7 +349,7 @@ std::string jsonEscaped(const std::string& text) {
 /// transcribing it into the Python is the point — a scenario whose rationale is
 /// reworded takes the report's wording with it, and there is no second copy to
 /// go stale. The cadence and latency come along because a reader of a shard has
-/// no other way to know a 30000-sample file is ten minutes rather than a week.
+/// no other way to know a 6000-sample file is two minutes rather than a day.
 void writeMeta(std::ostream& out, int run, const mco::Scenario& scenario, double cycle_s,
                double duration_s) {
   out << "{\"kind\":\"meta\",\"run\":" << run << ",\"scenario\":\"" << jsonEscaped(scenario.name)
@@ -461,7 +461,7 @@ RunResult flyOne(int run, const mco::Scenario& scenario, double duration_s,
   RunResult result;
   // The scenario owns its cadence and its arc length; the campaign flags are the
   // default and the ceiling, not an override. A fast-cadence scenario capped at
-  // ten minutes must stay ten minutes when `--duration-s` asks for seven days.
+  // two minutes must stay two minutes when `--duration-s` asks for a day.
   const double cycle_s = scenario.cycle_period_s > 0.0 ? scenario.cycle_period_s : kFixPeriodS;
   if (scenario.max_duration_s > 0.0) {
     duration_s = std::min(duration_s, scenario.max_duration_s);
@@ -616,6 +616,9 @@ RunResult flyOne(int run, const mco::Scenario& scenario, double duration_s,
 int main(int argc, char** argv) {
   int first_run = 0;
   int runs = 1;
+  // The default arc is a week; the flown campaign passes --duration-s 86400 and
+  // the fault scenarios carry their own one-day caps regardless, so the default
+  // is the ceiling for an uncapped `nominal`, not what anything routinely flies.
   double duration_s = 7.0 * 86400.0;
   std::string out_path;
   std::string only_scenario;

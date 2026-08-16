@@ -31,7 +31,8 @@ constexpr double kSecondsPerDay = 86400.0;
 constexpr std::int64_t kTtMinusTaiNs = 32184000000LL;
 
 /// EOP load window half-width beyond the ephemeris span, so endpoint
-/// interpolation still has neighbours. Mirrors the sim loader's margin.
+/// interpolation still has neighbours. (The sim loader takes its margin as an
+/// argument; this is the onboard store's own choice.)
 constexpr double kEopMarginDays = 5.0;
 
 /// Bulletin A fixed-width column spec, matching `sim/world/eop_file.cpp` and
