@@ -221,10 +221,12 @@
 ///
 /// The correction is bounded by `OrbitOdConfig::max_fix_latency_s`. Past that a
 /// fix is refused as before, because a tag arbitrarily far in the past is a
-/// clock fault rather than a latency, and a fix without a velocity is refused
-/// too — the filter's own velocity is not a substitute, since using it would
-/// fold the filter's error into a measurement that has to stay independent of
-/// it. The realised latency is reported on every fix through
+/// clock fault rather than a latency. A latent fix without a velocity is
+/// refused as @ref OrbitOdRefusal::kNoVelocityForSeed — the filter's own
+/// velocity is not a substitute, since using it would fold the filter's error
+/// into a measurement that has to stay independent of it — and the refusal
+/// carries the missing-velocity name rather than the clock-fault one, so
+/// telemetry can tell the two apart. The realised latency is reported on every fix through
 /// @ref OrbitOdResult::fix_latency_s, so a latency that climbs is visible in
 /// telemetry rather than silently absorbed.
 ///
@@ -476,7 +478,8 @@ enum class OrbitOdRefusal : std::uint8_t {
   kFixImplausible,       ///< fix radius outside the configured band (§9.1)
   kFixSigmaInvalid,      ///< a reported σ that is not positive and finite
   kFrameConversion,      ///< ECEF→ECI failed, or the epoch is outside EOP coverage
-  kNoVelocityForSeed,    ///< a seed needs a full PVT; position alone cannot start a 6-state
+  kNoVelocityForSeed,    ///< a velocity was required and absent: a seed needs a full PVT, and a
+                         ///< latent fix cannot be advanced to the filter epoch without one
   kMeasurementRejected,  ///< the NIS gate refused the fix
   kFilterFault,          ///< non-finite internal result; the solution was dropped
 };
@@ -532,6 +535,12 @@ struct OrbitOdUpdate {
   double nis{0.0};
   /// The measurement passed its gate and was applied.
   bool accepted{false};
+  /// The update aborted on a non-finite intermediate (singular `S`, non-finite
+  /// gain or state) rather than on the gate. Separates a filter-health fault
+  /// from a measurement rejection: the two demand different FDIR responses, and
+  /// a numeric fault must not masquerade as "the gate refused the fix" while
+  /// @ref OrbitOd::rejectedCount stays still.
+  bool numeric_fault{false};
 };
 
 /// Everything @ref OrbitOd::ingest needs from one GNSS fix, in the frame and on

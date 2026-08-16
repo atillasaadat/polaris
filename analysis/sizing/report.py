@@ -434,8 +434,10 @@ def _warnings(analysis: SizingAnalysis) -> tuple[str, ...]:
     """Conditions that qualify the analysis without failing it."""
     vehicle = analysis.vehicle
     out = [
-        "No requirement in the baseline is written on actuator sizing, so no "
-        "criterion here carries a requirement ID. REQ-ACTL-009 governs the "
+        "No requirement in the baseline is written on actuator sizing, so the "
+        "sizing criteria carry no requirement ID (the derived-parameter check "
+        "against the REQ-ACTL-009 envelope is the one exception, and that is a "
+        "behaviour requirement). REQ-ACTL-009 governs the "
         "stored-momentum envelope as a behaviour and REQ-ACTL-010 the "
         "desaturation law, neither of which is a bound on how large the "
         "actuators must be. Writing one — 'the wheel array shall provide, in "

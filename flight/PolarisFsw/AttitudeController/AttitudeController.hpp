@@ -223,7 +223,7 @@ class AttitudeController final : public AttitudeControllerComponentBase {
   //! Attitude-free by construction (magnitudes, not vectors), because judging a
   //! magnetometer through an attitude that magnetometer helped build is the
   //! circularity that latches out healthy units.
-  void runStuckOnMonitor(I64 nowNs);
+  void runStuckOnMonitor();
 
   //! Change mode, emitting ModeChanged on a transition only.
   void setMode(CtrlMode::T next);

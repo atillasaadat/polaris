@@ -13,11 +13,13 @@
 /// the assumption that commanding \f$u_i\f$ delivers \f$-u_i\f$ about wheel
 /// \f$i\f$'s axis — is wrong by exactly \f$-\tau_f\f$ per wheel. On a *loaded*
 /// array that error is secular, not zero-mean: every spinning wheel's Coulomb
-/// reaction points the same way for as long as its speed keeps its sign, and on
-/// the reference vehicle the four-wheel pyramid's \f$\tau_c = 10^{-4}\f$ N·m
-/// reactions sum to 2.3e-4 N·m on the body — more than twice the pointing PID
-/// integrator's entire authority. The measured cost was 2.9° of steady-state
-/// pointing error against REQ-ACTL-002's 1.0°.
+/// reaction points the same way for as long as its speed keeps its sign. On the
+/// wheel first flown here (\f$\tau_c = 10^{-4}\f$ N·m) the pyramid's reactions
+/// summed to 2.3e-4 N·m on the body — more than twice the pointing PID
+/// integrator's entire authority, measured as 2.9° of steady-state pointing
+/// error against REQ-ACTL-002's 1.0°. The wheel now catalogued carries
+/// \f$\tau_c = 8\times10^{-6}\f$ N·m (see `config/hardware` and the vehicle
+/// YAML), which shrinks the term but does not change its secular character.
 ///
 /// This module supplies the missing term. Applied **after** the allocation
 /// produces per-wheel demands and **before** they are commanded, it adds
@@ -52,7 +54,7 @@
 ///
 /// The viscous term \f$b\,\omega\f$ needs no blend: it is continuous through zero
 /// and vanishes there on its own. It is compensated for completeness rather than
-/// necessity (on the reference wheels it is ~5e-6 N·m at 1 rad/s, two orders
+/// necessity (on the reference wheels it is ~4e-7 N·m at 1 rad/s, well over an order
 /// below the Coulomb term), because leaving a modelled, continuous, exactly-known
 /// term out would be arbitrary.
 ///

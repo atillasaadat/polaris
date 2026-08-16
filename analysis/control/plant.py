@@ -86,7 +86,7 @@ Control*, §7.2 [markley2014] — the quaternion-feedback law this discretises.
 integration, the assumption behind the "integrator active" caveat.
 Franklin, Powell & Workman, *Digital Control of Dynamic Systems*, 3rd ed.,
 §4–§6 [franklin1998] — zero-order-hold equivalence and the sampled-data loop.
-Design doc §8.5 (control), §13 (analysis).
+Design doc §8.5 (control), §12 (analysis tools).
 """
 
 from __future__ import annotations

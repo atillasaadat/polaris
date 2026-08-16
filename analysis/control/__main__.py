@@ -18,7 +18,7 @@ Examples
 Run the gate on the reference vehicle, writing artifacts under the default
 ``build-artifacts`` location::
 
-    uv run --group analysis python -m analysis.control \\
+    PYTHONPATH=tools uv run --group analysis python -m analysis.control \\
         config/spacecraft/leo_smallsat.yaml
 
 Notes

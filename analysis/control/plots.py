@@ -20,7 +20,7 @@ magnitude in dB, phase and separations in degrees.
 
 References
 ----------
-Design doc §13 (analysis), §21.2 (generated artifacts).
+Design doc §12 (analysis tools), §21.2 (generated artifacts).
 """
 
 from __future__ import annotations

@@ -101,8 +101,9 @@ enum class BdotRefusal : std::uint8_t {
 struct BdotConfig {
   /// Control gain \f$k\f$ [N·m·s]. Set it from the Avanzini & Giulietti floor
   /// \f$2\,\omega_o(1+\sin\xi)J_{\min}\f$ and raise it toward the rods' saturation
-  /// limit for a faster decay; the closed-loop rate time constant is
-  /// \f$J/(k\cdot\mathrm{duty})\f$ while unsaturated.
+  /// limit for a faster decay; the closed-loop rate time constant is \f$J/k\f$
+  /// while unsaturated — the commanded dipole is divided by the duty factor
+  /// (see `bdot.cpp`), which is exactly what keeps duty out of the average.
   double gain_nms = 0.0;
 
   /// On-window fraction of the control period, in (0, 1]. The demanded dipole is

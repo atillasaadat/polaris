@@ -73,7 +73,7 @@ module flight {
   @ One sun sensor's processed unit vector. `sunPresent` is the unit's own
   @ sun-in-field-of-view flag: false in eclipse or when pointed away, which is a
   @ normal condition, not a fault. `sigmaRad` is the realised 1-sigma accuracy at
-  @ this incidence (§6.4) — carried so an estimator weights with the noise the
+  @ this incidence (§6.2) — carried so an estimator weights with the noise the
   @ sensor actually had rather than a headline number.
   struct SunSensorMeas {
     dirBody: Vec3F64 @< measured sun direction, body frame [dimensionless]

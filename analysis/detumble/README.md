@@ -7,7 +7,7 @@ requirement is verified today on the fast phase only (below 3.8 deg/s within
 200 s of engaging), and carries no bound on the time to completion because no
 campaign had been flown.
 
-Design doc §13 (analysis), §23.2 (Monte Carlo). The requirement is in
+Design doc §12 (analysis tools), §13 (Monte Carlo). The requirement is in
 `docs/requirements/adcs_control.rst`.
 
 ## The split, and why

@@ -226,7 +226,7 @@ const SunSensorMeas* AttitudeEstimator ::selectSunSensor(I64 nowTaiNs, FwIndexTy
   // and nothing at all on the large one, while costing a correlation the
   // estimators' white-R model has no way to represent.
   //
-  // The criterion is the **smallest realised sigma** (§6.4), which the unit
+  // The criterion is the **smallest realised sigma** (§6.2), which the unit
   // reports per sample from its own incidence angle. That is the incidence
   // cosine expressed in the quantity the estimator actually consumes, so it
   // stays right if a future suite mixes parts with different accuracy curves —

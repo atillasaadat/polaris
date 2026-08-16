@@ -102,6 +102,7 @@ void OnboardTables ::writeTelemetry() {
 // ----------------------------------------------------------------------
 
 bool OnboardTables ::getEopAt_handler(FwIndexType portNum, I64 taiNs, EopSample& sample) {
+  static_cast<void>(portNum);
   polaris::frames::EopValue v;
   const polaris::onboard::Quality q = this->store_.eopAt(taiNs, v);
   if (q == polaris::onboard::Quality::kUnavailable) {
@@ -113,6 +114,7 @@ bool OnboardTables ::getEopAt_handler(FwIndexType portNum, I64 taiNs, EopSample&
 
 bool OnboardTables ::getBodyPosition_handler(FwIndexType portNum, const OnboardBody& body,
                                              I64 taiNs, PosEciMeters& posEciM) {
+  static_cast<void>(portNum);
   const polaris::onboard::Body b =
       (body.e == OnboardBody::MOON) ? polaris::onboard::Body::Moon : polaris::onboard::Body::Sun;
   polaris::math::Vec3<polaris::math::frames::ECI> pos;
@@ -125,6 +127,7 @@ bool OnboardTables ::getBodyPosition_handler(FwIndexType portNum, const OnboardB
 }
 
 bool OnboardTables ::getTaiUtcOffset_handler(FwIndexType portNum, I64 taiNs, I32& deltaAtSec) {
+  static_cast<void>(portNum);
   std::int32_t delta = 0;
   const polaris::onboard::Quality q = this->store_.taiUtcOffset(taiNs, delta);
   if (q == polaris::onboard::Quality::kUnavailable) {
@@ -135,6 +138,8 @@ bool OnboardTables ::getTaiUtcOffset_handler(FwIndexType portNum, I64 taiNs, I32
 }
 
 void OnboardTables ::run_handler(FwIndexType portNum, U32 context) {
+  static_cast<void>(portNum);
+  static_cast<void>(context);
   using polaris::onboard::Quality;
 
   // Evaluate the grade actually being served at the current time, per domain.
@@ -167,19 +172,23 @@ void OnboardTables ::run_handler(FwIndexType portNum, U32 context) {
 }
 
 void OnboardTables ::noteGrade(TableDomain domain, polaris::onboard::Quality current,
-                               polaris::onboard::Quality& last) {
+                               std::atomic<polaris::onboard::Quality>& last) {
   using polaris::onboard::Quality;
-  if (current == last) {
+  // One load, compared and stored once: the watchdog is the only writer of
+  // `last`, so this is not a CAS race — the atomic is for the readers on the
+  // other threads, not for contention here.
+  const Quality previous = last.load();
+  if (current == previous) {
     return;
   }
-  if (current == Quality::kCoarse && last == Quality::kPrecise) {
+  if (current == Quality::kCoarse && previous == Quality::kPrecise) {
     this->log_WARNING_HI_TableDegraded(domain, toTableGrade(current));
-  } else if (current == Quality::kPrecise && last == Quality::kCoarse) {
+  } else if (current == Quality::kPrecise && previous == Quality::kCoarse) {
     // TableDegraded is unthrottled (edge-gated here per domain), so recovery
     // needs no throttle-clear; the next genuine degrade always emits.
     this->log_ACTIVITY_HI_TableRecovered(domain);
   }
-  last = current;
+  last.store(current);
 }
 
 // ----------------------------------------------------------------------

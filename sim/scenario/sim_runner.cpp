@@ -28,7 +28,7 @@ namespace {
 
 /// EOP records held per run. Bulletin A is daily and loading is windowed to the
 /// scenario span plus a margin, so this covers well over a year of propagation
-/// while keeping the table ~600 kB rather than the ~20 000 entries the full
+/// while keeping the table ~16 kB rather than the ~600 kB the full ~20 000-entry
 /// product would need.
 constexpr std::size_t kEopCapacity = 512;
 

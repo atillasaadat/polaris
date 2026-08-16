@@ -235,20 +235,28 @@ module flight {
     # Sensor measurement inputs (arrays: multi-unit is the design point, §8.2)
     # ----------------------------------------------------------------------
 
+    @ Sensor inputs are `guarded`, matching `run`: a `guarded` handler takes the
+    @ component mutex and a `sync` one does not, so mixing them would leave the
+    @ guard protecting nothing against a sensor push from another thread. Under
+    @ SITL the pushes and `run` share the bridge's task and the mutex is
+    @ uncontended; on the hardware topology (§2.4) the drivers get their own
+    @ threads and this is what keeps the latch-then-consume handoff sound. The
+    @ handlers only latch a few hundred bytes, so the cost is negligible.
+    @
     @ IMU delta-angle/delta-velocity increments, one port per unit in vehicle
     @ build order. Latched on arrival; consumed by the next `run`.
-    sync input port imuIn: [GncMaxUnits] ImuMeasPort
+    guarded input port imuIn: [GncMaxUnits] ImuMeasPort
 
     @ Sun-sensor unit vectors, one port per unit in vehicle build order.
-    sync input port sunSensorIn: [GncMaxUnits] SunSensorMeasPort
+    guarded input port sunSensorIn: [GncMaxUnits] SunSensorMeasPort
 
     @ Magnetometer field measurements, one port per unit in vehicle build order.
-    sync input port magnetometerIn: [GncMaxUnits] MagnetometerMeasPort
+    guarded input port magnetometerIn: [GncMaxUnits] MagnetometerMeasPort
 
     @ GNSS PVT fixes, one port per unit. The position is what the IGRF reference
     @ is evaluated at; this component does not estimate orbit state (§8.3 owns
     @ that) and does not consume the velocity.
-    sync input port gnssIn: [GncMaxUnits] GnssMeasPort
+    guarded input port gnssIn: [GncMaxUnits] GnssMeasPort
 
     @ Star-tracker attitude solutions, one port per unit — the finest rung of the
     @ §8.2 mode ladder, fused into the MEKF as **attitude** measurements
@@ -264,7 +272,7 @@ module flight {
     @
     @ Nothing here is fused into the **coarse** attitude, which stays
     @ tracker-independent to remain the Safe-mode floor (§10).
-    sync input port starTrackerIn: [GncMaxUnits] StarTrackerMeasPort
+    guarded input port starTrackerIn: [GncMaxUnits] StarTrackerMeasPort
 
     @ The magnetorquer duty-cycle schedule from the controller that owns it
     @ (design doc §7, interlock layer 2). A magnetometer sample whose time tag
@@ -281,7 +289,7 @@ module flight {
     @ control never calls it, and the estimator then admits every sample: the
     @ absence of a schedule means no rod has ever been commanded, which is the
     @ honest reading of a vehicle whose rods nothing drives.
-    sync input port mtqActuationIn: MtqActuationPort
+    guarded input port mtqActuationIn: MtqActuationPort
 
     # ----------------------------------------------------------------------
     # Reference queries and product output
@@ -770,6 +778,26 @@ module flight {
     @ of them wrong. Per-monitor persistence is what a mixed suite would need, and
     @ is another parameter of the same shape rather than a redesign.
     param MonitorAlertCycles: U32
+
+    @ Containment the coarse-agreement test admits a star tracker at: the
+    @ chi-square quantile for **3** degrees of freedom (an attitude error is
+    @ three-axis) at the chosen confidence. It decides whether the filter is
+    @ re-seeded from a tracker the NIS gate refused — whether the whole attitude
+    @ solution is replaced — so the cost of admitting a unit that did not belong
+    @ is one re-seed while the cost of refusing one that did is the vehicle's
+    @ finest rung; the errors are not symmetric and the reference tuning
+    @ (16.266, the 0.999 quantile) sits on the permissive side deliberately.
+    @ The same quantile the MEKF's own attitude gate (MekfAttNisGate) uses; a
+    @ parameter rather than a constant so the two cannot drift apart in code.
+    param StCoarseAgreementGate: F64
+
+    @ Consecutive cycles a latched-out star tracker must agree with the fine
+    @ solution before its exclusion is lifted. Its own parameter and not
+    @ MonitorAlertCycles: that one is the *reporting cadence* of the residual
+    @ monitors, and an operator who quiets a noisy monitor by raising it must
+    @ not silently lengthen an FDIR parole sentence on the vehicle's finest
+    @ attitude source.
+    param StReadmitCycles: U32
 
     # ----------------------------------------------------------------------
     # Fine-mode (MEKF) parameters — a second, independent validity gate

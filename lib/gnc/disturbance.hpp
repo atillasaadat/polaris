@@ -5,9 +5,10 @@
 /// @brief Onboard disturbance-torque feedforward, tiers 1 and 2 (design doc
 /// §8.5, §9; REQ-ACTL-011).
 ///
-/// The §8.5 disturbance-estimation ladder, cheapest first. Tier 3 (physical
-/// parameter estimation from long-arc data) waits on the §8.3 orbit filter and is
-/// not here.
+/// The §8.5 disturbance-estimation ladder, cheapest first. Tier 3's orbit-side
+/// half (drag/SRP parameter estimation from long-arc data) waits on the §8.3
+/// orbit filter; its attitude-side half, residual-dipole estimation, needs only
+/// the tier-2 observer and lives in `dipole_estimation.hpp`.
 ///
 /// **Tier 1 — model-based, free.** The two secular torques the vehicle can
 /// compute from states it already has:

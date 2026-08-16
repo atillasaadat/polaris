@@ -9,8 +9,9 @@ Subdirectories (design doc §22.3):
 `math/` (Eigen, quaternions, typed vectors) · `frames/` (transforms + EOP) ·
 `time/` (TAI/UTC/GPS) · `state/` (`EstimatedState`/`TruthState`) ·
 `constants/` (registry incl. WGS84) · `environment/` (IGRF geomagnetic field + its
-IAGA coefficient loader — gravity, drag, SRP and third-body are truth-side only
-and live in `sim/world/`) · `ephemeris/` (Chebyshev onboard evaluator) ·
+IAGA coefficient loader — the high-fidelity gravity, drag, SRP and third-body
+truth models live in `sim/world/`; the flight side carries its own coarse
+geopotential + exponential drag in `gnc/geopotential` and `gnc/orbit_od`) · `ephemeris/` (Chebyshev onboard evaluator) ·
 `random/` (seeded per-source RNG streams, §3.5) ·
 `gnc/` (estimation/guidance/control algorithms, §8) · `onboard/` (table store, §11.3) ·
 `sitl/` (plant↔FSW wire format, §2.2).

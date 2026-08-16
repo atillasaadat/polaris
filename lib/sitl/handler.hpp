@@ -8,8 +8,9 @@
 /// This is the flight counterpart of `sim/io/sitl_server.cpp`: the sim
 /// serializes and blocks, the FSW decodes here and answers. Factored out of the
 /// component so the byte-level protocol is unit-testable without a running
-/// topology — `SitlBridge::dataIn_handler` does nothing but hand the deframed
-/// payload to `SitlHandler::handle` and frame whatever bytes come back.
+/// topology — `SitlBridge::dataIn_handler` owns the transport-side state
+/// (quiescing, the connected latch, its EVRs, and driving the rate group for
+/// STEP) and hands the deframed payload here for the protocol itself.
 ///
 /// **Flight-safe:** no heap, no exceptions, no recursion, bounded loops.
 /// Everything is memcpy over caller-owned fixed buffers (`wire.hpp` PODs). Every
@@ -58,7 +59,7 @@ struct HandleResult {
 /// barrier needs: the per-type unit counts negotiated at HELLO, which size every
 /// later STEP exchange (neither STEP message repeats them), and the sensor
 /// records of the most recently decoded STEP_REQ, which the caller publishes to
-/// the GNC components. One instance per link; ~4 kB by value, no heap.
+/// the GNC components. One instance per link; ~3.7 kB by value, no heap.
 class SitlHandler {
  public:
   /// Decode one message from @p in (@p in_len bytes). For HELLO the HELLO_ACK is
@@ -294,7 +295,7 @@ class SitlHandler {
   bool hello_seen_ = false;
 
   // Latest decoded measurements, fixed capacity (kMaxUnits bounds the HELLO
-  // counts). ~3.5 kB held by value: no heap, and the component owns one handler.
+  // counts). ~3.7 kB held by value: no heap, and the component owns one handler.
   ImuRecord imu_[kMaxUnits]{};
   StarTrackerRecord star_tracker_[kMaxUnits]{};
   SunSensorRecord sun_sensor_[kMaxUnits]{};

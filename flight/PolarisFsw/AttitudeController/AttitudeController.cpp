@@ -93,6 +93,7 @@ void AttitudeController ::setFeedforwardAtStartup(bool model, bool observer) {
 
 void AttitudeController ::estimateIn_handler(FwIndexType portNum,
                                              const AttitudeEstimate& estimate) {
+  static_cast<void>(portNum);
   this->estimate_ = estimate;
   this->have_estimate_ = true;
 }
@@ -470,6 +471,7 @@ bool AttitudeController ::applyParameters() {
 }
 
 void AttitudeController ::parameterUpdated(FwPrmIdType id) {
+  static_cast<void>(id);
   // Any tuning change rebuilds all three laws and drops the accumulated state:
   // an integrator filled under the old gains means nothing under the new ones.
   (void)this->applyParameters();
@@ -804,7 +806,7 @@ bool AttitudeController ::runPoint(double dtSec, double* wheelTorque, CtrlRefusa
   return true;
 }
 
-void AttitudeController ::runStuckOnMonitor(I64 nowNs) {
+void AttitudeController ::runStuckOnMonitor() {
   // The comparison is on field **magnitudes** against the onboard IGRF, which is
   // attitude-free. Judging a magnetometer through an attitude that magnetometer
   // helped build is the circularity that latches out the healthy unit (P52), and
@@ -966,6 +968,8 @@ void AttitudeController ::commandActuators(I64 nowNs, const pm::Vec3<Body>& dipo
 }
 
 void AttitudeController ::run_handler(FwIndexType portNum, U32 context) {
+  static_cast<void>(portNum);
+  static_cast<void>(context);
   const I64 nowNs = this->currentTaiNs();
   ++this->cycles_run_;
 
@@ -1042,7 +1046,7 @@ void AttitudeController ::run_handler(FwIndexType portNum, U32 context) {
   // The stuck-on monitor runs in every mode, including IDLE — a rod stuck on
   // while nothing is commanding it is exactly the case worth catching, and it is
   // the one in which the residual is unambiguous.
-  this->runStuckOnMonitor(nowNs);
+  this->runStuckOnMonitor();
 
   // Momentum accounting and the disturbance observer likewise run in every mode:
   // the §9 envelope and momentum-anomaly monitors are vehicle-level fault

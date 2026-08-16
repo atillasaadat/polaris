@@ -69,7 +69,10 @@ bool MomentumConfig::isValid() const {
   }
   for (int i = 0; i < wheel_count; ++i) {
     const Eigen::Vector3d axis = spin_axes.col(i);
-    if (!axis.allFinite() || !(axis.norm() > 0.0)) {
+    // Unit norm required, not merely non-zero: update() multiplies I_w*omega by
+    // this column, so a column of length 2 doubles that wheel's momentum
+    // contribution with no symptom anywhere downstream.
+    if (!axis.allFinite() || std::abs(axis.norm() - 1.0) > 1.0e-9) {
       return false;
     }
   }
@@ -84,10 +87,13 @@ bool MomentumConfig::isValid() const {
       !(desat_exit_nms < desat_enter_nms) || desat_confirm_cycles == 0) {
     return false;
   }
-  // The envelope is the FDIR ceiling and the desat threshold is the action that
-  // keeps the vehicle under it, so an envelope below the threshold would report a
-  // fault the controller was never asked to prevent.
-  return std::isfinite(envelope_nms) && envelope_nms >= desat_enter_nms;
+  // The envelope is the FDIR ceiling on ||h_stored|| and the desat threshold is
+  // the action that keeps the vehicle under it — but the threshold gates
+  // ||h_stored - target||, a different quantity whenever the vehicle carries a
+  // momentum bias. The ordering that makes the pair coherent is therefore
+  // envelope >= ||target|| + enter: anything less lets a biased vehicle trip
+  // the envelope at a stored momentum the desat law was never asked to unload.
+  return std::isfinite(envelope_nms) && envelope_nms >= target_nms.norm() + desat_enter_nms;
 }
 
 MomentumManager::MomentumManager(const MomentumConfig& config)
@@ -111,8 +117,13 @@ void MomentumManager::reset() {
 
 bool MomentumManager::update(const double* wheel_speeds_radps, const bool* wheel_valid,
                              MomentumState& out) {
-  if (!configured_ || wheel_speeds_radps == nullptr || wheel_valid == nullptr) {
+  if (!configured_) {
     return refuseMomentum(MomentumRefusal::kUnconfigured, out);
+  }
+  // A null array is a caller bug, not a tuning problem; naming it kUnconfigured
+  // would send the operator to the parameter table for a defect in the code.
+  if (wheel_speeds_radps == nullptr || wheel_valid == nullptr) {
+    return refuseMomentum(MomentumRefusal::kBadInput, out);
   }
   Eigen::Vector3d stored = Eigen::Vector3d::Zero();
   for (int i = 0; i < config_.wheel_count; ++i) {

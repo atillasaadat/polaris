@@ -33,10 +33,12 @@ void SitlTime ::setSitlActive() {
 // ----------------------------------------------------------------------
 
 void SitlTime ::timeSetIn_handler(FwIndexType portNum, I64 epochTaiNs) {
+  static_cast<void>(portNum);
   this->sim_ns_.store(epochTaiNs, std::memory_order_relaxed);
 }
 
 void SitlTime ::timeGetPort_handler(FwIndexType portNum, Fw::Time& time) {
+  static_cast<void>(portNum);
   if (this->sitl_active_.load(std::memory_order_relaxed)) {
     // Sim time: the last pushed macro-step epoch, TAI. The onboard master clock
     // is TAI (§3.2); F´ has no TAI TimeBase, so it rides as spacecraft time.

@@ -49,9 +49,11 @@
 /// evaluated per call. IGRF publishes coefficients on a 5-year grid with a
 /// secular-variation set for the final interval; the ground-side loader collapses
 /// whichever pair brackets the epoch of interest into one (t₀, ġ) snapshot, so
-/// this evaluator only ever handles the linear case. Secular variation is
-/// published to degree 8 only — terms above that have ġ = 0 and are simply held
-/// constant.
+/// this evaluator only ever handles the linear case. The published
+/// secular-variation *column* stops at degree 8 (`kIgrfMaxSvDegree`); for an
+/// epoch bracketed by two main-field models the loader derives a rate at every
+/// degree from the difference, so terms above 8 drift too on that path and are
+/// held constant only when the SV column is the source.
 ///
 /// References:
 ///  - Alken et al., *International Geomagnetic Reference Field: the thirteenth
@@ -137,7 +139,8 @@ bool validIgrfCoefficients(const IgrfCoefficients& c);
 /// where \f$B_\theta\f$ points toward increasing colatitude (geographic south) and
 /// \f$B_r\f$ radially outward. Time dependence is the official linear model,
 /// \f$g_n^m(t) = g_n^m(t_0) + (t - t_0)\,\dot g_n^m\f$, with secular variation
-/// \f$\dot g_n^m\f$ published (and applied) only to degree 8. `field()` returns
+/// \f$\dot g_n^m\f$ from the SV column (degree <= 8) or derived at every degree
+/// from a bracketing pair of main-field models. `field()` returns
 /// the equivalent Cartesian ECEF vector; `fieldSpherical()` returns the
 /// components above.
 ///

@@ -5,7 +5,7 @@ real dynamics, against a truth stack the filter does not have, does the
 estimate stay bounded, does the covariance still mean what it says, and what
 happens when the receiver misbehaves in each of the ways §9.2 says it can.
 
-Design doc §8.3 (onboard OD), §9.2 (GNSS FDIR), §13 (analysis), §23.2 (Monte
+Design doc §8.3 (onboard OD), §9.2 (GNSS FDIR), §12 (analysis tools), §13 (Monte
 Carlo). Requirements REQ-ODP-001, -005, -006 in
 `docs/requirements/orbit_od_propagation.rst`.
 

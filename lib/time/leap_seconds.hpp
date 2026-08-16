@@ -76,7 +76,7 @@ class LeapSecondTable {
   /// unchanged.
   ///
   /// Only **positive** (+1) leap seconds are represented — none other has ever
-  /// occurred and the design assumes leaps are "inserted, never removed" (§5.2).
+  /// occurred and the design assumes leaps are "inserted, never removed" (§3.2).
   /// A step other than +1 (skipped/negative second) is not surfaced here.
   bool isInsertedLeapSecond(std::int64_t tai_seconds, std::int32_t& delta_at_during) const;
 

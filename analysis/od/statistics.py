@@ -2,7 +2,7 @@
 
 The campaign asks four separable questions and they need different statistics.
 
-**Is the estimate bounded?** Over a week, against a truth stack the filter does
+**Is the estimate bounded?** Over the campaign arc, against a truth stack the filter does
 not have, does the position error stay where the filter is useful. This is a
 distribution, summarised by its quantiles and its worst case, per regime — the
 nominal stretches and the fault stretches are different populations and pooling

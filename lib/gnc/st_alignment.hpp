@@ -110,7 +110,7 @@
 ///
 /// **Simultaneity is the caller's.** The two solutions must be from the same
 /// cycle: a vehicle rotating at even 0.1 °/s smears 360 arcsec of spurious
-/// misalignment into a 10 s time skew, which is three times the effect being
+/// misalignment into a 1 s time skew, which is three times the effect being
 /// measured. The component only offers a sample when both units delivered a fresh,
 /// valid solution in the same estimation cycle.
 ///

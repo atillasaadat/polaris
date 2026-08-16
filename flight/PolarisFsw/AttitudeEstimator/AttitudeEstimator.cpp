@@ -65,18 +65,6 @@ Vec3F64 toVec3F64(const Eigen::Vector3d& v) {
   return out;
 }
 
-//! True if @p timeTagNs is within @p maxAgeS of @p nowTaiNs. A measurement from
-//! the future is stale too — a time tag ahead of the master clock is a fault,
-//! not freshness (§9.1).
-bool fresh(I64 nowTaiNs, I64 timeTagNs, F64 maxAgeS) {
-  if (!(maxAgeS > 0.0)) {
-    return false;
-  }
-  const I64 delta = nowTaiNs - timeTagNs;
-  const I64 limit = static_cast<I64>(maxAgeS * static_cast<F64>(kNsPerSecond));
-  return delta >= -limit && delta <= limit;
-}
-
 //! Map the lib estimation mode onto the telemetry/port enum.
 EstimationMode::T toEstimationMode(polaris::state::EstimationMode m) {
   switch (m) {
@@ -108,8 +96,8 @@ AttitudeEstimator ::AttitudeEstimator(const char* const compName)
       // on invented values before configuration arrives.
       estimator_(polaris::gnc::CoarseAttitudeConfig{}),
       mekf_(polaris::gnc::MekfConfig{}),
-      mag_cal_accumulator_(polaris::gnc::MagCalibrationConfig{}),
       st_align_accumulator_(polaris::gnc::StAlignmentConfig{}),
+      mag_cal_accumulator_(polaris::gnc::MagCalibrationConfig{}),
       igrf_(polaris::environment::IgrfCoefficients{}),
       leap_(polaris::time::LeapSecondTable::historical()) {}
 
@@ -511,6 +499,22 @@ double AttitudeEstimator ::applyAlbedoCorrection(FwIndexType sunIndex, const pm:
   ain.radius_m = r_eci.eigen().norm();
   ain.dayside = std::max(0.0, r_hat.eigen().dot(sun_geocentric.eigen()));
 
+  // The covariance trace is read *before* the correction is applied, because a
+  // NaN or non-positive trace must not fall through as sigma_att = 0 — that is
+  // the most permissive value the inflation below can take, and it would hand
+  // the filter the *converged* sun sigma on exactly the cycle its own attitude
+  // covariance is unusable: overconfidence in the unsafe direction. No usable
+  // covariance means no usable correction; the cycle takes the uncorrected sun
+  // vector with the uncorrected sigma instead (the same rule the coarse-seed
+  // path applies to its prior).
+  const double cov_trace =
+      this->state_.covariance
+          .block<3, 3>(polaris::state::ErrorState::kAttitude, polaris::state::ErrorState::kAttitude)
+          .trace();
+  if (!std::isfinite(cov_trace) || !(cov_trace > 0.0)) {
+    return kNoValue;
+  }
+
   pm::Vec3<Body> corrected;
   double applied = 0.0;
   if (!polaris::gnc::albedoCorrection(unit_config, ain, corrected, applied)) {
@@ -538,13 +542,9 @@ double AttitudeEstimator ::applyAlbedoCorrection(FwIndexType sunIndex, const pm:
   //
   // σ_att is the total 1σ attitude angle from the published covariance trace,
   // halved because the induced sun-vector error is transverse to the pull rather
-  // than the full eigenaxis rotation.
-  const double cov_trace =
-      this->state_.covariance
-          .block<3, 3>(polaris::state::ErrorState::kAttitude, polaris::state::ErrorState::kAttitude)
-          .trace();
-  const double sigma_att =
-      (std::isfinite(cov_trace) && cov_trace > 0.0) ? std::sqrt(cov_trace) : 0.0;
+  // than the full eigenaxis rotation. The trace was validated above, before the
+  // correction was applied.
+  const double sigma_att = std::sqrt(cov_trace);
   const double attitude_driven = this->albedo_config_.albedo_error_rad * sigma_att * 0.5;
   this->setSunSigmaForCycle(std::hypot(this->sigma_sun_albedo_corr_rad_, attitude_driven),
                             ephemSigmaRad);
@@ -571,11 +571,12 @@ bool AttitudeEstimator ::refreshAlbedoConfig() {
   // correction on a cycle nobody was watching. Non-finiteness is a configuration
   // error, so it is reported now rather than discovered later.
   for (FwIndexType i = 0; i < NUM_SUNSENSORIN_INPUT_PORTS * 3; ++i) {
-    if (!std::isfinite(boresights[i])) {
+    const FwSizeType slot = static_cast<FwSizeType>(i);
+    if (!std::isfinite(boresights[slot])) {
       this->failAlbedoConfig("SunAlbedoBoresightsBody contains a non-finite component");
       return false;
     }
-    this->sun_boresights_[i] = boresights[i];
+    this->sun_boresights_[slot] = boresights[slot];
   }
 
   polaris::gnc::AlbedoCorrectionConfig cfg;
@@ -654,6 +655,7 @@ void AttitudeEstimator ::noteAttitudeLost() {
 }
 
 void AttitudeEstimator ::parameterUpdated(FwPrmIdType id) {
+  static_cast<void>(id);
   // Any change re-reads the whole set: the values are validated together
   // (CoarseAttitudeConfig::isValid), so one at a time means nothing.
   this->params_dirty_ = true;
@@ -983,6 +985,7 @@ void AttitudeEstimator ::gnssIn_handler(FwIndexType portNum, const GnssMeas& mea
 }
 
 void AttitudeEstimator ::mtqActuationIn_handler(FwIndexType portNum, const MtqActuation& state) {
+  static_cast<void>(portNum);
   this->mtq_schedule_ = state;
   this->have_mtq_schedule_ = true;
 }
@@ -1020,6 +1023,8 @@ void AttitudeEstimator ::starTrackerIn_handler(FwIndexType portNum, const StarTr
 // ----------------------------------------------------------------------
 
 void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
+  static_cast<void>(portNum);
+  static_cast<void>(context);
   const I64 nowNs = this->currentTaiNs();
 
   // Clear the published magnetic block before any of the cycle's early returns.

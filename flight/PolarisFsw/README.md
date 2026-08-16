@@ -36,8 +36,7 @@ fprime-gds --no-app
 The application binary may then be run independently from the created 'bin' directory.
 
 ```
-cd PolarisFsw/build-artifacts/<platform>/bin/
-./PolarisFsw -a 127.0.0.1 -p 50000
+./build-artifacts/Linux/flight_PolarisFsw/bin/flight_PolarisFsw -a 127.0.0.1 -p 50000
 ```
 
 
@@ -236,7 +235,7 @@ attitude estimator emits `ConfigInvalid` and refuses to run).
 `INVALID`, which on a vehicle with no flight defaults is indistinguishable from a
 config nobody wrote. So `configc` refuses to emit a file longer than the store,
 turning that into a build error. Polaris raises the limit from the F´ default of
-25 to **64** in `flight/config/PrmDbImplCfg.hpp`, registered as a
+25 to **128** in `flight/config/PrmDbImplCfg.hpp`, registered as a
 `CONFIGURATION_OVERRIDES` module (`flight/config/CMakeLists.txt`) so there is no
 vendored fork of the F´ config directory to keep in step with the submodule.
 `MAX_ENTRIES` in `tools/configc/prmdb.py` must stay equal to it.
