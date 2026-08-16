@@ -92,20 +92,46 @@ constexpr double kCoastHorizonS = 300.0;
 /// Force-model truncation over the coast horizon [m] — the **design input** for
 /// the process noise, and nothing else may set it.
 ///
-/// Measured at **3.59 m** by `CoarseModelTruncationOverTheCoastHorizon` below,
-/// against the GMAT-validated truth sim; carried here at 5.0 m, ~40% above it.
-/// The margin is deliberate and follows the house rule that a committed
-/// threshold sitting within noise of its own measurement is too tight: the
-/// measurement moves with the epoch (the geopotential residual depends on where
-/// in the orbit the arc starts) and with any legitimate truth-model improvement,
-/// and `q_a` should not have to be re-derived every time it does.
+/// Measured at **1.28 m** by `CoarseModelTruncationOverTheCoastHorizon` below,
+/// against the GMAT-validated truth sim at 32x32 gravity, and carried **at the
+/// measurement**. It used to be carried at 1.8 m, ~40% above it, and that
+/// margin was the process noise being over-budgeted: the OD Monte Carlo
+/// (`analysis/od`) measured the campaign NEES at 4.22 against a 95% floor of
+/// 4.83, all of it velocity, and re-flying the nominal scenario across the
+/// margin put NEES at 4.68 / 5.28 / 6.81 for 1.5 / 1.28 / 1.0 m — consistent
+/// only at the measurement. The margin was there so the CI fence below does not
+/// flap with the epoch, and it belongs on the fence, not on the flight tuning;
+/// hence `kTruncationFenceM` beside this, which is the only place headroom is
+/// added.
 ///
-/// The measured growth is very close to **quadratic** — 0.037 m at 30 s against
-/// 3.59 m at 300 s, a factor of 96 for a factor of 10 in time — which is the
-/// direct evidence that the truncation is a *systematic acceleration* and not
-/// noise, and therefore why the CWNA fit below is documented as an
-/// approximation matched at the horizon rather than as a description.
-constexpr double kTruncationAtHorizonM = 5.0;
+/// **This value dropped from 5.0 m when the onboard force model gained the 8x8
+/// EGM2008 field**, and the drop is smaller than the field's own contribution
+/// suggests because the reference got harder at the same time. On one arc, both
+/// models against the same 32x32 truth: the closed-form J2 model diverges
+/// **3.17 m** and the 8x8 field **1.28 m**, a 2.5x reduction. The older 3.59 m
+/// figure was measured against an *8x8* truth, which the onboard model now
+/// matches — an 8x8-vs-8x8 comparison measures two implementations of one field
+/// and reports 0.045 m, which is why the truth degree was raised rather than the
+/// number simply banked. `CoarseModelTruncationOverTheCoastHorizon` records both
+/// models every run and fails if the field ever stops winning.
+///
+/// The measured growth is still very close to **quadratic** — 0.0138 m at 30 s
+/// against 1.280 m at 300 s, a factor of 93 for a factor of 10 in time — which
+/// is the direct evidence that what remains is a *systematic acceleration* and
+/// not noise, and therefore why the CWNA fit below is documented as an
+/// approximation matched at the horizon rather than as a description. Improving
+/// the field did not change that character; it lowered the coefficient.
+constexpr double kTruncationAtHorizonM = 1.28;
+
+/// The CI fence on that measurement [m]: `CoarseModelTruncationOverTheCoastHorizon`
+/// fails above it. Sits ~17% over the measurement so a shift in epoch (the
+/// geopotential residual depends on where in the orbit the arc starts) or a
+/// legitimate truth-model improvement does not fail the build, and low enough
+/// that a force-model regression the process noise no longer covers is caught
+/// long before it reaches the ensemble check's ~13% noise floor at 30 runs. The
+/// epoch sensitivity itself is unmeasured; 17% is a judgement, not a number, and
+/// is not fed into anything the filter flies with.
+constexpr double kTruncationFenceM = 1.5;
 
 /// Process-noise acceleration PSD [m²/s³], from the CWNA position spread
 /// `σ_r(T) = √(q_a T³/3)` matched to the truncation at the horizon:
@@ -124,6 +150,17 @@ constexpr double kChi2_3_999 = 16.266;
 constexpr double kSigmaHM = 1.2 / 1.4142135623730951;
 constexpr double kSigmaVM = 1.5 * kSigmaHM;
 constexpr double kSigmaVelMps = 0.03;
+
+/// Largest fix latency the filter absorbs [s].
+///
+/// `config/hardware/gnss/novatel_oem7600.yaml` carries `fix_latency_s: 0.05` —
+/// the datasheet's 20 ms measurement latency plus bus transport and a scheduler
+/// slot. 0.2 s is 4x that, which covers a missed GNC cycle or two without
+/// becoming a licence to accept a fix from a stopped clock: at 7.6 km/s the bound
+/// itself is 1.5 km of forward propagation, and the point of having a bound at
+/// all is that the extrapolation stays short enough for the fix's own velocity to
+/// carry it.
+constexpr double kMaxFixLatencyS = 0.2;
 
 /// Reference vehicle ballistic properties: 12 kg, 0.06 m² ram area, C_d = 2.2.
 constexpr double kBallisticCoeff = 2.2 * 0.06 / 12.0;
@@ -145,8 +182,13 @@ constexpr double kBallisticCoeff = 2.2 * 0.06 / 12.0;
 OrbitOdConfig referenceConfig() {
   OrbitOdConfig cfg;
   cfg.mu_m3_per_s2 = pc::gravity::kGM;
-  cfg.zonal_j2 = pc::gravity::kJ2;
   cfg.reference_radius_m = pc::gravity::kReferenceRadius;
+  // The flown gravity model: the compiled-in 8x8 EGM2008 truncation, not the
+  // closed-form J2 the filter originally carried. `zonal_j2` stays zero — the
+  // harmonic field already contains the degree-2 zonal, and `isValid` refuses a
+  // config that sets both.
+  cfg.geopotential_degree = 8;
+  cfg.geopotential_order = 8;
   cfg.drag_ballistic_coeff_m2_per_kg = kBallisticCoeff;
   cfg.drag_ref_density_kg_m3 = 3.725e-12;  // Vallado Table 8-4, 400 km band
   cfg.drag_ref_altitude_m = 400'000.0;
@@ -157,8 +199,12 @@ OrbitOdConfig referenceConfig() {
   cfg.max_coast_s = kCoastHorizonS;
   cfg.max_dt_s = 10.0;
   cfg.max_step_s = 1.0;
-  cfg.min_radius_m = 6.4e6;
-  cfg.max_radius_m = 5.0e7;
+  cfg.max_fix_latency_s = kMaxFixLatencyS;
+  // The band is sized to *this vehicle's* orbit, not to Earth orbits in general.
+  // It is the only check on the seed path, where there is no prior and so no NIS
+  // gate; see `OrbitOdConfig::min_radius_m`. 120 km to 1600 km altitude.
+  cfg.min_radius_m = 6.5e6;
+  cfg.max_radius_m = 8.0e6;
   return cfg;
 }
 
@@ -176,16 +222,27 @@ OrbitOdConfig propagationOnly(OrbitOdConfig cfg) {
 }
 
 /// Gravity-only variant, for the analytic checks that need an isolated term.
+/// Gravity-only variant, for the analytic checks that need an isolated term.
+///
+/// These drop back to the **closed-form** two-body and J2 paths rather than
+/// asking the harmonic field for degree 0 or degree 2 order 0. The point of an
+/// analytic check is to compare the flown code against an expression written
+/// independently of it, and the closed forms are the ones the textbooks print;
+/// `geopotential_test.cpp` separately pins the harmonic evaluator's degree-0 and
+/// degree-2/order-0 cases onto exactly these same closed forms, so the chain is
+/// closed without either test standing in for the other.
 OrbitOdConfig twoBodyConfig() {
   OrbitOdConfig cfg = propagationOnly(referenceConfig());
+  cfg.geopotential_degree = 0;
+  cfg.geopotential_order = 0;
   cfg.zonal_j2 = 0.0;
   cfg.drag_ballistic_coeff_m2_per_kg = 0.0;
   return cfg;
 }
 
 OrbitOdConfig j2OnlyConfig() {
-  OrbitOdConfig cfg = propagationOnly(referenceConfig());
-  cfg.drag_ballistic_coeff_m2_per_kg = 0.0;
+  OrbitOdConfig cfg = twoBodyConfig();
+  cfg.zonal_j2 = pc::gravity::kJ2;
   return cfg;
 }
 
@@ -393,9 +450,13 @@ TEST(OrbitOdForceModel, TwoBodyEnergyIsConserved) {
 /// pass all of those.
 TEST(OrbitOdForceModel, DragDissipatesEnergyAtTheClosedFormRate) {
   RecordProperty("verifies", "REQ-ODP-001");
-  OrbitOdConfig cfg = referenceConfig();
-  cfg = propagationOnly(cfg);
-  cfg.zonal_j2 = 0.0;  // isolate drag from the J2 short-period energy exchange
+  // Two-body gravity plus drag: `specificEnergy` below is the *two-body*
+  // integral, which only a two-body field conserves. Under the flown 8x8 field
+  // the geopotential's own short-period energy exchange is three orders above
+  // the drag loss being measured, so isolating drag means isolating the whole
+  // harmonic field, not just its degree-2 zonal.
+  OrbitOdConfig cfg = twoBodyConfig();
+  cfg.drag_ballistic_coeff_m2_per_kg = kBallisticCoeff;
   Eigen::Vector3d r0;
   Eigen::Vector3d v0;
   circularState(kAltitudeM, kInclinationRad, cfg.mu_m3_per_s2, r0, v0);
@@ -522,11 +583,12 @@ TEST(OrbitOdForceModel, J2AccelerationMatchesTheTextbookComponentForm) {
   const OrbitOdConfig cfg = j2OnlyConfig();
   const Eigen::Vector3d r(4.0e6, 3.0e6, 4.5e6);
   const Eigen::Vector3d v(0.0, 7.0e3, 0.0);
-  const Eigen::Vector3d pole = Eigen::Vector3d::UnitZ();
+  // Identity orientation puts the pole on ẑ, which is what makes the closed form
+  // below the textbook one.
+  const pg::EarthOrientation earth;
 
-  const Eigen::Vector3d a = pg::onboardAcceleration(cfg, pm::Vec3<pmf::ECI>(r),
-                                                    pm::Vec3<pmf::ECI>(v), pm::Vec3<pmf::ECI>(pole))
-                                .eigen();
+  const Eigen::Vector3d a =
+      pg::onboardAcceleration(cfg, pm::Vec3<pmf::ECI>(r), pm::Vec3<pmf::ECI>(v), earth).eigen();
 
   // a = a_pointmass + a_J2, with (Montenbruck & Gill §3.2, Eq. 3.30)
   //   a_J2,{x,y} = -(3/2) J2 (μ/r²)(Re/r)² (·/r)(1 - 5z²/r²)
@@ -652,6 +714,54 @@ TEST(OrbitOdConfigValidation, RejectsEveryOutOfRangeField) {
     c.max_step_s = 1.0;
     c.max_dt_s = static_cast<double>(OrbitOd::kMaxSubsteps) + 1.0;
   }));
+
+  // --- Harmonic field ------------------------------------------------------
+  // Degree must be inside the compiled-in table; a request the evaluator would
+  // silently clamp is refused here instead, so a config asking for a fidelity
+  // the build does not have fails loudly rather than flying a lower one.
+  EXPECT_FALSE(broken([](OrbitOdConfig& c) { c.geopotential_degree = -1; }));
+  EXPECT_FALSE(broken(
+      [](OrbitOdConfig& c) { c.geopotential_degree = polaris::gnc::kGeopotentialMaxDegree + 1; }));
+  EXPECT_FALSE(broken([](OrbitOdConfig& c) { c.geopotential_order = c.geopotential_degree + 1; }));
+  EXPECT_FALSE(broken([](OrbitOdConfig& c) { c.geopotential_order = -1; }));
+
+  // Both gravity models at once is two descriptions of the same physics with
+  // one of them silently ignored.
+  EXPECT_FALSE(broken([](OrbitOdConfig& c) { c.zonal_j2 = pc::gravity::kJ2; }));
+
+  // The field uses the table's own GM and reference radius, so a config
+  // disagreeing with them describes two different Earths — and the drag altitude
+  // is computed from the config's radius, so the disagreement is not academic.
+  EXPECT_FALSE(broken([](OrbitOdConfig& c) { c.mu_m3_per_s2 *= 1.001; }));
+  EXPECT_FALSE(broken([](OrbitOdConfig& c) { c.reference_radius_m *= 1.001; }));
+  // ...but WGS84's constants against EGM2008's coefficients is a legitimate
+  // pairing (7.5e-10 in GM), and must stay legal.
+  {
+    OrbitOdConfig cfg = referenceConfig();
+    cfg.mu_m3_per_s2 = pc::wgs84::kGM;
+    EXPECT_TRUE(cfg.isValid());
+  }
+  // With the field off, `zonal_j2` and a mismatched mu are legal again — the
+  // closed-form path carries its own coefficient and scale.
+  {
+    OrbitOdConfig cfg = referenceConfig();
+    cfg.geopotential_degree = 0;
+    cfg.geopotential_order = 0;
+    cfg.zonal_j2 = pc::gravity::kJ2;
+    cfg.mu_m3_per_s2 *= 1.001;
+    EXPECT_TRUE(cfg.isValid());
+  }
+
+  // --- Fix latency ---------------------------------------------------------
+  EXPECT_FALSE(broken([](OrbitOdConfig& c) { c.max_fix_latency_s = -0.1; }));
+  EXPECT_FALSE(broken(
+      [](OrbitOdConfig& c) { c.max_fix_latency_s = std::numeric_limits<double>::quiet_NaN(); }));
+  // Zero is the documented way to demand strictly-forward fixes.
+  {
+    OrbitOdConfig cfg = referenceConfig();
+    cfg.max_fix_latency_s = 0.0;
+    EXPECT_TRUE(cfg.isValid());
+  }
 }
 
 TEST(OrbitOdRefusals, UnconfiguredFilterIsInertForever) {
@@ -678,6 +788,53 @@ TEST(OrbitOdRefusals, UninitialisedPropagationRefusesRatherThanGuessing) {
   EXPECT_EQ(filter.propagate(advance(epoch0, 1.0), eopAt(epoch0)), OrbitOdRefusal::kUninitialised);
   EXPECT_FALSE(filter.isInitialised());
   EXPECT_FALSE(filter.solutionValid());
+}
+
+TEST(OrbitOdRefusals, AGeoRadiusFixCannotSeedTheFilterOnALeoVehicle) {
+  RecordProperty("verifies", "REQ-ODP-001");
+  // A cold filter has no prior, so it has no innovation and therefore no NIS
+  // gate: the plausibility band in `OrbitOdConfig` is the *only* thing standing
+  // between a wire value and the state the vehicle then flies on. That makes
+  // the band's width a real decision rather than a formality — it must be sized
+  // to the orbit this vehicle is on, not to every orbit that exists. Sized to
+  // admit GEO on a 400 km vehicle, this fix would be accepted whole.
+  //
+  // The update path is checked as well, because the two refuse for different
+  // reasons and only one of them is the trust boundary: an initialised filter
+  // would also reject this on the innovation, which is defence in depth and not
+  // a substitute — it is unavailable at exactly the moment the band matters.
+  const OrbitOdConfig cfg = referenceConfig();
+  Eigen::Vector3d r0;
+  Eigen::Vector3d v0;
+  circularState(kAltitudeM, kInclinationRad, cfg.mu_m3_per_s2, r0, v0);
+
+  const pt::Tai epoch0 = testEpoch();
+  const pf::EopValue eop = eopAt(epoch0);
+
+  // Geostationary radius, the `bad_data` campaign scenario's injected value.
+  constexpr double kGeoRadiusM = 4.2164e7;
+  const Eigen::Vector3d r_geo = r0.normalized() * kGeoRadiusM;
+
+  OrbitOd cold(cfg);
+  OrbitOdResult out;
+  EXPECT_FALSE(cold.ingest(fixFrom(epoch0, r_geo, v0, eop), eop, out));
+  EXPECT_EQ(out.refusal, OrbitOdRefusal::kFixImplausible);
+  EXPECT_FALSE(cold.isInitialised());
+  EXPECT_FALSE(out.seeded);
+
+  OrbitOd warm(cfg);
+  ASSERT_TRUE([&] {
+    OrbitOdResult seed;
+    return warm.ingest(fixFrom(epoch0, r0, v0, eop), eop, seed) && seed.seeded;
+  }());
+  EXPECT_FALSE(warm.ingest(fixFrom(advance(epoch0, 10.0), r_geo, v0, eop), eop, out));
+  EXPECT_EQ(out.refusal, OrbitOdRefusal::kFixImplausible);
+  // Still on its own orbit rather than anywhere near the fix it refused. Not
+  // asserted as "unchanged": `ingest` propagates to the fix epoch before it
+  // judges the measurement, so the state has legitimately moved ten seconds
+  // along the trajectory. What must not have happened is the 35000 km jump.
+  EXPECT_TRUE(warm.solutionValid());
+  EXPECT_NEAR(warm.position().eigen().norm(), r0.norm(), 1.0e3);
 }
 
 TEST(OrbitOdRefusals, NonFiniteFixIsRefusedWithoutTouchingTheSolution) {
@@ -1073,8 +1230,16 @@ scenario::SimConfig truthConfig(const pt::Tai& epoch, const Eigen::Vector3d& r0,
   config.spacecraft.srp_area_m2 = 0.06;
   config.spacecraft.srp_cr = 1.3;
 
-  config.environment.gravity_degree = 8;
-  config.environment.gravity_order = 8;
+  // Truth gravity must sit **above** the onboard field, or this measures
+  // nothing. It used to be 8x8, which was comfortably above a closed-form J2
+  // onboard model; now that the filter itself flies 8x8, an 8x8 truth would
+  // reduce this test to a comparison of two implementations of the same field
+  // and report a truncation of approximately zero — passing, and meaningless.
+  // 32x32 is the next real step: at 400 km the degree-33+ residual is ~1e-9
+  // m/s², two orders below the degree-9..32 band this now measures, so the
+  // number is a fair stand-in for "everything the onboard model drops".
+  config.environment.gravity_degree = 32;
+  config.environment.gravity_order = 32;
   config.environment.drag_enabled = true;
   config.environment.srp_enabled = true;
   config.environment.sun_third_body = true;
@@ -1110,6 +1275,7 @@ scenario::SimConfig truthConfig(const pt::Tai& epoch, const Eigen::Vector3d& r0,
 /// tightly would make every legitimate force-model improvement a test failure.
 TEST(OrbitOdConsistency, CoarseModelTruncationOverTheCoastHorizon) {
   RecordProperty("verifies", "REQ-ODP-001");
+  RecordProperty("verifies", "REQ-ODP-005");
   const OrbitOdConfig cfg = referenceConfig();
   Eigen::Vector3d r0;
   Eigen::Vector3d v0;
@@ -1143,33 +1309,56 @@ TEST(OrbitOdConsistency, CoarseModelTruncationOverTheCoastHorizon) {
   ASSERT_TRUE(runner.runAt(times, truth, &error)) << error;
   ASSERT_EQ(truth.size(), times.size());
 
-  OrbitOd filter(cfg);
-  ASSERT_EQ(filter.initialize(epoch0, pm::Vec3<pmf::ECI>(r0), pm::Vec3<pmf::ECI>(v0),
-                              receiverSeedCovariance()),
-            OrbitOdRefusal::kNone);
-
-  double divergence_at_horizon = 0.0;
-  for (std::size_t i = 0; i < times.size(); ++i) {
-    const pt::Tai target = advance(epoch0, times[i]);
-    while (filter.epoch() < target) {
-      const double remaining = (target - filter.epoch()).seconds();
-      const pt::Tai next =
-          (remaining <= cfg.max_dt_s) ? target : advance(filter.epoch(), cfg.max_dt_s);
-      ASSERT_EQ(filter.propagate(next, *eop_table, leap), OrbitOdRefusal::kNone);
+  // Coast one configuration against the truth samples, recording the divergence
+  // at each and returning the one at the horizon. Factored out because the same
+  // walk is run twice — once for the flown field and once for the J2-only model
+  // it replaced — against the *same* truth arc, which is the only way the
+  // improvement is a measurement rather than two numbers from different runs.
+  const auto coast = [&](const OrbitOdConfig& model, const std::string& tag) -> double {
+    OrbitOd filter(model);
+    EXPECT_EQ(filter.initialize(epoch0, pm::Vec3<pmf::ECI>(r0), pm::Vec3<pmf::ECI>(v0),
+                                receiverSeedCovariance()),
+              OrbitOdRefusal::kNone);
+    double divergence = 0.0;
+    for (std::size_t i = 0; i < times.size(); ++i) {
+      const pt::Tai target = advance(epoch0, times[i]);
+      while (filter.epoch() < target) {
+        const double remaining = (target - filter.epoch()).seconds();
+        const pt::Tai next =
+            (remaining <= model.max_dt_s) ? target : advance(filter.epoch(), model.max_dt_s);
+        EXPECT_EQ(filter.propagate(next, *eop_table, leap), OrbitOdRefusal::kNone);
+      }
+      divergence = (filter.position().eigen() - truth[i].state.position.eigen()).norm();
+      RecordProperty(tag + "_m_at_" + std::to_string(static_cast<int>(times[i])) + "s",
+                     std::to_string(divergence));
     }
-    const double dr = (filter.position().eigen() - truth[i].state.position.eigen()).norm();
-    RecordProperty("truncation_m_at_" + std::to_string(static_cast<int>(times[i])) + "s",
-                   std::to_string(dr));
-    divergence_at_horizon = dr;
-  }
+    return divergence;
+  };
+
+  const double divergence_at_horizon = coast(cfg, "truncation");
+
+  // The model this one replaced, flown over the identical arc. Recorded and
+  // asserted rather than merely described: "the 8x8 field is better than J2"
+  // is the entire justification for carrying a coefficient table on the flight
+  // side, and a claim that load-bearing should fail CI if it stops being true.
+  OrbitOdConfig j2_model = propagationOnly(referenceConfig());
+  j2_model.geopotential_degree = 0;
+  j2_model.geopotential_order = 0;
+  j2_model.zonal_j2 = pc::gravity::kJ2;
+  const double j2_divergence = coast(j2_model, "j2_only_truncation");
 
   RecordProperty("q_a_m2_per_s3", std::to_string(kAccelPsd));
+  EXPECT_LT(divergence_at_horizon, j2_divergence)
+      << "the 8x8 field (" << divergence_at_horizon << " m) does not beat the closed-form J2 model "
+      << "(" << j2_divergence << " m) it replaced — the flight-side coefficient table is not "
+      << "earning its keep";
   EXPECT_GT(divergence_at_horizon, 0.0) << "a coarse model that matched truth exactly would mean "
                                            "the two propagators are not actually different";
-  EXPECT_LT(divergence_at_horizon, kTruncationAtHorizonM)
+  EXPECT_LT(divergence_at_horizon, kTruncationFenceM)
       << "the coarse force model diverges from truth by more over the coast horizon than the "
-         "value q_a was sized from — §8.3's process noise no longer covers its own truncation "
-         "and must be re-derived";
+         "fence above the value q_a was sized from ("
+      << kTruncationAtHorizonM
+      << " m) — §8.3's process noise no longer covers its own truncation and must be re-derived";
 }
 
 namespace {
@@ -1265,12 +1454,12 @@ TEST(OrbitOdConsistency, MonteCarloNeesAndNisSitAtTheirStateAndMeasurementDimens
       const pt::Tai t = advance(epoch0, static_cast<double>(step) * kStepS);
 
       // --- Truth: RK4 on the same force model, then the process-noise kick ---
-      pm::Vec3<pmf::ECI> pole;
-      ASSERT_TRUE(pg::polarAxisEci(t, eop, pole));
+      pg::EarthOrientation earth;
+      ASSERT_TRUE(pg::earthOrientationAt(t, eop, earth));
       auto deriv = [&](const Eigen::Vector3d& r, const Eigen::Vector3d& v, Eigen::Vector3d& dr,
                        Eigen::Vector3d& dv) {
         dr = v;
-        dv = pg::onboardAcceleration(cfg, pm::Vec3<pmf::ECI>(r), pm::Vec3<pmf::ECI>(v), pole)
+        dv = pg::onboardAcceleration(cfg, pm::Vec3<pmf::ECI>(r), pm::Vec3<pmf::ECI>(v), earth)
                  .eigen();
       };
       Eigen::Vector3d k1r;
@@ -1357,4 +1546,181 @@ TEST(OrbitOdConsistency, MonteCarloNeesAndNisSitAtTheirStateAndMeasurementDimens
   const double reject_fraction =
       static_cast<double>(rejected_total) / static_cast<double>(kRuns * kStepsPerRun);
   EXPECT_LT(reject_fraction, 0.01) << "the NIS gate is rejecting consistent measurements";
+}
+
+// ===========================================================================
+// 5. Fix latency (§6.2, §8.3)
+// ===========================================================================
+
+/// The correction, measured against the error it removes.
+///
+/// A fix tagged one latency behind the filter describes where the vehicle was,
+/// not where it is. Applied unchanged it drags the state backwards by ~v·τ; this
+/// asserts the corrected path lands on truth-at-the-filter's-epoch instead, and
+/// — the half that matters — asserts the *uncorrected* error is large, so a
+/// regression that quietly dropped the correction could not pass by being
+/// "close enough".
+TEST(OrbitOdLatency, LatentFixIsAdvancedToTheFilterEpochRatherThanApplied) {
+  RecordProperty("verifies", "REQ-ODP-006");
+  const OrbitOdConfig cfg = referenceConfig();
+  Eigen::Vector3d r0;
+  Eigen::Vector3d v0;
+  circularState(kAltitudeM, kInclinationRad, cfg.mu_m3_per_s2, r0, v0);
+
+  const pt::Tai epoch0 = testEpoch();
+  const pf::EopValue eop = eopAt(epoch0);
+  constexpr double kLatencyS = 0.05;
+  constexpr double kCycleS = 1.0;
+
+  OrbitOd filter(cfg);
+  OrbitOdResult out;
+  ASSERT_TRUE(filter.ingest(fixFrom(epoch0, r0, v0, eop), eop, out));
+  ASSERT_TRUE(out.seeded);
+
+  // The GNC cycle runs the filter forward to `t_now`. The receiver's next
+  // solution was measured at `t_now - latency` and arrives now.
+  const pt::Tai t_now = advance(epoch0, kCycleS);
+  ASSERT_EQ(filter.propagate(t_now, eop), OrbitOdRefusal::kNone);
+
+  const double t_measured = kCycleS - kLatencyS;
+  Eigen::Vector3d r_measured;
+  Eigen::Vector3d v_measured;
+  truthAt(cfg, epoch0, r0, v0, t_measured, eop, r_measured, v_measured);
+  Eigen::Vector3d r_now;
+  Eigen::Vector3d v_now;
+  truthAt(cfg, epoch0, r0, v0, kCycleS, eop, r_now, v_now);
+
+  // The error the correction exists to remove, stated before it is removed.
+  const double uncorrected_error = (r_measured - r_now).norm();
+  EXPECT_GT(uncorrected_error, 300.0)
+      << "a 50 ms latency should be hundreds of metres of along-track position; if it is not, "
+         "this test is not exercising the thing it is named for";
+
+  ASSERT_TRUE(
+      filter.ingest(fixFrom(advance(epoch0, t_measured), r_measured, v_measured, eop), eop, out));
+  EXPECT_TRUE(out.position.accepted);
+  EXPECT_NEAR(out.fix_latency_s, kLatencyS, 1.0e-6);
+
+  // The measurement, advanced, must agree with truth at the filter's epoch to
+  // far better than the fix's own noise — the residual is O(tau^3 * jerk), not
+  // O(tau^2). Compared against the *measurement* the filter now holds, reached
+  // through the innovation: a converged filter sits between prior and
+  // measurement, so asserting on the state would be asserting on the gain.
+  EXPECT_LT(out.position.innovation.norm(), 1.0e-3)
+      << "the advanced measurement disagrees with the filter's own propagated state by more than "
+         "a millimetre — the advance is not tracking the propagation";
+
+  // And the state itself must have stayed on truth, not been dragged back
+  // toward where the vehicle was one latency ago.
+  EXPECT_LT((filter.position().eigen() - r_now).norm(), 0.1 * uncorrected_error);
+}
+
+/// The bound is real: a fix from far enough in the past is a clock fault, not a
+/// latency, and is refused. Checked either side of the boundary so the test
+/// pins the threshold rather than merely observing that some refusal happens.
+TEST(OrbitOdLatency, FixOlderThanTheBoundIsRefusedAndTheSolutionUntouched) {
+  RecordProperty("verifies", "REQ-ODP-006");
+  const OrbitOdConfig cfg = referenceConfig();
+  Eigen::Vector3d r0;
+  Eigen::Vector3d v0;
+  circularState(kAltitudeM, kInclinationRad, cfg.mu_m3_per_s2, r0, v0);
+
+  const pt::Tai epoch0 = testEpoch();
+  const pf::EopValue eop = eopAt(epoch0);
+  OrbitOd filter(cfg);
+  OrbitOdResult out;
+  ASSERT_TRUE(filter.ingest(fixFrom(epoch0, r0, v0, eop), eop, out));
+
+  const double kCycleS = 2.0;
+  ASSERT_EQ(filter.propagate(advance(epoch0, kCycleS), eop), OrbitOdRefusal::kNone);
+
+  // Just inside the bound: accepted.
+  const double inside = kCycleS - (kMaxFixLatencyS - 0.01);
+  Eigen::Vector3d r_in;
+  Eigen::Vector3d v_in;
+  truthAt(cfg, epoch0, r0, v0, inside, eop, r_in, v_in);
+  EXPECT_TRUE(filter.ingest(fixFrom(advance(epoch0, inside), r_in, v_in, eop), eop, out));
+  EXPECT_TRUE(out.position.accepted);
+
+  // Just outside it: refused, and nothing moves. The filter's epoch is still
+  // t = kCycleS (an accepted latent fix does not rewind it), so a fix at
+  // kCycleS - kMaxFixLatencyS - 0.01 is over the bound.
+  const Eigen::Vector3d before = filter.position().eigen();
+  const OrbitOd::Covariance p_before = filter.covariance();
+  const double outside = kCycleS - (kMaxFixLatencyS + 0.01);
+  Eigen::Vector3d r_out;
+  Eigen::Vector3d v_out;
+  truthAt(cfg, epoch0, r0, v0, outside, eop, r_out, v_out);
+  EXPECT_FALSE(filter.ingest(fixFrom(advance(epoch0, outside), r_out, v_out, eop), eop, out));
+  EXPECT_EQ(out.refusal, OrbitOdRefusal::kNonMonotonicEpoch);
+  EXPECT_EQ(filter.position().eigen(), before);
+  EXPECT_EQ(filter.covariance(), p_before);
+}
+
+/// A latent fix without a velocity cannot be advanced, and the filter's own
+/// velocity must not be borrowed to do it — that would fold the filter's error
+/// into a measurement required to be independent of it, which is how a
+/// consistent filter is made overconfident.
+TEST(OrbitOdLatency, LatentFixWithoutVelocityIsRefusedRatherThanAdvancedOnThePrior) {
+  RecordProperty("verifies", "REQ-ODP-006");
+  const OrbitOdConfig cfg = referenceConfig();
+  Eigen::Vector3d r0;
+  Eigen::Vector3d v0;
+  circularState(kAltitudeM, kInclinationRad, cfg.mu_m3_per_s2, r0, v0);
+
+  const pt::Tai epoch0 = testEpoch();
+  const pf::EopValue eop = eopAt(epoch0);
+  OrbitOd filter(cfg);
+  OrbitOdResult out;
+  ASSERT_TRUE(filter.ingest(fixFrom(epoch0, r0, v0, eop), eop, out));
+  ASSERT_EQ(filter.propagate(advance(epoch0, 1.0), eop), OrbitOdRefusal::kNone);
+
+  Eigen::Vector3d r_m;
+  Eigen::Vector3d v_m;
+  truthAt(cfg, epoch0, r0, v0, 0.95, eop, r_m, v_m);
+  GnssFix fix = fixFrom(advance(epoch0, 0.95), r_m, v_m, eop);
+  fix.velocity_valid = false;
+
+  const OrbitOd::Covariance p_before = filter.covariance();
+  EXPECT_FALSE(filter.ingest(fix, eop, out));
+  EXPECT_EQ(out.refusal, OrbitOdRefusal::kNonMonotonicEpoch);
+  EXPECT_EQ(filter.covariance(), p_before);
+
+  // The same fix at the filter's own epoch needs no advance and is accepted
+  // position-only, so the refusal above is about the *advance*, not about
+  // velocity-less fixes in general.
+  Eigen::Vector3d r_f;
+  Eigen::Vector3d v_f;
+  truthAt(cfg, epoch0, r0, v0, 2.0, eop, r_f, v_f);
+  GnssFix forward = fixFrom(advance(epoch0, 2.0), r_f, v_f, eop);
+  forward.velocity_valid = false;
+  EXPECT_TRUE(filter.ingest(forward, eop, out));
+  EXPECT_TRUE(out.position.accepted);
+}
+
+/// Zero latency restores the strict behaviour: any fix behind the filter is
+/// refused. The feature must be opt-in per config, not a relaxation every
+/// existing scenario silently inherits.
+TEST(OrbitOdLatency, ZeroBoundRefusesAnyFixBehindTheFilter) {
+  RecordProperty("verifies", "REQ-ODP-006");
+  OrbitOdConfig cfg = referenceConfig();
+  cfg.max_fix_latency_s = 0.0;
+  ASSERT_TRUE(cfg.isValid());
+
+  Eigen::Vector3d r0;
+  Eigen::Vector3d v0;
+  circularState(kAltitudeM, kInclinationRad, cfg.mu_m3_per_s2, r0, v0);
+  const pt::Tai epoch0 = testEpoch();
+  const pf::EopValue eop = eopAt(epoch0);
+
+  OrbitOd filter(cfg);
+  OrbitOdResult out;
+  ASSERT_TRUE(filter.ingest(fixFrom(epoch0, r0, v0, eop), eop, out));
+  ASSERT_EQ(filter.propagate(advance(epoch0, 1.0), eop), OrbitOdRefusal::kNone);
+
+  Eigen::Vector3d r_m;
+  Eigen::Vector3d v_m;
+  truthAt(cfg, epoch0, r0, v0, 0.99, eop, r_m, v_m);
+  EXPECT_FALSE(filter.ingest(fixFrom(advance(epoch0, 0.99), r_m, v_m, eop), eop, out));
+  EXPECT_EQ(out.refusal, OrbitOdRefusal::kNonMonotonicEpoch);
 }

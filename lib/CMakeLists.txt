@@ -129,6 +129,7 @@ add_library(polaris_gnc
   gnc/momentum.cpp
   gnc/disturbance.cpp
   gnc/dipole_estimation.cpp
+  gnc/geopotential.cpp
   gnc/orbit_od.cpp)
 target_include_directories(polaris_gnc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # polaris_frames is PUBLIC because the onboard OD filter (§8.3) takes EOP and

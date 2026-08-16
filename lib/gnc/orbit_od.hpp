@@ -19,40 +19,63 @@
 /// this being one block of the same 15-state error-state filter, not to a
 /// multiplicative parameterisation of position.
 ///
-/// ## The force model is deliberately coarse
+/// ## The force model is coarse, but no longer J2-only
 ///
-/// **Two-body + J2 + exponential-density drag**, and nothing else. This is far
-/// below the truth sim's EGM2008 / NRLMSIS / third-body / SRP stack (§5.2), and
-/// the gap is the design, not an omission (§18, `sim/CLAUDE.md`: truth must
-/// differ from onboard, deliberately). Three reasons, in order of weight:
+/// **A degree/order 8 EGM2008 truncation + exponential-density drag.** This is
+/// still far below the truth sim's 200×200 EGM2008 / NRLMSIS / third-body / SRP
+/// stack (§5.2), and that gap is the design, not an omission (§18,
+/// `sim/CLAUDE.md`: truth must differ from onboard, deliberately).
 ///
-///  1. **GNSS dominates the solution.** A fix arrives at ~1 Hz with a ~1 m
-///     one-sigma; the dynamics only has to carry the state across the gaps
-///     between fixes and the occasional outage. Over the coast horizon below,
-///     the modelling error is comparable to one fix's noise — so buying more
-///     fidelity buys almost nothing, while the whole ~90 minute orbit's worth of
-///     accumulated model error never gets a chance to build.
-///  2. **The flight side must not carry a geopotential table.** An 8×8 EGM
-///     truncation is 81 coefficients and a normalized Legendre recursion in the
-///     10 Hz GNC cycle (§2.4); a 70×70 one is an uploaded table with its own
-///     validity, staleness and CRC story. Neither earns its keep against (1).
-///  3. **The truncation is absorbed as process noise**, which is what an error
-///     budget is for. `OrbitOdConfig::accel_psd_m2_per_s3` is sized *from the
-///     measured* divergence between this model and the full-fidelity one — see
-///     "Process noise" below — rather than tuned by feel.
+/// The filter originally flew closed-form two-body + J2, on the argument that
+/// GNSS dominates the solution and a better field buys nothing. That argument
+/// holds *for the estimate* and is unchanged: with 1 Hz fixes at ~1 m the
+/// steady-state error is receiver-bound, and no force model moves it. It does
+/// not hold for the two things the dynamics is actually load-bearing for —
+/// **coasting through an outage**, and **onboard ephemeris prediction** (§20
+/// pass planning, eclipse prediction, maneuver targeting) — where the J2-only
+/// truncation was the whole error budget: **3.17 m** over the 300 s coast
+/// horizon against a 32x32 truth, and **14.3 m** over 699 s against GMAT, led by
+/// the degree-3+ zonals and the tesserals. The same arcs with this field:
+/// **1.28 m** and **1.2 cm**.
 ///
-/// **Zonal J2 is evaluated about the true pole, in ECI.** A zonal field is
-/// axisymmetric about the **ECEF** Z axis, and ECI (J2000 mean equator) does not
-/// share it: precession and nutation separate the two by ~0.36° by 2026, which
-/// tilts the J2 bulge by that angle and costs ~100 m per revolution in LEO. That
-/// exact defect was found in the truth sim by GMAT cross-validation and is
-/// documented in `sim/world/gravity_field.hpp`; it is not repeated here. Because
-/// the field is axisymmetric, only the **pole direction** matters — not the
-/// Earth-rotation angle — so this filter takes the pole from the same
-/// `frames::eci_ecef` reduction every other transform in the repo uses
-/// (REQ-CONV-002) and evaluates the closed-form J2 acceleration about it
-/// directly in ECI. No position is rotated, and the ~50 arcsec/yr motion of the
-/// pole itself is resolved by the per-call EOP lookup.
+/// The objection the original argument raised against a table was cost, and the
+/// measured cost is small enough to overrule it: 8×8 is 45 coefficient pairs
+/// compiled in (`gnc/egm2008_low_degree.hpp`, ~1 kB of `.rodata`, no upload and
+/// so no staleness or CRC story), evaluated by the unnormalized Cunningham V/W
+/// recursion with `(N+2)²` doubles of stack scratch and no precomputed tables
+/// (`gnc/geopotential.hpp`). It is not evaluated in the 10 Hz GNC cycle — the
+/// propagation runs at the fix rate and its sub-steps.
+///
+/// What survives from the original argument is the third point, and it still
+/// does the real work: **the remaining truncation is absorbed as process
+/// noise**, which is what an error budget is for.
+/// `OrbitOdConfig::accel_psd_m2_per_s3` is sized *from the measured* divergence
+/// between this model and the full-fidelity one — see "Process noise" below —
+/// rather than tuned by feel, so improving the field re-derives `q_a` rather
+/// than leaving a now-conservative value in place.
+///
+/// Degree 0 restores the two-body path and `zonal_j2` the closed-form J2 one;
+/// that is how the golden test compares this propagator against GMAT **at
+/// matched fidelity**, and the two paths are mutually exclusive by config
+/// validation.
+///
+/// **The field is evaluated in ECEF, per integration sub-step.** A geopotential
+/// is defined in the Earth-fixed frame, and ECI (J2000 mean equator) is not it.
+/// For the *zonal* fallback path only the pole direction matters, since a zonal
+/// field is axisymmetric — but even there ECI must not be used naively:
+/// precession and nutation separate the two poles by ~0.36° by 2026, tilting the
+/// J2 bulge by that angle at ~100 m per revolution in LEO. That exact defect was
+/// found in the truth sim by GMAT cross-validation and is documented in
+/// `sim/world/gravity_field.hpp`; it is not repeated here or there.
+///
+/// The harmonic path cannot take that shortcut at all. A **tesseral** term is
+/// fixed to the rotating Earth, so the full ECI↔ECEF rotation is resolved from
+/// the same `frames::eci_ecef` reduction every other transform in the repo uses
+/// (REQ-CONV-002) — and resolved **per sub-step**, not once per propagation:
+/// Earth turns 0.004°/s, so holding one rotation across a 60 s step would smear
+/// the tesserals by 0.25° of longitude. Within a sub-step it is held across the
+/// four RK4 stages, where the 6e-5 rad of rotation over `h ≤ 1 s` mis-orients a
+/// ~1e-5 m/s² term by ~6e-10 m/s², orders below the truncation itself.
 ///
 /// **Drag is a static exponential atmosphere** — `ρ = ρ₀ exp(−(h−h₀)/H)` on a
 /// spherical altitude, against the atmosphere-relative velocity `v − ω⊕ × r`
@@ -130,13 +153,27 @@
 /// propagator against the GMAT-validated truth sim over the horizon and asserts
 /// the result stays under the value `q_a` was sized from, so a force-model
 /// regression fails CI rather than quietly invalidating the tuning. For the
-/// reference vehicle (12 kg, 400 km, 51.6°) that measurement is **3.59 m over
-/// 300 s**, carried at 5.0 m with ~40% margin, giving
-/// `q_a = 2.8e-6 m²/s³`. Design doc §8.3 records both.
+/// reference vehicle (12 kg, 400 km, 51.6°) that measurement is **1.28 m over
+/// 300 s**, carried at the measurement, giving `q_a = 1.8e-7 m²/s³`. It is
+/// carried *without* margin on purpose: the OD Monte Carlo (`analysis/od`)
+/// measured a 40% margin here as covariance pessimism — NEES 4.22 against a
+/// 95% floor of 4.83, all of it velocity — and consistent only at the
+/// measurement. Headroom against the measurement moving with the epoch belongs
+/// on the CI fence in `orbit_od_test.cpp`, not in the tuning. Design doc §8.3
+/// records the number, its reference, and that history.
+///
+/// **The reference has to stay above the model, and that is a live constraint,
+/// not a footnote.** This measurement used to read 3.59 m against an *8x8*
+/// truth — which the onboard model now matches, and an 8x8-vs-8x8 comparison
+/// reports 0.045 m: a passing test that asserts nothing, because it is measuring
+/// two implementations of one field rather than a truncation. The truth degree
+/// was raised to 32x32 rather than the smaller number banked. Any future
+/// increase in `geopotential_degree` has to check the same thing before trusting
+/// the number this paragraph quotes.
 ///
 /// State the approximation honestly: the truncation is a *systematic*, not white
-/// noise — and the same measurement says so, since it grows as `t²` (0.037 m at
-/// 30 s against 3.59 m at 300 s) where white noise would grow as `t^{3/2}`.
+/// noise — and the same measurement says so, since it grows as `t²` (0.0138 m at
+/// 30 s against 1.280 m at 300 s) where white noise would grow as `t^{3/2}`.
 /// Matching a white model to it **at** `T` therefore makes the filter
 /// conservative for `t < T` and optimistic beyond `T`, which is exactly why the
 /// solution is declared invalid at `T` rather than left to coast on a covariance
@@ -151,6 +188,45 @@
 /// term, a ~465 m/s error if skipped) through `frames::eciStateFromEcef`. A fix
 /// whose epoch lies outside the uploaded EOP table's span cannot be converted
 /// and is **refused**, not extrapolated.
+///
+/// ### Fix latency
+///
+/// A receiver's solution is valid at its **measurement epoch** but reaches the
+/// FSW a fix latency later — tens of milliseconds of internal processing, plus
+/// bus transport and scheduling. At 7.6 km/s that interval is ~7.6 m of
+/// along-track position per millisecond, which makes it the largest single error
+/// this filter can carry: an order above the receiver's own ~1 m noise, and two
+/// above the geopotential truncation the harmonic field was added to remove.
+///
+/// It is corrected on the **measurement**, not the filter. When a fix arrives
+/// tagged behind the filter's current epoch — the normal case, since the GNC
+/// cycle has propagated in the meantime — the reported PVT is advanced to the
+/// filter's epoch on the receiver's *own reported velocity* plus the onboard
+/// acceleration,
+/// \f[
+///   r \mathrel{+}= v\,\tau + \tfrac12 a\,\tau^2, \qquad v \mathrel{+}= a\,\tau,
+/// \f]
+/// and `R` is inflated by `(σ_v τ)²` for the velocity error that integrates into
+/// position across the advance. This is the benign corner of Bar-Shalom §5.6's
+/// out-of-sequence-measurement problem: the measurement determines the whole
+/// state and carries its own velocity, so the linear term is *measured* rather
+/// than modelled and the residual is `O(τ³·jerk)` — micrometres at `τ ≤ 0.2 s`.
+/// It is the solution-domain analogue of the signal-transit-time correction Kim
+/// et al. apply to navigation-solution measurements [kim2025].
+///
+/// Retrodicting the *filter* instead (rolling the state back to the fix epoch,
+/// updating, re-propagating) is the textbook-exact alternative and is not worth
+/// it here: it costs a stored prior and two extra propagations per fix to fix an
+/// error the measurement's own velocity already resolves to micrometres.
+///
+/// The correction is bounded by `OrbitOdConfig::max_fix_latency_s`. Past that a
+/// fix is refused as before, because a tag arbitrarily far in the past is a
+/// clock fault rather than a latency, and a fix without a velocity is refused
+/// too — the filter's own velocity is not a substitute, since using it would
+/// fold the filter's error into a measurement that has to stay independent of
+/// it. The realised latency is reported on every fix through
+/// @ref OrbitOdResult::fix_latency_s, so a latency that climbs is visible in
+/// telemetry rather than silently absorbed.
 ///
 /// Position and velocity are folded in as **two sequential 3-row updates**
 /// rather than one 6-row batch. The receiver draws them independently, so `R` is
@@ -240,14 +316,24 @@
 ///    (exponential atmosphere model and its scale-height table), §3.7 (ECEF↔ECI
 ///    state transformation). [vallado2013]
 ///  - Bar-Shalom, Li & Kirubarajan, *Estimation with Applications to Tracking
-///    and Navigation*, 2001, §5.4 (NEES/NIS consistency), §6.2.2 (the
-///    discretised continuous white-noise acceleration model). [barshalom2001]
+///    and Navigation*, 2001, §5.4 (NEES/NIS consistency), §5.6
+///    (out-of-sequence measurements), §6.2.2 (the discretised continuous
+///    white-noise acceleration model). [barshalom2001]
+///  - Kim, Lee & Park, "Enhanced Real-Time Onboard Orbit Determination of LEO
+///    Satellites Using GPS Navigation Solutions with Signal Transit Time
+///    Correction", Aerospace 12(6), 2025 (correcting a navigation-solution
+///    measurement to the epoch it is applied at). [kim2025]
+///  - Cunningham, "On the computation of the spherical harmonic terms needed
+///    during the numerical integration of the orbital motion of an artificial
+///    satellite", Celestial Mechanics 2, 1970 (the V/W recursion the onboard
+///    field is evaluated by). [cunningham1970]
 
 #include <cstdint>
 #include <Eigen/Core>
 
 #include "frames/eci_ecef.hpp"
 #include "frames/eop.hpp"
+#include "gnc/geopotential.hpp"
 #include "math/frames.hpp"
 #include "math/typed_vector.hpp"
 #include "state/estimated_state.hpp"
@@ -268,9 +354,26 @@ struct OrbitOdConfig {
   /// constant only so the golden test can pin the propagator against a reference
   /// tool's own μ.
   double mu_m3_per_s2{0.0};
+  /// Harmonic degree of the compiled-in EGM2008 truncation to evaluate
+  /// (`lib/gnc/geopotential.hpp`). **Zero disables the harmonic field** and falls
+  /// back to the closed-form two-body + @ref zonal_j2 path below, which is what
+  /// the GMAT matched-fidelity golden cases use. Must be in
+  /// `[0, kGeopotentialMaxDegree]`.
+  ///
+  /// When non-zero the field supplies its own point-mass term and its own GM and
+  /// reference radius, @ref zonal_j2 must be zero (the field already contains the
+  /// degree-2 zonal), and @ref mu_m3_per_s2 / @ref reference_radius_m must agree
+  /// with the table's constants to 1e-6 relative — see `isValid`.
+  int geopotential_degree{0};
+  /// Harmonic order to evaluate. Must be in `[0, geopotential_degree]`. Order 0
+  /// is a purely zonal field; the tesserals are what require the full ECEF
+  /// rotation per sub-step.
+  int geopotential_order{0};
+
   /// Unnormalized zonal harmonic J2 [-]. Set it from `constants::gravity::kJ2`.
   /// **Zero disables the term** (pure two-body), which is what the golden
-  /// two-body case uses. Must be finite and non-negative.
+  /// two-body case uses. Must be finite and non-negative, and must be zero when
+  /// @ref geopotential_degree is non-zero.
   double zonal_j2{0.0};
   /// Reference radius the zonal coefficient is scaled to [m]. Must be positive
   /// when `zonal_j2 > 0`; `constants::wgs84::kSemiMajorAxis` is the pairing the
@@ -318,6 +421,14 @@ struct OrbitOdConfig {
   double max_dt_s{0.0};
   /// Largest RK4 sub-step [s]. Must be positive.
   double max_step_s{0.0};
+  /// Largest fix latency the filter will absorb [s] — how far *behind* its own
+  /// epoch a fix may be tagged and still be used. See "Fix latency" in the file
+  /// header. Zero restores strictly-forward ingest (a fix behind the filter is
+  /// refused); it must cover the receiver's `fix_latency_s` plus the bus and
+  /// scheduling transport, and should not be set far beyond it, since the
+  /// measurement is forward-propagated across this interval on its own reported
+  /// velocity. Must be finite and non-negative.
+  double max_fix_latency_s{0.0};
 
   /// @}
   /// @name Measurement plausibility (§9.1)
@@ -327,6 +438,20 @@ struct OrbitOdConfig {
   /// the receiver is not trusted: an unchecked position does not fail loudly
   /// downstream, it poisons the propagation while every validity flag still
   /// reads true. Must satisfy `0 < min < max`.
+  ///
+  /// **Size this to the vehicle's own orbit regime, not to "an Earth orbit".**
+  /// The band is the *only* check a fix passes on the seed path: a cold filter,
+  /// or one whose solution the coast horizon has just dropped, has no prior, so
+  /// it has no innovation and the NIS gate does not exist. A fix that clears the
+  /// band there becomes the state the vehicle flies on, outright. On the update
+  /// path the gate is a second line of defence; on the seed path there is no
+  /// second line. A band wide enough to admit geostationary radius on a 400 km
+  /// vehicle therefore admits a GEO fix as a seed — measured, and pinned by
+  /// `OrbitOdRefusals.AGeoRadiusFixCannotSeedTheFilterOnALeoVehicle`.
+  ///
+  /// The reference LEO vehicle uses 6.5e6 m to 8.0e6 m (roughly 120 km to
+  /// 1600 km altitude): wide enough for the whole LEO band and any dispersion or
+  /// decay within it, narrow enough that MEO, GTO and GEO are all outside.
   double min_radius_m{0.0};
   double max_radius_m{0.0};
 
@@ -355,6 +480,45 @@ enum class OrbitOdRefusal : std::uint8_t {
   kMeasurementRejected,  ///< the NIS gate refused the fix
   kFilterFault,          ///< non-finite internal result; the solution was dropped
 };
+
+/// The refusal's own name, for a log line, a report or a test failure message.
+///
+/// Beside the enum on purpose: a mapping kept anywhere else is the same list
+/// written twice, and the two drift the first time a value is added. Here the
+/// switch is exhaustive and `-Wswitch` fails the build when it stops being so,
+/// which is the property that makes the mapping worth having at all. No storage,
+/// no allocation, nothing that would keep it off the flight path.
+[[nodiscard]] constexpr const char* refusalName(OrbitOdRefusal refusal) {
+  switch (refusal) {
+    case OrbitOdRefusal::kNone:
+      return "none";
+    case OrbitOdRefusal::kUnconfigured:
+      return "unconfigured";
+    case OrbitOdRefusal::kUninitialised:
+      return "uninitialised";
+    case OrbitOdRefusal::kNonMonotonicEpoch:
+      return "non_monotonic_epoch";
+    case OrbitOdRefusal::kStepTooLong:
+      return "step_too_long";
+    case OrbitOdRefusal::kCoastExpired:
+      return "coast_expired";
+    case OrbitOdRefusal::kFixNotFinite:
+      return "fix_not_finite";
+    case OrbitOdRefusal::kFixImplausible:
+      return "fix_implausible";
+    case OrbitOdRefusal::kFixSigmaInvalid:
+      return "fix_sigma_invalid";
+    case OrbitOdRefusal::kFrameConversion:
+      return "frame_conversion";
+    case OrbitOdRefusal::kNoVelocityForSeed:
+      return "no_velocity_for_seed";
+    case OrbitOdRefusal::kMeasurementRejected:
+      return "measurement_rejected";
+    case OrbitOdRefusal::kFilterFault:
+      return "filter_fault";
+  }
+  return "unknown";
+}
 
 /// Diagnostics from one 3-row measurement update. Populated whether or not the
 /// measurement was accepted, so the NIS of a *rejected* fix reaches telemetry
@@ -398,9 +562,32 @@ struct OrbitOdResult {
   /// This fix cold-started or re-acquired the filter, so no update was run and
   /// the covariance is the fix's own.
   bool seeded{false};
+  /// How far behind the filter's epoch the fix was tagged [s], and therefore how
+  /// far its PVT was forward-propagated before the update. Zero for a fix at or
+  /// ahead of the filter. Telemetered rather than merely handled: a latency that
+  /// climbs is a receiver or scheduling problem, and it is invisible in the
+  /// residuals precisely because this filter corrects for it.
+  double fix_latency_s{0.0};
   OrbitOdUpdate position{};  ///< position update diagnostics
   OrbitOdUpdate velocity{};  ///< velocity update diagnostics; untouched when the
                              ///< fix carried none
+};
+
+/// Earth orientation at one instant, as the force model needs it.
+///
+/// Carries the full ECI←ECEF rotation rather than just the pole, because the
+/// harmonic field is not axisymmetric: a tesseral term is fixed to the rotating
+/// Earth and evaluating it in ECI is wrong in longitude by the whole
+/// Earth-rotation angle. The zonal and drag terms still want only the pole, and
+/// @ref pole reads it off as the third column — the ECEF Z axis expressed in
+/// ECI, by definition of the rotation.
+struct EarthOrientation {
+  /// Rotation taking an ECEF vector to ECI. Identity is a *test* value, not a
+  /// physical one — see @ref earthOrientationAt for the real reduction.
+  Eigen::Matrix3d eci_from_ecef{Eigen::Matrix3d::Identity()};
+
+  /// The true (CIP) pole expressed in ECI, unit length.
+  Eigen::Vector3d pole() const { return eci_from_ecef.col(2); }
 };
 
 /// Acceleration of the onboard force model [m/s²], ECI (design doc §8.3).
@@ -414,19 +601,19 @@ struct OrbitOdResult {
 /// @param cfg      force-model coefficients (the filter half is ignored)
 /// @param position ECI position [m]
 /// @param velocity ECI velocity [m/s]
-/// @param pole_eci ECEF Z axis (the true/CIP pole) expressed in ECI, unit length
-///                 — see the file header for why a zonal field needs it
+/// @param earth    Earth orientation at the evaluation epoch — the harmonic
+///                 field is evaluated through it, the zonal and drag terms use
+///                 its pole
 math::Vec3<math::frames::ECI> onboardAcceleration(const OrbitOdConfig& cfg,
                                                   const math::Vec3<math::frames::ECI>& position,
                                                   const math::Vec3<math::frames::ECI>& velocity,
-                                                  const math::Vec3<math::frames::ECI>& pole_eci);
+                                                  const EarthOrientation& earth);
 
-/// The ECEF Z axis (true pole) expressed in ECI at @p t, for
-/// @ref onboardAcceleration. Thin wrapper over the one ECI↔ECEF reduction
-/// (REQ-CONV-002); returns false, leaving @p out untouched, when the reduction
-/// fails.
-[[nodiscard]] bool polarAxisEci(const time::Tai& t, const frames::EopValue& eop,
-                                math::Vec3<math::frames::ECI>& out);
+/// The Earth orientation at @p t, for @ref onboardAcceleration. Thin wrapper
+/// over the one ECI↔ECEF reduction (REQ-CONV-002); returns false, leaving
+/// @p out untouched, when the reduction fails.
+[[nodiscard]] bool earthOrientationAt(const time::Tai& t, const frames::EopValue& eop,
+                                      EarthOrientation& out);
 
 /// 6-state GNSS-aided orbit determination filter (design doc §8.3).
 ///

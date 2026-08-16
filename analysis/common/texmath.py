@@ -1,7 +1,7 @@
 """Typeset the report's formulae with KaTeX, inlined, with no network fetch.
 
 The console strings are ASCII written for a fixed-width terminal
-(``Kp = J * wn^2``). :mod:`analysis.sizing.mathfmt` sets those as Unicode with
+(``Kp = J * wn^2``). :mod:`analysis.common.mathfmt` sets those as Unicode with
 ``<sub>``/``<sup>``, which is honest but is not typesetting: a fraction stays a
 slash and a square root stays a function call. This module renders real
 mathematics, from LaTeX the report objects carry themselves.
@@ -19,7 +19,7 @@ and put raw words on a page that claimed to typeset them.
 Degrading, deliberately
 -----------------------
 :func:`tex_html` with no LaTeX returns the
-:func:`~analysis.sizing.mathfmt.math_html` rendering in the page's ordinary math
+:func:`~analysis.common.mathfmt.math_html` rendering in the page's ordinary math
 face. It is legible, it is obviously not typeset, and it is never pseudo-mathematics
 assembled from a guess. The same rendering is what a reader with JavaScript
 disabled sees for *every* formula: the markup carries the ASCII as its element
@@ -48,7 +48,7 @@ import html as _html
 import re
 from pathlib import Path
 
-from analysis.sizing.mathfmt import math_html
+from analysis.common.mathfmt import math_html
 
 #: The vendored library, beside this module so it travels with the package
 #: rather than with the working directory.
@@ -165,7 +165,7 @@ def tex_symbol(tex: str) -> str:
     Used by the nomenclature, whose rows are symbols with no ASCII source string
     to fall back to. Stripping ``\\omega_{\\mathrm{tipoff}}`` down to
     ``omega_tipoff`` and handing that to
-    :func:`~analysis.sizing.mathfmt.math_html` is safe in a way the reverse
+    :func:`~analysis.common.mathfmt.math_html` is safe in a way the reverse
     direction never is: it only ever produces *text*, so the worst case is a
     plainly-set symbol rather than mathematics that means something else.
 

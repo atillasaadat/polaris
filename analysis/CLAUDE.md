@@ -51,6 +51,24 @@
 > `sim/world/atmosphere.cpp` rather than transcribing it. See
 > `analysis/sizing/README.md`.
 >
+> **`od/` is live as of Push 63** — the long-arc orbit-determination Monte Carlo
+> (§8.3, §9.2, §13, §23.2). Same shape as `detumble/`: the runs are C++
+> (`tests/mc/orbit_od_mc.cpp` → `polaris_orbit_od_mc`, driving the real
+> `gnc::OrbitOd` against the real receiver model), and this package owns the
+> statistics, the figures and the verdict.
+> `PYTHONPATH=tools uv run --group analysis python -m analysis.od <records>`
+> writes the interactive page, prints the report and exits non-zero on any FAIL.
+> Its centre of gravity is that a covariance can be wrong in three separable
+> ways, so it carries three checks: NEES and NIS (self-normalised, in
+> `statistics.py`) and the **ensemble spread against the reported σ per RIC
+> axis** (`ensemble.py`), which estimates the covariance a second time from
+> truth alone and is the only one of the three that can see an error and a
+> covariance wrong by the same factor. Two more live on the C++ side and need no
+> campaign — `tests/unit/orbit_od_covariance_test.cpp` bounds the propagated
+> covariance against a finite-difference STM and against Liouville volume
+> conservation, both with no reference implementation. See
+> `analysis/od/README.md`.
+>
 > `contacts/`, `linkbudget/` and `postproc/` are still placeholders and wait on
 > `bindings/` exposing the C++ they must reuse (§13/§21.4, Phase 11).
 
@@ -60,7 +78,7 @@ Dependencies live in the **`analysis` group** of `pyproject.toml` (`uv sync --gr
 
 **plotly is the one library admitted on the opposite argument, and the boundary is that it renders nothing but what numpy computed.** `analysis/sizing/` reports a three-dimensional achievable set with a second surface nested inside it, and the reader has to rotate that to believe it; hand-rolling an interactive WebGL viewer is far more code than the dependency costs, and unlike a margin algorithm there is no correctness claim to own — a wrong picture of a right number is a rendering bug, not a wrong answer. It is emitted with `include_plotlyjs="inline"` so the report is one self-contained file that works offline and fetches nothing at runtime, and it stays on the ground-side lane: no flight or sim code imports it. The rule this keeps intact is the one above it — **the structured report object is still the verdict**, and the tests assert on that, never on the page.
 
-**KaTeX is admitted on the same argument and vendored rather than depended on.** The page typesets its formulae, and the alternatives were a lookup table feeding matplotlib mathtext (which is what Push 60 shipped, and which rotted the moment a formula string was reworded) or hand-rolled Unicode that cannot set a fraction. KaTeX 0.16.11 is committed **verbatim** under `analysis/sizing/vendor/katex/` with a `PROVENANCE.md` recording the version, the jsdelivr URLs and the MIT licence — the same convention §3.7 sets for external reference data, and for the same reason: the page inlines it, so the committed bytes must be reproducible from their source. It is not a Python dependency and adds nothing to the `analysis` group. The boundary is the same one plotly is held to: **it renders, it never computes.** Every symbol it sets comes from a `formula_tex` written beside the ASCII formula on the object that owns it, so a formula edited upstream carries its LaTeX with it, and one without a LaTeX form renders as plain text rather than as a guess.
+**KaTeX is admitted on the same argument and vendored rather than depended on.** The page typesets its formulae, and the alternatives were a lookup table feeding matplotlib mathtext (which is what Push 60 shipped, and which rotted the moment a formula string was reworded) or hand-rolled Unicode that cannot set a fraction. KaTeX 0.16.11 is committed **verbatim** under `analysis/common/vendor/katex/` with a `PROVENANCE.md` recording the version, the jsdelivr URLs and the MIT licence — the same convention §3.7 sets for external reference data, and for the same reason: the page inlines it, so the committed bytes must be reproducible from their source. It is not a Python dependency and adds nothing to the `analysis` group. The boundary is the same one plotly is held to: **it renders, it never computes.** Every symbol it sets comes from a `formula_tex` written beside the ASCII formula on the object that owns it, so a formula edited upstream carries its LaTeX with it, and one without a LaTeX form renders as plain text rather than as a guess.
 
 **`PYTHONPATH=tools` is not optional on these commands.** Every package here resolves its vehicle through
 `configc` (§19.3), which lives in `tools/` and is not an installed distribution — `pytest.ini` puts it on the
@@ -75,6 +93,10 @@ An analysis with a pass/fail criterion produces **both**, always. `analysis/comm
 2. **Plots that show the verdict on their face.** Not bare curves the reader must interpret. Draw the requirement threshold on the axes (`analysis.common.plotting.threshold_line`), annotate each measured value *at the point it was measured* with its number and the word PASS or FAIL (`annotate_measurement`), and put the config name and overall verdict in the title (`verdict_title`). **Colour is never load-bearing on its own** — every verdict is also words, so the figure survives grayscale and colour-blind readers.
 
 Output goes to a caller-supplied directory, defaulting under `build-artifacts/`; figures and rendered reports are derived artifacts and are never committed.
+
+3. **An HTML rendering, when the headline is a shape rather than a table.** `analysis/common/report_html.py` is the shared design system — one stylesheet, one behaviour script, the KaTeX and plotly plumbing, the prose helpers and the page shell (`render_page`). A report package owns only its *sections*: which exist, in what order, and what goes in each. Reuse the shell; never fork it. `analysis/sizing/html.py` and `analysis/od/html.py` are the worked examples, and they share no content.
+
+**Opening a browser is opt-out twice over.** Every report CLI opens its page by default, because a person running it wants to read it — and every one takes `--no-browser` to write without opening, which is what CI and the tests use. `POLARIS_NO_BROWSER` set in the environment overrides *every* caller at once and can never be overridden back on; it is the switch to set when regenerating a page repeatedly, so nothing opens a window on someone's behalf twenty times in a row. The path is printed either way, so a save-only run still says where the artifact landed.
 
 **State the validity boundary, and check it where checking is cheap.** `analysis/control/` is per-axis SISO, which assumes a near-diagonal inertia and small stored wheel momentum; it refuses a non-diagonal tensor at load and *measures* the gyroscopic coupling ratio at the loop crossover, emitting a report warning when the assumption is questionable for the configuration analysed (it fires on the reference vehicle at full wheel momentum). Warnings qualify a report; they do not fail it. See design doc §8.5, "SISO validity boundary and MIMO roadmap".
 

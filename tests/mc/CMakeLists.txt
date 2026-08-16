@@ -24,3 +24,30 @@ target_link_libraries(polaris_detumble_mc
     polaris::state
     polaris::time
     polaris_test_flags)
+
+# The 7-day orbit-determination campaign (design doc §8.3, §9.2, §13). Same
+# rules as the detumble driver above: a measurement instrument, not registered
+# with ctest, with the verdict produced downstream by `analysis/od` from the
+# JSONL it writes. Unlike detumble it runs in-process rather than forking the
+# deployment, because `gnc::OrbitOd` *is* the flight code and its F´ component
+# seam does not exist yet — see the file header.
+add_executable(polaris_orbit_od_mc
+  orbit_od_mc.cpp)
+
+target_compile_definitions(polaris_orbit_od_mc
+  PRIVATE
+    POLARIS_GOLDEN_DIR="${CMAKE_SOURCE_DIR}/tests/golden"
+    POLARIS_CONFIG_DIR="${CMAKE_SOURCE_DIR}/config")
+
+target_link_libraries(polaris_orbit_od_mc
+  PRIVATE
+    polaris::gnc
+    polaris::scenario
+    polaris::world
+    polaris::frames
+    polaris::random
+    polaris::constants
+    polaris::math
+    polaris::state
+    polaris::time
+    polaris_test_flags)

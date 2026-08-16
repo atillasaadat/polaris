@@ -301,3 +301,147 @@ TEST(Gnss, ClockJumpShiftsTheTimeTag) {
   EXPECT_NEAR(m.clock_bias_s, 1.0e-6, 1e-15);
   EXPECT_EQ(m.time_tag.nanosecondsSinceEpoch(), pt::toGps(kEpoch).nanosecondsSinceEpoch() + 1000);
 }
+
+// ---------------------------------------------------------------------------
+// Fix latency (§6.2, §8.3)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// The OEM7600 fixture with a delay line. 10 Hz rather than 100 so the arithmetic
+/// below is legible: at a 0.05 s latency, exactly one 0.1 s fix is in flight.
+sensors::GnssSpec latencySpec(double fix_latency_s, double rate_hz = 10.0) {
+  return sensors::GnssSpec::fromParams({
+      {"horizontal_position_rms_m", 1.2},
+      {"velocity_accuracy_m_s_rms", 0.03},
+      {"time_accuracy_ns_rms", 5.0},
+      {"max_rate_hz", rate_hz},
+      {"fix_latency_s", fix_latency_s},
+      {"cold_start_s", 0.0},
+      {"reacquisition_s", 0.0},
+  });
+}
+
+}  // namespace
+
+TEST(GnssSpec, CarriesFixLatencyAndDefaultsItToZero) {
+  EXPECT_DOUBLE_EQ(latencySpec(0.05).fix_latency_s, 0.05);
+  // Absent from the params, the term is disabled — the same zero-default
+  // convention every other key in `fromParams` follows.
+  EXPECT_DOUBLE_EQ(oem7600Spec().fix_latency_s, 0.0);
+}
+
+/// The delivered fix is tagged at the epoch it was *measured*, not the epoch it
+/// arrives — which is the whole point. A receiver stamps when it measured; a
+/// model that stamped on delivery would hide the latency from the filter and
+/// make it uncorrectable rather than merely present.
+TEST(Gnss, LatentFixIsTaggedAtItsMeasurementEpochNotItsDelivery) {
+  constexpr double kLatency = 0.05;
+  sensors::GnssSpec spec = latencySpec(kLatency);
+  spec.noise_enabled = false;  // isolate the timing from the error stack
+  sensors::Gnss rx(spec, kSeed, kStream);
+
+  const sensors::GnssInput in = inputOnXAxis();
+
+  // t = 0: the first solution enters the delay line and nothing has cleared the
+  // receiver yet, so there is no fix to report.
+  const sensors::GnssMeasurement first = rx.sample(kEpoch, in);
+  EXPECT_FALSE(first.valid) << "a receiver that has not finished a solution has nothing to report";
+
+  // t = 0.1 s: the t = 0 solution has been in the receiver 0.1 s > 0.05 s, so it
+  // is delivered — tagged at t = 0.
+  const sensors::GnssMeasurement second = rx.sample(epochPlus(0.1), in);
+  EXPECT_TRUE(second.valid);
+  const std::int64_t delivered_ns = second.time_tag.nanosecondsSinceEpoch();
+  const std::int64_t measured_ns = polaris::time::toGps(kEpoch).nanosecondsSinceEpoch();
+  EXPECT_NEAR(static_cast<double>(delivered_ns - measured_ns) / 1.0e9, 0.0, 1.0e-6)
+      << "the tag moved with delivery instead of staying at the measurement epoch";
+
+  EXPECT_EQ(rx.pendingDropped(), 0u);
+}
+
+/// A latent fix describes where the vehicle *was*. Asserted against a moving
+/// truth, because with a stationary one every epoch looks alike and the test
+/// would pass on a model that ignored latency entirely.
+TEST(Gnss, LatentFixReportsTheEarlierPositionNotTheCurrentOne) {
+  constexpr double kLatency = 0.05;
+  constexpr double kSpeed = 7612.0;
+  sensors::GnssSpec spec = latencySpec(kLatency);
+  spec.noise_enabled = false;
+  sensors::Gnss rx(spec, kSeed, kStream);
+
+  const auto truthAt = [&](double t_s) {
+    sensors::GnssInput in;
+    in.position_m = Vec3E(kRe + 500.0e3, kSpeed * t_s, 0.0);
+    in.velocity_m_s = Vec3E(0.0, kSpeed, 0.0);
+    return in;
+  };
+
+  ASSERT_FALSE(rx.sample(kEpoch, truthAt(0.0)).valid);
+  const sensors::GnssMeasurement m = rx.sample(epochPlus(0.1), truthAt(0.1));
+  ASSERT_TRUE(m.valid);
+
+  // Delivered at t = 0.1 s but measured at t = 0, so it must report y = 0, not
+  // the 761.2 m the vehicle has since travelled.
+  EXPECT_NEAR(m.position_m.eigen().y(), 0.0, 1.0e-6);
+  EXPECT_NEAR((m.position_m.eigen() - truthAt(0.1).position_m.eigen()).norm(), kSpeed * 0.1, 1.0e-3)
+      << "the delivered fix is not one latency behind the current truth";
+}
+
+/// With the term off, the model is bit-identical to the pre-latency one. The
+/// delay line must be a feature that switches on, not a behaviour change every
+/// existing scenario silently inherits.
+TEST(Gnss, ZeroLatencyDeliversTheCurrentSolutionImmediately) {
+  sensors::Gnss with_latency(latencySpec(0.0), kSeed, kStream);
+  sensors::Gnss without(oem7600Spec(/*cold_start_s=*/0.0), kSeed, kStream);
+
+  const sensors::GnssInput in = inputOnXAxis();
+  for (int i = 0; i < 5; ++i) {
+    const sensors::GnssMeasurement a = with_latency.sample(epochPlus(0.2 * i), in);
+    const sensors::GnssMeasurement b = without.sample(epochPlus(0.2 * i), in);
+    ASSERT_TRUE(a.valid) << "i = " << i;
+    EXPECT_EQ(a.position_m.eigen(), b.position_m.eigen()) << "i = " << i;
+    EXPECT_EQ(a.time_tag.nanosecondsSinceEpoch(), b.time_tag.nanosecondsSinceEpoch())
+        << "i = " << i;
+  }
+}
+
+/// The delay line must survive a long run at the configured rate without
+/// overrunning, and must say so if it ever does. A silently-dropping buffer
+/// would look like an intermittent receiver.
+TEST(Gnss, DelayLineDoesNotOverrunAtTheConfiguredRateAndLatency) {
+  // The datasheet corner: 100 Hz fixes against the 0.05 s configured latency,
+  // i.e. five solutions in flight at any moment against a 64-deep line.
+  sensors::GnssSpec spec = latencySpec(0.05, /*rate_hz=*/100.0);
+  spec.noise_enabled = false;
+  sensors::Gnss rx(spec, kSeed, kStream);
+
+  const sensors::GnssInput in = inputOnXAxis();
+  int valid_fixes = 0;
+  std::int64_t previous_tag_ns = 0;
+  for (int i = 0; i < 2000; ++i) {  // 20 s at 100 Hz
+    const sensors::GnssMeasurement m = rx.sample(epochPlus(0.01 * i), in);
+    if (!m.valid) {
+      continue;
+    }
+    valid_fixes += 1;
+    const std::int64_t tag_ns = m.time_tag.nanosecondsSinceEpoch();
+    if (previous_tag_ns != 0 && m.fresh) {
+      // The property the onboard filter actually depends on: tags never go
+      // backwards. `OrbitOd::ingest` refuses a non-increasing fix epoch, so a
+      // delay line that ever handed over an out-of-order solution would show up
+      // in flight as rejected measurements, not as a sim bug.
+      EXPECT_GE(tag_ns, previous_tag_ns) << "i = " << i;
+    }
+    previous_tag_ns = tag_ns;
+  }
+  EXPECT_EQ(rx.pendingDropped(), 0u) << "the delay line overran at its own datasheet rate";
+
+  // Not 2000: five solutions are in flight at any moment, and a poll that finds
+  // two due at once takes the newer and supersedes the older (see
+  // GnssSpec::fix_latency_s). With the poll epochs landing on nanosecond-rounded
+  // 0.01 s boundaries, that coalescing happens a couple of percent of the time.
+  // The bound is on the *delivery rate*, which is what a scenario cares about;
+  // pinning the exact count would be pinning double-rounding.
+  EXPECT_GT(valid_fixes, 1900) << "the receiver is delivering far fewer fixes than it solves";
+}

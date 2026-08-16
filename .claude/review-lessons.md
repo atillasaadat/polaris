@@ -365,3 +365,179 @@ before starting FDIR, estimator, or requirements work.
   locations (which YAML, which key, which installed units), what physically goes
   wrong if they stay apart, and the two ways out — fix the stale side, or declare
   the divergence, with the declaration spelled out ready to paste.
+
+## A test whose reference stopped being above its subject (P63, measurement)
+
+Push 63 raised the onboard force model from closed-form J2 to an 8×8 EGM2008
+field. Two committed tests had characterised the old model's truncation against
+references that were *also* degree 8 — the truth sim's `gravity_degree: 8` and
+the GMAT fixture's `gravity_degree: 8`. Both kept passing. Both had become
+meaningless: the unit test's 3.59 m fell to **0.045 m** and the golden test's
+14.3 m to **1.2 cm**, not because the model got 100× better against full
+fidelity, but because it was now being compared against *itself* through a
+second implementation. The bounds were 5.0 m and 50 m, so nothing failed and
+nothing prompted a look.
+
+- **Improving a model can silently invalidate the test that characterised it.**
+  A test with an upper bound reports a *smaller* number when it goes vacuous,
+  which reads exactly like success. There is no failure mode here to catch it:
+  the assertion, the test name, and the recorded property all still make sense
+  as English. The only thing that changed is that the reference is no longer
+  above the subject.
+- **The review question is "what is this measured *against*, and is it still
+  better than what it measures?"** Ask it every time a model's fidelity moves.
+  For any characterisation test — truncation, model difference, residual budget
+  — the reference's fidelity is a load-bearing input that lives somewhere else
+  in the file (here, a `SimConfig` field 60 lines away and a JSON fixture's
+  `environment` block) and is not mentioned in the assertion that depends on it.
+- **State the reference's fidelity next to the number it produces.** Both tests
+  now say what truth they run against and why it is above the model, so the next
+  degree bump reads the constraint at the point it would break it rather than
+  discovering it by having a number get suspiciously good.
+- **Two honest repairs, and they are different.** Where a higher-fidelity
+  reference existed, it was *raised* (truth sim 8×8 → 32×32) and the number
+  re-derived — `q_a` moved with it, since it is sized from that measurement.
+  Where none existed (GMAT's fixture is degree 8 and regenerating it is a
+  separate job), the test was **repurposed to what it can now actually assert** —
+  a matched-degree cross-validation of two independent implementations, which
+  turned out to be *stronger* evidence than the truncation it replaced. Deleting
+  it or loosening the bound to keep it green would both have been worse than
+  either.
+- **Pin the improvement, not just the improved number.** Both tests now fly the
+  *old* model over the identical arc and assert the new one beats it. A
+  characterisation number drifts with the epoch and the vehicle; "the field beats
+  J2" is the claim that actually justifies the code, so that is what is asserted.
+  It also means a silent revert to the old model fails, which a one-sided bound
+  on the new model's error never would.
+
+## A harness whose cycle order made a flight branch unreachable (P63, measurement)
+
+The orbit-OD Monte Carlo driver polled the GNSS delay-line model once per 10 s
+fix period and, on a valid fix, called `ingest()` alone. Two things followed,
+and only the first announced itself.
+
+- **A delay-line model polled slower than its own delay realises the poll
+  period, not the delay.** `Gnss::sample()` returns the newest solution at least
+  `fix_latency_s` old, and it only knows about solutions it was handed. Polled
+  every 10 s with the datasheet's 50 ms, the newest one old enough is the
+  *previous poll's* — so the campaign flew a 10 s latency. Measured: a constant
+  **76.7 km** of along-track offset (10 s × 7.669 km/s), with the covariance
+  sitting at 0.68 m and 354 of 355 fixes accepted. The tell was the shape, not
+  the size: a diverging filter does not look like that. The filter was tracking
+  its own trajectory perfectly and simply answering for an epoch 10 s behind the
+  one the record scored it against. **When an error is constant and the
+  covariance is healthy, suspect the epoch before the math.**
+- **Ingest-only means the filter's epoch is always the last fix's, so an
+  arriving fix is always *forward* and the latent-fix branch is dead code.**
+  This is the one that stayed silent. Every guard the latency correction owns —
+  `max_fix_latency_s`, the no-velocity refusal, the O(τ³) advance — had zero
+  campaign coverage, and nothing failed to say so, because unreachable code
+  reports no error. The gated unit tests exercised it; the campaign that was
+  supposed to be the open-ended check did not.
+- **A harness must march the real cycle order, not a convenient one.** The FSW
+  propagates to *now* every cycle and then folds in whatever arrived; that
+  ordering is what makes a latent fix latent. Reordering the driver to match
+  changed nothing about the zero-latency arcs' numbers (2.01 m worst, identical)
+  and turned a dead branch into a measured one — which is the signature of a
+  harness bug rather than a model bug: the fix is invisible where the harness was
+  already right.
+- **"Where am I now" and "where was I at the last fix" are different questions.**
+  Pointing, pass planning and maneuver targeting all ask the first. A harness
+  that only ever evaluates the estimate at fix epochs never measures the quantity
+  the vehicle actually uses.
+- **When a modelled effect cannot be resolved at the campaign's cadence, give it
+  its own scenario rather than arming it everywhere.** `latency_fast` runs 50 Hz
+  over ten minutes with the real 50 ms; the long arcs pass zero. Leaving a
+  datasheet value armed at a cadence that cannot see it does not model the effect
+  conservatively — it models a different, much larger effect, and reports it as
+  the filter's error.
+
+## The band that was the only gate, sized as if it were the second (P63, measurement)
+
+Building the OD campaign's report surfaced this from a scenario that was
+*passing*. `bad_data` injects fixes at geostationary radius and its stated
+intent is that they be refused on the §9.1 plausibility band "before the filter
+sees it". They were being refused — as `measurement_rejected`, by the NIS gate,
+one layer further in. The band, configured `6.4e6` to `5.0e7` m on a 400 km
+vehicle, admits everything from just above the surface to beyond GEO and caught
+nothing.
+
+- **A seed has no prior, so it has no innovation, so it has no gate.** On the
+  update path the NIS test is a genuine second line of defence and it worked.
+  On the *seed* path — a cold filter, or one whose solution the coast horizon
+  has just dropped — the plausibility band is the only thing between a wire
+  value and the state the vehicle then flies on. Measured: a GEO-radius fix
+  seeded the LEO filter outright, `seeded == true`, refusal `kNone`. The
+  `outage_long` scenario drops the solution three times a week, so the seed path
+  is not a cold-start curiosity; it is a path the vehicle takes in flight.
+- **A trust boundary sized to "any Earth orbit" is not a trust boundary.** The
+  band's job is to exclude what this vehicle cannot be doing, and a smallsat at
+  400 km cannot be at geostationary radius under any dispersion. Re-sized to
+  6.5e6–8.0e6 m (roughly 120–1600 km altitude): the whole LEO band with room for
+  decay and dispersion, with MEO, GTO and GEO all outside it.
+- **A defence that is passing because a *different* defence caught the case is
+  not passing.** Nothing failed here — the fix was rejected, the campaign was
+  green, and the scenario's own comment said what was supposed to happen. The
+  only way to see it was to read *which* refusal came back, which is why the
+  driver now emits the refusal by name rather than as an integer. Ask of any
+  layered check: which layer actually fired, and is the one being tested the one
+  that did?
+- **Emit the reason, not the outcome.** Had the record carried only
+  `fix_accepted: 0` this would have been invisible for as long as anyone cared
+  to look. The name cost a few bytes on ~1 % of rows and is what made the
+  finding legible at a glance.
+
+## A label that records the cause ending, not the effect ending (P63, campaign)
+
+The OD campaign's per-cycle `regime` tag flips back to `nominal` the instant a
+fault window closes. The estimate does not: after a spoof the filter is still
+kilometres out with its gate refusing honest fixes for tens of minutes. The
+campaign-wide NEES gate pooled every scenario's nominal-*regime* cycles, so the
+recovery tails — labelled nominal, drawn from no distribution the covariance
+claims — put it at 2.5e6 against a ceiling of 7.3 on a healthy filter.
+
+- **Armed and contaminated are different predicates.** A tag that records
+  whether the fault generator is running says nothing about whether the state
+  it corrupted has relaxed. Any statistic gated on "nominal" must decide which
+  of the two it means, and a transient-bearing system means the second.
+- **Three checks that can disagree are worth two that cannot.** NEES screamed
+  while the truth-derived ensemble ratio read 0.98 and NIS passed. The
+  contradiction did not just flag the defect, it *localised* it: the ensemble
+  check was already scoped to the nominal scenario, so the difference between
+  the populations was the entire suspect list.
+- **Quadratic statistics have no breakdown resistance.** A mean of squares is
+  moved arbitrarily far by arbitrarily few samples; 3k contaminated cycles
+  outvoted 2.2M healthy ones. Pool into a quadratic form only what the claim
+  under test covers.
+
+## Margin stored in a tuning constant instead of on its fence (P63, campaign)
+
+`q_a` is derived from the measured force-model truncation, which was carried at
+1.8 m against a 1.28 m measurement so the CI assertion would not flap with the
+epoch. The campaign then measured the filter conservative — NEES 4.22 under a
+4.83 floor, all velocity — and a sweep across the margin (4.68/5.28/6.81 at
+1.5/1.28/1.0 m) was consistent only at the measurement.
+
+- **Headroom belongs on the assertion, not in the value.** One constant served
+  two masters: a CI fence that wants slack and a flight tuning that wants the
+  truth. Split them (`kTruncationAtHorizonM` = measurement,
+  `kTruncationFenceM` = fence) so margin can never again ride silently into
+  the covariance.
+- **"Conservative" is a measured defect, not a virtue.** The pessimistic half
+  of the chi-square interval exists because an over-budgeted filter discards
+  information it has; the gate flagging it is the gate working.
+
+## An MC driver built in the tree the framework sanitizes (P63, campaign)
+
+The campaign ran 1.64x slow for a day because the driver was built into
+`build-fprime-automatic-native-ut`, where F´'s own `cmake/sanitizers.cmake`
+adds ASan+UBSan regardless of the project's `POLARIS_SANITIZE` option (OFF in
+both caches — checking it proves nothing). `analysis/detumble/README.md`
+already warned about exactly this; the new package's README documented the
+wrong tree anyway.
+
+- **Verify instrumentation on the binary, not in the cache:**
+  `nm -C <bin> | grep -c __asan` answers it in one line.
+- **A convention that lives only in a sibling's README is not a convention.**
+  The warning existed and was re-learned at full price; it is now beside the
+  build command in every campaign README.

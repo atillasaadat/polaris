@@ -10,7 +10,10 @@ The HTML page (``<out>/index.html``, :mod:`analysis.sizing.html`) is the default
 output because the headline result — the momentum envelope with the certified
 ceiling nested inside the hardware one — is a 3D object a reader has to rotate.
 ``--no-browser`` writes it without opening anything, which is what CI and the
-tests use; ``--print`` additionally writes the plain-text report to stdout, which
+tests use, and setting ``POLARIS_NO_BROWSER`` in the environment does the same
+for every report CLI at once — the switch to reach for when regenerating a page
+repeatedly, so a browser window is never opened on someone's behalf twenty times
+in a row. ``--print`` additionally writes the plain-text report to stdout, which
 is unchanged in content and remains the record the tests assert on. The text
 rendering is always written to ``<out>/sizing_report.txt`` either way.
 
@@ -48,13 +51,11 @@ from __future__ import annotations
 
 import argparse
 import sys
-import shutil
-import subprocess
-import webbrowser
 from pathlib import Path
 
 import numpy as np
 
+from analysis.common.report_html import open_in_browser
 from analysis.control.vehicle import load_vehicle
 from analysis.sizing.assumptions import SizingAssumptions
 from analysis.sizing.html import write_html
@@ -69,64 +70,6 @@ from analysis.sizing.report import (
 #: Matplotlib figures embedded into the HTML page, by filename. The two the
 #: interactive figures do not replace; see the comment at their use below.
 STATIC_FIGURES = ("momentum_drivers.png", "magnetorquer_sizing.png")
-
-
-def _is_wsl() -> bool:
-    """True on Windows Subsystem for Linux.
-
-    WSL reports a Microsoft kernel in ``/proc/version``; the environment
-    variable is only set for interactive shells, so the kernel string is the
-    reliable test.
-    """
-    try:
-        with open("/proc/version", encoding="utf-8", errors="replace") as f:
-            return "microsoft" in f.read().lower()
-    except OSError:
-        return False
-
-
-def _open_in_browser(page: Path) -> None:
-    """Open *page*, or say plainly how to open it, without ever failing the run.
-
-    :mod:`webbrowser` assumes a browser inside the machine it runs on. A WSL
-    distro usually has none: the browser is on the Windows side, so the module
-    falls through to ``gio``/``xdg-open`` and those report "no application for
-    text/html". The report has already been written at that point, so a failure
-    to *display* it must not look like a failure to *produce* it — the analysis
-    exit code belongs to the criteria, not to the desktop.
-
-    On WSL the page is handed to the Windows shell (``wslview`` if the wslu
-    package is installed, otherwise ``explorer.exe`` on the translated path),
-    which opens the user's real browser. Everywhere else :mod:`webbrowser` is
-    correct and is used unchanged.
-    """
-    target = str(page.resolve())
-    if not _is_wsl():
-        if not webbrowser.open(page.resolve().as_uri()):
-            print(f"could not open a browser; the report is at {target}")
-        return
-
-    if shutil.which("wslview"):
-        if subprocess.run(["wslview", target], check=False).returncode == 0:
-            return
-    windows_path = ""
-    if shutil.which("wslpath"):
-        translated = subprocess.run(
-            ["wslpath", "-w", target], capture_output=True, text=True, check=False
-        )
-        if translated.returncode == 0:
-            windows_path = translated.stdout.strip()
-    if windows_path and shutil.which("explorer.exe"):
-        # explorer.exe exits 1 even on success, so its status says nothing;
-        # what matters is whether the call could be made at all.
-        try:
-            subprocess.run(["explorer.exe", windows_path], check=False)
-            return
-        except OSError:
-            pass
-    print(
-        f"no browser reachable from WSL — open this from Windows:\n  {windows_path or target}"
-    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -240,8 +183,7 @@ def main(argv: list[str] | None = None) -> int:
         analysis, report, args.out or DEFAULT_OUTPUT_DIR, static_figures=static
     )
     print(f"sizing report: {page}")
-    if not args.no_browser:
-        _open_in_browser(page)
+    open_in_browser(page, enabled=not args.no_browser)
 
     if args.print_report:
         print()
