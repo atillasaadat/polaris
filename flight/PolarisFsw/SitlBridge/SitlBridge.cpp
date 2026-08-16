@@ -45,6 +45,7 @@ SitlBridge ::~SitlBridge() {}
 
 void SitlBridge ::dataIn_handler(FwIndexType portNum, Fw::Buffer& data,
                                  const ComCfg::FrameContext& context) {
+  static_cast<void>(portNum);
   namespace sitl = polaris::sitl;
 
   // After SHUTDOWN the bridge goes quiet: release the buffer and answer nothing.
@@ -89,12 +90,16 @@ void SitlBridge ::dataIn_handler(FwIndexType portNum, Fw::Buffer& data,
 
 void SitlBridge ::dataReturnIn_handler(FwIndexType portNum, Fw::Buffer& data,
                                        const ComCfg::FrameContext& context) {
+  static_cast<void>(portNum);
+  static_cast<void>(data);
+  static_cast<void>(context);
   // The reply buffer is a fixed member (reply_), not pool-allocated, so there is
   // nothing to deallocate — the framer has finished with it by the time we are
   // called (synchronous downlink on the receive task).
 }
 
 void SitlBridge ::wheelCmdIn_handler(FwIndexType portNum, const flight::WheelTorqueSet& cmds) {
+  static_cast<void>(portNum);
   // Latch this cycle's wheel torques as wire records (torque mode). Runs inside
   // sitlCycleOut on this same task, so no locking is needed against the reply build.
   for (U32 i = 0; i < WheelTorqueSet::SIZE; ++i) {
@@ -105,6 +110,7 @@ void SitlBridge ::wheelCmdIn_handler(FwIndexType portNum, const flight::WheelTor
 
 void SitlBridge ::mtqCmdIn_handler(FwIndexType portNum, const flight::MtqDipoleSet& cmds,
                                    F64 onWindowSec) {
+  static_cast<void>(portNum);
   this->latest_mtq_on_window_s_ = onWindowSec;
   for (U32 i = 0; i < MtqDipoleSet::SIZE; ++i) {
     this->latest_mtq_[i].dipole_am2[0] = cmds[i][0];
