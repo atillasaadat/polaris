@@ -1,6 +1,6 @@
 # `analysis/od` — the orbit-determination Monte Carlo campaign
 
-Answers the questions `gnc::OrbitOd`'s own unit tests cannot: over a week of
+Answers the questions `gnc::OrbitOd`'s own unit tests cannot: over long arcs of
 real dynamics, against a truth stack the filter does not have, does the
 estimate stay bounded, does the covariance still mean what it says, and what
 happens when the receiver misbehaves in each of the ways §9.2 says it can.
@@ -24,15 +24,20 @@ form for the same reason detumble uses it.
 
 ## Running the campaign
 
+Build it in `build-fprime-automatic-native`, **not** the `-ut` tree: F´'s own
+`cmake/sanitizers.cmake` compiles the unit-test tree with ASan and UBSan
+regardless of this project's `POLARIS_SANITIZE` option, and the campaign pays
+1.6x for instrumentation it does not need.
+
 ```bash
-uv run cmake --build build-fprime-automatic-native-ut \
+uv run cmake --build build-fprime-automatic-native \
     --target polaris_orbit_od_mc -j8
 ```
 
 **Smoke case — one run, one scenario, a few seconds.**
 
 ```bash
-./build-fprime-automatic-native-ut/bin/Linux/polaris_orbit_od_mc \
+./build-fprime-automatic-native/bin/Linux/polaris_orbit_od_mc \
     --runs 1 --duration-s 3000 --scenario nominal \
     --out build-artifacts/mc/od_smoke.jsonl
 ```
@@ -40,24 +45,30 @@ uv run cmake --build build-fprime-automatic-native-ut \
 **The full campaign — 30 runs.** Runs are sequential within one process;
 parallelise by sharding across processes. Each shard is a whole run (all nine
 scenarios) and is independently restartable. Budget about **430 MB RSS and
-80 minutes per shard**, so the concurrency ceiling is whichever of cores and
-memory runs out first.
+16 minutes per shard** idle, so the concurrency ceiling is whichever of cores
+and memory runs out first; under 30-way contention on 24 cores the whole
+campaign lands around half an hour.
 
-Only `nominal` flies the full seven days; the fault scenarios are capped at a
-day each by `max_duration_s` in `orbit_od_scenarios.hpp`, and `latency_fast` at
-ten minutes. That is 14 spacecraft-days per run rather than 56 — the week-long
-arc answers a question about the *un-faulted* filter, and it is the only
-scenario the consistency and ensemble statistics are measured on anyway. See
-that header for the full argument; the campaign is 4× cheaper for it.
+`--duration-s` sets `nominal`'s arc and only `nominal`'s: it is the one
+scenario without a `max_duration_s` of its own in `orbit_od_scenarios.hpp`. The
+seven fault scenarios are capped at a day each and `latency_fast` at two
+minutes, so the flag never lengthens them. Pass `604800` for the week-long
+nominal arc.
 
 ```bash
 JOBS=$(nproc)
-mkdir -p build-artifacts/mc/od7d
+mkdir -p build-artifacts/mc/od1d
 seq -w 0 29 | xargs -P "$JOBS" -I{} sh -c \
-  './build-fprime-automatic-native-ut/bin/Linux/polaris_orbit_od_mc \
-       --first-run $(echo {} | sed "s/^0*//;s/^$/0/") --runs 1 --duration-s 604800 \
-       --out build-artifacts/mc/od7d/shard_{}.jsonl'
+  './build-fprime-automatic-native/bin/Linux/polaris_orbit_od_mc \
+       --first-run $(echo {} | sed "s/^0*//;s/^$/0/") --runs 1 --duration-s 86400 \
+       --out build-artifacts/mc/od1d/shard_{}.jsonl'
 ```
+
+**Cost is per-cycle, not per-arc.** A shard's price is its GNC-cycle count times
+about 12.5 ms; the truth propagation is a couple of percent of it. Lengthening
+an arc at the 10 s nominal cadence is nearly free, while raising a cadence is
+not — `latency_fast` at 50 Hz bought a fifth of the whole campaign's cycles out
+of 0.02 % of its flight time before it was trimmed. Budget in cycles.
 
 **Reading the result.** The analysis takes the shard directory directly, and
 tolerates a campaign that is still flying — a shard whose last line is a
@@ -65,7 +76,7 @@ partial write is read short and named in the report's warnings.
 
 ```bash
 PYTHONPATH=tools uv run --group analysis python -m analysis.od \
-    build-artifacts/mc/od7d
+    build-artifacts/mc/od1d
 ```
 
 It writes the interactive page and the rendered report under
@@ -80,7 +91,7 @@ The seed is `0x0D0D * 1000003 + run`, a function of the run index alone, so
 adding runs to a campaign never moves an existing run's trajectory:
 
 ```bash
-./build-fprime-automatic-native-ut/bin/Linux/polaris_orbit_od_mc \
+./build-fprime-automatic-native/bin/Linux/polaris_orbit_od_mc \
     --first-run <run> --runs 1 --duration-s <same> --scenario <name>
 ```
 
@@ -102,7 +113,7 @@ written to demand ten.
 | `spoof_ramp` | A slow walk, each innovation inside a gate sized for one fix's noise. How far it gets is the campaign's headline measurement. |
 | `jamming` | The geographic jamming map (`config/scenarios/jamming/`), so degraded and absent fixes arrive where geography puts them. Skipped with a note if the KML is unreadable. |
 | `bad_data` | Clock jumps, geostationary-radius fixes and inflated reported sigmas — the receiver lying rather than going quiet. |
-| `latency_fast` | The only scenario with fix latency armed, at 50 Hz over ten minutes. The long arcs pass zero: at a 10 s cadence the delay line realises a whole poll rather than the datasheet's 50 ms. |
+| `latency_fast` | The only scenario with fix latency armed, at 50 Hz over two minutes. The long arcs pass zero: at a 10 s cadence the delay line realises a whole poll rather than the datasheet's 50 ms. |
 
 Every fault scenario's events are spread across its arc rather than clustered,
 so each lands at a different point in the orbit's precession and the day/night

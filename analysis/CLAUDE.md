@@ -51,7 +51,7 @@
 > `sim/world/atmosphere.cpp` rather than transcribing it. See
 > `analysis/sizing/README.md`.
 >
-> **`od/` is live as of Push 63** — the 7-day orbit-determination Monte Carlo
+> **`od/` is live as of Push 63** — the long-arc orbit-determination Monte Carlo
 > (§8.3, §9.2, §13, §23.2). Same shape as `detumble/`: the runs are C++
 > (`tests/mc/orbit_od_mc.cpp` → `polaris_orbit_od_mc`, driving the real
 > `gnc::OrbitOd` against the real receiver model), and this package owns the

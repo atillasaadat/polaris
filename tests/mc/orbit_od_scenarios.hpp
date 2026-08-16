@@ -264,7 +264,7 @@ inline std::vector<Scenario> scenarios() {
        /*max_duration_s=*/1.0 * kDay},
 
       {"latency_fast",
-       "The only scenario that exercises the fix-latency correction. Polls at 50 Hz over ten "
+       "The only scenario that exercises the fix-latency correction. Polls at 50 Hz over two "
        "minutes with the OEM7600's 50 ms latency armed, so the delivered fix is genuinely ~50 ms "
        "behind the filter's own epoch and the latent-fix branch fires on every update. The long "
        "arcs cannot do this: at their 10 s cadence the delivered fix is a whole poll old, which "
@@ -272,7 +272,12 @@ inline std::vector<Scenario> scenarios() {
        {},
        /*cycle_period_s=*/0.02,
        /*fix_latency_s=*/0.05,
-       /*max_duration_s=*/10.0 * kMinute},
+       // Two minutes, not ten. The correction fires on *every* update here, so
+       // the arc buys repetitions of one branch and nothing else — 6000 firings
+       // establish it as well as 30000 do. At 50 Hz the scenario was a fifth of
+       // the whole campaign's cycle count while covering 0.02% of its flight
+       // time, which is the wrong place to spend an hour of every campaign.
+       /*max_duration_s=*/2.0 * kMinute},
   };
 }
 
