@@ -289,9 +289,17 @@ class CampaignStatistics:
     scenarios : tuple of ScenarioStatistics
         In campaign order.
     nees, nis : ConsistencyInterval
-        Pooled over the nominal stretches of every run of every scenario. The
-        campaign-wide test is the one with the sample count to be meaningful;
-        the per-scenario ones exist so a single misbehaving scenario is visible.
+        Over the runs of the ``nominal`` scenario, the same population
+        :attr:`ensemble` is measured on. Deliberately *not* pooled over the
+        nominal-regime stretches of the fault scenarios: the regime tag records
+        whether a fault is armed at that instant, not whether the estimate is
+        still contaminated, so the recovery tail after a spoof or a bad fix
+        carries the ``"nominal"`` label while the error is still kilometres and
+        the innovation gate is still refusing honest fixes. NEES is quadratic,
+        so a few thousand such samples swamp millions of healthy ones and the
+        campaign gate reports a fault's size rather than the filter's honesty.
+        The per-scenario intervals keep that behaviour visible, and it is the
+        fault scenarios' own criteria that judge it.
     ensemble : tuple of EnsembleAxis
         The truth-derived spread against the reported 1σ, per RIC axis, over the
         nominal scenario. The only consistency evidence here that does not
@@ -401,15 +409,6 @@ def summarise(campaign: Campaign) -> CampaignStatistics:
     CampaignStatistics
     """
     scenarios: list[ScenarioStatistics] = []
-    # Keyed by run index, not appended flat. Every scenario of one run is flown
-    # from the same seed (`orbit_od_mc.cpp`: the seed is a function of the run
-    # alone), which is what makes fault effects comparable against a common
-    # nominal baseline — and which means one run's nine scenario means are nine
-    # views of one trajectory, not nine independent samples. Pooling them flat
-    # would inflate N ninefold, narrow the chi-square interval by about a factor
-    # of three, and let a two-run campaign satisfy a gate written to demand ten.
-    by_run_nees: dict[int, list[float]] = {}
-    by_run_nis: dict[int, list[float]] = {}
 
     for name in campaign.scenarios:
         runs = campaign.of(name)
@@ -418,9 +417,6 @@ def summarise(campaign: Campaign) -> CampaignStatistics:
 
         nees_means = np.array([_run_mean_nominal(r, r.nees) for r in runs])
         nis_means = np.array([_run_mean_nominal(r, r.nis) for r in runs])
-        for run, nees_mean, nis_mean in zip(runs, nees_means, nis_means):
-            by_run_nees.setdefault(run.run, []).append(float(nees_mean))
-            by_run_nis.setdefault(run.run, []).append(float(nis_mean))
 
         worst = max(
             (
@@ -448,30 +444,23 @@ def summarise(campaign: Campaign) -> CampaignStatistics:
             )
         )
 
+    # All three campaign-level checks are measured on `nominal` alone, and for
+    # one reason: it is the only scenario whose samples are all drawn from the
+    # distribution the covariance claims to describe. The fault scenarios share
+    # its seed and so its trajectory, and a nominal-*regime* mask does not
+    # recover a clean population from them — the tag falls the instant the
+    # fault window closes, while the estimate is still contaminated and the
+    # gate is still refusing good fixes. Their consistency is reported
+    # per-scenario, where a reader can see it against the fault that caused it.
+    nominal = campaign.of("nominal")
+    nominal_nees = np.array([_run_mean_nominal(r, r.nees) for r in nominal])
+    nominal_nis = np.array([_run_mean_nominal(r, r.nis) for r in nominal])
+
     return CampaignStatistics(
         scenarios=tuple(scenarios),
-        nees=consistency_interval(_per_run(by_run_nees), STATE_DIM),
-        nis=consistency_interval(_per_run(by_run_nis), MEASUREMENT_DIM),
-        # Measured on `nominal` alone. The fault scenarios share its seed and so
-        # its trajectory, and their fault stretches are by design not drawn from
-        # the distribution the covariance describes; pooling them would widen
-        # the ensemble spread with samples the covariance never claimed to cover.
-        ensemble=ensemble_covariance(campaign.of("nominal")),
+        nees=consistency_interval(nominal_nees, STATE_DIM),
+        nis=consistency_interval(nominal_nis, MEASUREMENT_DIM),
+        ensemble=ensemble_covariance(nominal),
         runs=len({r.run for r in campaign.runs}),
         samples=sum(r.samples for r in campaign.runs),
     )
-
-
-def _per_run(by_run: dict[int, list[float]]) -> np.ndarray:
-    """Collapse each run's per-scenario means to one sample for that run.
-
-    One value per *independent* run, in run order. See the note in
-    :func:`summarise`: scenarios within a run share a seed, so they are
-    replicates rather than samples and must not each count towards ``N``.
-    """
-    out = []
-    for run in sorted(by_run):
-        values = np.array(by_run[run], dtype=float)
-        values = values[np.isfinite(values)]
-        out.append(float(values.mean()) if values.size else float("nan"))
-    return np.array(out, dtype=float)

@@ -143,6 +143,40 @@ def test_nine_scenarios_of_one_run_count_as_one_sample(tmp_path: Path) -> None:
     assert stats.nis.samples == 1
 
 
+def test_a_fault_recovery_tail_does_not_move_the_campaign_gate(tmp_path: Path) -> None:
+    """The regime tag falls when the fault window closes, not when the error does.
+
+    A spoof walks the estimate away from truth; the window ends and the tag
+    reverts to ``"nominal"`` while the estimate is still kilometres out and the
+    innovation gate is still refusing honest fixes. Those samples are labelled
+    nominal but are not drawn from the distribution the covariance describes,
+    and because NEES is quadratic a handful of them swamp millions of healthy
+    ones. Measured on the campaign as flown this put NEES at 2.5e6 against a
+    ceiling of 7.3 while the truth-derived ensemble check said the covariance
+    was right to within 7% — the disagreement that found this.
+
+    The campaign gate must therefore read the ``nominal`` *scenario*, not every
+    scenario's nominal-*regime* stretches.
+    """
+    healthy = [od_sample(i, nees=6.0) for i in range(20)]
+    # Same regime label, ruined state: the tail after a spoof window closes.
+    contaminated = [
+        od_sample(i, nees=6.0 if i < 10 else 1.0e7, regime="nominal") for i in range(20)
+    ]
+    stats = summarise(
+        campaign_of(
+            tmp_path,
+            [(0, "nominal", healthy), (0, "spoof_step", contaminated)],
+        )
+    )
+
+    assert stats.of("spoof_step") is not None
+    assert (
+        stats.of("spoof_step").nees.mean > 1.0e5
+    ), "the fault stays visible per-scenario"
+    assert stats.nees.mean == pytest.approx(6.0), "but never reaches the campaign gate"
+
+
 def test_independent_runs_each_count_once(tmp_path: Path) -> None:
     """Runs are the independent unit; each contributes exactly one sample."""
     for run in range(6):
