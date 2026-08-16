@@ -315,6 +315,12 @@ body {
 .num, td.n, th.n, .u, .pct, .req, .compare .v, .spec dd, .tally, .topbar .meta {
   font-family: var(--mono); font-variant-numeric: tabular-nums;
 }
+/* A record identifier set beside its human title: a scenario or field name a
+   reader may need to grep the records for, styled as data rather than prose. */
+.code {
+  font-family: var(--mono); font-size: .72em; font-weight: 400;
+  color: var(--muted); letter-spacing: 0;
+}
 main { max-width: 1180px; margin: 0 auto; padding: 0 1.5rem 6rem; }
 
 /* ---- sticky document header ---- */

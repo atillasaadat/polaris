@@ -133,7 +133,7 @@ def _nominal_rejection(entry: ScenarioStatistics) -> Criterion | None:
     if summary is None or summary.fixes == 0:
         return None
     return Criterion(
-        name=f"{entry.scenario}: nominal fix rejection rate",
+        name=f"Clean-fix rejection rate, {entry.scenario}",
         requirement="REQ-ODP-001",
         threshold=NOMINAL_REJECTION_CEILING,
         measured=summary.rejection_rate,
@@ -171,7 +171,7 @@ def _band_refusals(stats: CampaignStatistics) -> Criterion | None:
     if total == 0:
         return None
     return Criterion(
-        name="GEO-radius fixes refused at the trust boundary",
+        name="Implausible fixes refused at the trust boundary",
         requirement="REQ-ODP-001",
         threshold=1.0,
         measured=band / total,
@@ -219,7 +219,7 @@ def _ensemble_criteria(stats: CampaignStatistics) -> list[Criterion]:
         )
         out.append(
             Criterion(
-                name=f"ensemble/reported sigma, {entry.axis.replace('_', '-')}",
+                name=f"Ensemble/reported sigma, {entry.axis.replace('_', '-')}",
                 requirement="REQ-ODP-001",
                 threshold=ENSEMBLE_RATIO_MAX,
                 measured=entry.ratio,
@@ -230,7 +230,7 @@ def _ensemble_criteria(stats: CampaignStatistics) -> list[Criterion]:
         )
         out.append(
             Criterion(
-                name=f"ensemble/reported sigma, {entry.axis.replace('_', '-')} (floor)",
+                name=f"Ensemble/reported sigma, {entry.axis.replace('_', '-')}, lower bound",
                 requirement="REQ-ODP-001",
                 threshold=ENSEMBLE_RATIO_MIN,
                 measured=entry.ratio,
@@ -250,7 +250,7 @@ def _integrity(stats: CampaignStatistics) -> list[Criterion]:
     """Was there enough campaign to read a verdict off."""
     return [
         Criterion(
-            name="independent runs",
+            name="Independent runs",
             requirement="REQ-ODP-001",
             threshold=float(MIN_CAMPAIGN_RUNS),
             measured=float(stats.nees.samples),
@@ -292,7 +292,7 @@ def od_report(
     criteria: list[Criterion] = list(_integrity(stats))
     criteria.extend(
         _consistency_criterion(
-            "campaign NEES",
+            "Campaign NEES",
             stats.nees,
             "REQ-ODP-001",
             "Normalised estimation error squared over the full 6-state,",
@@ -300,7 +300,7 @@ def od_report(
     )
     criteria.extend(
         _consistency_criterion(
-            "campaign NIS",
+            "Campaign NIS",
             stats.nis,
             "REQ-ODP-001",
             "Normalised innovation squared of the position update,",
@@ -327,19 +327,19 @@ def od_report(
     steady = nominal.regimes.get("nominal") if nominal is not None else None
 
     provenance = {
-        "records": records_path,
-        "runs": str(stats.runs),
-        "samples": str(stats.samples),
-        "scenarios": ", ".join(e.scenario for e in stats.scenarios),
-        "worst position error": f"{worst:.4g} m across every scenario and regime",
+        "Records": records_path,
+        "Runs": str(stats.runs),
+        "Samples": str(stats.samples),
+        "Scenarios": ", ".join(e.scenario for e in stats.scenarios),
+        "Worst position error": f"{worst:.4g} m across every scenario and regime",
     }
     if steady is not None:
-        provenance["steady-state position error"] = (
+        provenance["Steady-state position error"] = (
             f"median {steady.position.median:.4g} m, "
             f"95th {steady.position.p95:.4g} m, "
             f"worst {steady.position.worst:.4g} m"
         )
-        provenance["steady-state error in own sigmas"] = (
+        provenance["Steady-state error, in units of the reported sigma"] = (
             f"median {steady.sigma_ratio.median:.3g}, 95th {steady.sigma_ratio.p95:.3g}"
         )
 

@@ -47,11 +47,13 @@ from analysis.common.report import AnalysisReport, Criterion
 from analysis.common.report_html import (
     esc,
     figure_block,
+    glossary,
     lead_and_why,
     prose,
     render_page,
 )
 from analysis.od.plots import (
+    SCENARIO_TITLES,
     consistency_figure,
     error_history_figure,
     refusal_figure,
@@ -72,6 +74,51 @@ SECTIONS = (
     ("warnings", "Measurements"),
 )
 
+#: The report's own short codes and initialisms, defined in the open at the head
+#: of the criteria section — the same convention the sizing report follows for
+#: its D/M codes. A reader meeting NEES for the first time cannot expand it from
+#: a table row.
+ACRONYMS = (
+    (
+        "NEES",
+        "normalised estimation error squared: the state error, squared and "
+        "weighted by the inverse of the covariance the filter reported for it. "
+        "For an honest filter it averages the state dimension (6).",
+    ),
+    (
+        "NIS",
+        "normalised innovation squared: the same construction on the "
+        "measurement side, applied to each fix before it is folded in. "
+        "Averages the measurement dimension (3), and is what the rejection "
+        "gate thresholds.",
+    ),
+    (
+        "Ensemble/reported sigma",
+        "the truth-derived standard deviation of the error across independent "
+        "runs, divided by the standard deviation the filter claimed. One means "
+        "the covariance matches reality; it is the only consistency figure "
+        "here that never consults the covariance it is judging.",
+    ),
+    (
+        "Radial, in-track, cross-track",
+        "the orbit-local axes (the RIC frame): towards the Earth's centre, "
+        "along the velocity, and normal to the orbit plane. Orbit error "
+        "concentrates in-track, which is why the ensemble check is resolved "
+        "this way rather than as one number.",
+    ),
+    (
+        "Coast horizon",
+        "how long the filter may propagate without a fix before its solution "
+        "is dropped rather than trusted, 300 s here.",
+    ),
+    (
+        "|dr|/sigma",
+        "the position error at an instant, in units of the standard deviation "
+        "the filter reported at that instant. Above about 3 the filter is "
+        "outside its own error bars.",
+    ),
+)
+
 #: Regime names as a reader should see them. The record's names are the driver's
 #: enum spellings; these say what was happening.
 REGIME_LABELS = {
@@ -80,7 +127,7 @@ REGIME_LABELS = {
     "spoof": "Spoofed position",
     "jam": "Geographic jamming",
     "clock_jump": "Receiver clock jump",
-    "radius_jump": "Implausible fix (GEO radius)",
+    "radius_jump": "Implausible fix (geostationary radius)",
     "sigma_degrade": "Degraded reported sigmas",
 }
 
@@ -95,13 +142,22 @@ REFUSAL_GLOSSARY = (
         "non_monotonic_epoch",
         "the epoch went backwards, stalled, or exceeded the latency bound",
     ),
-    ("step_too_long", "the gap exceeds max_dt_s: a clock glitch, not a coast"),
+    (
+        "step_too_long",
+        "the time step is beyond the configured propagation bound: a clock "
+        "glitch, not a coast",
+    ),
     ("fix_sigma_invalid", "a reported sigma that is not positive and finite"),
     ("fix_not_finite", "a non-finite component in the fix"),
-    ("frame_conversion", "ECEF to ECI failed, or the epoch is outside EOP coverage"),
+    (
+        "frame_conversion",
+        "the Earth-fixed to inertial conversion failed, or the epoch is "
+        "outside the loaded Earth-orientation data",
+    ),
     (
         "no_velocity_for_seed",
-        "a seed needs a full PVT; position alone cannot start a 6-state",
+        "a seed needs position and velocity both; position alone cannot "
+        "start a six-state solution",
     ),
     ("filter_fault", "a non-finite internal result; the solution was dropped"),
 )
@@ -112,24 +168,25 @@ def _thesis(stats: CampaignStatistics, report: AnalysisReport) -> str:
     nominal = stats.of("nominal")
     steady = nominal.regimes.get("nominal") if nominal is not None else None
     days = max((e.duration_s for e in stats.scenarios), default=0.0) / 86400.0
+    span = f"{days:.0f} day{'' if round(days) == 1 else 's'}"
     accuracy = (
         f"held <b>{steady.position.p95:.3g} m</b> at the 95th percentile"
         if steady is not None and math.isfinite(steady.position.p95)
         else "was measured"
     )
-    honest = "and its covariance stayed honest" if stats.nees.consistent else ""
+    honest = ", and its covariance stayed honest" if stats.nees.consistent else ""
 
     if report.passes:
         return (
-            f"Over {days:.0f} days and {stats.runs} runs the estimate {accuracy} "
-            f"with no fix stream interruption it did not recover from {honest}."
+            f"Over {span} and {stats.runs} runs the estimate {accuracy}, "
+            f"recovered from every fix-stream interruption{honest}."
         )
     failures = report.failures()
     worst = failures[0]
     return (
         f"<b>{len(failures)} of {len(report.criteria)} criteria do not close</b>, "
         f"the first being {esc(worst.name)} at {worst.measured:.4g} against "
-        f"{worst.threshold:.4g}. Over {days:.0f} days and {stats.runs} runs the "
+        f"{worst.threshold:.4g}. Over {span} and {stats.runs} runs the "
         f"estimate {accuracy}."
     )
 
@@ -172,7 +229,7 @@ def _regime_table(entry: ScenarioStatistics) -> str:
             ", ".join(
                 f"{kind} × {count}" for kind, count in sorted(summary.refusals.items())
             )
-            or "—"
+            or "&ndash;"
         )
         rows.append(
             f"<tr><td>{esc(REGIME_LABELS.get(name, name))}</td>"
@@ -288,7 +345,8 @@ def write_html(
         )
         blocks.append(
             f'<section class="panel" id="scenario-{esc(entry.scenario)}">'
-            f"<h3>{esc(entry.scenario)}</h3>"
+            f"<h3>{esc(SCENARIO_TITLES.get(entry.scenario, entry.scenario))} "
+            f'<span class="code">{esc(entry.scenario)}</span></h3>'
             f'<div class="lead">{prose(entry.intent)}</div>'
             f'<p class="xref">{entry.runs} runs, {entry.samples} cycles at '
             f"{entry.cycle_period_s:g} s"
@@ -321,6 +379,7 @@ accuracy figures are measurements and appear above. What is judged here is what
 has a threshold this campaign did not choose: the chi-square consistency
 intervals, the gate's own configured rejection rate, and the fault policy.
 Click a column heading to sort; failing rows are shaded <b>and</b> say FAIL.</p>
+{glossary(ACRONYMS, xref=False)}
 {_criteria_table(report.criteria)}
 </section>
 

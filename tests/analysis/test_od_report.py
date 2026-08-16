@@ -78,7 +78,7 @@ def test_too_few_runs_fails_integrity_and_warns(tmp_path: Path) -> None:
     """A verdict read off a campaign that half ran points the wrong way."""
     report = report_of(tmp_path, [[healthy_run(run)] for run in range(3)])
 
-    integrity = named(report, "independent runs")
+    integrity = named(report, "Independent runs")
     assert integrity is not None
     assert not integrity.passes
     assert integrity.threshold == float(MIN_CAMPAIGN_RUNS)
@@ -104,8 +104,8 @@ def test_an_optimistic_filter_fails_the_upper_consistency_bound(tmp_path: Path) 
     ]
     report = report_of(tmp_path, groups)
 
-    assert not named(report, "campaign NEES not optimistic").passes
-    assert named(report, "campaign NEES not pessimistic").passes
+    assert not named(report, "Campaign NEES not optimistic").passes
+    assert named(report, "Campaign NEES not pessimistic").passes
 
 
 def test_an_optimistic_covariance_fails_the_ensemble_check(tmp_path: Path) -> None:
@@ -136,8 +136,8 @@ def test_an_optimistic_covariance_fails_the_ensemble_check(tmp_path: Path) -> No
     ]
     report = report_of(tmp_path, groups)
 
-    assert named(report, "campaign NEES not optimistic").passes
-    radial = named(report, "ensemble/reported sigma, radial")
+    assert named(report, "Campaign NEES not optimistic").passes
+    radial = named(report, "Ensemble/reported sigma, radial")
     assert radial is not None
     assert not radial.passes
     assert radial.threshold == ENSEMBLE_RATIO_MAX
@@ -166,7 +166,7 @@ def test_a_gate_refusing_clean_fixes_fails(tmp_path: Path) -> None:
     ]
     report = report_of(tmp_path, groups)
 
-    rejection = named(report, "nominal: nominal fix rejection rate")
+    rejection = named(report, "Clean-fix rejection rate, nominal")
     assert rejection is not None
     assert not rejection.passes
     assert rejection.threshold == NOMINAL_REJECTION_CEILING
@@ -202,7 +202,7 @@ def test_a_geo_fix_caught_a_layer_in_fails_the_band_criterion(tmp_path: Path) ->
     ]
     report = report_of(tmp_path, groups)
 
-    band = named(report, "GEO-radius fixes refused at the trust boundary")
+    band = named(report, "Implausible fixes refused at the trust boundary")
     assert band is not None
     assert not band.passes
     assert band.measured == 0.0
@@ -231,7 +231,7 @@ def test_the_same_fix_caught_at_the_boundary_passes(tmp_path: Path) -> None:
     ]
     report = report_of(tmp_path, groups)
 
-    assert named(report, "GEO-radius fixes refused at the trust boundary").passes
+    assert named(report, "Implausible fixes refused at the trust boundary").passes
 
 
 def test_the_spoof_drift_is_a_warning_and_never_a_criterion(tmp_path: Path) -> None:
@@ -278,8 +278,8 @@ def test_the_accuracy_numbers_are_provenance_not_criteria(tmp_path: Path) -> Non
         tmp_path, [[healthy_run(run)] for run in range(MIN_CAMPAIGN_RUNS)]
     )
 
-    assert "worst position error" in report.provenance
-    assert "steady-state position error" in report.provenance
+    assert "Worst position error" in report.provenance
+    assert "Steady-state position error" in report.provenance
     assert not any(
         "error" in c.name.lower() and "m" == c.units for c in report.criteria
     )

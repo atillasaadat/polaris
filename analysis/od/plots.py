@@ -64,6 +64,22 @@ __all__ = [
 MAX_POINTS = 2000
 
 
+#: Scenario headings as a reader should see them. The driver's snake_case names
+#: are identifiers, not prose; each block shows the title with the identifier
+#: beside it, so a reader can still grep the records for the block they are on.
+SCENARIO_TITLES = {
+    "nominal": "Nominal operations",
+    "outage_short": "Short outages",
+    "outage_horizon": "Outages at the coast horizon",
+    "outage_long": "Outage past the coast horizon",
+    "spoof_step": "Step spoof",
+    "spoof_ramp": "Ramp spoof",
+    "jamming": "Geographic jamming",
+    "bad_data": "Receiver lying",
+    "latency_fast": "Fix latency at 50 Hz",
+}
+
+
 def _envelope_decimate(
     t_s: np.ndarray, values: np.ndarray, buckets: int
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -167,7 +183,7 @@ def error_history_figure(run: ScenarioRun) -> go.Figure:
 
     figure.update_layout(
         **layout(
-            f"{run.scenario} — run {run.run}: error inside its own covariance",
+            f"{SCENARIO_TITLES.get(run.scenario, run.scenario)} — run {run.run}: error inside its own covariance",
             "Time from epoch [h]",
             "Position [m]",
             height=380,
@@ -325,7 +341,7 @@ def regime_figure(entry: ScenarioStatistics) -> go.Figure:
         )
     figure.update_layout(
         **layout(
-            f"{entry.scenario} — position error by regime",
+            f"{SCENARIO_TITLES.get(entry.scenario, entry.scenario)} — position error by regime",
             "",
             "Position error [m]",
             height=360,
