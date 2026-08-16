@@ -156,8 +156,8 @@ REFUSAL_GLOSSARY = (
     ),
     (
         "no_velocity_for_seed",
-        "a seed needs position and velocity both; position alone cannot "
-        "start a six-state solution",
+        "a velocity was required and absent: a seed needs position and "
+        "velocity both, and a latent fix cannot be advanced without one",
     ),
     ("filter_fault", "a non-finite internal result; the solution was dropped"),
 )

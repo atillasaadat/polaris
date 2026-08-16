@@ -1683,7 +1683,9 @@ TEST(OrbitOdLatency, LatentFixWithoutVelocityIsRefusedRatherThanAdvancedOnThePri
 
   const OrbitOd::Covariance p_before = filter.covariance();
   EXPECT_FALSE(filter.ingest(fix, eop, out));
-  EXPECT_EQ(out.refusal, OrbitOdRefusal::kNonMonotonicEpoch);
+  // The missing-velocity name, not the clock-fault one: FDIR keyed on
+  // kNonMonotonicEpoch must mean time tags went wrong, nothing else.
+  EXPECT_EQ(out.refusal, OrbitOdRefusal::kNoVelocityForSeed);
   EXPECT_EQ(filter.covariance(), p_before);
 
   // The same fix at the filter's own epoch needs no advance and is accepted

@@ -464,17 +464,22 @@ bool OrbitOd::applyUpdate(int offset, const Eigen::Vector3d& measured, const Eig
   const Eigen::Vector3d predicted = (offset == kPosition) ? position_ : velocity_;
   const Eigen::Vector3d y = measured - predicted;
   const Eigen::Matrix3d s = p_.block<3, 3>(offset, offset) + r_cov;
+  // Published before the inversion is checked, so a numeric fault still
+  // telemeters the innovation it faulted on rather than a zero that reads as a
+  // perfect fit.
+  out.innovation = y;
+  out.innovation_cov = s;
   const Eigen::Matrix3d s_inv = s.inverse();
   if (!s_inv.allFinite() || !y.allFinite()) {
+    out.numeric_fault = true;
     return false;
   }
 
   const double nis = y.dot(s_inv * y);
   if (!std::isfinite(nis)) {
+    out.numeric_fault = true;
     return false;
   }
-  out.innovation = y;
-  out.innovation_cov = s;
   out.nis = nis;
 
   // Divergence guard. An outlier folded in at full gain drags the trajectory off
@@ -496,6 +501,7 @@ bool OrbitOd::applyUpdate(int offset, const Eigen::Vector3d& measured, const Eig
   const Eigen::Matrix<double, kDim, 3> k_gain = p_ * h_t * s_inv;
   const Vec6 dx = k_gain * y;
   if (!k_gain.allFinite() || !dx.allFinite()) {
+    out.numeric_fault = true;
     return false;
   }
 
@@ -511,6 +517,7 @@ bool OrbitOd::applyUpdate(int offset, const Eigen::Vector3d& measured, const Eig
   if (!new_position.allFinite() || !new_velocity.allFinite() || !p_new.allFinite()) {
     dropSolution();
     out = OrbitOdUpdate{};
+    out.numeric_fault = true;
     return false;
   }
   position_ = new_position;
@@ -663,8 +670,11 @@ bool OrbitOd::ingest(const GnssFix& fix, const frames::EopValue& eop, OrbitOdRes
       // filter's own velocity is not a substitute: using it would fold the
       // filter's current error into a measurement that is supposed to be
       // independent of it, which is exactly how a consistent filter is made
-      // overconfident.
-      out.refusal = OrbitOdRefusal::kNonMonotonicEpoch;
+      // overconfident. Named as the missing-velocity refusal, not as a clock
+      // fault: an FDIR rule keyed on kNonMonotonicEpoch means "the receiver's
+      // time tags went wrong", and an honest, on-time fix that merely lacks a
+      // velocity field is a different failure with a different response.
+      out.refusal = OrbitOdRefusal::kNoVelocityForSeed;
       return false;
     }
 
@@ -702,11 +712,14 @@ bool OrbitOd::ingest(const GnssFix& fix, const frames::EopValue& eop, OrbitOdRes
   const bool pos_ok =
       applyUpdate(kPosition, r_eci.eigen(), r_pos_eci, cfg_.position_nis_gate, out.position);
   if (!pos_ok) {
-    // A failed position update either tripped the gate or dropped the filter on
-    // a non-finite result; either way the velocity is not folded in against a
-    // state the position half just refused.
-    out.refusal =
-        initialised_ ? OrbitOdRefusal::kMeasurementRejected : OrbitOdRefusal::kFilterFault;
+    // A failed position update either tripped the gate or faulted on a
+    // non-finite intermediate; either way the velocity is not folded in against
+    // a state the position half just refused. The two are named apart: a gate
+    // rejection increments rejectedCount and is the FDIR stream signal, while a
+    // numeric fault is filter health and must not hide inside that stream.
+    out.refusal = (out.position.numeric_fault || !initialised_)
+                      ? OrbitOdRefusal::kFilterFault
+                      : OrbitOdRefusal::kMeasurementRejected;
     return false;
   }
   age_s_ = 0.0;
@@ -719,8 +732,9 @@ bool OrbitOd::ingest(const GnssFix& fix, const frames::EopValue& eop, OrbitOdRes
       // velocity half is reported rejected. A receiver whose velocity degrades
       // while its position is fine is a real mode, and it must not cost the
       // position fix.
-      out.refusal =
-          initialised_ ? OrbitOdRefusal::kMeasurementRejected : OrbitOdRefusal::kFilterFault;
+      out.refusal = (out.velocity.numeric_fault || !initialised_)
+                        ? OrbitOdRefusal::kFilterFault
+                        : OrbitOdRefusal::kMeasurementRejected;
       return initialised_;
     }
   }
@@ -736,11 +750,19 @@ bool OrbitOd::nees(const math::Vec3<math::frames::ECI>& position_true,
   e.head<3>() = position_true.eigen() - position_;
   e.tail<3>() = velocity_true.eigen() - velocity_;
 
-  const Covariance p_inv = p_.inverse();
-  if (!p_inv.allFinite() || !e.allFinite()) {
+  // Solve rather than invert: LDLT on an SPD 6x6 is cheaper and better
+  // conditioned than an explicit inverse for the same quadratic form, and it is
+  // the SPD discipline the rest of the file already uses (llt() gates, Joseph
+  // form).
+  const Eigen::LDLT<Covariance> ldlt = p_.ldlt();
+  if (ldlt.info() != Eigen::Success || !e.allFinite()) {
     return false;
   }
-  const double value = e.dot(p_inv * e);
+  const Vec6 solved = ldlt.solve(e);
+  if (!solved.allFinite()) {
+    return false;
+  }
+  const double value = e.dot(solved);
   if (!std::isfinite(value)) {
     return false;
   }
