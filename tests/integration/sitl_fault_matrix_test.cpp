@@ -41,8 +41,9 @@
 ///
 /// Skips (never fails) when the flight binary or the Python toolchain is absent.
 ///
-/// Verifies REQ-FDIR-005 through REQ-FDIR-013, and is one of the artifacts
-/// REQ-FDIR-004 (fault-injection verification) requires.
+/// Verifies REQ-FDIR-005 through REQ-FDIR-013 and REQ-ODP-007 (the two GNSS
+/// outage rows, Push 65), and is one of the artifacts REQ-FDIR-004
+/// (fault-injection verification) requires.
 
 #include <gtest/gtest.h>
 
@@ -1044,6 +1045,111 @@ TEST(SitlFaultMatrix, MagnetometerFaultIsBlamedOnlyOnceAnIndependentReferenceExi
   EXPECT_EQ(run.log.find("Magnetometer 0 excluded"), std::string::npos)
       << "the HEALTHY magnetometer was latched out:\n"
       << run.log;
+  EXPECT_EQ(run.log.find("Attitude lost"), std::string::npos) << run.log;
+}
+
+// ----------------------------------------------------------------------
+// GNSS: the receiver goes quiet (§9.2, §8.3)
+// ----------------------------------------------------------------------
+
+/// Orbit-filter coast horizon [s] the vehicle config flies (`MaxCoastS`). A row
+/// below sits on each side of it. Pinned here rather than read from the YAML so
+/// a change to the horizon fails this file with a number, which is the same
+/// reason kFlightMonitorAlertCycles is pinned above.
+constexpr double kOrbitCoastHorizonS = 300.0;
+
+/// A receiver outage over [@p startS, @p stopS), on the scenario's own fault
+/// schedule (§9.2). Not a per-step hook like the other rows: the closed loop
+/// reconciles every receiver to the schedule on each sample, so a flag set on
+/// the model directly is overwritten before the next fix — which is exactly the
+/// idempotence `applyGnssFaults` promises, and the reason this file learned it.
+scenario::SimConfig withGnssOutage(scenario::SimConfig orbit, double startS, double stopS) {
+  scenario::GnssFaultEvent outage;
+  outage.unit = "gps_a";
+  outage.type = scenario::GnssFaultEvent::Type::kOutage;
+  outage.start_s = startS;
+  outage.stop_s = stopS;
+  orbit.environment.gnss_fault_events.push_back(outage);
+  return orbit;
+}
+
+void noFault(scenario::Vehicle&, unsigned) {}
+
+/// **A short outage costs nothing.** Sixty seconds without a fix is a fifth of the
+/// orbit filter's coast horizon: the solution stays valid on propagation, the
+/// attitude estimator keeps its magnetic reference, and no FDIR edge fires
+/// anywhere. This is the row that did not exist before Push 65 — until then the
+/// attitude estimator read the receiver directly and the *first* missed fix cost
+/// the magnetic pair.
+///
+/// Verifies REQ-ODP-007.
+TEST(SitlFaultMatrix, GnssOutageInsideTheHorizonCostsNoReference) {
+  RecordProperty("verifies", "REQ-ODP-007");
+  POLARIS_REQUIRE_SITL_TOOLCHAIN();
+
+  const RunResult run = flyWithFaults(
+      "gnss-short", withGnssOutage(faultMatrixOrbit(120.0, "sitl-fault-gnss-short"), 40.0, 100.0),
+      kAlignPairs, noFault);
+  ASSERT_TRUE(run.sim_healthy);
+  ASSERT_FALSE(run.log.empty());
+
+  ASSERT_NE(run.log.find("Orbit solution seeded"), std::string::npos) << run.log;
+  EXPECT_EQ(countOf(run.log, "Orbit solution seeded"), 1u)
+      << "the orbit filter re-seeded across a 60 s outage, so it did not coast:\n"
+      << run.log;
+  EXPECT_EQ(run.log.find("Orbit solution dropped"), std::string::npos)
+      << "the solution was dropped inside the coast horizon:\n"
+      << run.log;
+  EXPECT_EQ(run.log.find("No valid orbit solution"), std::string::npos)
+      << "the attitude estimator lost its position during an outage the orbit filter should "
+         "have coasted:\n"
+      << run.log;
+  EXPECT_EQ(run.log.find("Attitude lost"), std::string::npos) << run.log;
+}
+
+/// **A long outage is reported, not coasted on.** Past the horizon the orbit
+/// solution is dropped — the §8.3 policy, since beyond it the model error is a
+/// systematic that a stale prior would only drag the fresh fix toward — the
+/// attitude estimator loses its magnetic reference and says so, and when fixes
+/// return the filter re-seeds whole and the reference comes back. The ordering is
+/// the case: dropped only after the horizon, re-seeded only after the outage.
+///
+/// Verifies REQ-ODP-007.
+TEST(SitlFaultMatrix, GnssOutagePastTheHorizonDropsAndReseeds) {
+  RecordProperty("verifies", "REQ-ODP-007");
+  POLARIS_REQUIRE_SITL_TOOLCHAIN();
+
+  // The receiver's 34 s cold start puts the first fix near 37 s; the outage
+  // opens after the filter has seeded and runs 30 s past the coast horizon.
+  constexpr double kOutageStartS = 40.0;
+  constexpr double kOutageStopS = kOutageStartS + kOrbitCoastHorizonS + 30.0;  // 370 s
+  const RunResult run = flyWithFaults(
+      "gnss-long",
+      withGnssOutage(faultMatrixOrbit(430.0, "sitl-fault-gnss-long"), kOutageStartS, kOutageStopS),
+      kAlignPairs, noFault);
+  ASSERT_TRUE(run.sim_healthy);
+  ASSERT_FALSE(run.log.empty());
+
+  const std::size_t seeded = indexOf(run.log, "Orbit solution seeded");
+  const std::size_t dropped = indexOf(run.log, "Orbit solution dropped");
+  const std::size_t position_lost = indexOf(run.log, "No valid orbit solution");
+  ASSERT_NE(seeded, std::string::npos) << run.log;
+  ASSERT_NE(dropped, std::string::npos) << "the solution outlived the coast horizon:\n" << run.log;
+  ASSERT_NE(position_lost, std::string::npos)
+      << "the attitude estimator kept a position the orbit filter had dropped:\n"
+      << run.log;
+  EXPECT_LT(seeded, dropped) << run.log;
+  EXPECT_LE(dropped, position_lost)
+      << "the attitude estimator lost its position before the orbit filter dropped it:\n"
+      << run.log;
+  // Re-seeded once fixes returned: two seeds over the run, the second after the drop.
+  EXPECT_EQ(countOf(run.log, "Orbit solution seeded"), 2u)
+      << "the filter did not re-acquire whole when fixes returned:\n"
+      << run.log;
+  EXPECT_LT(dropped, run.log.rfind("Orbit solution seeded")) << run.log;
+  // The attitude side keeps its sun and tracker sources through the gap and never
+  // declares the attitude lost: only the magnetic pair is costed, and only for
+  // the ~30 s between the drop and the fixes' return.
   EXPECT_EQ(run.log.find("Attitude lost"), std::string::npos) << run.log;
 }
 

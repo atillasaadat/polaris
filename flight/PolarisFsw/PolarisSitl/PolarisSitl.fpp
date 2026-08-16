@@ -64,10 +64,10 @@ module PolarisSitl {
         connections Sitl {
             # --- Barrier-driven rate group (design doc §2.4 steps 3-4) ---
             # sitlBridge drives the SITL rate group synchronously per STEP; its
-            # members run in port order. Members 0 and 1 — the GNC estimator and
-            # the GNC controller — are left to the importing topology
-            # (Top/topology.fpp), together with the controller's command
-            # connections back to sitlBridge: both are flight components that
+            # members run in port order. Members 0-2 — the orbit estimator, the
+            # attitude estimator and the controller — are left to the importing
+            # topology (Top/topology.fpp), together with the controller's command
+            # connections back to sitlBridge: all three are flight components that
             # ship to hardware, so they do not belong in the SITL subtopology.
             # The order is load-bearing: estimation runs before anything that
             # acts on the estimate.

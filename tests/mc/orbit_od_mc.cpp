@@ -24,10 +24,12 @@
 /// publishes, so reconstructing it sim-side would transcribe the flight path.
 /// The orbit filter has no such chain: `gnc::OrbitOd` *is* the flight code, it
 /// takes a `GnssFix` struct and an EOP table and nothing else, and its F´
-/// component seam does not exist yet (§8.3, "still owed"). Running it in-process
-/// against the receiver model is therefore the real article, not a stand-in —
-/// and when the seam lands, this driver should move behind it for the same
-/// reason detumble already is.
+/// component (`flight/PolarisFsw/OrbitEstimator`, Push 65) is a thin wrapper
+/// that adds ports, parameters and telemetry around exactly that call. Running
+/// the filter in-process against the receiver model is therefore the real
+/// article, not a stand-in — moving this driver behind the component, for the
+/// same reason detumble already is, is owed but changes nothing the campaign
+/// measures.
 ///
 /// **Faults are applied to the receiver, never to the filter.** The filter has
 /// to discover a fault from the data it is handed, exactly as it would in

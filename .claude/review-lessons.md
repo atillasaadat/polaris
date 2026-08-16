@@ -564,3 +564,32 @@ to a push that re-measured a number and swept *most* of its citations.
   push. The OD area's pattern — declare the design input once, compute the
   derived constant from it, cite rather than restate — is what came through
   the audit clean.
+
+## A fixture can lie about its own physics for fifty pushes (P65, SITL)
+
+The shared SITL orbit fixture set `gravity_degree = -1` under the comment
+"two-body: the plant is not under test". In the sim's enum -1 is *free
+drift*: every SITL row from Push 39 to Push 64 — fault matrix, control,
+calibration, tuning — flew a vehicle in a straight line at 7.6 km/s, and
+every one of them passed, because nothing they measured depended on where
+the vehicle actually went. Push 65's orbit estimator was the first consumer
+whose whole model is gravity; it rejected every fix within a second and the
+fixture was found in the innovation sequence, not in review.
+
+- **A comment stating a config value's meaning is a claim about an enum,
+  and enums are checkable.** The one-line fix (`gravity_degree = 8`, matched
+  to the flight model) is trivial; the fifty pushes of a plant that did not
+  orbit are not recoverable. Prefer named constants for enum-like sentinels
+  (`kFreeDriftPlant`) so a reader sees the semantics rather than the number.
+- **"The plant is not under test" is not the same as "the plant may be
+  wrong".** A fixture that is *simplified* is fine; one that is *unphysical*
+  quietly narrows what every row on it can ever notice. Three tuned rows
+  broke on the corrected plant — two control A/B thresholds and the
+  magnetometer-calibration residual (2.43 → 7.45 mrad) — which is what
+  narrowing looks like when it lifts.
+- **Per-step fault hooks and scheduled faults do not compose.** The closed
+  loop reconciles every receiver to the scenario's fault schedule on each
+  sample (idempotent by design), so a flag set directly on the model is
+  undone before the next fix. A GNSS row must inject through the schedule;
+  the sensor rows' per-step hooks work only because those sensors have no
+  schedule. Documented on the row that learned it.

@@ -290,8 +290,10 @@ demotion just created, so the component carries a running total that only
 
 **Measurement seam.** Inputs arrive on **port arrays** (`GncMaxUnits = 8`)
 defined in the interface-only `GncPorts/` module: `imuIn`, `sunSensorIn`,
-`magnetometerIn`, `gnssIn`, `starTrackerIn`, with `estimateOut` publishing the
-§8.0 product. The arrays exist from the start because the vehicle flies
+`magnetometerIn`, `starTrackerIn`, plus the single `orbitStateIn` the
+OrbitEstimator publishes its §8.3 solution on, with `estimateOut` publishing
+the §8.0 attitude product. GNSS does not reach this component at all — the
+receiver is the orbit estimator's (see below). The arrays exist from the start because the vehicle flies
 several sun sensors and IMUs and will fly more magnetometers and star trackers —
 adding a unit is a topology line plus a vehicle-config entry, never a port
 change. Under SITL `SitlBridge` fills the seam from each STEP_REQ's
@@ -338,26 +340,28 @@ redundancy is worth, and the differences are deliberate:
 
 **References.** The sun reference is `getBodyPosition(SUN)` (normalised,
 spacecraft-centric when a position is known) and the magnetic reference is the
-**onboard IGRF-14** evaluated at the GNSS position and rotated ECEF→ECI with
-onboard EOP. The IGRF snapshot is loaded at topology setup from the verbatim
+**onboard IGRF-14** evaluated at the §8.3 orbit solution's position (taken to
+ECEF with the inverse of the same rotation the field comes back with) and
+rotated ECEF→ECI with onboard EOP. The IGRF snapshot is loaded at topology setup from the verbatim
 IAGA coefficient file (default `tests/golden/igrf14coeffs.txt`, override with
 `-I`) through the flight-safe reader `lib/environment/igrf_iaga`; a failure
 emits `IgrfLoadFailed` and the estimator can still publish body rate but cannot
 acquire attitude. The telemetered reference grade is the **worse** of the
 ephemeris and EOP grades, with edge-gated `ReferenceDegraded`/`ReferenceRecovered`
-events. Position is **GNSS-only** until the §8.3 orbit filter is *wired*: the filter
-itself now exists (`lib/gnc/orbit_od`, with an 8x8 EGM2008 force model and a
-fix-latency correction), but its F´ component seam is a separate push, so until
-that lands a GNSS outage still costs the magnetic reference and the estimator
+events. Position is the **orbit estimator's** solution, latched from
+`orbitStateIn` and consumed once per cycle (a producer that stops publishing
+leaves position unavailable rather than a stale vector reused). A receiver
+outage therefore costs the magnetic reference only once the orbit filter has
+dropped its solution at the coast horizon (§8.3); when it does, the estimator
 gyro-coasts, flagged by an edge-gated `PositionUnavailable` warning.
 
 **Tuning is ParameterDb, with no defaults, behind two flight validity gates and
 one command-time gate.** The
-fifteen coarse values (the magnetic white and systematic sigmas, the sun white
+thirteen coarse values (the magnetic white and systematic sigmas, the sun white
 sigma and the **four** terms its systematic is composed from — see below — gyro
 ARW,
-`MinSinAngle`, `TriadGain`, `MaxCoastSec`, `MaxDtSec`, `MaxMeasAgeSec`, and the
-`Min`/`MaxPositionRadiusM` band a GNSS fix must fall in) and the seven fine-mode
+`MinSinAngle`, `TriadGain`, `MaxCoastSec`, `MaxDtSec` and `MaxMeasAgeSec`)
+and the seven fine-mode
 values (`MekfRrw`, `MekfNisGate`, `MekfMaxCoastSec`, `MekfBiasSigmaInit`,
 `MekfRefusalStreak`, `MekfNisStreak`, `SeedMinObservability`) are F´ parameters
 without defaults (§19.3). A missing or out-of-range **coarse** value emits an

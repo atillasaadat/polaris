@@ -237,6 +237,46 @@ spacecraft:
   # chosen to make the estimator look good. Re-derive these whenever a model_id
   # changes.
   fsw_parameters:
+    # --- Onboard orbit determination (§8.3, §9.2) ---------------------------
+    # The position every inertial reference below is evaluated at comes from the
+    # OrbitEstimator, not the raw GNSS fix; these are the filter's tuning, the
+    # campaign's `filterConfig()` in tests/mc/orbit_od_mc.cpp, and the OD Monte
+    # Carlo (analysis/od) is what re-validates them when they move.
+    #
+    # Force model: the compiled-in EGM2008 8x8 truncation (GM and reference
+    # radius are paired with the table in code, deliberately not parameters —
+    # see the constant-pairing defect in §8.3) and one band of the Vallado
+    # Table 8-4 exponential atmosphere at the 400 km operating altitude. The
+    # ballistic coefficient is this vehicle's: C_d 2.2 * 0.06 m^2 / 12 kg.
+    flight.orbitEstimator.GeopotentialDegree: 8
+    flight.orbitEstimator.GeopotentialOrder: 8
+    flight.orbitEstimator.DragBallisticCoeffM2PerKg: 0.011      # [m^2/kg] 2.2*0.06/12
+    flight.orbitEstimator.DragRefDensityKgM3: 3.725e-12         # [kg/m^3] Vallado 8-4, 400 km band
+    flight.orbitEstimator.DragRefAltitudeM: 400.0e3             # [m]
+    flight.orbitEstimator.DragScaleHeightM: 58515.0             # [m]
+    # Process noise: q_a = 3*dr(T)^2/T^3 from the measured 1.28 m truncation of
+    # this force model against a 32x32 truth over the 300 s coast horizon.
+    flight.orbitEstimator.AccelPsdM2PerS3: 1.8e-7               # [m^2/s^3]
+    # NIS gates: chi-square with 3 dof at 99.9%.
+    flight.orbitEstimator.PositionNisGate: 16.27                # [-]
+    flight.orbitEstimator.VelocityNisGate: 16.27                # [-]
+    # Coast horizon (§8.3): ~9x the receiver's 34 s cold start; past it the
+    # solution is dropped and the next fix re-seeds whole.
+    flight.orbitEstimator.MaxCoastS: 300.0                      # [s]
+    # Longest single propagation step and the RK4 sub-step ceiling.
+    flight.orbitEstimator.MaxDtS: 60.0                          # [s]
+    flight.orbitEstimator.MaxStepS: 10.0                        # [s]
+    # Fix latency bound: 4x the OEM7600's catalogued 0.05 s. configc refuses a
+    # value below the receiver's fix_latency_s (§19.4 flight/sim pair).
+    flight.orbitEstimator.MaxFixLatencyS: 0.2                   # [s]
+    # Geocentric-radius plausibility band a fix must fall in (§9.1): 6.5e6 m is
+    # below this orbit but above the surface; 8.0e6 m is ~1600 km altitude, well
+    # past any orbit this vehicle can reach, so both ends catch a corrupt fix
+    # without gating a real one. Used to gate the estimator's own GNSS position
+    # too, before the orbit filter owned it.
+    flight.orbitEstimator.MinRadiusM: 6.5e6                     # [m]
+    flight.orbitEstimator.MaxRadiusM: 8.0e6                     # [m]
+    # --- Attitude estimator ------------------------------------------------
     # Sun pair. The FSS is specified 2.0 deg 3-sigma out at the 60 deg field
     # edge (0.5 deg inside 45 deg), so 2.0/3 deg = 11.6 mrad is the conservative
     # white part.
@@ -347,12 +387,6 @@ spacecraft:
     # Staleness window (§9.1): 1.0 s admits the slowest sensor on this vehicle
     # while excluding anything a full second behind the cycle epoch.
     flight.attitudeEstimator.MaxMeasAgeSec: 1.0           # [s]
-    # Geocentric radius band a GNSS fix must fall in to be used as the point the
-    # geomagnetic reference is evaluated at (§9.1). 6.5e6 m is below this orbit
-    # but above the Earth's surface; 5.0e7 m is well past any orbit this vehicle
-    # can reach, so both ends catch a corrupt fix without gating a real one.
-    flight.attitudeEstimator.MinPositionRadiusM: 6.5e6    # [m]
-    flight.attitudeEstimator.MaxPositionRadiusM: 5.0e7    # [m]
     # --- Fine mode (MEKF) -------------------------------------------------
     # The filter's angle random walk is GyroArw above and its largest
     # propagation step is MaxDtSec: same gyro, same rate group, so they are not
