@@ -69,6 +69,11 @@ void fakeFsw(std::uint16_t port, int n_steps, std::vector<sitl::StepReqHeader>* 
       rec.dipole_am2[0] = static_cast<double>(req.macro_step);
       ASSERT_TRUE(sitl::writeRecord(reply.data(), reply.size(), roff, rec));
     }
+    for (std::uint32_t t = 0; t < hello.n_thruster; ++t) {
+      sitl::ThrusterCommandRecord rec;
+      rec.throttle = 0.25 * (static_cast<double>(req.macro_step) + 1.0);
+      ASSERT_TRUE(sitl::writeRecord(reply.data(), reply.size(), roff, rec));
+    }
     ASSERT_TRUE(sendFramed(fd, reply.data(), roff));
   }
 
@@ -90,6 +95,7 @@ TEST(SitlServer, LockstepExchangeCarriesScriptedCommandsAndBarrierEcho) {
   counts.gnss = 1;
   counts.wheel = 4;
   counts.mtq = 3;
+  counts.thruster = 1;
   SitlServer server(counts, 100'000'000LL);
   ASSERT_TRUE(server.start(0)) << server.lastError();
 
@@ -105,6 +111,8 @@ TEST(SitlServer, LockstepExchangeCarriesScriptedCommandsAndBarrierEcho) {
     // The scripted values prove the reply was decoded, not defaulted.
     EXPECT_DOUBLE_EQ(out.wheels[2].value, 0.01 * (static_cast<double>(s) + 1.0) + 2.0);
     EXPECT_DOUBLE_EQ(out.magnetorquer_dipoles[0].eigen()[0], static_cast<double>(s));
+    ASSERT_EQ(out.thruster_throttles.size(), 1u);
+    EXPECT_DOUBLE_EQ(out.thruster_throttles[0], 0.25 * (static_cast<double>(s) + 1.0));
   }
   server.stop();
   fsw.join();
@@ -159,9 +167,12 @@ TEST(SitlServer, BarrierMismatchDegradesToOpenLoopNotCrash) {
 
 TEST(SitlWire, RecordSizesAreTheFrozenLayout) {
   // The wire contract: any change here is a version bump, not a silent edit.
-  // Version 2 (Push 56) added WheelTachRecord to the STEP_REQ; every earlier
+  // Version 2 (Push 56) added WheelTachRecord to the STEP_REQ; version 3 (Push
+  // 70) added the thruster count to HELLO (in its former pad, same size) and
+  // ThrusterCommandRecord after the MTQ records in the STEP_REPLY; every earlier
   // record is unchanged, which is what the sizes below pin.
-  EXPECT_EQ(sitl::kVersion, 2);
+  EXPECT_EQ(sitl::kVersion, 3);
+  EXPECT_EQ(sizeof(sitl::ThrusterCommandRecord), 8u);
   EXPECT_EQ(sizeof(sitl::HelloMsg), 48u);
   EXPECT_EQ(sizeof(sitl::ImuRecord), 64u);
   EXPECT_EQ(sizeof(sitl::StarTrackerRecord), 56u);

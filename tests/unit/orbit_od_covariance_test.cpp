@@ -131,6 +131,7 @@ OrbitOdConfig conservativeConfig(bool with_j2) {
   cfg.position_nis_gate = 16.27;  // chi2(3) at 0.999; unused, no fix is ingested
   cfg.velocity_nis_gate = 16.27;
   cfg.max_coast_s = 1.0e9;  // the coast policy is tested on its own
+  cfg.max_degraded_coast_s = 1.0e9;
   cfg.max_dt_s = 10.0;
   cfg.max_step_s = 1.0;
   cfg.min_radius_m = 6.5e6;

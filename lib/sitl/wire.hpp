@@ -42,7 +42,9 @@ inline constexpr std::uint32_t kMagic = 0x50534954u;  ///< "PSIT"
 /// live in this repo and are built together, so the bump is a mismatch *detector*
 /// (a stale binary on either side fails `checkHeader` immediately) rather than a
 /// compatibility mechanism — there is deliberately no version negotiation.
-inline constexpr std::uint16_t kVersion = 2;
+/// Bumped to 3 in Push 70: HELLO declares the thruster count and the STEP_REPLY
+/// carries per-thruster throttle records for the §17 finite burns.
+inline constexpr std::uint16_t kVersion = 3;
 
 /// Bounded unit counts per sensor/actuator type (wire arrays are sized to the
 /// HELLO-declared counts, never these maxima; these bound validation).
@@ -75,9 +77,9 @@ struct HelloMsg {
   std::uint32_t n_sun_sensor = 0;
   std::uint32_t n_magnetometer = 0;
   std::uint32_t n_gnss = 0;
-  std::uint32_t n_wheel = 0;  ///< reply sizing
-  std::uint32_t n_mtq = 0;    ///< reply sizing
-  std::uint32_t pad = 0;
+  std::uint32_t n_wheel = 0;     ///< reply sizing
+  std::uint32_t n_mtq = 0;       ///< reply sizing
+  std::uint32_t n_thruster = 0;  ///< reply sizing (§17 finite burns)
   std::int64_t macro_dt_ns = 0;
 };
 
@@ -209,8 +211,17 @@ struct MtqCommandRecord {
 
 static_assert(sizeof(MtqCommandRecord) == 24);
 
-/// STEP_REPLY fixed prefix; WheelCommandRecord×n_wheel then
-/// MtqCommandRecord×n_mtq follow. `macro_step` echoes the request — the barrier
+/// One thruster throttle command in the reply, 0..1, held for the macro step.
+/// The truth model applies its own rise/fall lag, thrust-magnitude error and
+/// misalignment (§7); the FSW commands what it asked for, not what it got.
+struct ThrusterCommandRecord {
+  double throttle = 0.0;
+};
+
+static_assert(sizeof(ThrusterCommandRecord) == 8);
+
+/// STEP_REPLY fixed prefix; WheelCommandRecord×n_wheel, MtqCommandRecord×n_mtq,
+/// then ThrusterCommandRecord×n_thruster follow. `macro_step` echoes the request — the barrier
 /// check that neither side skipped a step.
 struct StepReplyHeader {
   MsgHeader hdr{kMagic, kVersion, static_cast<std::uint16_t>(MsgType::kStepReply)};
@@ -234,7 +245,8 @@ inline constexpr std::size_t kMaxStepReqBytes =
 
 /// Largest possible STEP_REPLY payload.
 inline constexpr std::size_t kMaxStepReplyBytes =
-    sizeof(StepReplyHeader) + kMaxUnits * (sizeof(WheelCommandRecord) + sizeof(MtqCommandRecord));
+    sizeof(StepReplyHeader) + kMaxUnits * (sizeof(WheelCommandRecord) + sizeof(MtqCommandRecord) +
+                                           sizeof(ThrusterCommandRecord));
 
 /// Validate a received header: magic, version, and expected type.
 inline bool checkHeader(const MsgHeader& h, MsgType expected) {

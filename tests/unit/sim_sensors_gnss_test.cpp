@@ -388,6 +388,47 @@ TEST(Gnss, LatentFixReportsTheEarlierPositionNotTheCurrentOne) {
       << "the delivered fix is not one latency behind the current truth";
 }
 
+/// **Latency jitter moves delivery, never the tag.** With a jittered delay line
+/// polled at the fix rate, some fixes come due a poll early and some a poll
+/// late — but every delivered fix is still tagged at its own measurement epoch,
+/// which is what keeps the onboard correction exact per fix (Push 70; the
+/// paper it answers measured 15 ± 7.5 ms bus delays).
+TEST(Gnss, LatencyJitterChangesWhenAFixIsDueButNotItsTag) {
+  sensors::GnssSpec spec = latencySpec(0.05, 20.0);
+  spec.fix_latency_jitter_s = 0.02;
+  spec.noise_enabled = false;
+  sensors::Gnss rx(spec, kSeed, kStream);
+  const sensors::GnssInput in = inputOnXAxis();
+
+  // Poll at 20 Hz for 5 s: with a 50 ± 20 ms latency a 50 ms poll sees each
+  // fix either at the next poll or the one after; count how many arrive with
+  // each age, and check every tag is a whole number of fix periods behind.
+  int age_one = 0;
+  int age_two_plus = 0;
+  std::int64_t last_tag = 0;
+  for (int k = 0; k <= 100; ++k) {
+    const double t = 0.05 * k;
+    const sensors::GnssMeasurement m = rx.sample(epochPlus(t), in);
+    if (!m.valid || m.time_tag.nanosecondsSinceEpoch() == last_tag) {
+      continue;
+    }
+    last_tag = m.time_tag.nanosecondsSinceEpoch();
+    const double age_s =
+        static_cast<double>(polaris::time::toGps(epochPlus(t)).nanosecondsSinceEpoch() - last_tag) /
+        1.0e9;
+    // Tags land on the 50 ms sample grid, never on a delivery instant.
+    EXPECT_NEAR(std::fmod(age_s + 1.0e-9, 0.05), 0.0, 1.0e-6);
+    if (age_s < 0.075) {
+      ++age_one;
+    } else {
+      ++age_two_plus;
+    }
+  }
+  EXPECT_GT(age_one, 10) << "no fix ever came due within one poll";
+  EXPECT_GT(age_two_plus, 5) << "no fix was ever late: the jitter did nothing";
+  EXPECT_EQ(rx.pendingDropped(), 0u);
+}
+
 /// With the term off, the model is bit-identical to the pre-latency one. The
 /// delay line must be a feature that switches on, not a behaviour change every
 /// existing scenario silently inherits.

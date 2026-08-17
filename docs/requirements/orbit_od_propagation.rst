@@ -116,24 +116,69 @@ Source: design doc §8.3, §11. Fully populated in Phase 6; firm seeds below.
    :method: Test
    :derived_from: REQ-ODP-001
    :allocation: flight/PolarisFsw/OrbitEstimator, flight/PolarisFsw/AttitudeEstimator
-   :value_required: valid through max_coast_s after the last accepted fix; dropped past it
+   :value_required: FINE through max_coast_s after the last accepted fix; DEGRADED through max_degraded_coast_s; dropped past it
 
    The FSW **shall** publish the onboard orbit solution once per GNC cycle to
    every consumer that needs the vehicle's position — the attitude estimator's
-   magnetic and sun references first — and that solution **shall** remain valid
-   through the configured coast horizon after the last accepted fix and be
-   declared invalid past it, so that a receiver outage shorter than the horizon
-   costs no attitude reference and one longer than it is reported rather than
-   coasted on. A consumer **shall** treat an absent or invalid solution as no
-   position, never reuse the last one.
+   magnetic and sun references first — with a **quality**: FINE through the
+   configured fine coast horizon after the last accepted fix, DEGRADED from
+   there through the configured degraded horizon (the solution coasted on the
+   force model with the covariance the process noise grows), and dropped past
+   it. A consumer **shall** gate on the published position uncertainty against
+   its own tolerance rather than on the fine horizon alone, so that a receiver
+   outage costs a metre-class consumer its accuracy and a kilometre-class one
+   (the magnetic reference: ~1e-3 deg per km) nothing; a consumer **shall**
+   treat an absent solution as no position, never reuse the last one. Fixes
+   returning inside the degraded horizon **shall** be absorbed by update on the
+   grown covariance, not by a re-seed.
 
-   Verified by the SITL rows of ``tests/integration/sitl_od_fault_test.cpp``:
-   outages on each side of the horizon, a spoof step on each side of it, a stale
-   receiver clock, ``OD_RESET`` mid-run, a second receiver carrying a primary
-   outage, and one orbit period with no fault.
+   Verified by the SITL rows of ``tests/integration/sitl_od_fault_test.cpp``
+   (outages on each side of the fine horizon, a spoof step on each side of it —
+   refused throughout on the degraded horizon — a stale receiver clock,
+   ``OD_RESET`` mid-run, a second receiver carrying a primary outage, one orbit
+   period with no fault) and ``sitl_od_burn_test.cpp`` (a 1200 s outage coasted
+   DEGRADED to 2.2 m with the magnetic reference kept and no re-seed).
 
    Rationale: until this seam existed the attitude estimator read the receiver
    directly and a GNSS outage cost the magnetic pair on the first missed fix.
    Serving position from the filter moves that dependency onto a horizon sized
    from the receiver's own outage modes (§8.3) and puts the plausibility gate on
    the fix, in one place, ahead of every consumer.
+
+.. req:: Non-gravitational acceleration input and ground seed
+   :id: REQ-ODP-008
+   :status: reviewed
+   :level: L3
+   :tags: od, estimation, maneuver
+   :method: Test
+   :derived_from: REQ-ODP-001, REQ-ODP-007
+   :allocation: lib/gnc, flight/PolarisFsw/OrbitEstimator, flight/PolarisFsw/BurnExecutor
+   :value_required: a burn inside an outage coasted to < 100 m at outage end (measured 26 m told vs 1374 m blind)
+   :refs: ceresoli2025
+
+   The onboard orbit filter **shall** accept a known non-gravitational
+   acceleration — the commanded thrust of a finite burn (§17), in the inertial
+   frame with a 1-sigma magnitude — and **shall** propagate with it over the
+   step and inflate its process noise by that sigma over the same step, so a
+   burn is neither refused fix by fix nor coasted through blind; an invalid or
+   stale acceleration record **shall** mean "no thrust known", never the last
+   value. The filter **shall** accept a ground-supplied state seed (epoch,
+   position, velocity, sigmas) for a long outage or a failed receiver, refused
+   when the epoch is older than the degraded horizon or in the future beyond
+   the fix-latency bound.
+
+   Rationale: Ceresoli et al. (2025) measured a burn during a GNSS outage as
+   5 km of error with the thrust fed from the IMU against 9 km propagating
+   the last fix, on a J2 model; on the 8x8 model here, the same burn inside a
+   900 s outage is 26 m told against 1374 m blind, and a 60 s burn while
+   tracking is absorbed at the receiver's noise (0.13 m). The accelerometer path
+   is deliberately not the source yet: an accelerometer bias of hundreds of
+   micro-g integrated over a coast is worse than no input, so it waits on a bias
+   state and a burn-active gate.
+
+   Verified by ``tests/unit/orbit_od_test.cpp``
+   (``NonGravitationalAccelerationIsPropagatedAndBudgeted``, the seed API), the
+   MC scenarios ``burn_tracked`` / ``burn_outage_fed`` / ``burn_outage_blind``
+   (``tests/mc``), the ``OrbitEstimator`` component tests
+   (``NonGravAccelIsAppliedOnlyWhenFreshAndValid``, ``GroundSeedAcceptedAndRefused``)
+   and the SITL rows of ``tests/integration/sitl_od_burn_test.cpp``.

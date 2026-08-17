@@ -36,7 +36,7 @@ using Body = pm::frames::Body;
 //! SigmaSunWhiteRad costs — the whole estimator — and a separate gate would imply
 //! a degraded-but-flying state that does not exist. (The cycle counts are U32 and
 //! are read alongside them.)
-constexpr FwSizeType kParamCount = 19;
+constexpr FwSizeType kParamCount = 20;
 
 //! Number of fine-mode (MEKF + Davenport seed) tuning parameters. Validated
 //! separately: a missing one costs the fine mode, not the whole estimator.
@@ -165,6 +165,7 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
   values[16] = this->paramGet_MagMaxFieldRatio(valids[16]);
   values[17] = this->paramGet_MagDisagreementT(valids[17]);
   values[18] = this->paramGet_MagMaxAttSigmaRad(valids[18]);
+  values[19] = this->paramGet_MaxPositionSigmaM(valids[19]);
   Fw::ParamValid mag_readmit_valid = Fw::ParamValid::INVALID;
   const U32 mag_readmit_cycles = this->paramGet_MagReadmitCycles(mag_readmit_valid);
   Fw::ParamValid mag_confirm_valid = Fw::ParamValid::INVALID;
@@ -194,7 +195,8 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
                                                   "MagMinFieldRatio",
                                                   "MagMaxFieldRatio",
                                                   "MagDisagreementT",
-                                                  "MagMaxAttSigmaRad"};
+                                                  "MagMaxAttSigmaRad",
+                                                  "MaxPositionSigmaM"};
 
   for (FwSizeType i = 0; i < kParamCount; ++i) {
     if (valids[i] != Fw::ParamValid::VALID || !std::isfinite(values[i])) {
@@ -236,6 +238,11 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
   mag_vote_cfg.max_field_ratio = values[16];
   mag_vote_cfg.disagreement_tesla = values[17];
   mag_vote_cfg.max_attitude_sigma_rad = values[18];
+  if (!(values[19] > 0.0)) {
+    this->failConfig("MaxPositionSigmaM must be positive");
+    return false;
+  }
+  this->max_position_sigma_m_ = values[19];
   mag_vote_cfg.readmit_cycles = mag_readmit_cycles;
   mag_vote_cfg.identify_confirm_cycles = mag_confirm_cycles;
   // The library owns the range rules — including that the band must straddle 1,
@@ -1107,15 +1114,18 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
   // --- Position and the ECEF->ECI rotation ----------------------------------
   // Both inertial references need the rotation; the magnetic one also needs the
   // position, which is the §8.3 orbit solution the OrbitEstimator published
-  // earlier this cycle. Its `valid` is the orbit filter's own coast-horizon
-  // verdict, so a receiver outage costs the magnetic pair only once the orbit
-  // solution has been dropped — flagged by PositionUnavailable rather than
-  // papered over with the last position it was handed. Consumed **once**: the
-  // latch is cleared here so a producer that stops running cannot leave a
-  // stale solution wearing a valid flag for the rest of the mission.
+  // earlier this cycle. `valid` says a solution exists (fine or degraded); the
+  // published sigma against MaxPositionSigmaM is this consumer's own tolerance
+  // (Push 70) — a coasted, degraded solution keeps the magnetic pair as long as
+  // its covariance is inside what a geomagnetic reference can stand, and it is
+  // PositionUnavailable, not a papered-over last position, once it is not.
+  // Consumed **once**: the latch is cleared here so a producer that stops
+  // running cannot leave a stale solution wearing a valid flag for the rest of
+  // the mission.
   pm::Vec3<ECI> r_eci;
   bool have_position = false;
-  if (this->orbit_.get_valid()) {
+  if (this->orbit_.get_valid() && std::isfinite(this->orbit_.get_posSigmaM()) &&
+      this->orbit_.get_posSigmaM() <= this->max_position_sigma_m_) {
     r_eci = pm::Vec3<ECI>(toEigen(this->orbit_.get_posEciM()));
     have_position = r_eci.isFinite();
   }
@@ -1591,8 +1601,12 @@ void AttitudeEstimator ::emitEstimate(const Eigen::Matrix3d& cov, double age_s) 
   estimate.set_magFieldValid(this->pub_mag_valid_);
   estimate.set_magModelValid(this->pub_mag_model_valid_);
   estimate.set_magRawValid(this->pub_mag_raw_valid_);
-  if (this->isConnected_estimateOut_OutputPort(0)) {
-    this->estimateOut_out(0, estimate);
+  // Every connected consumer: index 0 the controller, index 1 the burn
+  // executor (§17), both the same estimate.
+  for (FwIndexType i = 0; i < NUM_ESTIMATEOUT_OUTPUT_PORTS; ++i) {
+    if (this->isConnected_estimateOut_OutputPort(i)) {
+      this->estimateOut_out(i, estimate);
+    }
   }
 
   this->tlmWrite_EstMode(toEstimationMode(this->state_.mode));

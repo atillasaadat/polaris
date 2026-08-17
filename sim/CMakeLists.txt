@@ -75,10 +75,11 @@ add_library(polaris::sensors ALIAS polaris_sensors)
 add_library(polaris_actuators
   actuators/reaction_wheel.cpp
   actuators/rw_assembly.cpp
-  actuators/magnetorquer.cpp)
+  actuators/magnetorquer.cpp
+  actuators/thruster.cpp)
 target_include_directories(polaris_actuators PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_actuators
-  PUBLIC Eigen3::Eigen polaris_math
+  PUBLIC Eigen3::Eigen polaris_math polaris_random polaris_constants
   PRIVATE polaris_flags)
 add_library(polaris::actuators ALIAS polaris_actuators)
 

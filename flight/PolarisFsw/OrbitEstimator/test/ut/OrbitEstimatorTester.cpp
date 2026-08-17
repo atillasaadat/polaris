@@ -40,6 +40,9 @@ constexpr F64 kDragScaleHeight = 58'515.0;
 constexpr F64 kAccelPsd = 1.8e-7;
 constexpr F64 kNisGate = 16.266;
 constexpr F64 kMaxCoastS = 300.0;
+constexpr F64 kMaxDegradedCoastS = 900.0;  // short, so the drop is reachable at 1 Hz
+constexpr F64 kMaxAccelAgeS = 0.5;
+constexpr U32 kStatusPeriodCycles = 100;
 constexpr F64 kMaxDtS = 60.0;
 constexpr F64 kMaxStepS = 10.0;
 constexpr F64 kMaxFixLatencyS = 0.2;
@@ -72,6 +75,7 @@ pg::OrbitOdConfig referenceConfig() {
   cfg.position_nis_gate = kNisGate;
   cfg.velocity_nis_gate = kNisGate;
   cfg.max_coast_s = 1.0e9;  // the truth never expires
+  cfg.max_degraded_coast_s = 1.0e9;
   cfg.max_dt_s = kMaxDtS;
   cfg.max_step_s = kMaxStepS;
   cfg.max_fix_latency_s = kMaxFixLatencyS;
@@ -143,6 +147,9 @@ void OrbitEstimatorTester ::setValidParameters() {
   this->paramSet_PositionNisGate(kNisGate, Fw::ParamValid::VALID);
   this->paramSet_VelocityNisGate(kNisGate, Fw::ParamValid::VALID);
   this->paramSet_MaxCoastS(kMaxCoastS, Fw::ParamValid::VALID);
+  this->paramSet_MaxDegradedCoastS(kMaxDegradedCoastS, Fw::ParamValid::VALID);
+  this->paramSet_MaxAccelAgeS(kMaxAccelAgeS, Fw::ParamValid::VALID);
+  this->paramSet_StatusPeriodCycles(kStatusPeriodCycles, Fw::ParamValid::VALID);
   this->paramSet_MaxDtS(kMaxDtS, Fw::ParamValid::VALID);
   this->paramSet_MaxStepS(kMaxStepS, Fw::ParamValid::VALID);
   this->paramSet_MaxFixLatencyS(kMaxFixLatencyS, Fw::ParamValid::VALID);
@@ -206,6 +213,7 @@ void OrbitEstimatorTester ::runCycleAt(I64 taiNs) {
   const U32 useconds = static_cast<U32>((taiNs % kNsPerSecond) / 1000);
   this->setTestTime(Fw::Time(seconds, useconds));
   this->invoke_to_run(0, 0);
+  ++this->cycles_run_;
 }
 
 // ----------------------------------------------------------------------
@@ -288,27 +296,52 @@ void OrbitEstimatorTester ::testCoastsThenDropsAtHorizon() {
   this->sendFixAt(kStartTaiNs);
   this->runCycleAt(kStartTaiNs);
   ASSERT_TRUE(this->last_estimate_.get_valid());
+  ASSERT_EQ(this->last_estimate_.get_quality(), OrbitQuality::FINE);
 
-  // Coast at 1 Hz cycles: valid on the propagated state through the horizon.
+  // Coast at 1 Hz cycles: FINE on the propagated state through the fine horizon.
   I64 t = kStartTaiNs;
   for (int s = 1; s <= 300; ++s) {
     t = kStartTaiNs + s * kNsPerSecond;
     this->runCycleAt(t);
     ASSERT_TRUE(this->last_estimate_.get_valid()) << "coast second " << s;
+    ASSERT_EQ(this->last_estimate_.get_quality(), OrbitQuality::FINE) << "coast second " << s;
     EXPECT_NEAR(this->last_estimate_.get_ageSec(), static_cast<F64>(s), 1.0e-6);
   }
   Eigen::Vector3d r_true;
   Eigen::Vector3d v_true;
   this->truthAt(t, r_true, v_true);
   EXPECT_LT((toEigen(this->last_estimate_.get_posEciM()) - r_true).norm(), 0.1);
+  ASSERT_EVENTS_OrbitSolutionDegraded_SIZE(0);
   ASSERT_EVENTS_OrbitSolutionDropped_SIZE(0);
 
-  // One second past the horizon: dropped, once, with the age and the horizon.
+  // One second past the fine horizon: DEGRADED, still valid and published,
+  // once-reported, and the position still tracks the truth on this model.
+  t += kNsPerSecond;
+  this->runCycleAt(t);
+  ASSERT_TRUE(this->last_estimate_.get_valid());
+  ASSERT_EQ(this->last_estimate_.get_quality(), OrbitQuality::DEGRADED);
+  ASSERT_EVENTS_OrbitSolutionDegraded_SIZE(1);
+  ASSERT_EVENTS_OrbitSolutionDropped_SIZE(0);
+  for (int s = 302; s <= 900; ++s) {
+    t = kStartTaiNs + s * kNsPerSecond;
+    this->runCycleAt(t);
+    ASSERT_TRUE(this->last_estimate_.get_valid()) << "coast second " << s;
+    ASSERT_EQ(this->last_estimate_.get_quality(), OrbitQuality::DEGRADED) << "second " << s;
+  }
+  ASSERT_EVENTS_OrbitSolutionDegraded_SIZE(1);
+  this->truthAt(t, r_true, v_true);
+  EXPECT_LT((toEigen(this->last_estimate_.get_posEciM()) - r_true).norm(), 0.5);
+  EXPECT_GT(this->last_estimate_.get_posSigmaM(), 1.0)
+      << "the degraded covariance must have grown past the receiver's own";
+
+  // One second past the degraded horizon: dropped, once, with the age and the
+  // horizon it happened at.
   t += kNsPerSecond;
   this->runCycleAt(t);
   ASSERT_FALSE(this->last_estimate_.get_valid());
+  ASSERT_EQ(this->last_estimate_.get_quality(), OrbitQuality::NONE);
   ASSERT_EVENTS_OrbitSolutionDropped_SIZE(1);
-  ASSERT_EVENTS_OrbitSolutionDropped(0, 301.0, kMaxCoastS);
+  ASSERT_EVENTS_OrbitSolutionDropped(0, 901.0, kMaxDegradedCoastS);
   ASSERT_TLM_LastRefusal(this->tlmHistory_LastRefusal->size() - 1,
                          OrbitEstimator::OdRefusal::COAST_EXPIRED);
   // Stays dropped, quietly.
@@ -322,8 +355,118 @@ void OrbitEstimatorTester ::testCoastsThenDropsAtHorizon() {
   this->sendFixAt(t);
   this->runCycleAt(t);
   ASSERT_TRUE(this->last_estimate_.get_valid());
+  ASSERT_EQ(this->last_estimate_.get_quality(), OrbitQuality::FINE);
   ASSERT_EVENTS_OrbitSeeded_SIZE(2);
   EXPECT_LT(this->last_estimate_.get_ageSec(), 1.0e-6);
+
+  // The status cadence: one OrbitStatus per kStatusPeriodCycles cycles.
+  const std::size_t cycles = static_cast<std::size_t>(this->cycles_run_);
+  ASSERT_EVENTS_OrbitStatus_SIZE(cycles / kStatusPeriodCycles);
+}
+
+void OrbitEstimatorTester ::testDegradedReacquiresByUpdateNotSeed() {
+  this->setValidParameters();
+  this->startTruthAt(kStartTaiNs);
+  this->sendFixAt(kStartTaiNs);
+  this->runCycleAt(kStartTaiNs);
+  I64 t = kStartTaiNs;
+  for (int s = 1; s <= 600; ++s) {
+    t = kStartTaiNs + s * kNsPerSecond;
+    this->runCycleAt(t);
+  }
+  ASSERT_EQ(this->last_estimate_.get_quality(), OrbitQuality::DEGRADED);
+  // A returning fix inside the degraded band is an *update* on the grown
+  // covariance: no second seed, quality back to FINE, nothing refused.
+  t += kNsPerSecond;
+  this->sendFixAt(t);
+  this->runCycleAt(t);
+  ASSERT_EQ(this->last_estimate_.get_quality(), OrbitQuality::FINE);
+  ASSERT_EVENTS_OrbitSeeded_SIZE(1);
+  ASSERT_EVENTS_FixRefused_SIZE(0);
+  EXPECT_LT(this->last_estimate_.get_ageSec(), 1.0e-6);
+}
+
+void OrbitEstimatorTester ::testNonGravAccelIsAppliedOnlyWhenFreshAndValid() {
+  this->setValidParameters();
+  this->startTruthAt(kStartTaiNs);
+  this->sendFixAt(kStartTaiNs);
+  this->runCycleAt(kStartTaiNs);
+  ASSERT_TRUE(this->last_estimate_.get_valid());
+
+  // A 0.03 m/s^2 along-track thrust the executor reports at this cycle: the
+  // filter propagates with it (the truth here does not thrust, so the estimate
+  // departs the truth by 1/2 a t^2 — the point is that it *was* applied).
+  Eigen::Vector3d r_true;
+  Eigen::Vector3d v_true;
+  this->truthAt(kStartTaiNs, r_true, v_true);
+  const Eigen::Vector3d a = 0.03 * v_true.normalized();
+  NonGravAccel accel;
+  accel.set_epochTaiNs(kStartTaiNs + kNsPerSecond);
+  accel.set_accelEciMps2(toVec3(a));
+  accel.set_sigmaMps2(1.5e-3);
+  accel.set_valid(true);
+  this->invoke_to_accelIn(0, accel);
+  this->runCycleAt(kStartTaiNs + kNsPerSecond);
+  ASSERT_EVENTS_NonGravAccelApplied_SIZE(1);
+  ASSERT_TLM_NonGravAccelMps2(this->tlmHistory_NonGravAccelMps2->size() - 1, 0.03);
+  this->truthAt(kStartTaiNs + kNsPerSecond, r_true, v_true);
+  const double departure = (toEigen(this->last_estimate_.get_posEciM()) - r_true).norm();
+  EXPECT_NEAR(departure, 0.5 * 0.03 * 1.0 * 1.0, 1.0e-3);
+
+  // The same record two seconds later is stale (MaxAccelAgeS = 0.5): cleared,
+  // and the propagate coasts.
+  this->runCycleAt(kStartTaiNs + 3 * kNsPerSecond);
+  ASSERT_EVENTS_NonGravAccelCleared_SIZE(1);
+  ASSERT_TLM_NonGravAccelMps2(this->tlmHistory_NonGravAccelMps2->size() - 1, 0.0);
+
+  // An invalid record is never applied, whatever its epoch.
+  accel.set_epochTaiNs(kStartTaiNs + 4 * kNsPerSecond);
+  accel.set_valid(false);
+  this->invoke_to_accelIn(0, accel);
+  this->runCycleAt(kStartTaiNs + 4 * kNsPerSecond);
+  ASSERT_EVENTS_NonGravAccelApplied_SIZE(1);
+  ASSERT_TLM_NonGravAccelMps2(this->tlmHistory_NonGravAccelMps2->size() - 1, 0.0);
+}
+
+void OrbitEstimatorTester ::testGroundSeedAcceptedAndRefused() {
+  this->setValidParameters();
+  this->startTruthAt(kStartTaiNs);
+  // No fix at all: the ground seed is what starts the filter.
+  this->runCycleAt(kStartTaiNs);
+  ASSERT_FALSE(this->last_estimate_.get_valid());
+  Eigen::Vector3d r_true;
+  Eigen::Vector3d v_true;
+  this->truthAt(kStartTaiNs, r_true, v_true);
+
+  // Refused: an epoch further behind now than the degraded horizon.
+  this->sendCmd_OD_SEED_STATE(0, 0, kStartTaiNs - 2000 * kNsPerSecond, r_true.x(), r_true.y(),
+                              r_true.z(), v_true.x(), v_true.y(), v_true.z(), 100.0, 0.1);
+  ASSERT_CMD_RESPONSE(0, OrbitEstimator::OPCODE_OD_SEED_STATE, 0,
+                      Fw::CmdResponse::VALIDATION_ERROR);
+  ASSERT_EVENTS_OrbitSeedRefused_SIZE(1);
+  // Refused: an implausible radius.
+  this->sendCmd_OD_SEED_STATE(0, 1, kStartTaiNs, 10.0 * r_true.x(), 10.0 * r_true.y(),
+                              10.0 * r_true.z(), v_true.x(), v_true.y(), v_true.z(), 100.0, 0.1);
+  ASSERT_CMD_RESPONSE(1, OrbitEstimator::OPCODE_OD_SEED_STATE, 1,
+                      Fw::CmdResponse::VALIDATION_ERROR);
+  ASSERT_EVENTS_OrbitSeedRefused_SIZE(2);
+  ASSERT_EVENTS_OrbitSeedRefused(1, OrbitEstimator::OdRefusal::FIX_IMPLAUSIBLE);
+  // Accepted: the truth at now, 100 m / 0.1 m/s.
+  this->sendCmd_OD_SEED_STATE(0, 2, kStartTaiNs, r_true.x(), r_true.y(), r_true.z(), v_true.x(),
+                              v_true.y(), v_true.z(), 100.0, 0.1);
+  ASSERT_CMD_RESPONSE(2, OrbitEstimator::OPCODE_OD_SEED_STATE, 2, Fw::CmdResponse::OK);
+  ASSERT_EVENTS_OrbitSeededFromGround_SIZE(1);
+  this->runCycleAt(kStartTaiNs + kNsPerSecond);
+  ASSERT_TRUE(this->last_estimate_.get_valid());
+  ASSERT_EQ(this->last_estimate_.get_quality(), OrbitQuality::FINE);
+  EXPECT_NEAR(this->last_estimate_.get_posSigmaM(), 100.0 * std::sqrt(3.0), 1.0);
+  this->truthAt(kStartTaiNs + kNsPerSecond, r_true, v_true);
+  EXPECT_LT((toEigen(this->last_estimate_.get_posEciM()) - r_true).norm(), 0.01);
+  // And a fix now updates it, no seed.
+  this->sendFixAt(kStartTaiNs + 2 * kNsPerSecond);
+  this->runCycleAt(kStartTaiNs + 2 * kNsPerSecond);
+  ASSERT_EVENTS_OrbitSeeded_SIZE(0);
+  ASSERT_EVENTS_FixRefused_SIZE(0);
 }
 
 void OrbitEstimatorTester ::testRefusesImplausibleFix() {

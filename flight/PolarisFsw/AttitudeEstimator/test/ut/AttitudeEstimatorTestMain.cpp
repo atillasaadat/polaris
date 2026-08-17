@@ -44,6 +44,11 @@ TEST(AttitudeEstimator, NonFinitePositionIsRejected) {
   tester.testNonFinitePositionIsRejected();
 }
 
+TEST(AttitudeEstimator, DegradedOrbitSolutionIsUsedUpToTheSigmaTolerance) {
+  flight::AttitudeEstimatorTester tester;
+  tester.testDegradedOrbitSolutionIsUsedUpToTheSigmaTolerance();
+}
+
 TEST(AttitudeEstimator, OrbitSolutionIsConsumedOnce) {
   flight::AttitudeEstimatorTester tester;
   tester.testOrbitSolutionIsConsumedOnce();

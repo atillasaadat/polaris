@@ -15,6 +15,7 @@
 
 #include "actuators/magnetorquer.hpp"
 #include "actuators/reaction_wheel.hpp"
+#include "actuators/thruster.hpp"
 #include "math/frames.hpp"
 #include "math/typed_vector.hpp"
 
@@ -478,4 +479,104 @@ TEST(MagnetorquerSpec, SettleTimeComesFromTheCatalog) {
   m.commandDipole(Vec3B(Eigen::Vector3d(5.0, 0.0, 0.0)));
   m.deenergize();
   EXPECT_NEAR(m.settlingDipole(1.0e-9).eigen().x(), 0.0, 1e-12);
+}
+
+// --- Thruster (§7, §17) ------------------------------------------------------
+
+namespace {
+act::ThrusterSpec idealThruster() {
+  act::ThrusterSpec s;
+  s.thrust_n = 0.5;
+  s.isp_s = 220.0;
+  return s;
+}
+
+constexpr double kG0 = 9.80665;
+}  // namespace
+
+TEST(Thruster, IdealUnitDeliversTheCommandedThrustAlongItsAxisAndSpendsPropellant) {
+  act::Thruster t(idealThruster());
+  t.commandThrottle(1.0);
+  const auto out = t.step(0.1);
+  EXPECT_NEAR(out.delivered_thrust_n, 0.5, 1e-15);
+  EXPECT_NEAR(out.force_n.z(), 0.5, 1e-15);
+  EXPECT_NEAR(out.force_n.head<2>().norm(), 0.0, 1e-15);
+  EXPECT_NEAR(out.mass_flow_kg_s, 0.5 / (220.0 * kG0), 1e-15);
+  t.commandThrottle(0.4);
+  EXPECT_NEAR(t.step(0.1).delivered_thrust_n, 0.2, 1e-15);
+  t.commandThrottle(7.0);  // clamped
+  EXPECT_NEAR(t.step(0.1).delivered_thrust_n, 0.5, 1e-15);
+}
+
+TEST(Thruster, RiseAndFallLagsIntegrateExactlyAndTheImpulseTendsToFTimesT) {
+  act::ThrusterSpec spec = idealThruster();
+  spec.rise_time_s = 0.05;
+  spec.fall_time_s = 0.02;
+  act::Thruster t(spec);
+  t.commandThrottle(1.0);
+  // One step of one time constant from rest: 1 - e^-1 of the command.
+  EXPECT_NEAR(t.step(0.05).delivered_thrust_n, 0.5 * (1.0 - std::exp(-1.0)), 1e-12);
+  // A 10 s burn at 10 ms steps: impulse within one time constant's worth of F*t.
+  act::Thruster burn(spec);
+  burn.commandThrottle(1.0);
+  double impulse = 0.0;
+  for (int k = 0; k < 1000; ++k) {
+    impulse += burn.step(0.01).delivered_thrust_n * 0.01;
+  }
+  // Rectangle rule on the end-of-step thrust over-counts the rise by < dt/2·F.
+  EXPECT_NEAR(impulse, 0.5 * 10.0 - 0.5 * spec.rise_time_s, 5e-3);
+  // Tail-off is faster than rise: one fall constant after commanding off.
+  burn.commandThrottle(0.0);
+  EXPECT_NEAR(burn.step(0.02).delivered_thrust_n, 0.5 * std::exp(-1.0), 1e-6);
+}
+
+TEST(Thruster, ScaleErrorMisalignmentAndMinimumImpulseBitAreWhatTheySay) {
+  act::ThrusterSpec spec = idealThruster();
+  spec.thrust_scale_error = 0.02;
+  spec.misalignment_rad = 0.005;
+  spec.misalignment_azimuth_rad = M_PI / 2.0;  // tilt toward +y
+  act::Thruster t(spec);
+  t.commandThrottle(1.0);
+  const auto out = t.step(0.1);
+  EXPECT_NEAR(out.delivered_thrust_n, 0.51, 1e-12);
+  EXPECT_NEAR(out.force_n.y(), 0.51 * std::sin(0.005), 1e-12);
+  EXPECT_NEAR(out.force_n.x(), 0.0, 1e-12);
+  EXPECT_NEAR(out.force_n.z(), 0.51 * std::cos(0.005), 1e-12);
+  // The caller's torque about the body origin from a mounting position.
+  const Eigen::Vector3d r(0.0, 0.0, -0.15);
+  const Eigen::Vector3d torque = r.cross(out.force_n);
+  EXPECT_NEAR(torque.x(), -(-0.15) * out.force_n.y(), 1e-15);  // r x F, x-component
+  // Minimum impulse bit: a 1 ms pulse at 0.5 N is 0.5 mN*s, under a 5 mN*s bit.
+  act::ThrusterSpec bit = idealThruster();
+  bit.min_impulse_bit_ns = 0.005;
+  act::Thruster q(bit);
+  q.commandThrottle(1.0);
+  EXPECT_DOUBLE_EQ(q.step(0.001).delivered_thrust_n, 0.0);
+  EXPECT_NEAR(q.step(0.1).delivered_thrust_n, 0.5, 1e-15);
+}
+
+TEST(Thruster, StuckOffAndStuckOnFaults) {
+  act::Thruster t(idealThruster());
+  t.commandThrottle(1.0);
+  t.setStuckOff(true);
+  EXPECT_DOUBLE_EQ(t.step(0.1).delivered_thrust_n, 0.0);
+  t.clearFaults();
+  t.commandThrottle(0.0);
+  t.setStuckOn(true);
+  EXPECT_NEAR(t.step(0.1).delivered_thrust_n, 0.5, 1e-15);
+}
+
+TEST(ThrusterSpec, LibraryParamsConvertToTheSpec) {
+  const act::ThrusterSpec s = act::ThrusterSpec::fromParams({{"thrust_n", 0.5},
+                                                             {"isp_s", 220.0},
+                                                             {"min_impulse_bit_ns", 0.005},
+                                                             {"rise_time_s", 0.05},
+                                                             {"fall_time_s", 0.03},
+                                                             {"thrust_scale_error", 0.02},
+                                                             {"thrust_noise_frac", 0.01},
+                                                             {"misalignment_rad", 0.005}});
+  EXPECT_DOUBLE_EQ(s.thrust_n, 0.5);
+  EXPECT_DOUBLE_EQ(s.isp_s, 220.0);
+  EXPECT_DOUBLE_EQ(s.rise_time_s, 0.05);
+  EXPECT_DOUBLE_EQ(s.misalignment_rad, 0.005);
 }

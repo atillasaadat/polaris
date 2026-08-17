@@ -20,12 +20,16 @@
  * nine spare. Push 54's attitude control adds 30 (B-dot, the pointing PID, the
  * wheel allocation and the MTQ/MAG interlock), which is what the Push 52 note
  * predicted would happen, so the limit moved to **128** rather than being shaved
- * against: the vehicle now sits at **85 of 128**.
+ * against: the vehicle sat at 85 of 128. Pushes 62-69 (the orbit filter, its
+ * fault rows, the slew limit, the wheel-capacity monitor and the wheel-speed
+ * bias) took it to 125, and Push 70's finite-burn executor and the orbit
+ * filter's thrust/degraded-coast/seed parameters overflowed it — so the limit
+ * moved to **256**, the same reasoning as before: Phases 7-10 still owe FDIR,
+ * CFDP and sequencing tuning, and a limit shaved against is a limit that
+ * eventually loads a partial database in flight.
  *
- * The cost is a `Fw::ArrayMap` of 128 parameter buffers, statically allocated,
- * comfortably inside the deployment's memory budget. Phases 6-10 still owe orbit
- * determination, FDIR, CFDP and sequencing tuning; at 43 spare that is headroom
- * rather than a countdown. Only this number needs changing:
+ * The cost is a `Fw::ArrayMap` of 256 parameter buffers, statically allocated,
+ * comfortably inside the deployment's memory budget. Only this number needs changing:
  * `tools/configc/prmdb.py` parses it out of this file, and refuses to emit a
  * longer one — so overflowing it is a build error rather than a partially-loaded
  * database in flight.
@@ -38,7 +42,7 @@
 namespace {
 
 enum {
-  PRMDB_NUM_DB_ENTRIES = 128,   // !< Number of entries in the parameter database
+  PRMDB_NUM_DB_ENTRIES = 256,   // !< Number of entries in the parameter database
   PRMDB_ENTRY_DELIMITER = 0xA5  // !< Byte value that should precede each parameter in file; sanity
                                 // check against file integrity. Should match ground system.
 };

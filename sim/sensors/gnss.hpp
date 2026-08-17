@@ -125,6 +125,17 @@ struct GnssSpec {
   /// epoch it was answering for. That artifact is what made this trap visible.
   double fix_latency_s = 0.0;
 
+  /// **Latency jitter** [s, 1σ]: each fix's delivery delay is
+  /// `max(0, fix_latency_s + N(0, jitter))` — the bus and scheduler do not
+  /// deliver every message the same number of milliseconds late (Ceresoli et
+  /// al. 2025 measured 15 ± 7.5 ms on CubeSat buses). The fix's **time tag is
+  /// unaffected**: it is the measurement epoch, which is what makes the
+  /// onboard latency correction exact per fix rather than a mean-delay guess.
+  /// What jitter changes is *when* a fix comes due, so a poll can see one fix
+  /// early and the next late; the flight side must be indifferent to that.
+  /// Zero (default) is the fixed-latency delay line.
+  double fix_latency_jitter_s = 0.0;
+
   /// Time-to-first-fix from a cold start [s] — the receiver is invalid for this
   /// long after its first sample.
   double cold_start_s = 0.0;
@@ -295,7 +306,7 @@ class Gnss {
   /// and `pendingDropped()` counts it so a mis-sized buffer cannot hide.
   static constexpr std::size_t kMaxPending = 64;
   GnssMeasurement pending_[kMaxPending]{};
-  std::int64_t pending_epoch_ns_[kMaxPending]{};  ///< GPS ns the fix was measured at
+  std::int64_t pending_epoch_ns_[kMaxPending]{};  ///< GPS ns the fix comes due (measured + latency)
   std::size_t pending_count_ = 0;
   std::uint64_t pending_dropped_ = 0;
   /// GPS-time nanoseconds before which fixes stay invalid (cold-start acquisition

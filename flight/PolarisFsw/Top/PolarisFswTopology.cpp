@@ -222,6 +222,13 @@ void setupTopology(const TopologyState& state) {
   // own body runs when the cycle comes (the run cycle holds the component mutex,
   // so it is not re-dispatched through the command port).
   orbitEstimator.commandResetAtCycle(state.odResetCycle);
+  if (state.odAccelInput >= 0) {
+    orbitEstimator.setAccelInputAtStartup(state.odAccelInput != 0);
+  }
+  // The §17 twin: arm a burn for a given GNC cycle; the command handler's body
+  // runs when the cycle comes (the run cycle holds the mutex the command port
+  // shares).
+  burnExecutor.commandBurnAtCycle(state.burnStartCycle, state.burnDurationS, state.burnThrottle);
   // Autocoded task kick-off (active components). Function provided by autocoder.
   startTasks(state);
   // Initialize socket communication if and only if there is a valid specification

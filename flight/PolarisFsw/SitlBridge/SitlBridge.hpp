@@ -57,6 +57,9 @@ class SitlBridge final : public SitlBridgeComponentBase {
   void mtqCmdIn_handler(FwIndexType portNum, const flight::MtqDipoleSet& cmds,
                         F64 onWindowSec) override;
 
+  //! Latch the burn executor's thruster throttles for the next reply.
+  void thrusterCmdIn_handler(FwIndexType portNum, const flight::ThrusterThrottleSet& cmds) override;
+
   // ----------------------------------------------------------------------
   // Helpers
   // ----------------------------------------------------------------------
@@ -91,6 +94,7 @@ class SitlBridge final : public SitlBridgeComponentBase {
   //! the STEP_REPLY. Fixed-size (kMaxUnits); zero until the rate group commands.
   polaris::sitl::WheelCommandRecord latest_wheel_[polaris::sitl::kMaxUnits] = {};
   polaris::sitl::MtqCommandRecord latest_mtq_[polaris::sitl::kMaxUnits] = {};
+  polaris::sitl::ThrusterCommandRecord latest_thruster_[polaris::sitl::kMaxUnits] = {};
 
   //! §7 MTQ-on window [s] for the next step, latched with the dipoles. Zero
   //! until the rate group commands, which is the rods-off schedule.

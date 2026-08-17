@@ -280,25 +280,42 @@
 /// @ref OrbitOd::rejectedCount standing — a filter that has just diverged is
 /// when FDIR most needs to see what it had been rejecting on the way there.
 ///
-/// Past `max_coast_s` without an accepted fix the solution is declared invalid
-/// **and dropped**, and the next fix re-acquires whole. This is the coarse
-/// attitude estimator's discipline, not the attitude MEKF's: the MEKF retains
-/// its state past the horizon because a Kalman gain against a grown covariance
-/// takes the returning measurement almost whole and there is a converged *gyro
-/// bias* worth keeping. Here there is no such parameter — the whole state is
-/// position and velocity, a GNSS fix determines both outright and better than
-/// any coasted prior, and the coarse force model's error past the horizon is
-/// systematic, so blending against a stale prior would drag the fresh fix
-/// toward a known-wrong trajectory for no gain.
+/// **Two coast horizons (Push 70).** Past `max_coast_s` without an accepted
+/// fix the solution is no longer *fine*: the truncation-sized process noise has
+/// grown the covariance to where it is a coasted prediction, and it is reported
+/// as **degraded** (@ref OrbitOd::quality) — still propagated, still published
+/// with its grown covariance, so a consumer whose tolerance is kilometres (the
+/// magnetic reference moves ~1e-3° per km) keeps its position and a consumer
+/// whose tolerance is metres reads the σ and declines. Past
+/// `max_degraded_coast_s` the solution is **dropped** and the next fix
+/// re-acquires whole. Re-acquisition after a degraded coast is by the grown
+/// covariance alone: a returning fix passes the NIS gate because `P` says it
+/// should, and there is deliberately no "N rejections → reseed" rule, which
+/// would let a persistent spoof win the seed (§9.2). Ceresoli et al. measured
+/// what a 20 min coast costs on a J2+drag model (~3 km 3σ in LEO); this 8×8
+/// field's truncation over the same arc is tens of metres, so the degraded
+/// horizon is set from that campaign figure, not from the fine one
+/// [ceresoli2025].
 ///
-/// **Sizing the horizon.** It covers the outage modes the receiver model already
-/// has (§6.2): the cold-start time-to-first-fix, the post-outage reacquisition
-/// delay, and brief dropouts — the same graceful-coasting case the §9.2 FDIR
-/// suite drives. It is not sized to survive a long GNSS loss, because this force
-/// model cannot: see the `q_a` derivation above for why the honest end of a
-/// coast is an invalidity flag rather than a slowly-worsening answer. The
-/// configured value and the receiver figures it was set from are in design doc
-/// §8.3.
+/// **Sizing the fine horizon.** It covers the outage modes the receiver model
+/// already has (§6.2): the cold-start time-to-first-fix, the post-outage
+/// reacquisition delay, and brief dropouts — the same graceful-coasting case
+/// the §9.2 FDIR suite drives. The configured values and the receiver figures
+/// they were set from are in design doc §8.3.
+///
+/// **Non-gravitational acceleration input (Push 70).** A finite burn (§17) is
+/// an acceleration the force model does not know: propagated blind, the filter
+/// lags the truth by ½aΔt², rejects the next fixes as outliers, and coasts a
+/// wrong trajectory through any outage. @ref OrbitOd::propagate therefore takes
+/// an optional @ref NonGravAccelInput — the commanded thrust over mass in ECI
+/// (from the burn executor) or, later, a measured specific force gated on a
+/// burn being active — added to the acceleration over the step (constant over
+/// the step; the Jacobian is untouched since it does not depend on the state)
+/// and its 1σ magnitude uncertainty folded into the process noise as a second
+/// CWNA term over the same step, so a burn is neither a rejection storm nor a
+/// covariance the filter cannot justify. Ceresoli et al. measured the same idea
+/// with an accelerometer through a burn inside an outage: 5 km against 9 km
+/// [ceresoli2025].
 ///
 /// **Frames, units, conventions.** Position/velocity `Vec3<ECI>` [m], [m/s];
 /// fixes arrive as `Vec3<ECEF>` in GPS time; times TAI (§3.2); covariance m² /
@@ -329,6 +346,11 @@
 ///    during the numerical integration of the orbital motion of an artificial
 ///    satellite", Celestial Mechanics 2, 1970 (the V/W recursion the onboard
 ///    field is evaluated by). [cunningham1970]
+///  - Ceresoli, Colagrossi, Silvestrini & Lavagna, "Robust Onboard Orbit
+///    Determination Through Error Kalman Filtering", Aerospace 12(1):45, 2025
+///    (coasting through outages on a propagator; the thrust acceleration fed to
+///    the filter through a burn; the cost of an unmodelled fix latency).
+///    [ceresoli2025]
 
 #include <cstdint>
 #include <Eigen/Core>
@@ -411,10 +433,15 @@ struct OrbitOdConfig {
   /// structures and a receiver can degrade in one without the other. Must be
   /// positive.
   double velocity_nis_gate{0.0};
-  /// Longest interval without an accepted fix before the solution is declared
-  /// invalid **and dropped** [s]. See the file header for how it is sized and
-  /// why this filter drops where the attitude MEKF retains. Must be positive.
+  /// Longest interval without an accepted fix over which the solution is
+  /// **fine** [s]; past it the solution is degraded (@ref OrbitOd::quality),
+  /// still propagated and published with its grown covariance. See the file
+  /// header. Must be positive.
   double max_coast_s{0.0};
+  /// Longest interval without an accepted fix before the solution is
+  /// **dropped** [s]. Must be finite and >= `max_coast_s`; equal restores the
+  /// pre-Push-70 drop-at-the-horizon policy.
+  double max_degraded_coast_s{0.0};
   /// Largest accepted propagation gap [s]. A longer step is refused
   /// (@ref OrbitOdRefusal::kStepTooLong) rather than integrated, since a clock
   /// glitch must not be absorbed as a legitimate coast. Must be positive and no
@@ -463,6 +490,20 @@ struct OrbitOdConfig {
   bool isValid() const;
 };
 
+/// A known non-gravitational acceleration acting over the next propagation step
+/// (see "Non-gravitational acceleration input" in the file header).
+struct NonGravAccelInput {
+  math::Vec3<math::frames::ECI> accel_m_s2{};  ///< ECI [m/s²], constant over the step
+  double sigma_m_s2{0.0};                      ///< 1σ magnitude uncertainty [m/s²], >= 0
+};
+
+/// The solution's coast verdict (see "Two coast horizons" in the file header).
+enum class OrbitOdQuality : std::uint8_t {
+  kNone = 0,  ///< no solution
+  kDegraded,  ///< past `max_coast_s`: a coasted prediction with a grown covariance
+  kFine,      ///< inside `max_coast_s`
+};
+
 /// Why an entry point declined to act. `kNone` is success; every other value
 /// names a specific, testable condition rather than a bare `false`, so FDIR and
 /// telemetry can distinguish "the clock stopped" from "the fix was absurd" from
@@ -473,7 +514,7 @@ enum class OrbitOdRefusal : std::uint8_t {
   kUninitialised,        ///< no solution yet, and this entry point cannot seed one
   kNonMonotonicEpoch,    ///< epoch is not strictly after the last (backwards *or* stuck)
   kStepTooLong,          ///< gap exceeds `max_dt_s`
-  kCoastExpired,         ///< past `max_coast_s`; the solution was dropped
+  kCoastExpired,         ///< past `max_degraded_coast_s`; the solution was dropped
   kFixNotFinite,         ///< a non-finite component in the fix
   kFixImplausible,       ///< fix radius outside the configured band (§9.1)
   kFixSigmaInvalid,      ///< a reported σ that is not positive and finite
@@ -675,17 +716,30 @@ class OrbitOd {
   OrbitOdRefusal initialize(const time::Tai& epoch, const math::Vec3<math::frames::ECI>& position,
                             const math::Vec3<math::frames::ECI>& velocity, const Covariance& cov);
 
+  /// Seed from a ground-uploaded state (a long outage, a dead receiver):
+  /// isotropic position and velocity σ, no cross terms. Refused when not
+  /// finite, when the radius is outside the plausibility band, or when a σ is
+  /// not positive. Whether the epoch is one the filter can then propagate from
+  /// (not too far behind now, not ahead of it) is the caller's check — the
+  /// library has no clock.
+  OrbitOdRefusal seed(const time::Tai& epoch, const math::Vec3<math::frames::ECI>& position,
+                      const math::Vec3<math::frames::ECI>& velocity, double sigma_pos_m,
+                      double sigma_vel_m_s);
+
   /// Propagate the state and covariance to @p epoch on the onboard force model.
   ///
   /// @param epoch TAI time tag to propagate to; must be **strictly** after the
   ///              last one
   /// @param eop   Earth orientation at @p epoch, for the J2 pole
-  /// @return `kNone` on a completed step. `kCoastExpired` when the step carried
-  ///         the solution past `max_coast_s` — the solution is **dropped**, so
-  ///         the next fix re-acquires whole. `kFilterFault` on a non-finite
-  ///         internal result (also dropped). Everything else leaves the state
-  ///         untouched.
-  OrbitOdRefusal propagate(const time::Tai& epoch, const frames::EopValue& eop);
+  /// @param accel a known non-gravitational acceleration over the step, or
+  ///              `nullptr` for gravity and drag alone (file header)
+  /// @return `kNone` on a completed step (check @ref quality for fine/degraded).
+  ///         `kCoastExpired` when the step carried the solution past
+  ///         `max_degraded_coast_s` — the solution is **dropped**, so the next
+  ///         fix re-acquires whole. `kFilterFault` on a non-finite internal
+  ///         result (also dropped). Everything else leaves the state untouched.
+  OrbitOdRefusal propagate(const time::Tai& epoch, const frames::EopValue& eop,
+                           const NonGravAccelInput* accel = nullptr);
 
   /// Ingest one GNSS fix: GPS→TAI and ECEF→ECI (REQ-CONV-001), propagate to the
   /// fix epoch, then the position and (when reported) velocity updates.
@@ -749,11 +803,17 @@ class OrbitOd {
   /// Time since the last **accepted** fix [s]; grows through outage.
   double ageSeconds() const { return age_s_; }
 
-  /// The solution exists and is inside the coast horizon. Because expiry drops
-  /// the solution, this is equivalent to @ref isInitialised — both are kept
-  /// because they answer different questions and a future change to the
-  /// retention policy would separate them.
-  bool solutionValid() const { return initialised_ && age_s_ <= cfg_.max_coast_s; }
+  /// The solution's coast verdict (file header).
+  OrbitOdQuality quality() const {
+    if (!initialised_) {
+      return OrbitOdQuality::kNone;
+    }
+    return age_s_ <= cfg_.max_coast_s ? OrbitOdQuality::kFine : OrbitOdQuality::kDegraded;
+  }
+
+  /// A solution exists (fine or degraded). A consumer with an accuracy need
+  /// reads the covariance, not this flag.
+  bool solutionValid() const { return initialised_; }
 
   /// Fixes rejected by a NIS gate since construction or @ref reset. A rising
   /// count is the FDIR signal, not a single rejection.

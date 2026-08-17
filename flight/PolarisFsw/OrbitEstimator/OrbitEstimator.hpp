@@ -37,6 +37,12 @@ class OrbitEstimator final : public OrbitEstimatorComponentBase {
   //! it cannot be dispatched from there) — only the uplink is skipped.
   void commandResetAtCycle(U32 cycle);
 
+  //! SITL/bench only: ignore the non-gravitational acceleration input (§8.3)
+  //! regardless of what arrives on accelIn, so the same burn can be flown with
+  //! the filter told and blind and the difference measured. On is the flight
+  //! behaviour; this only ever switches it off.
+  void setAccelInputAtStartup(bool enable) { this->accel_input_enabled_ = enable; }
+
  private:
   // ----------------------------------------------------------------------
   // Port handlers
@@ -44,6 +50,10 @@ class OrbitEstimator final : public OrbitEstimatorComponentBase {
 
   //! Latch one fix for the next cycle and mark the slot fresh.
   void gnssIn_handler(FwIndexType portNum, const GnssMeas& meas) override;
+
+  //! Latch the burn executor's non-gravitational acceleration for the next
+  //! propagate.
+  void accelIn_handler(FwIndexType portNum, const NonGravAccel& accel) override;
 
   //! One GNC cycle: propagate to now, ingest the freshest fix, publish.
   void run_handler(FwIndexType portNum, U32 context) override;
@@ -58,6 +68,9 @@ class OrbitEstimator final : public OrbitEstimatorComponentBase {
   // ----------------------------------------------------------------------
 
   void OD_RESET_cmdHandler(FwOpcodeType opCode, U32 cmdSeq) override;
+  void OD_SEED_STATE_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, I64 epochTaiNs, F64 posEciX,
+                                F64 posEciY, F64 posEciZ, F64 velEciX, F64 velEciY, F64 velEciZ,
+                                F64 posSigmaM, F64 velSigmaMps) override;
 
   // ----------------------------------------------------------------------
   // Helpers
@@ -98,8 +111,17 @@ class OrbitEstimator final : public OrbitEstimatorComponentBase {
   bool tuning_alerted_{false};
   bool eop_alerted_{false};
 
-  //! Coast horizon as configured, for the drop EVR.
+  //! Horizons and windows as configured, for the EVRs and the seed gate.
   F64 max_coast_s_{0.0};
+  F64 max_degraded_coast_s_{0.0};
+  F64 max_accel_age_s_{0.0};
+  F64 max_fix_latency_s_{0.0};
+  U32 status_period_cycles_{0};
+  //! Latched non-gravitational acceleration and the applied/cleared edge.
+  NonGravAccel accel_{};
+  bool accel_applied_{false};
+  //! The quality published last cycle, for the degraded/dropped edges.
+  polaris::gnc::OrbitOdQuality last_quality_{polaris::gnc::OrbitOdQuality::kNone};
   //! Epoch of the previous cycle, for the drop EVR's age figure.
   I64 last_run_ns_{0};
 
@@ -110,8 +132,9 @@ class OrbitEstimator final : public OrbitEstimatorComponentBase {
   //! OD_RESET's body: drop the solution and the counters, report it.
   void resetFilter();
 
-  U32 cycle_{0};           //!< GNC cycles run so far (for the armed reset)
-  U32 reset_at_cycle_{0};  //!< 0 = no reset armed
+  bool accel_input_enabled_{true};  //!< SITL/bench override (setAccelInputAtStartup)
+  U32 cycle_{0};                    //!< GNC cycles run so far (for the armed reset)
+  U32 reset_at_cycle_{0};           //!< 0 = no reset armed
   polaris::gnc::OrbitOdRefusal last_refusal_{polaris::gnc::OrbitOdRefusal::kNone};
   polaris::gnc::OrbitOdRefusal last_alerted_refusal_{polaris::gnc::OrbitOdRefusal::kNone};
 };

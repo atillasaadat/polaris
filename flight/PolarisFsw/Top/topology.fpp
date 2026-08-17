@@ -29,6 +29,7 @@ module flight {
     instance sitlTime
     instance onboardTables
     instance orbitEstimator
+    instance burnExecutor
     instance attitudeEstimator
     instance attitudeController
     instance rateGroup1
@@ -160,7 +161,11 @@ module flight {
       # first and reads the schedule the controller published *last* cycle, which
       # is the period this cycle's magnetometer sample was taken in — the correct
       # pairing, not a staleness bug (see GncPorts.MtqActuation).
-      attitudeEstimator.estimateOut       -> attitudeController.estimateIn
+      attitudeEstimator.estimateOut[0]    -> attitudeController.estimateIn
+      # The burn executor's second copy of the estimate: it rotates the
+      # commanded thrust to ECI for the orbit filter (§17).
+      attitudeEstimator.estimateOut[1]    -> burnExecutor.attitudeIn
+      burnExecutor.accelOut               -> orbitEstimator.accelIn
       attitudeController.mtqActuationOut  -> attitudeEstimator.mtqActuationIn
     }
 
@@ -192,6 +197,11 @@ module flight {
       PolarisSitl.sitlRateGroup.RateGroupMemberOut[2] -> attitudeController.run
       attitudeController.wheelCmdOut -> PolarisSitl.sitlBridge.wheelCmdIn
       attitudeController.mtqCmdOut   -> PolarisSitl.sitlBridge.mtqCmdIn
+      # Member 3 is the burn executor (§17): its throttle rides the same
+      # STEP_REPLY, and the acceleration it publishes is latched by member 0
+      # for the next cycle — the step over which that throttle first acts.
+      PolarisSitl.sitlRateGroup.RateGroupMemberOut[3] -> burnExecutor.run
+      burnExecutor.thrusterCmdOut -> PolarisSitl.sitlBridge.thrusterCmdIn
 
       # Sensor measurements, SITL end of the GncPorts seam. One line per installed
       # unit, in the order config/spacecraft/leo_smallsat.yaml declares them —

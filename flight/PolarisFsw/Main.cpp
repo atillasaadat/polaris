@@ -45,7 +45,11 @@ void print_usage(const char* app) {
       "absent = no alignment calibration)\n"
       "-F\tdisturbance feedforward tiers as model,observer (0/1 each; SITL/bench "
       "only; absent = the ParameterDb values)\n"
-      "-R\tcommand OD_RESET on GNC cycle N (SITL/bench only; 0/absent = never)\n",
+      "-R\tcommand OD_RESET on GNC cycle N (SITL/bench only; 0/absent = never)\n"
+      "-N\torbit filter uses the burn executor's acceleration 0/1 (SITL/bench only; "
+      "absent = 1)\n"
+      "-b\tcommand BURN_START as cycle,durationS,throttle (SITL/bench only; absent = "
+      "no burn)\n",
       app);
 }
 
@@ -89,12 +93,16 @@ int main(int argc, char* argv[]) {
   U32 st_align_samples = 0;      // 0 = do not command an alignment calibration at startup
   I32 ff_model = -1;             // <0 = leave the ParameterDb value alone
   I32 ff_observer = -1;
-  U32 od_reset_cycle = 0;  // 0 = never command an orbit-filter reset
+  U32 od_reset_cycle = 0;   // 0 = never command an orbit-filter reset
+  I32 od_accel_input = -1;  // <0 = flight behaviour (the filter uses the accel input)
+  U32 burn_cycle = 0;       // 0 = never command a burn
+  double burn_duration_s = 0.0;
+  double burn_throttle = 0.0;
 
   Os::init();
 
   // Loop while reading the getopt supplied options
-  while ((option = getopt(argc, argv, "hp:a:s:c:q:E:B:I:Y:P:M:A:F:R:")) != -1) {
+  while ((option = getopt(argc, argv, "hp:a:s:c:q:E:B:I:Y:P:M:A:F:R:b:N:")) != -1) {
     switch (option) {
       // Handle the -a argument for address/hostname
       case 'a':
@@ -232,6 +240,30 @@ int main(int argc, char* argv[]) {
         od_reset_cycle = static_cast<U32>(parsed);
         break;
       }
+      // SITL/bench only: arm a BURN_START for a GNC cycle (§17), the burn rows'
+      // way to fire the thruster with no ground link. The executor validates the
+      // duration and throttle against its own tuning; this rejects only garbage.
+      case 'b': {
+        long cycle = 0;
+        if (::sscanf(optarg, "%ld,%lf,%lf", &cycle, &burn_duration_s, &burn_throttle) != 3 ||
+            cycle < 1 || cycle > 100000000) {
+          (void)printf("Invalid burn spec '%s' (expected cycle,durationS,throttle)\n", optarg);
+          return 1;
+        }
+        burn_cycle = static_cast<U32>(cycle);
+        break;
+      }
+      // SITL/bench only: the "blind" half of the burn-in-outage A/B — the orbit
+      // filter ignores the burn executor's acceleration.
+      case 'N': {
+        const long parsed = ::strtol(optarg, nullptr, 10);
+        if (parsed < 0 || parsed > 1) {
+          (void)printf("Invalid orbit-filter accel-input spec '%s' (expected 0 or 1)\n", optarg);
+          return 1;
+        }
+        od_accel_input = static_cast<I32>(parsed);
+        break;
+      }
       // Cascade intended: help output
       case 'h':
       // Cascade intended: help output
@@ -261,6 +293,10 @@ int main(int argc, char* argv[]) {
   inputs.ffModel = ff_model;
   inputs.ffObserver = ff_observer;
   inputs.odResetCycle = od_reset_cycle;
+  inputs.odAccelInput = od_accel_input;
+  inputs.burnStartCycle = burn_cycle;
+  inputs.burnDurationS = burn_duration_s;
+  inputs.burnThrottle = burn_throttle;
   inputs.prmDbPath = prm_db_path;
 
   // Setup program shutdown via Ctrl-C

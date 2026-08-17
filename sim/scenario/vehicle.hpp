@@ -31,6 +31,7 @@
 #include "actuators/magnetorquer.hpp"
 #include "actuators/reaction_wheel.hpp"
 #include "actuators/rw_assembly.hpp"
+#include "actuators/thruster.hpp"
 #include "scenario/sim_config.hpp"
 #include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
@@ -67,21 +68,25 @@ struct Vehicle {
   std::vector<MountedModel<sensors::PayloadSensor>> payload_sensors;
   std::vector<MountedModel<actuators::ReactionWheel>> wheels;
   std::vector<MountedModel<actuators::Magnetorquer>> magnetorquers;
+  /// Thrusters (§7, §17): nominal thrust along the unit's +z (`mounting_dcm`
+  /// col 2 in body), force applied at `position_body_m` so the burn's
+  /// misalignment torque r x F reaches the plant.
+  std::vector<MountedModel<actuators::Thruster>> thrusters;
 
   /// The wheel array's distribution matrix W (§7), columns = each wheel's spin
   /// axis in body frame, in `wheels` order. Empty when there are no wheels. Use
   /// it to turn per-wheel torques/momenta into their body-frame totals.
   actuators::RwAssembly rw_assembly;
 
-  /// Units the config asked for that have no truth model yet (e.g. a thruster),
-  /// as "name:kind". Reported rather than dropped: a scenario
-  /// quietly flying without a sensor it configured would produce a clean-looking
-  /// run that answers a different question.
+  /// Units the config asked for that have no truth model yet, as "name:kind". Reported rather than
+  /// dropped: a scenario quietly flying without a sensor it configured would produce a
+  /// clean-looking run that answers a different question.
   std::vector<std::string> unmodelled;
 
   std::size_t modelledCount() const {
     return imus.size() + star_trackers.size() + sun_sensors.size() + magnetometers.size() +
-           gnss_receivers.size() + payload_sensors.size() + wheels.size() + magnetorquers.size();
+           gnss_receivers.size() + payload_sensors.size() + wheels.size() + magnetorquers.size() +
+           thrusters.size();
   }
 };
 

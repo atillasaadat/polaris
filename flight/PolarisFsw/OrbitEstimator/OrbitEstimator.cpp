@@ -68,6 +68,11 @@ OrbitEstimator ::OrbitEstimator(const char* compName)
 // Handlers
 // ----------------------------------------------------------------------
 
+void OrbitEstimator ::accelIn_handler(FwIndexType portNum, const NonGravAccel& accel) {
+  static_cast<void>(portNum);
+  this->accel_ = accel;
+}
+
 void OrbitEstimator ::gnssIn_handler(FwIndexType portNum, const GnssMeas& meas) {
   if (portNum < 0 || portNum >= NUM_GNSSIN_INPUT_PORTS) {
     return;
@@ -167,12 +172,42 @@ void OrbitEstimator ::run_handler(FwIndexType portNum, U32 context) {
   // Propagate first, then ingest: a fix in hand is at or behind now (its
   // latency), and the filter advances the *measurement* to its own epoch — so
   // the filter must already be at now for the correction to be the right one.
+  // The burn executor's acceleration, if it is valid and fresh enough to be
+  // this step's (§8.3, Push 70). Stale means "no thrust known", not "the last
+  // thrust", so a dead executor coasts rather than burns forever.
+  pg::NonGravAccelInput accel_input;
+  const pg::NonGravAccelInput* accel = nullptr;
+  {
+    const double accel_age_s = static_cast<double>(nowNs - this->accel_.get_epochTaiNs()) / 1.0e9;
+    const Vec3F64& a = this->accel_.get_accelEciMps2();
+    const bool fresh = this->accel_input_enabled_ && this->accel_.get_valid() &&
+                       accel_age_s >= 0.0 && accel_age_s <= this->max_accel_age_s_ &&
+                       std::isfinite(a[0]) && std::isfinite(a[1]) && std::isfinite(a[2]) &&
+                       std::isfinite(this->accel_.get_sigmaMps2()) &&
+                       this->accel_.get_sigmaMps2() >= 0.0;
+    if (fresh) {
+      accel_input.accel_m_s2 = polaris::math::Vec3<polaris::math::frames::ECI>(a[0], a[1], a[2]);
+      accel_input.sigma_m_s2 = this->accel_.get_sigmaMps2();
+      accel = &accel_input;
+    }
+    if (fresh != this->accel_applied_) {
+      if (fresh) {
+        this->log_ACTIVITY_LO_NonGravAccelApplied(accel_input.accel_m_s2.eigen().norm(),
+                                                  accel_input.sigma_m_s2);
+      } else {
+        this->log_ACTIVITY_LO_NonGravAccelCleared();
+      }
+      this->accel_applied_ = fresh;
+    }
+    this->tlmWrite_NonGravAccelMps2(fresh ? accel_input.accel_m_s2.eigen().norm() : 0.0);
+  }
+
   if (this->od_.isInitialised() && have_eop_now) {
     const double age_before_s = this->od_.ageSeconds();
-    const pg::OrbitOdRefusal r = this->od_.propagate(now, eop_now);
+    const pg::OrbitOdRefusal r = this->od_.propagate(now, eop_now, accel);
     if (r == pg::OrbitOdRefusal::kCoastExpired) {
       const double dt_s = static_cast<double>(nowNs - this->last_run_ns_) / 1.0e9;
-      this->log_WARNING_HI_OrbitSolutionDropped(age_before_s + dt_s, this->max_coast_s_);
+      this->log_WARNING_HI_OrbitSolutionDropped(age_before_s + dt_s, this->max_degraded_coast_s_);
       this->last_refusal_ = r;
     } else if (r == pg::OrbitOdRefusal::kFilterFault) {
       this->log_WARNING_HI_OrbitFilterFault();
@@ -229,9 +264,12 @@ void OrbitEstimator ::run_handler(FwIndexType portNum, U32 context) {
 
 void OrbitEstimator ::publish(I64 nowNs) {
   const bool valid = this->configured_ && this->od_.solutionValid();
+  const pg::OrbitOdQuality quality =
+      this->configured_ ? this->od_.quality() : pg::OrbitOdQuality::kNone;
   OrbitEstimate est;
   est.set_epochTaiNs(valid ? this->od_.epoch().nanosecondsSinceEpoch() : nowNs);
   est.set_valid(false);
+  est.set_quality(OrbitQuality::NONE);
   est.set_ageSec(kNoValue);
   est.set_posSigmaM(kNoValue);
   est.set_velSigmaMps(kNoValue);
@@ -252,11 +290,28 @@ void OrbitEstimator ::publish(I64 nowNs) {
       est.set_velSigmaMps(vel_sigma);
       est.set_ageSec(this->od_.ageSeconds());
       est.set_valid(true);
+      est.set_quality(quality == pg::OrbitOdQuality::kFine ? OrbitQuality::FINE
+                                                           : OrbitQuality::DEGRADED);
     }
+  }
+  // The fine -> degraded edge (§8.3). The drop edge is the propagate's own
+  // refusal, reported there with the age it happened at.
+  const pg::OrbitOdQuality published = est.get_valid() ? quality : pg::OrbitOdQuality::kNone;
+  if (published == pg::OrbitOdQuality::kDegraded &&
+      this->last_quality_ == pg::OrbitOdQuality::kFine) {
+    this->log_WARNING_LO_OrbitSolutionDegraded(est.get_ageSec(), this->max_coast_s_,
+                                               est.get_posSigmaM());
+  }
+  this->last_quality_ = published;
+  if (this->status_period_cycles_ > 0 && (this->cycle_ % this->status_period_cycles_) == 0) {
+    const Vec3F64& r = est.get_posEciM();
+    this->log_ACTIVITY_LO_OrbitStatus(est.get_quality(), est.get_ageSec(), est.get_posSigmaM(),
+                                      r[0], r[1], r[2]);
   }
   if (this->isConnected_orbitStateOut_OutputPort(0)) {
     this->orbitStateOut_out(0, est);
   }
+  this->tlmWrite_OrbitQualityTlm(est.get_quality());
 
   this->tlmWrite_PosEciM(est.get_posEciM());
   this->tlmWrite_VelEciMps(est.get_velEciMps());
@@ -321,6 +376,18 @@ bool OrbitEstimator ::applyParameters() {
   POLARIS_GET(cfg.position_nis_gate, paramGet_PositionNisGate, "PositionNisGate");
   POLARIS_GET(cfg.velocity_nis_gate, paramGet_VelocityNisGate, "VelocityNisGate");
   POLARIS_GET(cfg.max_coast_s, paramGet_MaxCoastS, "MaxCoastS");
+  POLARIS_GET(cfg.max_degraded_coast_s, paramGet_MaxDegradedCoastS, "MaxDegradedCoastS");
+  POLARIS_GET(this->max_accel_age_s_, paramGet_MaxAccelAgeS, "MaxAccelAgeS");
+  {
+    Fw::ParamValid v = Fw::ParamValid::INVALID;
+    this->status_period_cycles_ = this->paramGet_StatusPeriodCycles(v);
+    if (v != Fw::ParamValid::VALID) {
+      return fail("StatusPeriodCycles");
+    }
+  }
+  if (!std::isfinite(this->max_accel_age_s_) || this->max_accel_age_s_ < 0.0) {
+    return fail("MaxAccelAgeS");
+  }
   POLARIS_GET(cfg.max_dt_s, paramGet_MaxDtS, "MaxDtS");
   POLARIS_GET(cfg.max_step_s, paramGet_MaxStepS, "MaxStepS");
   POLARIS_GET(cfg.max_fix_latency_s, paramGet_MaxFixLatencyS, "MaxFixLatencyS");
@@ -333,6 +400,8 @@ bool OrbitEstimator ::applyParameters() {
   }
   this->od_ = pg::OrbitOd(cfg);
   this->max_coast_s_ = cfg.max_coast_s;
+  this->max_degraded_coast_s_ = cfg.max_degraded_coast_s;
+  this->max_fix_latency_s_ = cfg.max_fix_latency_s;
   this->configured_ = true;
   this->tuning_alerted_ = false;
   return true;
@@ -361,6 +430,40 @@ void OrbitEstimator ::resetFilter() {
 
 void OrbitEstimator ::OD_RESET_cmdHandler(FwOpcodeType opCode, U32 cmdSeq) {
   this->resetFilter();
+  this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
+}
+
+void OrbitEstimator ::OD_SEED_STATE_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, I64 epochTaiNs,
+                                               F64 posEciX, F64 posEciY, F64 posEciZ, F64 velEciX,
+                                               F64 velEciY, F64 velEciZ, F64 posSigmaM,
+                                               F64 velSigmaMps) {
+  if (!this->configured_) {
+    this->log_WARNING_LO_OrbitSeedRefused(OdRefusal(OdRefusal::UNCONFIGURED));
+    this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::EXECUTION_ERROR);
+    return;
+  }
+  // The window the filter can then propagate from: no further behind now than
+  // the degraded horizon, no further ahead than a fix may be latent.
+  const double behind_s = static_cast<double>(this->currentTaiNs() - epochTaiNs) / 1.0e9;
+  if (!(behind_s <= this->max_degraded_coast_s_) || !(behind_s >= -this->max_fix_latency_s_)) {
+    this->log_WARNING_LO_OrbitSeedRefused(OdRefusal(OdRefusal::NON_MONOTONIC_EPOCH));
+    this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::VALIDATION_ERROR);
+    return;
+  }
+  using polaris::math::Vec3;
+  using polaris::math::frames::ECI;
+  const pg::OrbitOdRefusal r =
+      this->od_.seed(polaris::time::Tai::fromNanosecondsSinceEpoch(epochTaiNs),
+                     Vec3<ECI>(posEciX, posEciY, posEciZ), Vec3<ECI>(velEciX, velEciY, velEciZ),
+                     posSigmaM, velSigmaMps);
+  if (r != pg::OrbitOdRefusal::kNone) {
+    this->log_WARNING_LO_OrbitSeedRefused(OdRefusal(toFpp(r)));
+    this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::VALIDATION_ERROR);
+    return;
+  }
+  this->last_refusal_ = pg::OrbitOdRefusal::kNone;
+  this->last_alerted_refusal_ = pg::OrbitOdRefusal::kNone;
+  this->log_ACTIVITY_HI_OrbitSeededFromGround(posSigmaM);
   this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
 }
 

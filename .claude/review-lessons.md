@@ -656,3 +656,19 @@ fixture was found in the innovation sequence, not in review.
   tail) passed for two pushes while the storm ran underneath it. The
   demotion and saturation counts were on the log the whole time; they are
   now bounded on the row, so the storm fails a test the day it returns.
+
+## A paper is a checklist, not a design (P70, OD)
+
+- **Read the numbers, not the abstract.** The paper's headline is a robust
+  GNSS/INS architecture; its own results say the INS buys nothing while GNSS
+  is present and the outage performance "is not remarkably higher than an
+  isolated propagator". The one transferable result was the burn-in-outage
+  comparison — and that is what was built. Adopting the architecture would
+  have added a 15-state error filter for no measured gain.
+- **A validity policy that costs a consumer must be justified by that
+  consumer's tolerance.** The 300 s drop was sized for a metre-class use and
+  cost a kilometre-class one (the magnetic reference) for nothing. Publish
+  quality and sigma; let each consumer gate on its own tolerance.
+- **When a lane dies mid-task, read the tree before re-planning.** The OD lane
+  was killed by a spend limit after most of its work had landed; three unit
+  tests were the whole gap. Rebuild, run everything, then fill holes.

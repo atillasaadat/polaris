@@ -51,6 +51,7 @@ GnssSpec GnssSpec::fromParams(const std::map<std::string, double>& p) {
   s.sample_period_s = (s.max_rate_hz > 0.0) ? 1.0 / s.max_rate_hz : 0.0;
 
   s.fix_latency_s = get(p, "fix_latency_s");
+  s.fix_latency_jitter_s = get(p, "fix_latency_jitter_s");
 
   s.cold_start_s = get(p, "cold_start_s");
   s.hot_start_s = get(p, "hot_start_s");
@@ -153,14 +154,19 @@ GnssMeasurement Gnss::sample(const time::Tai& epoch, const GnssInput& input) {
     pending_count_ -= 1;
     pending_dropped_ += 1;
   }
+  // Each fix carries its own delivery epoch: the latency plus a per-fix jitter
+  // draw, clamped at zero. The tag `m` carries stays the measurement epoch.
+  double latency_s = spec_.fix_latency_s;
+  if (spec_.fix_latency_jitter_s > 0.0) {
+    latency_s = std::max(0.0, latency_s + spec_.fix_latency_jitter_s * rng_.gaussian());
+  }
   pending_[pending_count_] = m;
-  pending_epoch_ns_[pending_count_] = gps_ns;
+  pending_epoch_ns_[pending_count_] =
+      gps_ns + static_cast<std::int64_t>(std::llround(latency_s * kNsPerSecond));
   pending_count_ += 1;
 
-  const std::int64_t due_ns =
-      gps_ns - static_cast<std::int64_t>(std::llround(spec_.fix_latency_s * kNsPerSecond));
   std::size_t ready = 0;
-  while (ready < pending_count_ && pending_epoch_ns_[ready] <= due_ns) {
+  while (ready < pending_count_ && pending_epoch_ns_[ready] <= gps_ns) {
     ready += 1;
   }
   if (ready == 0) {

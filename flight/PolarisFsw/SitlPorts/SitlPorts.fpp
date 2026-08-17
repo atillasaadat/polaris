@@ -27,9 +27,19 @@ module flight {
   @ entries past the rod count are unused (zero).
   array MtqDipoleSet = [SitlMaxUnits] MtqDipole
 
+  @ Per-thruster throttle commands, 0..1, indexed in vehicle thruster build
+  @ order; entries past the thruster count are unused (zero). A throttle rather
+  @ than an on/off so a proportional or pulse-width-averaged drive fits the same
+  @ record; the truth model applies its own rise/fall and thrust error (§7).
+  array ThrusterThrottleSet = [SitlMaxUnits] F64
+
   @ Reaction-wheel torque command set, source -> SitlBridge (latched for the
   @ next STEP_REPLY).
   port WheelTorqueCmd(cmds: WheelTorqueSet)
+
+  @ Thruster throttle command set, burn executor -> SitlBridge (latched for the
+  @ next STEP_REPLY; held for the whole macro step).
+  port ThrusterThrottleCmd(cmds: ThrusterThrottleSet)
 
   @ Magnetorquer dipole command set, source -> SitlBridge.
   @

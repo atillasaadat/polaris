@@ -120,6 +120,7 @@ constexpr F64 kMagMinFieldRatio = 0.5;
 constexpr F64 kMagMaxFieldRatio = 1.6;
 constexpr F64 kMagDisagreementT = 5.0e-6;
 constexpr F64 kMagMaxAttSigmaRad = 0.02;
+constexpr F64 kMaxPositionSigmaM = 20.0e3;  // the reference vehicle's tolerance (§8.3)
 constexpr U32 kMagReadmitCycles = 3;
 constexpr U32 kMagIdentifyConfirmCycles = 2;
 
@@ -230,8 +231,15 @@ bool AttitudeEstimatorTester ::from_getEopAt_handler(FwIndexType portNum, I64 ta
 
 void AttitudeEstimatorTester ::from_estimateOut_handler(FwIndexType portNum,
                                                         const AttitudeEstimate& estimate) {
-  this->last_estimate_ = estimate;
-  ++this->estimate_count_;
+  // Both indices carry the same estimate each cycle (index 0 the controller,
+  // index 1 the burn executor); the count is per cycle, on index 0, and index 1
+  // is checked to be its twin.
+  if (portNum == 0) {
+    this->last_estimate_ = estimate;
+    ++this->estimate_count_;
+  } else {
+    EXPECT_EQ(estimate, this->last_estimate_);
+  }
 }
 
 // ----------------------------------------------------------------------
@@ -266,6 +274,7 @@ void AttitudeEstimatorTester ::setValidParameters(bool withFine, bool withAlbedo
   this->paramSet_MagMaxFieldRatio(kMagMaxFieldRatio, Fw::ParamValid::VALID);
   this->paramSet_MagDisagreementT(kMagDisagreementT, Fw::ParamValid::VALID);
   this->paramSet_MagMaxAttSigmaRad(kMagMaxAttSigmaRad, Fw::ParamValid::VALID);
+  this->paramSet_MaxPositionSigmaM(kMaxPositionSigmaM, Fw::ParamValid::VALID);
   this->paramSet_MagReadmitCycles(kMagReadmitCycles, Fw::ParamValid::VALID);
   this->paramSet_MagIdentifyConfirmCycles(kMagIdentifyConfirmCycles, Fw::ParamValid::VALID);
   if (withStarTracker) {
@@ -581,9 +590,12 @@ void AttitudeEstimatorTester ::feedMeasurements(I64 taiNs, const QuatBI& q_bi,
     orbit.set_epochTaiNs(tag);
     orbit.set_posEciM(toVec3F64(r_eci));
     orbit.set_velEciMps(toVec3F64(Eigen::Vector3d::Zero()));
-    orbit.set_posSigmaM(1.0);
+    orbit.set_posSigmaM(this->orbit_sigma_m_);
     orbit.set_velSigmaMps(0.01);
     orbit.set_ageSec(0.0);
+    orbit.set_quality(this->orbit_valid_ ? (this->orbit_sigma_m_ > 1.0 ? OrbitQuality::DEGRADED
+                                                                       : OrbitQuality::FINE)
+                                         : OrbitQuality::NONE);
     orbit.set_valid(this->orbit_valid_);
     this->invoke_to_orbitStateIn(0, orbit);
   }
@@ -797,6 +809,29 @@ void AttitudeEstimatorTester ::testOrbitSolutionIsConsumedOnce() {
   // reused — a stale solution wearing a valid flag is how a dropped orbit
   // solution would keep feeding the field model for the rest of the mission.
   this->orbit_published_ = false;
+  this->feedMeasurements(kStartTaiNs + kNsPerSecond / 10, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(kStartTaiNs + kNsPerSecond / 10);
+  ASSERT_TLM_PositionValid(1, false);
+  ASSERT_TLM_MagValid(1, false);
+  ASSERT_EVENTS_PositionUnavailable_SIZE(1);
+}
+
+void AttitudeEstimatorTester ::testDegradedOrbitSolutionIsUsedUpToTheSigmaTolerance() {
+  this->loadIgrf();
+  this->setValidParameters();
+  const QuatBI truth(polaris::math::Quaternion::Identity());
+
+  // A DEGRADED solution with a 5 km sigma: inside MaxPositionSigmaM, so the
+  // magnetic reference is evaluated at it and nothing is lost.
+  this->orbit_sigma_m_ = 5.0e3;
+  this->feedMeasurements(kStartTaiNs, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(kStartTaiNs);
+  ASSERT_TLM_PositionValid(0, true);
+  ASSERT_TLM_MagValid(0, true);
+  ASSERT_EVENTS_PositionUnavailable_SIZE(0);
+
+  // 50 km: past the tolerance. Still `valid` on the port, but not usable here.
+  this->orbit_sigma_m_ = 50.0e3;
   this->feedMeasurements(kStartTaiNs + kNsPerSecond / 10, truth, Eigen::Vector3d::Zero(), true);
   this->runCycleAt(kStartTaiNs + kNsPerSecond / 10);
   ASSERT_TLM_PositionValid(1, false);

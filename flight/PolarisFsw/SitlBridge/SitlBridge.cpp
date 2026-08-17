@@ -30,6 +30,8 @@ static_assert(WheelTorqueSet::SIZE == polaris::sitl::kMaxUnits,
               "WheelTorqueSet must be sized to sitl::kMaxUnits");
 static_assert(MtqDipoleSet::SIZE == polaris::sitl::kMaxUnits,
               "MtqDipoleSet must be sized to sitl::kMaxUnits");
+static_assert(ThrusterThrottleSet::SIZE == polaris::sitl::kMaxUnits,
+              "ThrusterThrottleSet must be sized to sitl::kMaxUnits");
 
 // ----------------------------------------------------------------------
 // Component construction and destruction
@@ -70,7 +72,8 @@ void SitlBridge ::dataIn_handler(FwIndexType portNum, Fw::Buffer& data,
     case sitl::HandleStatus::kHelloAck: {
       const sitl::HelloMsg& h = result.hello;
       this->log_ACTIVITY_HI_HelloReceived(h.n_imu, h.n_star_tracker, h.n_sun_sensor,
-                                          h.n_magnetometer, h.n_gnss, h.n_wheel, h.n_mtq);
+                                          h.n_magnetometer, h.n_gnss, h.n_wheel, h.n_mtq,
+                                          h.n_thruster);
       this->sendReply(result.reply_len, context);
       break;
     }
@@ -119,6 +122,14 @@ void SitlBridge ::mtqCmdIn_handler(FwIndexType portNum, const flight::MtqDipoleS
   }
 }
 
+void SitlBridge ::thrusterCmdIn_handler(FwIndexType portNum,
+                                        const flight::ThrusterThrottleSet& cmds) {
+  static_cast<void>(portNum);
+  for (U32 i = 0; i < ThrusterThrottleSet::SIZE; ++i) {
+    this->latest_thruster_[i].throttle = cmds[i];
+  }
+}
+
 // ----------------------------------------------------------------------
 // Helpers
 // ----------------------------------------------------------------------
@@ -140,7 +151,7 @@ void SitlBridge ::runStepCycle(const polaris::sitl::HandleResult& result,
 
   const FwSizeType reply_len = this->handler_.buildStepReply(
       result.macro_step, this->latest_wheel_, this->latest_mtq_, this->latest_mtq_on_window_s_,
-      this->reply_, sizeof(this->reply_));
+      this->reply_, sizeof(this->reply_), this->latest_thruster_);
   if (reply_len == 0) {
     // Reply would overflow the fixed buffer (never in flight sizing) — treat as
     // a malformed exchange rather than sending a truncated frame.

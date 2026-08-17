@@ -708,6 +708,7 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
 
   //! Staleness gate [s], cached from the parameter set with the rest of the config.
   F64 max_meas_age_s_{0.0};
+  F64 max_position_sigma_m_{0.0};  //!< MaxPositionSigmaM: the orbit-solution tolerance
 
   //! Magnetic 1-sigma handed to the MEKF and the Davenport seed [rad]: the white
   //! and systematic parts of the same budget, root-sum-squared. The filter treats
