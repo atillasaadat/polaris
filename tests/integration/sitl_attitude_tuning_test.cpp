@@ -101,11 +101,11 @@ TEST(SitlAttitudeTuning, CompiledParametersLetTheEstimatorAcquireAttitude) {
   EXPECT_NE(log.find("PrmFileLoadComplete"), std::string::npos)
       << "prmDb never loaded the compiled parameter file:\n"
       << log;
-  EXPECT_NE(log.find("Records: 133"), std::string::npos)
-      << "prmDb loaded a record count other than the 107 declared parameters "
-         "(57 estimator + 50 controller; the estimator's last two are the "
-         "StCoarseAgreementGate and StReadmitCycles FDIR parameters that "
-         "replaced a hard-coded gate and an overloaded cadence):\n"
+  EXPECT_NE(log.find("Records: 139"), std::string::npos)
+      << "prmDb loaded a record count other than the 139 declared parameters "
+         "(Push 71 added the six NESC TB 20-03 item (d) editing-policy and "
+         "backup-ephemeris parameters: Position/VelocityMeasMode, BackupPeriodS, "
+         "Sun/Mag/StMeasMode):\n"
       << log;
 
   // 2. The estimator accepted the whole tuning set — both gates. ConfigInvalid

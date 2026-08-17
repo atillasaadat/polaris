@@ -672,3 +672,25 @@ fixture was found in the innovation sequence, not in review.
 - **When a lane dies mid-task, read the tree before re-planning.** The OD lane
   was killed by a spend limit after most of its work had landed; three unit
   tests were the whole gap. Rebuild, run everything, then fill holes.
+
+## A best-practices document is a checklist against the seams, not the math (P71, OD/ADET)
+
+- **The filters were textbook; the operability was not.** NASA/TP-2018-219822's
+  math chapters were already satisfied; its Ch. 9 (editing flags, covariance
+  re-init, backup ephemeris, uplink without loss) was entirely absent, and the
+  most costly gap was a *component* behaviour — every parameter upload rebuilt
+  the filter and threw a converged solution away. Audit component seams
+  against operability rules, not only libraries against equations.
+- **"Bad upload" must never make a running filter inert.** `fail()` paths that
+  set `configured_ = false` were correct at bring-up and wrong forever after;
+  the rule is: refuse the *new* set, keep the *old* one in force.
+- **Force overrides the gate, never the fault.** A negative NIS is the
+  covariance, not the residual; an operator flag that overrode it would fly an
+  update against an indefinite `P` on request.
+- **Record what a practice cannot fix.** The leap-second exposure on the seed
+  path is real and bounded; a test that measures it (490 m, cold seed only) is
+  worth more than a sentence claiming immunity.
+- **Declining a recommendation needs the number.** Underweighting was declined
+  because `H` is linear for GNSS/ST and the sun/mag second-order term is
+  ~1e-3 rad against 1e-2 rad σ — written down, so the next reader does not
+  re-derive it or add a parameter nobody can tune.

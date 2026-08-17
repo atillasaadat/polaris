@@ -298,6 +298,19 @@ spacecraft:
     # too, before the orbit filter owned it.
     flight.orbitEstimator.MinRadiusM: 6.5e6                     # [m]
     flight.orbitEstimator.MaxRadiusM: 8.0e6                     # [m]
+    # Measurement editing policy (NASA/TP-2018-219822 §9.1; NESC TB 20-03 item
+    # d): 0 accept (the NIS gate decides), 1 inhibit, 2 force past the gate.
+    # Flown at accept; the other two are operator tools, set by uplink and
+    # applied without dropping the solution.
+    flight.orbitEstimator.PositionMeasMode: 0
+    flight.orbitEstimator.VelocityMeasMode: 0
+    # Backup ephemeris re-seed interval (TP §9.2; TB 20-03 item e): a copy of
+    # the filter propagated alongside it and never measurement-updated, so a
+    # restart needs no uplink and the separation is a divergence comparator.
+    # Ten minutes: long enough that the backup is genuinely independent of the
+    # last few fixes, a third of the degraded horizon so it never expires
+    # before it is refreshed. 0 disables it.
+    flight.orbitEstimator.BackupPeriodS: 600.0                  # [s]
     # --- Attitude estimator ------------------------------------------------
     # Sun pair. The FSS is specified 2.0 deg 3-sigma out at the 60 deg field
     # edge (0.5 deg inside 45 deg), so 2.0/3 deg = 11.6 mrad is the conservative
@@ -461,6 +474,12 @@ spacecraft:
     # tail plus the odd albedo transient, which is exactly what the gate is for.
     flight.attitudeEstimator.MekfRefusalStreak: 5         # [cycles]
     flight.attitudeEstimator.MekfNisStreak: 20            # [cycles]
+    # Measurement editing policy per type (NASA/TP-2018-219822 §9.1; NESC TB
+    # 20-03 item d): 0 accept, 1 inhibit (from both chains), 2 force past the
+    # fine gate. Flown at accept.
+    flight.attitudeEstimator.SunMeasMode: 0
+    flight.attitudeEstimator.MagMeasMode: 0
+    flight.attitudeEstimator.StMeasMode: 0
     # Davenport seed observability gate, lambda_min/lambda_max of the information
     # matrix. Set to match the coarse chain's MinSinAngle = sin(10 deg): two
     # equally-weighted observations separated by theta give

@@ -332,8 +332,10 @@ double AttitudeEstimator ::fuseStarTrackers(const StarTrackerSample* samples, in
     }
     const U32 rejected_before = this->mekf_.rejectedCount();
     polaris::gnc::MekfUpdate diagnostics;
-    const bool applied =
-        this->mekf_.updateAttitude(samples[i].attitude, samples[i].noise_cov, diagnostics);
+    const bool force =
+        this->st_meas_mode_ == static_cast<U8>(polaris::gnc::MeasurementMode::kForce);
+    const bool applied = this->mekf_.updateAttitude(samples[i].attitude, samples[i].noise_cov,
+                                                    diagnostics, force);  // TP §9.1
     // Same three-way distinction the vector path makes, and for the same reason:
     // a gate rejection and a malformed measurement both return false and mean
     // opposite things — one is the divergence guard working, the other is the

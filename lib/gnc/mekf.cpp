@@ -82,6 +82,46 @@ void Mekf::dropSolution() {
   rate_valid_ = false;
 }
 
+bool Mekf::retune(const MekfConfig& config) {
+  // TB 20-03 item (g) / TP §9.3: the tuning changes, the navigation data does
+  // not. A bad upload leaves everything, the old configuration included.
+  if (!config.isValid()) {
+    return false;
+  }
+  cfg_ = config;
+  configured_ = true;
+  return true;
+}
+
+bool Mekf::reinitializeCovariance(double sigma_att_rad, double sigma_bias_rad_s) {
+  // TB 20-03 item (f) / TP §9.2: the covariance is re-opened, the state kept.
+  if (!configured_ || !initialised_) {
+    return false;
+  }
+  if (!std::isfinite(sigma_att_rad) || !std::isfinite(sigma_bias_rad_s) || !(sigma_att_rad > 0.0) ||
+      !(sigma_bias_rad_s > 0.0)) {
+    return false;
+  }
+  p_.setZero();
+  p_.block<3, 3>(kAttitude, kAttitude) =
+      sigma_att_rad * sigma_att_rad * Eigen::Matrix3d::Identity();
+  p_.block<3, 3>(kGyroBias, kGyroBias) =
+      sigma_bias_rad_s * sigma_bias_rad_s * Eigen::Matrix3d::Identity();
+  return true;
+}
+
+bool Mekf::covarianceHealthy() const {
+  // TP Ch. 7: definiteness, asked for explicitly since P is not factorised.
+  if (!initialised_) {
+    return true;
+  }
+  if (!p_.allFinite()) {
+    return false;
+  }
+  const Eigen::LDLT<Covariance> ldlt(p_);
+  return ldlt.info() == Eigen::Success && ldlt.isPositive();
+}
+
 void Mekf::reset() {
   dropSolution();
   // Only a *commanded* reset clears the count. An internal fault drops the
@@ -89,6 +129,7 @@ void Mekf::reset() {
   // that just diverged is precisely when FDIR needs to see how many
   // measurements it had been rejecting on the way there.
   rejected_ = 0;
+  forced_ = 0;
 }
 
 bool Mekf::initialize(const time::Tai& epoch,
@@ -222,8 +263,8 @@ bool Mekf::propagate(const time::Tai& epoch, const math::Vec3<math::frames::Body
 }
 
 bool Mekf::update(const math::Vec3<math::frames::Body>& body_meas,
-                  const math::Vec3<math::frames::ECI>& reference, double sigma_rad,
-                  MekfUpdate& out) {
+                  const math::Vec3<math::frames::ECI>& reference, double sigma_rad, MekfUpdate& out,
+                  bool force) {
   out = MekfUpdate{};
   if (!configured_ || !initialised_) {
     return false;
@@ -271,9 +312,21 @@ bool Mekf::update(const math::Vec3<math::frames::Body>& body_meas,
   // indefinite, S would follow and the NIS could come back **negative**, which
   // a one-sided "too large?" test waves straight through. Silent acceptance is
   // the one failure mode a divergence guard must not have.
-  if (!(nis >= 0.0 && nis <= cfg_.nis_gate)) {
+  //
+  // `force` (TP §9.1's editing flag) overrides the *gate* only: a negative NIS
+  // is the covariance gone indefinite, and no operator flag makes an update
+  // against that meaningful.
+  if (!(nis >= 0.0)) {
     ++rejected_;
     return false;
+  }
+  if (nis > cfg_.nis_gate) {
+    if (!force) {
+      ++rejected_;
+      return false;
+    }
+    ++forced_;
+    out.forced = true;
   }
 
   // --- Gain, Joseph-form covariance, multiplicative reset ------------------
@@ -320,7 +373,7 @@ bool Mekf::update(const math::Vec3<math::frames::Body>& body_meas,
 }
 
 bool Mekf::updateAttitude(const math::Quat<math::frames::Body, math::frames::ECI>& measured,
-                          const Eigen::Matrix3d& noise_cov, MekfUpdate& out) {
+                          const Eigen::Matrix3d& noise_cov, MekfUpdate& out, bool force) {
   out = MekfUpdate{};
   if (!configured_ || !initialised_) {
     return false;
@@ -375,9 +428,17 @@ bool Mekf::updateAttitude(const math::Quat<math::frames::Body, math::frames::ECI
   // tracker constrains the rotation about its boresight too, just far more
   // loosely. So this gate is χ²₃ and carries its own configured threshold.
   // Same accept-range form, for the same reason (a negative NIS must not pass).
-  if (!(nis >= 0.0 && nis <= cfg_.attitude_nis_gate)) {
+  if (!(nis >= 0.0)) {
     ++rejected_;
     return false;
+  }
+  if (nis > cfg_.attitude_nis_gate) {
+    if (!force) {  // TP §9.1 force flag, gate only — see update()
+      ++rejected_;
+      return false;
+    }
+    ++forced_;
+    out.forced = true;
   }
 
   // --- Gain, Joseph-form covariance, multiplicative reset ------------------

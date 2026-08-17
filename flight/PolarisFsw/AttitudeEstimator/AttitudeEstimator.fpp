@@ -329,6 +329,18 @@ module flight {
     @ MAG_CAL_CLEAR.
     guarded command RESET_ESTIMATOR
 
+    @ Re-initialise the fine-mode (MEKF) covariance **without altering the
+    @ state** (NESC TB 20-03 item f; NASA/TP-2018-219822 §9.2): P =
+    @ diag(attSigma^2 I, biasSigma^2 I). The remedy for a fine filter that has
+    @ become over-confident and is editing good measurements while its attitude
+    @ and converged bias are still sound — milder than RESET_ESTIMATOR, which
+    @ throws the bias away. Refused when fine mode is not engaged or a sigma is
+    @ not positive.
+    guarded command ATT_REINIT_COV(
+      attSigmaRad: F64 @< 1-sigma attitude error, per axis [rad]
+      biasSigmaRadps: F64 @< 1-sigma gyro bias, per axis [rad/s]
+    )
+
     @ Open a magnetometer hard/soft-iron calibration window of @p sampleCount
     @ **accepted** samples (design doc §8.1). The estimator keeps running
     @ normally throughout: collection is a tap on the magnetometer path, not a
@@ -866,6 +878,23 @@ module flight {
     @ measurement stream the filter no longer believes. Must be positive.
     param MekfNisStreak: U32
 
+    @ Editing policy for the sun-vector measurement (NASA/TP-2018-219822 §9.1;
+    @ NESC TB 20-03 item d): 0 = ACCEPT (the NIS gate decides), 1 = INHIBIT
+    @ (the sun vector is withheld from **both** chains — the coarse floor loses
+    @ its pair too, which is what "do not process this measurement type"
+    @ means), 2 = FORCE (applied to the fine filter past its gate; a numeric
+    @ fault still refuses). Mirrors `polaris::gnc::MeasurementMode`; a U8
+    @ because configc emits scalars only.
+    param SunMeasMode: U8
+
+    @ Editing policy for the magnetic-field measurement; same encoding and the
+    @ same both-chains meaning of INHIBIT.
+    param MagMeasMode: U8
+
+    @ Editing policy for the star-tracker attitude measurement; same encoding.
+    @ INHIBIT withholds every tracker from the fine filter (and from seeding it).
+    param StMeasMode: U8
+
     @ Observability gate for the Davenport seed [dimensionless], in (0, 1): the
     @ ratio lambda_min/lambda_max of the observation set's Fisher information
     @ matrix, required in both the body and the reference frame. Scale-free, so
@@ -1205,6 +1234,14 @@ module flight {
     @ filter. Resets to zero at every demotion, since the filter it counted for
     @ is gone; MekfRejectedTotal is the one to watch a trend on.
     telemetry MekfRejected: U32
+
+    @ Fine-mode updates applied **past** their gate under FORCE by the currently
+    @ seeded filter (TP §9.1). Never folded into an acceptance count.
+    telemetry MekfForced: U32
+
+    @ The fine covariance factorised positive semi-definite this cycle (TP Ch.
+    @ 7); true while fine mode is not engaged.
+    telemetry FineCovarianceHealthy: bool
 
     @ Fine-mode NIS-gate rejections since the last commanded reset, across every
     @ filter this component has seeded. A demotion clears the filter's own count
@@ -1767,6 +1804,33 @@ module flight {
     event EstimatorReset \
       severity activity high \
       format "Attitude estimator reset: solutions dropped, awaiting re-acquisition"
+
+    @ A parameter upload was applied to the running fine filter (NESC TB 20-03
+    @ item g): re-tuned in place, the fine solution kept.
+    event FineTuningApplied(solutionKept: bool) \
+      severity activity low \
+      format "Fine-mode tuning applied; solution kept: {}"
+
+    @ ATT_REINIT_COV accepted.
+    event FineCovarianceReinitialised(attSigmaRad: F64, biasSigmaRadps: F64) \
+      severity activity high \
+      format "Fine covariance re-initialised: attitude sigma {} rad, bias sigma {} rad/s; state kept"
+
+    @ ATT_REINIT_COV refused: fine mode not engaged, or a bad sigma.
+    event FineCovarianceReinitRefused \
+      severity warning low \
+      format "Fine covariance re-initialisation refused: no fine solution or bad sigma"
+
+    @ The fine covariance is not positive semi-definite (TP Ch. 7). Edge.
+    @ ATT_REINIT_COV is the remedy that keeps the state.
+    event FineCovarianceIndefinite \
+      severity warning high \
+      format "Fine covariance is indefinite: re-initialise it (ATT_REINIT_COV) or reset"
+
+    @ The measurement editing policy changed (TP §9.1). Edge on any value.
+    event AttMeasurementPolicyChanged(sunMode: U8, magMode: U8, stMode: U8) \
+      severity activity high \
+      format "Attitude measurement policy: sun {}, mag {}, star tracker {} (0 accept, 1 inhibit, 2 force)"
 
     @ A magnetometer calibration window opened (design doc §8.1). The estimator
     @ keeps running unchanged; only the sampling tap is new.

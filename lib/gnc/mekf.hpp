@@ -159,10 +159,17 @@
 ///  - Trawny & Roumeliotis, "Indirect Kalman Filter for 3D Attitude
 ///    Estimation", UMN MARS Lab TR 2005-002 (JPL-convention error state and
 ///    reset). [trawny2005]
+///  - Carpenter & D'Souza (eds.), *Navigation Filter Best Practices*,
+///    NASA/TP-2018-219822, 2018 — Ch. 7 (definiteness check), §9.1 (the
+///    accept/inhibit/force editing flag), §9.2 (covariance re-initialisation
+///    without a state change), §9.3 (uplinkable tuning); and Dennehy &
+///    Carpenter, NESC Technical Bulletin 20-03, 2020, items (d), (f), (g).
+///    [carpenter2018, dennehy2020]
 
 #include <cstdint>
 #include <Eigen/Core>
 
+#include "gnc/measurement_policy.hpp"
 #include "math/frames.hpp"
 #include "math/quaternion.hpp"
 #include "math/typed_vector.hpp"
@@ -229,6 +236,9 @@ struct MekfUpdate {
   double nis{0.0};
   /// The measurement passed the NIS gate and was applied.
   bool accepted{false};
+  /// Applied **past** the gate under `force` (implies @ref accepted). Reported
+  /// apart so a forced update is never read as a consistent one.
+  bool forced{false};
 };
 
 /// 6-state multiplicative EKF for attitude and gyro bias (design doc §8.1).
@@ -318,8 +328,13 @@ class Mekf {
   ///         gate rejection is a normal outcome, not an error: it returns
   ///         `false` with the diagnostics populated and the count incremented.
   ///         Malformed inputs return `false` with @p out default-constructed.
+  /// @param force    apply past the NIS gate (NASA/TP-2018-219822 §9.1's
+  ///                  "force" editing flag; NESC TB 20-03 item d). Overrides the
+  ///                  *gate* only — a negative or non-finite NIS is the covariance
+  ///                  gone bad and still refuses. Counted in @ref forcedCount.
   bool update(const math::Vec3<math::frames::Body>& body_meas,
-              const math::Vec3<math::frames::ECI>& reference, double sigma_rad, MekfUpdate& out);
+              const math::Vec3<math::frames::ECI>& reference, double sigma_rad, MekfUpdate& out,
+              bool force = false);
 
   /// Fold in one **attitude** measurement: a complete Body ← ECI solution, which
   /// is what a star tracker reports (design doc §8.2; Markley & Crassidis §6.2.4
@@ -360,13 +375,36 @@ class Mekf {
   ///                  symmetric and positive-definite
   /// @param out       innovation, `S`, NIS and the accept decision — filled on a
   ///                  gate rejection too, exactly as @ref update does
+  /// @param force    apply past the attitude NIS gate (TP §9.1 "force"); the
+  ///                  gate only — a negative or non-finite NIS still refuses
   /// @return `true` iff the measurement was applied. A @ref
   ///         MekfConfig::attitude_nis_gate rejection returns `false` with the
   ///         diagnostics populated and @ref rejectedCount incremented; malformed
   ///         inputs return `false` with @p out default-constructed, so the caller
   ///         can tell a divergence guard from a refusal on the count alone.
   bool updateAttitude(const math::Quat<math::frames::Body, math::frames::ECI>& measured,
-                      const Eigen::Matrix3d& noise_cov, MekfUpdate& out);
+                      const Eigen::Matrix3d& noise_cov, MekfUpdate& out, bool force = false);
+
+  /// Swap the tuning under a running solution (NESC TB 20-03 item g;
+  /// NASA/TP-2018-219822 §9.3): attitude, bias, covariance, epoch, age and
+  /// counters are kept, only the noise/gate/horizon values change. Refused
+  /// (returns false, **nothing** touched, old configuration kept) when @p
+  /// config fails @ref MekfConfig::isValid — a bad upload must not make a
+  /// running filter inert.
+  bool retune(const MekfConfig& config);
+
+  /// Re-initialise the covariance **without altering the state** (NESC TB 20-03
+  /// item f; TP §9.2): `P = diag(σ_att² I, σ_bias² I)`, no cross terms. The
+  /// remedy for a filter that has become over-confident and is editing good
+  /// measurements while its attitude and bias are still sound; milder than
+  /// @ref reset, and it keeps the converged bias. False when there is no
+  /// solution or a σ is not positive and finite.
+  bool reinitializeCovariance(double sigma_att_rad, double sigma_bias_rad_s);
+
+  /// True when there is no solution, or when `P` is positive semi-definite by
+  /// an LDLᵀ factorisation (TP Ch. 7's definiteness check, done explicitly on a
+  /// full covariance). False is a filter-health signal.
+  bool covarianceHealthy() const;
 
   /// Reference attitude Body ← ECI (JPL scalar-first, canonical `q0 ≥ 0`).
   math::Quat<math::frames::Body, math::frames::ECI> attitude() const {
@@ -397,6 +435,11 @@ class Mekf {
   /// A rising count is the FDIR signal, not a single rejection.
   std::uint32_t rejectedCount() const { return rejected_; }
 
+  /// Updates applied **past** their gate under `force` since construction or
+  /// @ref reset (TP §9.1). Kept apart from @ref rejectedCount — a forced update
+  /// is neither a rejection nor a consistent acceptance.
+  std::uint32_t forcedCount() const { return forced_; }
+
   /// Analysis-only 6-state NEES `eᵀP⁻¹e` against a known truth, with
   /// `e = [δθ_true; δb_true]` (Bar-Shalom §5.4 [barshalom2001]). Averaged over
   /// Monte-Carlo runs it should sit inside the χ²₆ bounds; systematically above
@@ -426,6 +469,7 @@ class Mekf {
   time::Tai last_epoch_{};                         ///< epoch of `attitude_`
   double age_s_{0.0};                              ///< since the last accepted update [s]
   std::uint32_t rejected_{0};                      ///< NIS-gate rejections
+  std::uint32_t forced_{0};                        ///< updates applied past the gate
   bool configured_{false};
   bool initialised_{false};
   bool rate_valid_{false};
