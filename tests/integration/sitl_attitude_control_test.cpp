@@ -781,21 +781,21 @@ TEST(SitlAttitudeControl, FeedforwardImprovesPointingAndTheAnomalyMonitorFires) 
   // estimate, reached within a minute of the observer starting. Running to 5 tau
   // would multiply the wall time of two lockstep rows for a difference the
   // assertion does not need.
-  scenario::SimConfig orbit = loadingOrbit(200.0, "sitl-ff", kFeedforwardDipoleAm2);
-  // Free-drift plant, as this A/B was tuned on: on the orbiting plant the two
-  // runs land within 1% of each other and the 5% "no worse" bound flips on
-  // noise. Re-baselining on the real orbit is owed (Push 65).
-  orbit.environment.gravity_degree = kFreeDriftPlant;
+  // **400 s, on the orbiting plant** (Push 67). At 200 s both runs were still
+  // settling (0.040° → 0.032° by 400 s) and the paired ratio sat inside the
+  // tail window's own noise — even the free-drift plant this row was tuned on
+  // cleared the 5 % bound by 0.5 %. Gravity-gradient torque on or off changes
+  // neither number, so the plant is not the variable; the settling time is.
+  scenario::SimConfig orbit = loadingOrbit(400.0, "sitl-ff", kFeedforwardDipoleAm2);
 
   const RunResult with_ff =
       fly("ff-on", orbit, /*ctrlMode=*/2, target_q, noFaults, /*feedforward=*/1);
   ASSERT_TRUE(with_ff.sim_healthy);
-  scenario::SimConfig orbit_off = loadingOrbit(200.0, "sitl-ff-off", kFeedforwardDipoleAm2);
-  orbit_off.environment.gravity_degree = kFreeDriftPlant;
+  scenario::SimConfig orbit_off = loadingOrbit(400.0, "sitl-ff-off", kFeedforwardDipoleAm2);
   const RunResult without_ff =
       fly("ff-off", orbit_off, /*ctrlMode=*/2, target_q, noFaults, /*feedforward=*/0);
   ASSERT_TRUE(without_ff.sim_healthy);
-  ASSERT_GT(with_ff.trace.size(), 1500u);
+  ASSERT_GT(with_ff.trace.size(), 3500u);
   ASSERT_EQ(with_ff.trace.size(), without_ff.trace.size());
 
   // Steady-state pointing over the last 50 s. Truth-side, so this is the
@@ -831,6 +831,12 @@ TEST(SitlAttitudeControl, FeedforwardImprovesPointingAndTheAnomalyMonitorFires) 
   EXPECT_LE(error_on, 1.05 * error_off)
       << "feedforward degraded steady pointing: " << (error_on * 180.0 / M_PI) << " deg with, "
       << (error_off * 180.0 / M_PI) << " deg without";
+  // And the hold class itself, so the row asserts more than a ratio: measured
+  // 0.0317 deg with and 0.0318 deg without at 400 s on the orbiting plant
+  // (Push 67), against the 0.0396 deg loaded-array figure of Push 60.
+  constexpr double kLoadedHoldBoundRad = 0.05 * M_PI / 180.0;
+  EXPECT_LT(error_on, kLoadedHoldBoundRad) << (error_on * 180.0 / M_PI) << " deg";
+  EXPECT_LT(error_off, kLoadedHoldBoundRad) << (error_off * 180.0 / M_PI) << " deg";
 
   // **The §9 monitor fires on the injected torque** — in both runs, because the
   // observer runs whether or not its estimate is fed forward: a fault monitor a
@@ -873,11 +879,6 @@ TEST(SitlAttitudeControl, DetumblesThenAcquiresSunPointing) {
 
   // --- Phase A: B-dot through the fast phase --------------------------------
   scenario::SimConfig orbit_a = faultMatrixOrbit(250.0, "sitl-safemode-detumble");
-  // Free-drift plant, as this two-phase row was tuned on: on the orbiting plant
-  // the sun-pointing tail sits at 5.3 deg against the 2 deg bound below, which
-  // wants an investigation of its own (eclipse and field geometry over a real
-  // arc) rather than a bound moved to fit. Owed (Push 65).
-  orbit_a.environment.gravity_degree = kFreeDriftPlant;
   orbit_a.initial_state.body_rate = pm::Vec3<pm::frames::Body>(kTumbleRadps);
   const RunResult a = fly("safemode-a", orbit_a, /*ctrlMode=*/1, nullptr, noFaults);
   ASSERT_TRUE(a.sim_healthy);
@@ -915,8 +916,17 @@ TEST(SitlAttitudeControl, DetumblesThenAcquiresSunPointing) {
   const double target[4] = {q_target.w(), q_target.x(), q_target.y(), q_target.z()};
 
   // --- Phase B: POINT at the sun from the handover state --------------------
-  scenario::SimConfig orbit_b = faultMatrixOrbit(300.0, "sitl-safemode-sunpoint");
-  orbit_b.environment.gravity_degree = kFreeDriftPlant;  // same plant as phase A
+  // **450 s, on the orbiting plant** (Push 67). The acquisition from a 3 deg/s
+  // handover is a storm, not a slew: the wheels saturate, stored momentum
+  // leaves the envelope and desaturation cycles, and the SUN_MAG fine mode is
+  // demoted NIS_STREAK a dozen times before it holds — deterministic, and
+  // identical with every disturbance torque switched off, so it is the entry
+  // and not the plant. On the free-drift plant it converged by ~225 s; on the
+  // real orbit the same storm lands one demotion-cycle later (~275 s), which a
+  // 300 s window read as a 5.3 deg tail. 450 s measures a settled tail with the
+  // margin the old window only had by accident. The storm itself is a finding
+  // about the POINT-from-tumble entry and is recorded as owed (§8.5).
+  scenario::SimConfig orbit_b = faultMatrixOrbit(450.0, "sitl-safemode-sunpoint");
   orbit_b.initial_state = handover;
   const RunResult b = fly("safemode-b", orbit_b, /*ctrlMode=*/2, target, noFaults);
   ASSERT_TRUE(b.sim_healthy);
@@ -940,6 +950,10 @@ TEST(SitlAttitudeControl, DetumblesThenAcquiresSunPointing) {
   }
   RecordProperty("sun_angle_tail_worst_deg", std::to_string(worst_tail_deg));
   RecordProperty("sun_angle_final_deg", std::to_string(sun_angle_deg(b.trace.back().state)));
+  // The storm, visible in the artifact: how many times the fine mode was demoted
+  // on the way in (measured 11-13 on both plants, Push 67).
+  RecordProperty("fine_demotions", std::to_string(countOf(b.log, "Fine mode demoted")));
+  // Measured tail 0.012 deg at 450 s; 2 deg is the class bound, not a fit.
   EXPECT_LT(worst_tail_deg, 2.0) << "sun acquisition did not converge: worst tail angle "
                                  << worst_tail_deg << " deg";
   // The tumble actually died: truth rate at the end is fine-pointing quiet,

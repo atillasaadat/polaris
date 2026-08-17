@@ -68,6 +68,7 @@ void MagCalibrationAccumulator::reset() {
   normal_.setZero();
   rhs_.setZero();
   directions_.setZero();
+  sum_f2_ = 0.0;
   sum_f2_squared_ = 0.0;
   sum_field_t_ = 0.0;
   count_ = 0;
@@ -97,6 +98,7 @@ bool MagCalibrationAccumulator::addSample(const math::Vec3<math::frames::Body>& 
   rhs_ += h * f2;
   const Eigen::Vector3d direction = m / m_norm;
   directions_ += direction * direction.transpose();
+  sum_f2_ += f2;
   sum_f2_squared_ += f2 * f2;
   sum_field_t_ += igrf_magnitude_t;
   ++count_;
@@ -183,21 +185,40 @@ bool MagCalibrationAccumulator::solve(MagCalibrationResult& out, MagCalibrationR
     return false;
   }
   const Eigen::Matrix3d& u = quadric.eigenvectors();
-  const Eigen::Matrix3d soft_iron_inverse =
-      u * a_eig.cwiseSqrt().asDiagonal() * u.transpose();  // A^{1/2}, symmetric PD
   const Eigen::Vector3d v = theta.segment<3>(6);
   const Eigen::Vector3d beta =
       u * (u.transpose() * v).cwiseQuotient(a_eig);  // A⁻¹v, non-dimensional centre
 
-  // Residuals. The fit carries `c` as a free parameter, so the *applied*
-  // correction's magnitude residual differs from the linear model's by the
-  // constant `κ = c − βᵀAβ` — nonzero only through noise. Since the constant
-  // column makes the linear residuals zero-mean, the applied residual's mean
-  // square is the model's plus `κ²`; folding it in is what keeps this number
-  // honest about the correction actually shipped.
+  // The constant is not free. The linear fit carries `c` as a tenth
+  // parameter, but the model has none: expanding `(x−β)ᵀA(x−β) = f²` gives
+  // `c = βᵀAβ` identically. What the solve returns is `(x−β)ᵀA(x−β) = f² − κ + e`
+  // with `κ = c − βᵀAβ` decided by noise — and when the field magnitude barely
+  // moves over the window (a real LEO arc swings `F` by ~6 %), the constant
+  // column and the trace of `A` are nearly collinear, so κ is *not* small: on
+  // the reference vehicle it shipped as a constant 0.7 % magnitude scale error
+  // and was reported as a 7.5 mrad residual against a 2.2 mrad noise floor
+  // (Push 67). Absorbing κ into the scale of `A` — `A ← A·f̄²/(f̄²−κ)`, so the
+  // corrected magnitude squared is `f² + (s−1)(f²−f̄²) + s·e` — removes it
+  // exactly at the mean field and leaves a term of order `κ·(F swing)`
+  // elsewhere, which is what the residual below then measures honestly.
   const double kappa = theta(kParameters - 1) - beta.dot(quadricOf(theta) * beta);
+  const double mean_f2 = sum_f2_ / n;
+  const double s = mean_f2 / (mean_f2 - kappa);
+  if (!std::isfinite(s) || !(s > 0.0)) {
+    why = MagCalibrationRefusal::Numerical;
+    return false;
+  }
+  const Eigen::Matrix3d soft_iron_inverse =
+      std::sqrt(s) * u * a_eig.cwiseSqrt().asDiagonal() * u.transpose();  // (sA)^{1/2}, PD
+
+  // Applied residual `r = s(f² − κ + e) − f² = (s−1)(f² − f̄²) + s·e`, in closed
+  // form from the moments: `Σe² = ssr`, `Σe(f²−f̄²) = Σf⁴ − θᵀg` (the linear
+  // residuals are orthogonal to the constant column), `Σ(f²−f̄²)² = Σf⁴ − n·f̄⁴`.
   const double ssr_fit = sumSquaredResiduals(normal_, rhs_, sum_f2_squared_, theta);
-  const double mean_square = ssr_fit / n + kappa * kappa;
+  const double var_f2 = std::max(0.0, sum_f2_squared_ / n - mean_f2 * mean_f2);
+  const double cov_e_f2 = sum_f2_squared_ / n - theta.dot(rhs_) / n;
+  const double mean_square = std::max(
+      0.0, (s - 1.0) * (s - 1.0) * var_f2 + 2.0 * s * (s - 1.0) * cov_e_f2 + s * s * ssr_fit / n);
 
   ParamVector uncalibrated = ParamVector::Zero();
   uncalibrated(0) = 1.0;
