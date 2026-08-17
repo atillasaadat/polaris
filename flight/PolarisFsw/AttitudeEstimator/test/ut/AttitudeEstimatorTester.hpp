@@ -76,6 +76,9 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! The orbit solution is consumed once per cycle: a producer that stops
   //! publishing leaves position unavailable, never a stale vector reused.
   void testOrbitSolutionIsConsumedOnce();
+  //! A DEGRADED orbit solution keeps the magnetic reference while its position
+  //! sigma is inside MaxPositionSigmaM, and loses it past that (§8.3, Push 70).
+  void testDegradedOrbitSolutionIsUsedUpToTheSigmaTolerance();
 
   //! RESET_ESTIMATOR drops the solution and re-arms *every* edge-gated alert, so
   //! a still-faulted vehicle reports each fault again rather than staying quiet.
@@ -564,6 +567,7 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! whether one is fed at all (a producer that did not run this cycle).
   bool orbit_valid_{true};
   bool orbit_published_{true};
+  F64 orbit_sigma_m_{1.0};  //!< posSigmaM the fixture publishes (>1 marks it DEGRADED)
 
   //! Where the vehicle is [m, ECEF]: what the fed orbit solution states (in ECI,
   //! rotated with the stubbed EOP) *and* what both inertial references are

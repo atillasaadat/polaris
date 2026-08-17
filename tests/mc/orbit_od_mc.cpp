@@ -84,6 +84,7 @@
 #include <vector>
 
 #include "constants/constants.hpp"
+#include "dynamics/force_torque.hpp"
 #include "frames/eci_ecef.hpp"
 #include "frames/eop.hpp"
 #include "gnc/orbit_od.hpp"
@@ -137,6 +138,9 @@ constexpr double kFixPeriodS = 10.0;
 /// a 30% velocity-σ over-budget (NEES 4.22 against a 4.83 floor), which is why
 /// the two are now separate constants there.
 constexpr double kCoastHorizonS = 300.0;
+/// The degraded horizon (Push 70): the solution stands, degraded, up to here
+/// and is dropped past it — the reference vehicle's flown value.
+constexpr double kDegradedHorizonS = 1800.0;
 constexpr double kTruncationAtHorizonM = 1.28;
 constexpr double kAccelPsd = 3.0 * kTruncationAtHorizonM * kTruncationAtHorizonM /
                              (kCoastHorizonS * kCoastHorizonS * kCoastHorizonS);
@@ -190,6 +194,7 @@ pg::OrbitOdConfig filterConfig() {
   cfg.position_nis_gate = kChi2_3_999;
   cfg.velocity_nis_gate = kChi2_3_999;
   cfg.max_coast_s = kCoastHorizonS;
+  cfg.max_degraded_coast_s = kDegradedHorizonS;
   cfg.max_dt_s = 60.0;
   cfg.max_step_s = 10.0;
   cfg.max_fix_latency_s = kMaxFixLatencyS;
@@ -396,6 +401,58 @@ void writeRecord(std::ostream& out, int run, const std::string& scenario, const 
 
 namespace {
 
+/// The truth's finite burns (§17; Push 70): the scenario's `kThrust` events as
+/// an external force model composed into the truth propagation — an
+/// along-track acceleration of the event's magnitude while it is armed. What
+/// the *filter* is told is a separate question, answered per event by
+/// `tell_filter` in the loop below.
+class ScheduledThrust final : public polaris::sim::dynamics::ForceTorqueModel {
+ public:
+  ScheduledThrust(const mco::Scenario& scenario, const pt::Tai& epoch0)
+      : scenario_(scenario), epoch0_(epoch0) {}
+
+  /// The along-track acceleration armed at @p t_s [m/s²] (zero when none).
+  double magnitudeAt(double t_s) const {
+    double a = 0.0;
+    for (const mco::FaultEvent& e : scenario_.events) {
+      if (e.kind == mco::FaultKind::kThrust && mco::active(e, t_s)) {
+        a += e.magnitude;
+      }
+    }
+    return a;
+  }
+
+  /// Whether an armed burn at @p t_s is one the filter is told about. With two
+  /// overlapping burns of different policy the answer is the fed one's, which no
+  /// scenario in the table constructs.
+  bool filterTold(double t_s) const {
+    for (const mco::FaultEvent& e : scenario_.events) {
+      if (e.kind == mco::FaultKind::kThrust && mco::active(e, t_s)) {
+        return e.tell_filter;
+      }
+    }
+    return false;
+  }
+
+  pm::Vec3<pmf::ECI> acceleration(const polaris::state::TruthState& s) const override {
+    const double t_s = (s.epoch - epoch0_).seconds();
+    const double a = magnitudeAt(t_s);
+    const Eigen::Vector3d v = s.velocity.eigen();
+    if (a == 0.0 || !(v.norm() > 0.0)) {
+      return pm::Vec3<pmf::ECI>::Zero();
+    }
+    return pm::Vec3<pmf::ECI>(a * v.normalized());
+  }
+
+  pm::Vec3<pm::frames::Body> torque(const polaris::state::TruthState&) const override {
+    return pm::Vec3<pm::frames::Body>::Zero();
+  }
+
+ private:
+  const mco::Scenario& scenario_;
+  pt::Tai epoch0_;
+};
+
 /// Apply @p scenario's armed events to @p rx at @p t_s, and report which regime
 /// the sample belongs to. Returns the sigma-inflation factor the caller applies
 /// to the reported fix (1.0 when no degradation is armed).
@@ -442,6 +499,10 @@ double applyFaults(const mco::Scenario& scenario, double t_s, psen::Gnss& rx,
       case mco::FaultKind::kSigmaDegrade:
         sigma_scale *= e.magnitude;
         break;
+      case mco::FaultKind::kThrust:
+        // Applied to the truth by ScheduledThrust and to the filter in the
+        // loop; here it only names the regime.
+        break;
     }
   }
 
@@ -486,9 +547,10 @@ RunResult flyOne(int run, const mco::Scenario& scenario, double duration_s,
   }
 
   const pt::Tai epoch0 = campaignEpoch();
+  const ScheduledThrust thrust(scenario, epoch0);
   ps::SimRunner runner;
   if (!runner.build(truthConfig(epoch0, r0, v0, duration_s),
-                    ps::DataPaths::under(POLARIS_GOLDEN_DIR), error)) {
+                    ps::DataPaths::under(POLARIS_GOLDEN_DIR), error, &thrust)) {
     return result;
   }
 
@@ -548,7 +610,25 @@ RunResult flyOne(int run, const mco::Scenario& scenario, double duration_s,
     // epoch, where every subsequent fix looks forward and the latent branch is
     // dead code. It is also the quantity that matters: "where am I *now*" is
     // what pointing, pass planning and maneuver targeting all ask.
-    const pg::OrbitOdRefusal pr = filter.propagate(now, eop_table, leap);
+    // A burn the filter is told about enters the propagate as the burn
+    // executor would hand it: the commanded acceleration in ECI, along the
+    // filter's *own* velocity direction (which is what a body-frame thrust
+    // rotated by the estimated attitude amounts to when the vehicle points
+    // along-track), with a 5 % thrust-knowledge sigma. The truth burns whether
+    // or not the filter is told.
+    pg::NonGravAccelInput accel_input;
+    const pg::NonGravAccelInput* accel = nullptr;
+    const double a_told = thrust.filterTold(t_s) ? thrust.magnitudeAt(t_s) : 0.0;
+    if (a_told > 0.0 && filter.isInitialised() && filter.velocity().eigen().norm() > 0.0) {
+      accel_input.accel_m_s2 = pm::Vec3<pmf::ECI>(a_told * filter.velocity().eigen().normalized());
+      accel_input.sigma_m_s2 = 0.05 * a_told;
+      accel = &accel_input;
+    }
+    pf::EopValue eop_now;
+    pg::OrbitOdRefusal pr = pg::OrbitOdRefusal::kFrameConversion;
+    if (eop_table.lookup(now, leap, eop_now)) {
+      pr = filter.propagate(now, eop_now, accel);
+    }
     rec.refusal = pr;
 
     if (m.valid) {

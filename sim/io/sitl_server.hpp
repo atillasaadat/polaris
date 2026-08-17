@@ -64,6 +64,7 @@ class SitlServer {
     std::uint32_t gnss = 0;
     std::uint32_t wheel = 0;
     std::uint32_t mtq = 0;
+    std::uint32_t thruster = 0;
   };
 
   SitlServer(const Counts& counts, std::int64_t macro_dt_ns);

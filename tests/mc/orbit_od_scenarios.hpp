@@ -15,6 +15,9 @@
 /// **Why these scenarios and not others.** Each one targets a *different*
 /// defence, and they are deliberately not interchangeable:
 ///
+///  - **Burns** (Push 70) accelerate the *truth* along-track and either hand the
+///    filter the acceleration or not: the fed/blind pair measures what the
+///    non-gravitational acceleration input buys through an outage.
 ///  - **Outages** exercise the coast horizon and the re-acquisition policy, at
 ///    durations either side of it. The 280 s case coasts and recovers on the
 ///    same solution; the 1800 s case must be *dropped* and re-acquired whole.
@@ -79,6 +82,12 @@ enum class FaultKind : std::uint8_t {
   /// `magnitude` for `duration_s`. Not a fault in the fix — a fault in its
   /// quality, which the filter must absorb through `R`.
   kSigmaDegrade,
+  /// A finite burn (§17): the *truth* accelerates along-track at `magnitude`
+  /// [m/s²] for `duration_s`. Not a receiver fault at all — an unmodelled
+  /// force, which is what the filter's non-gravitational acceleration input
+  /// exists for (Push 70). `tell_filter` says whether the filter is handed the
+  /// acceleration (as the burn executor would) or flies blind through it.
+  kThrust,
 };
 
 /// One timed event on a receiver.
@@ -92,6 +101,9 @@ struct FaultEvent {
   double magnitude{0.0};
   /// Ramp time for @ref FaultKind::kSpoof [s]; zero is a step.
   double ramp_s{0.0};
+  /// @ref FaultKind::kThrust only: hand the acceleration to the filter (true,
+  /// the burn executor's path) or leave it blind (false, the paper's baseline).
+  bool tell_filter{true};
 };
 
 /// A named fault timeline.
@@ -194,9 +206,10 @@ inline std::vector<Scenario> scenarios() {
        /*max_duration_s=*/1.0 * kDay},
 
       {"outage_long",
-       "Losses far past the horizon, up to six hours. The solution must be declared invalid and "
-       "dropped, stay dropped, and re-acquire from the first fix back rather than blending "
-       "against a prior that has stopped meaning anything.",
+       "Losses far past the horizon, up to six hours. Past the 300 s fine horizon the solution "
+       "stands as DEGRADED with its grown covariance (Push 70); past the 30 min degraded horizon "
+       "it is dropped, stays dropped, and re-acquires from the first fix back rather than "
+       "blending against a prior that has stopped meaning anything.",
        {
            {FaultKind::kOutage, 2.0 * kHour, 30.0 * kMinute, 0.0, 0.0},
            {FaultKind::kOutage, 7.0 * kHour, 2.0 * kHour, 0.0, 0.0},
@@ -263,6 +276,48 @@ inline std::vector<Scenario> scenarios() {
        /*fix_latency_s=*/0.0,
        /*max_duration_s=*/1.0 * kDay},
 
+      {"burn_tracked",
+       "A 120 s, 0.03 m/s^2 along-track burn while GNSS is nominal, the filter fed the "
+       "acceleration as the burn executor would (Push 70). Measured: fixes rejected through the "
+       "burn and the position error at its end — a filter propagating blind lags the truth by "
+       "1/2 a t^2 (216 m at 120 s) and rejects the fixes as outliers; a fed filter should reject "
+       "none and stay at the receiver's noise.",
+       {
+           {FaultKind::kThrust, 3.0 * kHour, 120.0, 0.03, 0.0, true},
+           {FaultKind::kThrust, 15.0 * kHour, 120.0, 0.03, 0.0, true},
+       },
+       /*cycle_period_s=*/1.0,
+       /*fix_latency_s=*/0.0,
+       /*max_duration_s=*/1.0 * kDay},
+
+      {"burn_outage_fed",
+       "The same 120 s burn inside a 15 min outage, the filter fed the acceleration: the "
+       "coasted error at the outage's end is the number the paper measured (5 km fed against "
+       "9 km blind, on a J2 model). Read against burn_outage_blind.",
+       {
+           {FaultKind::kOutage, 3.0 * kHour, 15.0 * kMinute, 0.0, 0.0},
+           {FaultKind::kThrust, 3.0 * kHour + 5.0 * kMinute, 120.0, 0.03, 0.0, true},
+           {FaultKind::kOutage, 15.0 * kHour, 15.0 * kMinute, 0.0, 0.0},
+           {FaultKind::kThrust, 15.0 * kHour + 5.0 * kMinute, 120.0, 0.03, 0.0, true},
+       },
+       /*cycle_period_s=*/1.0,
+       /*fix_latency_s=*/0.0,
+       /*max_duration_s=*/1.0 * kDay},
+
+      {"burn_outage_blind",
+       "burn_outage_fed with the filter told nothing: it coasts on gravity and drag through a "
+       "burn it cannot see. The difference between the two scenarios' outage-end errors is what "
+       "the acceleration input buys.",
+       {
+           {FaultKind::kOutage, 3.0 * kHour, 15.0 * kMinute, 0.0, 0.0},
+           {FaultKind::kThrust, 3.0 * kHour + 5.0 * kMinute, 120.0, 0.03, 0.0, false},
+           {FaultKind::kOutage, 15.0 * kHour, 15.0 * kMinute, 0.0, 0.0},
+           {FaultKind::kThrust, 15.0 * kHour + 5.0 * kMinute, 120.0, 0.03, 0.0, false},
+       },
+       /*cycle_period_s=*/1.0,
+       /*fix_latency_s=*/0.0,
+       /*max_duration_s=*/1.0 * kDay},
+
       {"latency_fast",
        "The only scenario that exercises the fix-latency correction. Polls at 50 Hz over two "
        "minutes with the OEM7600's 50 ms latency armed, so the delivered fix is genuinely ~50 ms "
@@ -302,6 +357,8 @@ inline const char* kindName(FaultKind kind) {
       return "radius_jump";
     case FaultKind::kSigmaDegrade:
       return "sigma_degrade";
+    case FaultKind::kThrust:
+      return "thrust";
   }
   return "unknown";
 }

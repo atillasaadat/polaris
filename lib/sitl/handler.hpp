@@ -103,9 +103,12 @@ class SitlHandler {
   /// which the plant needs to apply the rods over the right fraction of it.
   /// Returns the reply length, or 0 if @p out cannot hold it (caller emits a
   /// warning EVR — never overruns). Requires a prior HELLO (`helloSeen()`).
+  /// @p thrusters points to at least `nThruster()` `ThrusterCommandRecord`s
+  /// (throttles for the §17 burn executor); `nullptr` fills zeros (off).
   std::size_t buildStepReply(std::uint64_t macro_step, const WheelCommandRecord* wheels,
                              const MtqCommandRecord* mtqs, double mtq_on_window_s,
-                             std::uint8_t* out, std::size_t out_cap) {
+                             std::uint8_t* out, std::size_t out_cap,
+                             const ThrusterCommandRecord* thrusters = nullptr) {
     if (!hello_seen_) {
       return 0;  // STEP_REPLY before HELLO breaks the handshake order
     }
@@ -128,10 +131,19 @@ class SitlHandler {
         return 0;
       }
     }
+    for (std::uint32_t i = 0; i < n_thruster_; ++i) {
+      const ThrusterCommandRecord rec =
+          thrusters != nullptr ? thrusters[i] : ThrusterCommandRecord{};
+      if (!writeRecord(out, out_cap, woff, rec)) {
+        return 0;
+      }
+    }
     return woff;
   }
 
   bool helloSeen() const { return hello_seen_; }
+
+  std::uint32_t nThruster() const { return n_thruster_; }
 
   std::uint32_t nWheel() const { return n_wheel_; }
 
@@ -185,7 +197,8 @@ class SitlHandler {
     }
     if (hello.n_imu > kMaxUnits || hello.n_star_tracker > kMaxUnits ||
         hello.n_sun_sensor > kMaxUnits || hello.n_magnetometer > kMaxUnits ||
-        hello.n_gnss > kMaxUnits || hello.n_wheel > kMaxUnits || hello.n_mtq > kMaxUnits) {
+        hello.n_gnss > kMaxUnits || hello.n_wheel > kMaxUnits || hello.n_mtq > kMaxUnits ||
+        hello.n_thruster > kMaxUnits) {
       return r;  // kMalformed: implausible unit count
     }
     n_imu_ = hello.n_imu;
@@ -195,6 +208,7 @@ class SitlHandler {
     n_gnss_ = hello.n_gnss;
     n_wheel_ = hello.n_wheel;
     n_mtq_ = hello.n_mtq;
+    n_thruster_ = hello.n_thruster;
     hello_seen_ = true;
 
     HelloMsg ack = hello;  // echo all counts (§2.2 HELLO_ACK contract)
@@ -292,6 +306,7 @@ class SitlHandler {
   std::uint32_t n_gnss_ = 0;
   std::uint32_t n_wheel_ = 0;
   std::uint32_t n_mtq_ = 0;
+  std::uint32_t n_thruster_ = 0;
   bool hello_seen_ = false;
 
   // Latest decoded measurements, fixed capacity (kMaxUnits bounds the HELLO

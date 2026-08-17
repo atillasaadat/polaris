@@ -308,7 +308,7 @@ module flight {
     @ The published attitude estimate (§8.0), for guidance/control/FDIR. Emitted
     @ every cycle the estimator runs, with validity flags set — a consumer gates
     @ on those, never on the mere arrival of the port call.
-    output port estimateOut: AttitudeEstimatePort
+    output port estimateOut: [2] AttitudeEstimatePort
 
     # ----------------------------------------------------------------------
     # Commands
@@ -537,6 +537,16 @@ module flight {
     @ and no larger than MaxCoastSec: a staleness window wider than the coast
     @ horizon would keep feeding the estimator data it has already outlived.
     param MaxMeasAgeSec: F64
+
+    @ Largest orbit-solution position sigma [m] this estimator will evaluate
+    @ its magnetic and sun references at (§8.3, Push 70). The orbit filter
+    @ publishes a DEGRADED solution past its fine horizon with the covariance
+    @ its process noise grew; the geomagnetic reference moves ~1e-3 deg per km
+    @ of position error, so a km-class solution is still a reference here
+    @ while a metre-class consumer would decline it. Must be positive. 20 km on
+    @ the reference vehicle: 0.02 deg of reference error, a hundredth of the
+    @ magnetometer's own systematic.
+    param MaxPositionSigmaM: F64
 
     # --- Multi-IMU voting (§8.2) -------------------------------------------
     # Part of the **coarse** validity gate above rather than a set of their own,
@@ -1712,16 +1722,19 @@ module flight {
       severity activity high \
       format "Inter-tracker alignment cleared on unit {}"
 
-    @ No valid orbit solution was available, so the geomagnetic reference could
-    @ not be evaluated and the magnetic pair was excluded this cycle. With no
-    @ magnetic pair there is no TRIAD, so the estimator gyro-coasts. Edge-gated.
-    @ Action: check the OrbitEstimator's telemetry — the orbit filter coasts a
-    @ receiver outage for its coast horizon (§8.3), so this fires only once the
-    @ solution has been dropped, or before it was ever seeded. Sustained loss
-    @ ends in AttitudeLost once the attitude coast horizon expires.
+    @ No usable orbit solution was available — none published, or one whose
+    @ position sigma is above MaxPositionSigmaM — so the geomagnetic reference
+    @ could not be evaluated and the magnetic pair was excluded this cycle.
+    @ With no magnetic pair there is no TRIAD, so the estimator gyro-coasts.
+    @ Edge-gated. Action: check the OrbitEstimator's telemetry — the orbit
+    @ filter coasts a receiver outage as DEGRADED past its fine horizon and
+    @ drops it only at the degraded one (§8.3), so this fires once the solution
+    @ has been dropped, before it was ever seeded, or when a coast has grown
+    @ the sigma past this estimator's tolerance. Sustained loss ends in
+    @ AttitudeLost once the attitude coast horizon expires.
     event PositionUnavailable \
       severity warning low \
-      format "No valid orbit solution: magnetic reference unavailable, coasting"
+      format "No usable orbit solution: magnetic reference unavailable, coasting"
 
     @ The onboard IGRF-14 snapshot could not be loaded at setup, so there is no
     @ modelled field and the magnetic pair can never be formed. The estimator

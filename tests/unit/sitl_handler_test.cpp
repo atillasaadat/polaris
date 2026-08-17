@@ -478,3 +478,38 @@ TEST(SitlHandler, BuildStepReplySerializesCallerCommands) {
   EXPECT_EQ(m0.dipole_am2[2], 3.5);
   EXPECT_EQ(off, reply_len);
 }
+
+TEST(SitlHandler, StepReplyCarriesThrusterThrottlesAfterTheMtqRecords) {
+  // Push 70: HELLO declares thrusters; the reply appends one throttle record per
+  // thruster after the MTQ records, zero (off) when the caller passes none.
+  ps::SitlHandler h;
+  ps::HelloMsg hello = makeHello(2, 1);
+  hello.n_thruster = 2;
+  std::array<std::uint8_t, ps::kMaxStepReplyBytes> out{};
+  ASSERT_EQ(
+      h.handle(reinterpret_cast<const std::uint8_t*>(&hello), sizeof(hello), out.data(), out.size())
+          .status,
+      ps::HandleStatus::kHelloAck);
+  EXPECT_EQ(h.nThruster(), 2u);
+
+  std::array<ps::ThrusterCommandRecord, 2> thr{};
+  thr[0].throttle = 0.6;
+  thr[1].throttle = 1.0;
+  const std::size_t reply_len =
+      h.buildStepReply(3, nullptr, nullptr, 0.0, out.data(), out.size(), thr.data());
+  ASSERT_EQ(reply_len, sizeof(ps::StepReplyHeader) + 2 * sizeof(ps::WheelCommandRecord) +
+                           sizeof(ps::MtqCommandRecord) + 2 * sizeof(ps::ThrusterCommandRecord));
+  std::size_t off = sizeof(ps::StepReplyHeader) + 2 * sizeof(ps::WheelCommandRecord) +
+                    sizeof(ps::MtqCommandRecord);
+  ps::ThrusterCommandRecord t0;
+  ps::ThrusterCommandRecord t1;
+  ASSERT_TRUE(ps::readRecord(out.data(), reply_len, off, t0));
+  ASSERT_TRUE(ps::readRecord(out.data(), reply_len, off, t1));
+  EXPECT_DOUBLE_EQ(t0.throttle, 0.6);
+  EXPECT_DOUBLE_EQ(t1.throttle, 1.0);
+  // Omitted: off.
+  const std::size_t len0 = h.buildStepReply(4, nullptr, nullptr, 0.0, out.data(), out.size());
+  off = len0 - sizeof(ps::ThrusterCommandRecord);
+  ASSERT_TRUE(ps::readRecord(out.data(), len0, off, t1));
+  EXPECT_DOUBLE_EQ(t1.throttle, 0.0);
+}

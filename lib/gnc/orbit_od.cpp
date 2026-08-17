@@ -139,6 +139,9 @@ bool OrbitOdConfig::isValid() const {
   if (!(max_coast_s > 0.0) || !(max_dt_s > 0.0) || !(max_step_s > 0.0)) {
     return false;
   }
+  if (!std::isfinite(max_degraded_coast_s) || max_degraded_coast_s < max_coast_s) {
+    return false;
+  }
   // The sub-step loop is bounded at compile time (§3.6). Rejecting a config the
   // bound would truncate keeps that from ever being a silent short propagation:
   // the failure is at construction, not four orbits into a run.
@@ -238,13 +241,16 @@ bool earthOrientationAt(const time::Tai& t, const frames::EopValue& eop, EarthOr
 
 namespace {
 
-/// Derivative of the 6-state `[r; v]` under the onboard force model.
-Vec6 stateDerivative(const OrbitOdConfig& cfg, const Vec6& x, const EarthOrientation& earth) {
+/// Derivative of the 6-state `[r; v]` under the onboard force model, plus a
+/// known non-gravitational acceleration @p a_ng (zero when none).
+Vec6 stateDerivative(const OrbitOdConfig& cfg, const Vec6& x, const EarthOrientation& earth,
+                     const Eigen::Vector3d& a_ng = Eigen::Vector3d::Zero()) {
   Vec6 dx;
   dx.head<3>() = x.tail<3>();
   dx.tail<3>() = onboardAcceleration(cfg, math::Vec3<math::frames::ECI>(x.head<3>()),
                                      math::Vec3<math::frames::ECI>(x.tail<3>()), earth)
-                     .eigen();
+                     .eigen() +
+                 a_ng;
   return dx;
 }
 
@@ -336,12 +342,40 @@ OrbitOdRefusal OrbitOd::initialize(const time::Tai& epoch,
   return OrbitOdRefusal::kNone;
 }
 
-OrbitOdRefusal OrbitOd::propagate(const time::Tai& epoch, const frames::EopValue& eop) {
+OrbitOdRefusal OrbitOd::seed(const time::Tai& epoch, const math::Vec3<math::frames::ECI>& position,
+                             const math::Vec3<math::frames::ECI>& velocity, double sigma_pos_m,
+                             double sigma_vel_m_s) {
+  if (!std::isfinite(sigma_pos_m) || !std::isfinite(sigma_vel_m_s) || !(sigma_pos_m > 0.0) ||
+      !(sigma_vel_m_s > 0.0)) {
+    return OrbitOdRefusal::kFixSigmaInvalid;
+  }
+  Covariance cov = Covariance::Zero();
+  cov.block<3, 3>(kPosition, kPosition) = sigma_pos_m * sigma_pos_m * Eigen::Matrix3d::Identity();
+  cov.block<3, 3>(kVelocity, kVelocity) =
+      sigma_vel_m_s * sigma_vel_m_s * Eigen::Matrix3d::Identity();
+  return initialize(epoch, position, velocity, cov);
+}
+
+OrbitOdRefusal OrbitOd::propagate(const time::Tai& epoch, const frames::EopValue& eop,
+                                  const NonGravAccelInput* accel) {
   if (!configured_) {
     return OrbitOdRefusal::kUnconfigured;
   }
   if (!initialised_) {
     return OrbitOdRefusal::kUninitialised;
+  }
+  // A known non-gravitational acceleration over the step (file header). Not
+  // finite or a negative sigma is a caller bug, refused like a bad fix rather
+  // than propagated into the state.
+  Eigen::Vector3d a_ng = Eigen::Vector3d::Zero();
+  double q_ng = 0.0;
+  if (accel != nullptr) {
+    if (!accel->accel_m_s2.isFinite() || !std::isfinite(accel->sigma_m_s2) ||
+        accel->sigma_m_s2 < 0.0) {
+      return OrbitOdRefusal::kFixNotFinite;
+    }
+    a_ng = accel->accel_m_s2.eigen();
+    q_ng = accel->sigma_m_s2 * accel->sigma_m_s2;
   }
 
   // Strictly increasing epochs only. Backwards is obvious; a *stuck* clock is
@@ -373,8 +407,11 @@ OrbitOdRefusal OrbitOd::propagate(const time::Tai& epoch, const frames::EopValue
   // Built once: it depends only on the sub-step length, which is constant across
   // the loop. The off-diagonal blocks are the point — the position and velocity
   // error from one unmodelled acceleration are the same error seen twice.
+  // The thrust-knowledge term joins it as a second white acceleration over the
+  // step: σ_a² [m²/s⁴] acting for h seconds is a PSD of σ_a²·h [m²/s³] over the
+  // sub-step, which puts it in the same discretisation as q_a.
   const Eigen::Matrix3d id = Eigen::Matrix3d::Identity();
-  const double q_a = cfg_.accel_psd_m2_per_s3;
+  const double q_a = cfg_.accel_psd_m2_per_s3 + q_ng * h;
   Covariance q_d = Covariance::Zero();
   q_d.block<3, 3>(kPosition, kPosition) = (q_a * h * h * h / 3.0) * id;
   const Eigen::Matrix3d q_cross = (q_a * h * h / 2.0) * id;
@@ -404,10 +441,10 @@ OrbitOdRefusal OrbitOd::propagate(const time::Tai& epoch, const frames::EopValue
     const Covariance phi = Covariance::Identity() + f * h + 0.5 * (f * f) * (h * h);
 
     // Classical RK4 on the state.
-    const Vec6 k1 = stateDerivative(cfg_, x, earth);
-    const Vec6 k2 = stateDerivative(cfg_, Vec6(x + 0.5 * h * k1), earth);
-    const Vec6 k3 = stateDerivative(cfg_, Vec6(x + 0.5 * h * k2), earth);
-    const Vec6 k4 = stateDerivative(cfg_, Vec6(x + h * k3), earth);
+    const Vec6 k1 = stateDerivative(cfg_, x, earth, a_ng);
+    const Vec6 k2 = stateDerivative(cfg_, Vec6(x + 0.5 * h * k1), earth, a_ng);
+    const Vec6 k3 = stateDerivative(cfg_, Vec6(x + 0.5 * h * k2), earth, a_ng);
+    const Vec6 k4 = stateDerivative(cfg_, Vec6(x + h * k3), earth, a_ng);
     x += (h / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
 
     p = phi * p * phi.transpose() + q_d;
@@ -425,12 +462,11 @@ OrbitOdRefusal OrbitOd::propagate(const time::Tai& epoch, const frames::EopValue
   last_epoch_ = epoch;
   age_s_ += dt_s;
 
-  if (age_s_ > cfg_.max_coast_s) {
-    // Past the horizon the coarse force model's error is systematic and the
-    // covariance has stopped covering it, so the solution is declared invalid
-    // and *dropped* — the next fix re-acquires whole rather than blending
-    // against a prior that no longer means anything. See the file header for why
-    // this differs from the attitude MEKF's retention.
+  if (age_s_ > cfg_.max_degraded_coast_s) {
+    // Past the degraded horizon the coasted prediction is dropped: the next fix
+    // re-acquires whole rather than blending against a prior whose covariance
+    // has stopped covering the model's systematic error (file header). Between
+    // the two horizons the solution stands and quality() says degraded.
     dropSolution();
     return OrbitOdRefusal::kCoastExpired;
   }

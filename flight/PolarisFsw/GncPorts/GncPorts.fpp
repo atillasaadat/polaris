@@ -108,13 +108,29 @@ module flight {
     valid: bool @< the receiver reports this fix as usable (§9.1)
   }
 
+  @ Quality of the onboard orbit solution (§8.3, Push 70). FINE: inside the
+  @ fine coast horizon (MaxCoastS) — the covariance is the filter's own claim.
+  @ DEGRADED: past the fine horizon but inside the degraded one
+  @ (MaxDegradedCoastS) — the solution is a coasted prediction whose covariance
+  @ has grown by the process noise; good enough for a km-class consumer (the
+  @ magnetic reference moves ~1e-3 deg per km) and not for a metre-class one.
+  @ NONE: dropped; there is no position.
+  enum OrbitQuality : U8 {
+    NONE = 0
+    DEGRADED = 1
+    FINE = 2
+  }
+
   @ The onboard orbit solution (§8.3), orbit estimator -> every consumer that
   @ needs where the vehicle is: the attitude estimator's magnetic and sun
   @ references, guidance, FDIR. ECI (ICRF/J2000) metres and metres per second at
   @ @ epochTaiNs, with the 1-sigma figures the filter's own covariance carries.
-  @ `valid` is the filter's coast-horizon verdict (§8.3): false means the
-  @ solution was dropped, and a consumer MUST treat position as unavailable
-  @ rather than reuse the last vector (§9.1).
+  @ `quality` is the filter's coast verdict (§8.3); `valid` is `quality != NONE`
+  @ and is kept so a consumer that only asks "is there a position" reads one
+  @ flag. A consumer with an accuracy need gates on `posSigmaM` against its own
+  @ tolerance, never on `valid` alone. NONE means the solution was dropped, and
+  @ a consumer MUST treat position as unavailable rather than reuse the last
+  @ vector (§9.1).
   struct OrbitEstimate {
     epochTaiNs: I64 @< TAI ns this solution is valid at
     posEciM: Vec3F64 @< position, ECI [m]
@@ -122,7 +138,25 @@ module flight {
     posSigmaM: F64 @< sqrt(trace) of the position covariance [m]
     velSigmaMps: F64 @< sqrt(trace) of the velocity covariance [m/s]
     ageSec: F64 @< time since the last accepted fix [s]
-    valid: bool @< the solution is inside the coast horizon and finite
+    quality: OrbitQuality @< FINE / DEGRADED / NONE (§8.3)
+    valid: bool @< quality != NONE and the vector is finite
+  }
+
+  @ Non-gravitational acceleration the orbit filter should propagate with
+  @ (§8.3, Push 70): the commanded or measured thrust of a finite burn (§17), in
+  @ ECI. The filter adds it to its force model over the propagation step and
+  @ inflates its process noise by sigmaMps2^2 over the same step, so a burn is
+  @ neither a fix-rejection storm nor a covariance the filter cannot justify.
+  @ `valid` false or a stale epoch means "no thrust known": the filter coasts on
+  @ gravity and drag as before. Sources: the burn executor (commanded thrust /
+  @ mass, sigma from the thrust-knowledge fraction) now; the accelerometer path
+  @ later, gated on a burn being active because an accelerometer's bias
+  @ (hundreds of micro-g) integrated over a coast is worse than nothing.
+  struct NonGravAccel {
+    epochTaiNs: I64 @< TAI ns the acceleration is valid from
+    accelEciMps2: Vec3F64 @< acceleration, ECI [m/s^2]
+    sigmaMps2: F64 @< 1-sigma magnitude uncertainty [m/s^2]
+    valid: bool @< a known non-gravitational acceleration is acting
   }
 
   @ One star tracker's attitude solution. Defined now so the fine-mode (MEKF)
@@ -239,6 +273,9 @@ module flight {
 
   @ Orbit solution, orbit estimator -> attitude estimator / guidance / FDIR.
   port OrbitEstimatePort(estimate: OrbitEstimate)
+
+  @ Non-gravitational (thrust) acceleration, burn executor -> orbit estimator.
+  port NonGravAccelPort(accel: NonGravAccel)
 
   @ Star-tracker attitude, sensor source -> estimator.
   port StarTrackerMeasPort(meas: StarTrackerMeas)

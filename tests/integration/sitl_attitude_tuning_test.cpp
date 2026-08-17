@@ -101,7 +101,7 @@ TEST(SitlAttitudeTuning, CompiledParametersLetTheEstimatorAcquireAttitude) {
   EXPECT_NE(log.find("PrmFileLoadComplete"), std::string::npos)
       << "prmDb never loaded the compiled parameter file:\n"
       << log;
-  EXPECT_NE(log.find("Records: 121"), std::string::npos)
+  EXPECT_NE(log.find("Records: 133"), std::string::npos)
       << "prmDb loaded a record count other than the 107 declared parameters "
          "(57 estimator + 50 controller; the estimator's last two are the "
          "StCoarseAgreementGate and StReadmitCycles FDIR parameters that "

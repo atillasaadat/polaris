@@ -62,8 +62,10 @@ namespace ps = polaris::state;
 namespace scenario = polaris::sim::scenario;
 
 using pg::GnssFix;
+using pg::NonGravAccelInput;
 using pg::OrbitOd;
 using pg::OrbitOdConfig;
+using pg::OrbitOdQuality;
 using pg::OrbitOdRefusal;
 using pg::OrbitOdResult;
 
@@ -197,6 +199,8 @@ OrbitOdConfig referenceConfig() {
   cfg.position_nis_gate = kChi2_3_999;
   cfg.velocity_nis_gate = kChi2_3_999;
   cfg.max_coast_s = kCoastHorizonS;
+  cfg.max_degraded_coast_s = kCoastHorizonS;  // the pre-Push-70 policy; the horizon
+                                              // tests set their own
   cfg.max_dt_s = 10.0;
   cfg.max_step_s = 1.0;
   cfg.max_fix_latency_s = kMaxFixLatencyS;
@@ -218,6 +222,7 @@ OrbitOdConfig referenceConfig() {
 /// would fail for a reason that has nothing to do with the force model.
 OrbitOdConfig propagationOnly(OrbitOdConfig cfg) {
   cfg.max_coast_s = 1.0e9;
+  cfg.max_degraded_coast_s = 1.0e9;
   return cfg;
 }
 
@@ -686,6 +691,10 @@ TEST(OrbitOdConfigValidation, RejectsEveryOutOfRangeField) {
   EXPECT_FALSE(broken([](OrbitOdConfig& c) { c.position_nis_gate = 0.0; }));
   EXPECT_FALSE(broken([](OrbitOdConfig& c) { c.velocity_nis_gate = -1.0; }));
   EXPECT_FALSE(broken([](OrbitOdConfig& c) { c.max_coast_s = 0.0; }));
+  // The degraded horizon must be at least the fine one, and finite.
+  EXPECT_FALSE(broken([](OrbitOdConfig& c) { c.max_degraded_coast_s = c.max_coast_s - 1.0; }));
+  EXPECT_FALSE(broken(
+      [](OrbitOdConfig& c) { c.max_degraded_coast_s = std::numeric_limits<double>::infinity(); }));
   EXPECT_FALSE(broken([](OrbitOdConfig& c) { c.max_step_s = 0.0; }));
   EXPECT_FALSE(broken([](OrbitOdConfig& c) { c.min_radius_m = 0.0; }));
   EXPECT_FALSE(broken([](OrbitOdConfig& c) { c.max_radius_m = 1.0; }));
@@ -1041,6 +1050,89 @@ TEST(OrbitOdRefusals, CoastHorizonExpiryDropsTheSolutionAndTheNextFixReacquiresW
       << "a re-acquisition must take the fix whole, not blend it with the stale prior";
 }
 
+/// **A known thrust is propagated and budgeted (Push 70).** A constant
+/// acceleration over a step moves the state by ½aΔt² relative to the unthrusted
+/// propagation, and its uncertainty grows the covariance like a second white
+/// acceleration over the step.
+TEST(OrbitOdLatency, NonGravitationalAccelerationIsPropagatedAndBudgeted) {
+  RecordProperty("verifies", "REQ-ODP-008");
+  const OrbitOdConfig cfg = propagationOnly(referenceConfig());
+  Eigen::Vector3d r0;
+  Eigen::Vector3d v0;
+  circularState(kAltitudeM, kInclinationRad, cfg.mu_m3_per_s2, r0, v0);
+  const pt::Tai epoch0 = testEpoch();
+  const pf::EopValue eop = eopAt(epoch0);
+
+  OrbitOd coast(cfg);
+  OrbitOd burn(cfg);
+  ASSERT_EQ(coast.initialize(epoch0, pm::Vec3<pmf::ECI>(r0), pm::Vec3<pmf::ECI>(v0),
+                             receiverSeedCovariance()),
+            OrbitOdRefusal::kNone);
+  ASSERT_EQ(burn.initialize(epoch0, pm::Vec3<pmf::ECI>(r0), pm::Vec3<pmf::ECI>(v0),
+                            receiverSeedCovariance()),
+            OrbitOdRefusal::kNone);
+  const Eigen::Vector3d a = 0.03 * v0.normalized();  // along-track, a 30 mm/s² burn
+  NonGravAccelInput input;
+  input.accel_m_s2 = pm::Vec3<pmf::ECI>(a);
+  input.sigma_m_s2 = 0.05 * 0.03;  // 5 % thrust knowledge
+  const double dt = 1.0;
+  ASSERT_EQ(coast.propagate(advance(epoch0, dt), eop), OrbitOdRefusal::kNone);
+  ASSERT_EQ(burn.propagate(advance(epoch0, dt), eop, &input), OrbitOdRefusal::kNone);
+
+  // Δr = ½aΔt², Δv = aΔt, to 1e-9 relative: over one second the gravity
+  // gradient acting on the ~15 mm displacement is 1e-8 m — below the tolerance
+  // only because the step is short, which is what makes the check analytic.
+  const Eigen::Vector3d dr = burn.position().eigen() - coast.position().eigen();
+  const Eigen::Vector3d dv = burn.velocity().eigen() - coast.velocity().eigen();
+  EXPECT_LT((dr - 0.5 * a * dt * dt).norm(), 1.0e-9 * (0.5 * a * dt * dt).norm() + 1.0e-7);
+  // The velocity picks up the gravity gradient across the 15 mm displacement
+  // over the second (~6e-9 m/s), so the tolerance is 1e-8 rather than 1e-9.
+  EXPECT_LT((dv - a * dt).norm(), 1.0e-9 * (a * dt).norm() + 1.0e-8);
+
+  // Covariance: the extra term is σ_a²·h over the sub-step in the same CWNA
+  // structure as q_a. With max_step_s = 1 the whole step is one sub-step, so
+  // the velocity block grew by σ_a²·h·h = σ_a²·dt² relative to the coast.
+  const double dpvv = burn.covariance()(OrbitOd::kVelocity, OrbitOd::kVelocity) -
+                      coast.covariance()(OrbitOd::kVelocity, OrbitOd::kVelocity);
+  EXPECT_NEAR(dpvv, input.sigma_m_s2 * input.sigma_m_s2 * dt * dt, 1.0e-3 * dpvv + 1.0e-18);
+  EXPECT_GT(burn.covariance()(OrbitOd::kPosition, OrbitOd::kPosition),
+            coast.covariance()(OrbitOd::kPosition, OrbitOd::kPosition));
+
+  // Refused, state untouched, on a non-finite or negative-sigma input.
+  NonGravAccelInput bad = input;
+  bad.sigma_m_s2 = -1.0;
+  const Eigen::Vector3d before = burn.position().eigen();
+  EXPECT_EQ(burn.propagate(advance(epoch0, 2.0 * dt), eop, &bad), OrbitOdRefusal::kFixNotFinite);
+  EXPECT_EQ(burn.position().eigen(), before);
+}
+
+/// **A ground seed (Push 70).** `seed()` builds an isotropic covariance and takes
+/// the same plausibility gates as a fix; a bad σ or an implausible radius leaves
+/// the filter untouched.
+TEST(OrbitOdIngest, GroundSeedIsAcceptedAndItsRefusalsLeaveTheStateAlone) {
+  RecordProperty("verifies", "REQ-ODP-008");
+  const OrbitOdConfig cfg = referenceConfig();
+  Eigen::Vector3d r0;
+  Eigen::Vector3d v0;
+  circularState(kAltitudeM, kInclinationRad, cfg.mu_m3_per_s2, r0, v0);
+  const pt::Tai epoch0 = testEpoch();
+  OrbitOd filter(cfg);
+  EXPECT_EQ(filter.seed(epoch0, pm::Vec3<pmf::ECI>(r0), pm::Vec3<pmf::ECI>(v0), 0.0, 1.0),
+            OrbitOdRefusal::kFixSigmaInvalid);
+  EXPECT_EQ(filter.seed(epoch0, pm::Vec3<pmf::ECI>(10.0 * r0), pm::Vec3<pmf::ECI>(v0), 1000.0, 1.0),
+            OrbitOdRefusal::kFixImplausible);
+  EXPECT_FALSE(filter.isInitialised());
+  ASSERT_EQ(filter.seed(epoch0, pm::Vec3<pmf::ECI>(r0), pm::Vec3<pmf::ECI>(v0), 1000.0, 1.0),
+            OrbitOdRefusal::kNone);
+  EXPECT_TRUE(filter.solutionValid());
+  EXPECT_EQ(filter.quality(), OrbitOdQuality::kFine);
+  EXPECT_NEAR(filter.covariance()(OrbitOd::kPosition, OrbitOd::kPosition), 1.0e6, 1e-9);
+  EXPECT_NEAR(filter.covariance()(OrbitOd::kVelocity, OrbitOd::kVelocity), 1.0, 1e-12);
+  EXPECT_NEAR(filter.covariance()(OrbitOd::kPosition, OrbitOd::kVelocity), 0.0, 1e-12);
+  // And it propagates from there.
+  EXPECT_EQ(filter.propagate(advance(epoch0, 1.0), eopAt(epoch0)), OrbitOdRefusal::kNone);
+}
+
 /// A gross outlier — a spoofed fix, which §6.2 makes deliberately *valid* so
 /// that catching it is the innovation gate's job and not a flag's — is rejected,
 /// counted, and leaves the state alone.
@@ -1372,6 +1464,104 @@ struct ConsistencyStats {
 };
 
 }  // namespace
+
+/// **Two horizons (Push 70).** Past `max_coast_s` the solution stands, degraded,
+/// with its grown covariance; past `max_degraded_coast_s` it is dropped and the
+/// next fix re-acquires whole. Inside the degraded band a returning fix is
+/// *accepted* on the grown covariance, not re-seeded — checked against a truth
+/// arc from the sim's own 32×32 field over a 20 min coast: the NEES at the end
+/// of the coast sits inside χ²₆ and the fix passes the NIS gate.
+TEST(OrbitOdRefusals, DegradedHorizonKeepsTheSolutionAndReacquiresOnTheGrownCovariance) {
+  RecordProperty("verifies", "REQ-ODP-007");
+  OrbitOdConfig cfg = referenceConfig();
+  cfg.max_degraded_coast_s = 1800.0;
+  cfg.max_dt_s = 60.0;
+  cfg.max_step_s = 10.0;
+  Eigen::Vector3d r0;
+  Eigen::Vector3d v0;
+  circularState(kAltitudeM, kInclinationRad, cfg.mu_m3_per_s2, r0, v0);
+  const pt::Tai epoch0 = testEpoch();
+
+  std::vector<polaris::sim::world::FinalsRow> rows;
+  std::string error;
+  ASSERT_TRUE(polaris::sim::world::parseFinals(
+      std::string(POLARIS_GOLDEN_DIR) + "/finals.all.iau2000.txt", 1.0, 0.0, 0.0, rows, &error))
+      << error;
+  auto eop_table = std::make_unique<pf::EopTable<24576>>();
+  for (const polaris::sim::world::FinalsRow& r : rows) {
+    ASSERT_TRUE(eop_table->addEntry({r.mjd_utc, r.dut1_s, r.xp_arcsec, r.yp_arcsec}));
+  }
+  const pt::LeapSecondTable leap = pt::LeapSecondTable::historical();
+  constexpr double kCoastS = 1200.0;  // 20 min: the paper's longest outage
+  scenario::SimRunner runner;
+  ASSERT_TRUE(runner.build(truthConfig(epoch0, r0, v0, kCoastS),
+                           scenario::DataPaths::under(POLARIS_GOLDEN_DIR), &error))
+      << error;
+  std::vector<double> times;
+  for (double t = 60.0; t <= kCoastS + 1.0e-9; t += 60.0) {
+    times.push_back(t);
+  }
+  times.push_back(kCoastS + 1.0);  // the returning fix's epoch, from the truth plant
+  std::vector<scenario::TrajectorySample> truth;
+  ASSERT_TRUE(runner.runAt(times, truth, &error)) << error;
+  const std::size_t n_coast = times.size() - 1;
+
+  OrbitOd filter(cfg);
+  ASSERT_EQ(filter.initialize(epoch0, pm::Vec3<pmf::ECI>(r0), pm::Vec3<pmf::ECI>(v0),
+                              receiverSeedCovariance()),
+            OrbitOdRefusal::kNone);
+  bool saw_degraded = false;
+  for (std::size_t i = 0; i < n_coast; ++i) {
+    ASSERT_EQ(filter.propagate(advance(epoch0, times[i]), *eop_table, leap), OrbitOdRefusal::kNone)
+        << "t = " << times[i];
+    if (times[i] > cfg.max_coast_s) {
+      EXPECT_EQ(filter.quality(), OrbitOdQuality::kDegraded) << "t = " << times[i];
+      saw_degraded = true;
+    } else {
+      EXPECT_EQ(filter.quality(), OrbitOdQuality::kFine) << "t = " << times[i];
+    }
+    EXPECT_TRUE(filter.solutionValid());
+  }
+  EXPECT_TRUE(saw_degraded);
+
+  // Consistency at the end of the coast: the grown covariance covers the truth.
+  const auto& end = truth[n_coast - 1].state;
+  double nees = 0.0;
+  ASSERT_TRUE(filter.nees(end.position, end.velocity, nees));
+  const double err_m = (filter.position().eigen() - end.position.eigen()).norm();
+  RecordProperty("coast_1200s_position_error_m", std::to_string(err_m));
+  RecordProperty("coast_1200s_nees", std::to_string(nees));
+  EXPECT_LT(nees, 22.46) << "chi2_6(0.999): the degraded covariance does not cover the coast";
+  EXPECT_LT(err_m, 100.0) << "an 8x8 model coasts 20 min to tens of metres, not " << err_m;
+
+  // The returning fix is accepted on that covariance — no re-seed.
+  pf::EopValue eop_ret;
+  ASSERT_TRUE(eop_table->lookup(advance(epoch0, kCoastS + 1.0), leap, eop_ret));
+  OrbitOdResult out;
+  const pt::Tai t_ret = advance(epoch0, kCoastS + 1.0);
+  ASSERT_EQ(filter.propagate(t_ret, eop_ret), OrbitOdRefusal::kNone);
+  // Truth at t_ret from the plant itself (a kinematic extrapolation over one
+  // second is 4 m and 9 m/s off — enough to trip the velocity gate).
+  const auto& ret = truth.back().state;
+  ASSERT_TRUE(filter.ingest(fixFrom(t_ret, ret.position.eigen(), ret.velocity.eigen(), eop_ret),
+                            eop_ret, out));
+  EXPECT_FALSE(out.seeded) << "a degraded solution re-acquires by update, not by seed";
+  EXPECT_EQ(filter.quality(), OrbitOdQuality::kFine);
+  EXPECT_EQ(filter.rejectedCount(), 0u);
+
+  // And past the degraded horizon: dropped, and the next fix re-seeds.
+  OrbitOd second(cfg);
+  ASSERT_EQ(second.initialize(epoch0, pm::Vec3<pmf::ECI>(r0), pm::Vec3<pmf::ECI>(v0),
+                              receiverSeedCovariance()),
+            OrbitOdRefusal::kNone);
+  const pf::EopValue eop = eopAt(epoch0);
+  ASSERT_TRUE(walkTo(second, epoch0, cfg.max_degraded_coast_s, cfg.max_dt_s, eop));
+  EXPECT_EQ(second.quality(), OrbitOdQuality::kDegraded);
+  EXPECT_EQ(second.propagate(advance(epoch0, cfg.max_degraded_coast_s + cfg.max_dt_s), eop),
+            OrbitOdRefusal::kCoastExpired);
+  EXPECT_EQ(second.quality(), OrbitOdQuality::kNone);
+  EXPECT_FALSE(second.solutionValid());
+}
 
 /// **NEES/NIS consistency against a truth the filter's own model describes.**
 ///

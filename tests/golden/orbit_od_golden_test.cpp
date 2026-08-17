@@ -129,6 +129,7 @@ pg::OrbitOdConfig onboardConfig(bool j2_enabled) {
   cfg.position_nis_gate = 16.27;
   cfg.velocity_nis_gate = 16.27;
   cfg.max_coast_s = 1.0e9;
+  cfg.max_degraded_coast_s = 1.0e9;
   cfg.max_dt_s = kChunkS;
   cfg.max_step_s = kSubStepS;
   cfg.min_radius_m = 6.4e6;

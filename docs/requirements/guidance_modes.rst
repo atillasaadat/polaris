@@ -65,3 +65,38 @@ Source: design doc §8.4, §10. Fully populated in Phase 7; firm seeds below.
 
    The FSW **shall** carry a configurable onboard ground-station list (lat/lon/alt,
    mask angles) used for contact prediction, tracking, and link analysis.
+
+.. req:: Finite-burn executor and thrust knowledge to the orbit filter
+   :id: REQ-MAN-001
+   :status: reviewed
+   :level: L2
+   :tags: maneuver, propulsion, od
+   :method: Test
+   :derived_from: REQ-MIS-001, REQ-ODP-001
+   :allocation: flight/PolarisFsw/BurnExecutor, flight/PolarisFsw/OrbitEstimator, sim/actuators
+   :value_required: commanded acceleration = throttle * F / m along the mounted axis in ECI, sigma = knowledge fraction * |a|
+
+   The FSW **shall** execute every burn as a **finite burn** (design doc §17): a
+   commanded throttle held on the configured thrusters for a commanded duration
+   through a single executor, started and aborted by command, refused by name
+   when the duration or throttle is out of range, the attitude estimate is
+   invalid or stale, or a burn is already in progress, and aborted when the
+   attitude estimate goes stale during it. While burning the executor **shall**
+   publish the commanded non-gravitational acceleration — thrust over its own
+   depleting mass estimate, rotated to ECI with the current attitude — with a
+   1-sigma knowledge fraction, to the orbit filter; while idle it **shall**
+   publish an explicit "no thrust" every cycle. Per-unit thrust, specific
+   impulse and thrust axis **shall** be configuration cross-checked against the
+   installed thruster catalog entries.
+
+   Rationale: a solution-domain orbit filter that is not told about a burn
+   rejects every fix under it and, in an outage, coasts a kilometre-class error
+   the paper it is compared against measured at 9 km against 5 km with the
+   thrust known (Ceresoli et al. 2025). Steering (velocity tracking, Delta-V
+   mode) and targeting are Phase 8; pointing during a burn is REQ-ACTL-002's.
+
+   Verified by the ``BurnExecutor`` component tests (refusal paths, the
+   hand-computed ECI acceleration for a known attitude with mass depletion at
+   F/(Isp g0), abort mid-burn, stale-attitude abort, the armed bench hook), the
+   config compiler's thruster cross-checks (``tests/tools/test_config_compiler.py``)
+   and the SITL burn rows (``tests/integration/sitl_od_fault_test.cpp``).

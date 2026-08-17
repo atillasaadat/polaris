@@ -351,8 +351,9 @@ ephemeris and EOP grades, with edge-gated `ReferenceDegraded`/`ReferenceRecovere
 events. Position is the **orbit estimator's** solution, latched from
 `orbitStateIn` and consumed once per cycle (a producer that stops publishing
 leaves position unavailable rather than a stale vector reused). A receiver
-outage therefore costs the magnetic reference only once the orbit filter has
-dropped its solution at the coast horizon (§8.3); when it does, the estimator
+outage therefore costs the magnetic reference only once the orbit filter's
+published position sigma exceeds `MaxPositionSigmaM` (20 km) or the solution is
+dropped at the degraded horizon (§8.3, 1800 s); when it does, the estimator
 gyro-coasts, flagged by an edge-gated `PositionUnavailable` warning.
 
 **Tuning is ParameterDb, with no defaults, behind two flight validity gates and
@@ -806,3 +807,52 @@ single attempt would always be refused. `-R <cycle>` runs the orbit estimator's
 `OD_RESET` body on that GNC cycle (§8.3), for the reset-and-reseed SITL row; it
 is the one hook that does *not* go through the command port, because the run
 cycle already holds the component's mutex and the command port shares it.
+`-b cycle,durationS,throttle` arms the burn executor's `BURN_START` for a GNC
+cycle (§17), the burn rows' way of firing the thruster; like `-R` it runs the
+command body from inside the guarded run cycle. `-N 0` makes the orbit
+estimator ignore the burn executor's acceleration — the "blind" half of the
+burn-in-outage A/B (`sitl_od_burn_test.cpp`); absent or `-N 1` is the flight
+behaviour.
+
+## Orbit estimator: thrust, the degraded horizon, the ground seed (§8.3, Push 70)
+
+The `OrbitEstimator` latches the burn executor's `NonGravAccel` on `accelIn`
+and propagates with it when it is valid and no older than `MaxAccelAgeS`
+(invalid or stale means "no thrust known", never the last value), inflating its
+process noise by the record's sigma over the step. Its solution now carries a
+**quality**: FINE through `MaxCoastS` (300 s), DEGRADED through
+`MaxDegradedCoastS` (1800 s) — the coasted prediction with the covariance the
+process noise grew, `OrbitSolutionDegraded` at the edge — and dropped past it
+(`OrbitSolutionDropped`). Consumers gate on `posSigmaM` against their own
+tolerance: the attitude estimator's `MaxPositionSigmaM` is 20 km, so a
+DEGRADED solution keeps the magnetic reference. Fixes returning inside the
+degraded horizon are absorbed by update, not re-seed. `OD_SEED_STATE(epoch, r,
+v, σ)` seeds the filter from the ground for a long outage or a dead receiver
+(refused when older than the degraded horizon or ahead of the latency bound),
+and `OrbitStatus` (every `StatusPeriodCycles`) reports quality, age, sigma and
+position — the event the SITL rows read against truth.
+
+## Finite-burn executor (§17)
+
+`BurnExecutor` (`flight/PolarisFsw/BurnExecutor`, base id `0x10060000`,
+REQ-MAN-001) is the seam the Phase-8 targeting will command: `BURN_START
+(durationS, throttleFrac)` holds a throttle on the configured thrusters for the
+duration, `BURN_ABORT` stops it, and refusals are by name (`UNCONFIGURED`,
+`DURATION`, `THROTTLE`, `ATTITUDE`, `ALREADY_BURNING`); an attitude estimate
+going stale mid-burn aborts it. It is **member 3** of the GNC rate group, after
+the controller — its throttle (`thrusterCmdOut -> sitlBridge.thrusterCmdIn`,
+`ThrusterThrottleSet` in vehicle build order) rides the same STEP_REPLY as the
+wheel and rod commands, and the acceleration it publishes (`accelOut ->
+orbitEstimator.accelIn`, `NonGravAccel`: commanded thrust over its own
+depleting mass estimate, rotated to ECI with the second copy of the attitude
+estimate on `attitudeEstimator.estimateOut[1]`, `sigma = ThrustKnowledgeFrac *
+|a|`) is latched by the orbit estimator for the *next* cycle — the step over
+which that throttle first acts on the plant. Idle it publishes an explicit "no
+thrust" every cycle, so the filter never coasts on a stale vector. Parameters
+(`ThrusterCount`, `ThrusterAxesBody`, `ThrusterThrustN`, `ThrusterIspS`,
+`VehicleMassKg`, `ThrustKnowledgeFrac`, `MaxBurnDurationS`,
+`MaxAttitudeAgeS`) are no-default and configc-checked against the installed
+thruster catalog entries and their `thrust_axis` mounts. Telemetry:
+`BurnStateTlm`, `BurnRemainingS`, `BurnDeltaVMps`, `MassEstimateKg`,
+`ThrottleCmd`. Pointing during a burn is the controller's job; steering and
+targeting are Phase 8.

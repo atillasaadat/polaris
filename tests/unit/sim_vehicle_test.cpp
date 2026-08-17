@@ -158,21 +158,23 @@ TEST(Vehicle, WheelAssemblyFallsBackToTheMountingColumn) {
 }
 
 TEST(Vehicle, UnmodelledKindsAreReportedNotDropped) {
-  scenario::UnitConfig thruster;
-  thruster.name = "acs_1";
-  thruster.model_id = "THR-GENERIC";
-  thruster.kind = "thruster";  // no truth model yet (§7 propulsion)
-  thruster.params = {{"thrust_n", 0.05}};
+  // Thrusters gained a truth model in Push 70; a CMG is the kind without one
+  // (§7 lists it as a later actuator).
+  scenario::UnitConfig cmg;
+  cmg.name = "cmg_1";
+  cmg.model_id = "CMG-GENERIC";
+  cmg.kind = "cmg";
+  cmg.params = {{"max_momentum_nms", 0.5}};
 
   scenario::SpacecraftConfig sc;
   sc.sensors = {imuUnit("imu_a", 0.15)};
-  sc.actuators = {thruster};
+  sc.actuators = {cmg};
 
   scenario::Vehicle v;
   ASSERT_TRUE(scenario::buildVehicle(sc, 1, v, nullptr));
   EXPECT_EQ(v.imus.size(), 1u);
   ASSERT_EQ(v.unmodelled.size(), 1u);
-  EXPECT_EQ(v.unmodelled[0], "acs_1:thruster");
+  EXPECT_EQ(v.unmodelled[0], "cmg_1:cmg");
 }
 
 TEST(Vehicle, BuildsSunSensorsAndMagnetometersFromConfig) {
