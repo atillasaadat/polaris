@@ -30,6 +30,13 @@ class OrbitEstimator final : public OrbitEstimatorComponentBase {
   explicit OrbitEstimator(const char* compName);
   ~OrbitEstimator() override = default;
 
+  //! SITL/bench only: run OD_RESET's body on GNC cycle @p cycle (1-based;
+  //! 0 = never). Exists so the reset-and-reseed path can be flown mid-run in a
+  //! deployment with no ground link. It runs the command handler's own body
+  //! from inside the guarded run cycle (the command port shares the mutex, so
+  //! it cannot be dispatched from there) — only the uplink is skipped.
+  void commandResetAtCycle(U32 cycle);
+
  private:
   // ----------------------------------------------------------------------
   // Port handlers
@@ -100,6 +107,11 @@ class OrbitEstimator final : public OrbitEstimatorComponentBase {
   polaris::gnc::OrbitOdResult last_result_{};
   U32 fixes_accepted_{0};
   U32 fixes_refused_{0};
+  //! OD_RESET's body: drop the solution and the counters, report it.
+  void resetFilter();
+
+  U32 cycle_{0};           //!< GNC cycles run so far (for the armed reset)
+  U32 reset_at_cycle_{0};  //!< 0 = no reset armed
   polaris::gnc::OrbitOdRefusal last_refusal_{polaris::gnc::OrbitOdRefusal::kNone};
   polaris::gnc::OrbitOdRefusal last_alerted_refusal_{polaris::gnc::OrbitOdRefusal::kNone};
 };

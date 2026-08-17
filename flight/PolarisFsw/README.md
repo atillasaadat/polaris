@@ -802,4 +802,7 @@ ways and measure what feedforward buys), the §8.5 equivalents of the
 estimator's `-M`/`-A`. Both dispatch the real opcodes through the component's own
 command port; only the uplink is skipped. The mode is *retried* each cycle until
 the estimate can support it, because at setup no measurement has arrived and a
-single attempt would always be refused.
+single attempt would always be refused. `-R <cycle>` runs the orbit estimator's
+`OD_RESET` body on that GNC cycle (§8.3), for the reset-and-reseed SITL row; it
+is the one hook that does *not* go through the command port, because the run
+cycle already holds the component's mutex and the command port shares it.

@@ -44,7 +44,8 @@ void print_usage(const char* app) {
       "-A\tcommand ST_ALIGN_CAL_START as unit,pairs at startup (SITL/bench only; "
       "absent = no alignment calibration)\n"
       "-F\tdisturbance feedforward tiers as model,observer (0/1 each; SITL/bench "
-      "only; absent = the ParameterDb values)\n",
+      "only; absent = the ParameterDb values)\n"
+      "-R\tcommand OD_RESET on GNC cycle N (SITL/bench only; 0/absent = never)\n",
       app);
 }
 
@@ -88,11 +89,12 @@ int main(int argc, char* argv[]) {
   U32 st_align_samples = 0;      // 0 = do not command an alignment calibration at startup
   I32 ff_model = -1;             // <0 = leave the ParameterDb value alone
   I32 ff_observer = -1;
+  U32 od_reset_cycle = 0;  // 0 = never command an orbit-filter reset
 
   Os::init();
 
   // Loop while reading the getopt supplied options
-  while ((option = getopt(argc, argv, "hp:a:s:c:q:E:B:I:Y:P:M:A:F:")) != -1) {
+  while ((option = getopt(argc, argv, "hp:a:s:c:q:E:B:I:Y:P:M:A:F:R:")) != -1) {
     switch (option) {
       // Handle the -a argument for address/hostname
       case 'a':
@@ -218,6 +220,18 @@ int main(int argc, char* argv[]) {
         ff_observer = observer;
         break;
       }
+      // SITL/bench only: command the orbit filter's OD_RESET on a given GNC
+      // cycle, so the reset-and-reseed path can be flown with no ground link.
+      case 'R': {
+        char* end = nullptr;
+        const long parsed = strtol(optarg, &end, 10);
+        if (end == optarg || *end != '\0' || parsed < 0 || parsed > 100000000) {
+          (void)printf("Invalid OD_RESET cycle '%s' (expected 0-100000000)\n", optarg);
+          return 1;
+        }
+        od_reset_cycle = static_cast<U32>(parsed);
+        break;
+      }
       // Cascade intended: help output
       case 'h':
       // Cascade intended: help output
@@ -246,6 +260,7 @@ int main(int argc, char* argv[]) {
   inputs.stAlignSamples = st_align_samples;
   inputs.ffModel = ff_model;
   inputs.ffObserver = ff_observer;
+  inputs.odResetCycle = od_reset_cycle;
   inputs.prmDbPath = prm_db_path;
 
   // Setup program shutdown via Ctrl-C

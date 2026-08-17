@@ -218,6 +218,10 @@ void setupTopology(const TopologyState& state) {
   if (state.ffModel >= 0 && state.ffObserver >= 0) {
     attitudeController.setFeedforwardAtStartup(state.ffModel != 0, state.ffObserver != 0);
   }
+  // The §8.3 twin: arm an OD_RESET for a given GNC cycle. The command handler's
+  // own body runs when the cycle comes (the run cycle holds the component mutex,
+  // so it is not re-dispatched through the command port).
+  orbitEstimator.commandResetAtCycle(state.odResetCycle);
   // Autocoded task kick-off (active components). Function provided by autocoder.
   startTasks(state);
   // Initialize socket communication if and only if there is a valid specification

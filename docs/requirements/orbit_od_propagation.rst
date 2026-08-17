@@ -127,6 +127,11 @@ Source: design doc §8.3, §11. Fully populated in Phase 6; firm seeds below.
    coasted on. A consumer **shall** treat an absent or invalid solution as no
    position, never reuse the last one.
 
+   Verified by the SITL rows of ``tests/integration/sitl_od_fault_test.cpp``:
+   outages on each side of the horizon, a spoof step on each side of it, a stale
+   receiver clock, ``OD_RESET`` mid-run, a second receiver carrying a primary
+   outage, and one orbit period with no fault.
+
    Rationale: until this seam existed the attitude estimator read the receiver
    directly and a GNSS outage cost the magnetic pair on the first missed fix.
    Serving position from the filter moves that dependency onto a horizon sized
