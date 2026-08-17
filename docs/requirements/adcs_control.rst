@@ -78,7 +78,7 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    :method: Test
    :derived_from: REQ-MIS-001
    :allocation: lib/gnc, flight/PolarisFsw/AttitudeController
-   :refs: wie1989, markley2014, astrom2008, wie2008
+   :refs: wie1989, wie1995, markley2014, astrom2008, wie2008
 
    The FSW **shall** provide reaction-wheel attitude control driven by the error
    rotation between the estimated attitude and a commanded reference attitude,
@@ -87,9 +87,13 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
 
    The error rotation **shall** take the shorter of the two rotations between the
    two attitudes. The integrator **shall** be bounded by a configured clamp and
-   **shall not** accumulate while the torque command is saturated. A torque demand
-   above the configured limit **shall** be scaled as a whole, preserving the
-   commanded direction, and **shall not** be clipped componentwise.
+   **shall not** accumulate while the torque command is saturated or the slew is
+   rate-limited. A torque demand above the configured limit **shall** be scaled
+   as a whole, preserving the commanded direction, and **shall not** be clipped
+   componentwise. The rate the proportional term commands **shall** be limited in
+   norm to a configured slew rate, so that a large error is closed by a
+   constant-rate rotation about the error's eigenaxis rather than by a torque
+   demand the actuators cannot carry.
 
    The commanded body torque **shall** be distributed across the reaction-wheel
    array so that the delivered torque equals the commanded one while every wheel

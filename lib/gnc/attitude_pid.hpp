@@ -43,6 +43,22 @@
 /// §11.4 [astrom2008]); the clamp bounds the state even when saturation is never
 /// reached.
 ///
+/// **Slew-rate limit: saturate the commanded rate, not only the torque.** With
+/// \f$K_p/K_d\f$ set for a small-angle bandwidth, a large error asks for a rate
+/// the vehicle cannot carry: on the reference vehicle \f$K_p\,\delta\theta\f$ at
+/// 100° is ~85× the torque limit, so a POINT entered from a tumble or a large
+/// slew is a bang-bang manoeuvre with the wheels pinned, momentum leaving its
+/// envelope and the estimator's fine mode demoted a dozen times on the way in
+/// (measured, Push 67). Wie & Lu's rate-limited eigenaxis form [wie1995] fixes
+/// it: the proportional term is written as a commanded rate
+/// \f$\boldsymbol\omega_c = \mathrm{sat}_{\omega_{max}}\big((K_p/K_d)\,
+/// \delta\boldsymbol\theta\big)\f$, saturated by *norm* so the eigenaxis is kept,
+/// and the torque is \f$K_d(\boldsymbol\omega_\mathrm{ref}+\boldsymbol\omega_c-
+/// \hat{\boldsymbol\omega})\f$ — identical to the PID inside the limit, a
+/// constant-rate eigenaxis slew with pure rate damping outside it. A limited
+/// cycle freezes the integrator like a saturated one: the error is large by
+/// construction and would only wind it.
+///
 /// **Torque saturation preserves direction.** Unlike the B-dot law (see
 /// `gnc/bdot.hpp`), the commanded torque is a *pointing* command: clipping one
 /// axis rotates the commanded torque away from the direction the error asked for,
@@ -69,6 +85,9 @@
 ///    and Control*, 2014, §7.2 (attitude control laws) [markley2014].
 ///  - Åström & Murray, *Feedback Systems*, 2008, §11.4 (integrator windup)
 ///    [astrom2008].
+///  - Wie & Lu, "Feedback Control Logic for Spacecraft Eigenaxis Rotations
+///    Under Slew Rate and Control Constraints," J. Guidance, Control & Dynamics
+///    18(6):1372–1379, 1995 [wie1995].
 
 #include <cstdint>
 
@@ -112,9 +131,15 @@ struct AttitudePidConfig {
   /// the integral is not advanced across it.
   double max_dt_s = 0.0;
 
-  /// Gains non-negative and finite, `kp`/`kd` positive, limits and `max_dt_s`
-  /// positive. `ki` may be zero (a PD controller), and then `max_integral_rad_s`
-  /// is unused but must still be non-negative.
+  /// Slew-rate limit [rad/s]: the norm of the commanded rate `(kp/kd)·δθ` is
+  /// saturated here (file header). Sized against the torque budget — the rate
+  /// damping `kd · max_slew_rate_radps` must leave torque to track with — and
+  /// against what the estimator's fine mode holds through.
+  double max_slew_rate_radps = 0.0;
+
+  /// Gains non-negative and finite, `kp`/`kd` positive, limits, `max_dt_s` and
+  /// `max_slew_rate_radps` positive. `ki` may be zero (a PD controller), and
+  /// then `max_integral_rad_s` is unused but must still be non-negative.
   bool isValid() const;
 };
 
@@ -134,6 +159,10 @@ struct AttitudePidResult {
 
   /// The unsaturated demand exceeded `max_torque_nm` and was scaled down.
   bool saturated = false;
+
+  /// The commanded rate `(kp/kd)·δθ` exceeded `max_slew_rate_radps` and was
+  /// saturated: this cycle is a rate-limited eigenaxis slew, not a PID cycle.
+  bool rate_limited = false;
 
   /// @ref torque_nm is usable.
   bool valid = false;

@@ -880,6 +880,16 @@ spacecraft:
     # Longest step the integrator is advanced over; a larger gap is a dropout and
     # the PD terms act alone.
     flight.attitudeController.PidMaxDtSec: 0.5
+    # Slew-rate limit on the commanded rate (Kp/Kd)·δθ (Wie & Lu's rate-limited
+    # eigenaxis form). Sized against the torque budget: the rate damping
+    # Kd·ω_max = 0.12693 × 8.73e-3 = 1.1e-3 N·m is 74 % of PidMaxTorqueNm,
+    # leaving a quarter to track with; and against the estimator, whose fine mode
+    # holds through the ~3 deg/s calibration tumble, so 0.5 deg/s asks nothing of
+    # it. Without it a POINT entered from the ~3 deg/s B-dot floor was a
+    # bang-bang slew with the wheels pinned — momentum out of its envelope, the
+    # fine mode demoted a dozen times on the way in (Push 67). A 100 deg slew
+    # now takes ~200 s at constant rate.
+    flight.attitudeController.PidMaxSlewRateRadps: 8.727e-3   # 0.5 deg/s
 
     # --- Wheel allocation ----------------------------------------------
     flight.attitudeController.WheelCount: 4

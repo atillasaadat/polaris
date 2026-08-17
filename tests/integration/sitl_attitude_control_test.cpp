@@ -916,16 +916,17 @@ TEST(SitlAttitudeControl, DetumblesThenAcquiresSunPointing) {
   const double target[4] = {q_target.w(), q_target.x(), q_target.y(), q_target.z()};
 
   // --- Phase B: POINT at the sun from the handover state --------------------
-  // **450 s, on the orbiting plant** (Push 67). The acquisition from a 3 deg/s
-  // handover is a storm, not a slew: the wheels saturate, stored momentum
-  // leaves the envelope and desaturation cycles, and the SUN_MAG fine mode is
-  // demoted NIS_STREAK a dozen times before it holds — deterministic, and
-  // identical with every disturbance torque switched off, so it is the entry
-  // and not the plant. On the free-drift plant it converged by ~225 s; on the
-  // real orbit the same storm lands one demotion-cycle later (~275 s), which a
-  // 300 s window read as a 5.3 deg tail. 450 s measures a settled tail with the
-  // margin the old window only had by accident. The storm itself is a finding
-  // about the POINT-from-tumble entry and is recorded as owed (§8.5).
+  // **450 s, on the orbiting plant** (Push 67), and a slew, not a storm (Push
+  // 68). Until Push 68 the acquisition from a 3 deg/s handover was bang-bang:
+  // Kp*dtheta at ~100 deg was 85x the torque limit, so the wheels sat pinned,
+  // stored momentum left the envelope and desaturation cycled, and the SUN_MAG
+  // fine mode was demoted NIS_STREAK 11-13 times before it held (~225 s on the
+  // free-drift plant, ~275 s on the orbit — which a 300 s window read as a
+  // 5.3 deg tail; every disturbance torque off was bit-identical, so it was the
+  // entry, not the plant). The slew-rate limit (`PidMaxSlewRateRadps`, Wie &
+  // Lu's rate-limited eigenaxis form) makes it a 0.5 deg/s constant-rate slew:
+  // measured 1 demotion, 2 saturation events, no momentum excursion. 450 s
+  // covers the ~200 s slew plus a settled tail.
   scenario::SimConfig orbit_b = faultMatrixOrbit(450.0, "sitl-safemode-sunpoint");
   orbit_b.initial_state = handover;
   const RunResult b = fly("safemode-b", orbit_b, /*ctrlMode=*/2, target, noFaults);
@@ -950,9 +951,19 @@ TEST(SitlAttitudeControl, DetumblesThenAcquiresSunPointing) {
   }
   RecordProperty("sun_angle_tail_worst_deg", std::to_string(worst_tail_deg));
   RecordProperty("sun_angle_final_deg", std::to_string(sun_angle_deg(b.trace.back().state)));
-  // The storm, visible in the artifact: how many times the fine mode was demoted
-  // on the way in (measured 11-13 on both plants, Push 67).
-  RecordProperty("fine_demotions", std::to_string(countOf(b.log, "Fine mode demoted")));
+  // The entry's cost to the estimator, on the artifact and bounded: the fine
+  // mode was demoted 11-13 times on the way in before the slew-rate limit
+  // (Push 67), once after it (Push 68). A slew that costs the fine mode more
+  // than a couple of demotions is the storm coming back.
+  const std::size_t demotions = countOf(b.log, "Fine mode demoted");
+  RecordProperty("fine_demotions", std::to_string(demotions));
+  EXPECT_LE(demotions, 2u) << "the POINT entry demoted the fine mode " << demotions
+                           << " times — the bang-bang entry is back:\n"
+                           << b.log;
+  // And it did not pin the wheels: a rate-limited slew asks for kd*omega_max,
+  // under the torque limit by construction; the handful of saturation events
+  // are the first cycles damping 3 deg/s down to the limit.
+  EXPECT_LE(countOf(b.log, "TorqueSaturated"), 10u) << b.log;
   // Measured tail 0.012 deg at 450 s; 2 deg is the class bound, not a fit.
   EXPECT_LT(worst_tail_deg, 2.0) << "sun acquisition did not converge: worst tail angle "
                                  << worst_tail_deg << " deg";

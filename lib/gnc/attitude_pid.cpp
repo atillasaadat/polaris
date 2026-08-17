@@ -50,7 +50,7 @@ bool AttitudePidConfig::isValid() const {
          ki_nm_per_rad_s >= 0.0 && std::isfinite(kd_nm_per_radps) && kd_nm_per_radps > 0.0 &&
          std::isfinite(max_integral_rad_s) && max_integral_rad_s >= 0.0 &&
          std::isfinite(max_torque_nm) && max_torque_nm > 0.0 && std::isfinite(max_dt_s) &&
-         max_dt_s > 0.0;
+         max_dt_s > 0.0 && std::isfinite(max_slew_rate_radps) && max_slew_rate_radps > 0.0;
 }
 
 AttitudePid::AttitudePid(const AttitudePidConfig& config)
@@ -94,7 +94,16 @@ bool AttitudePid::update(const math::Quat<math::frames::Body, math::frames::ECI>
   // Unsaturated demand with the integrator as it stands. The integrator is
   // advanced only after the saturation test, so a saturated cycle does not fill
   // it (conditional integration).
-  const Eigen::Vector3d proportional = config_.kp_nm_per_rad * error.eigen();
+  // Rate-limited eigenaxis form (file header): the proportional term is the
+  // commanded rate (kp/kd)·δθ, saturated by norm, times kd. Inside the limit
+  // this is exactly kp·δθ.
+  Eigen::Vector3d rate_cmd = (config_.kp_nm_per_rad / config_.kd_nm_per_radps) * error.eigen();
+  const double rate_cmd_norm = rate_cmd.norm();
+  const bool rate_limited = rate_cmd_norm > config_.max_slew_rate_radps;
+  if (rate_limited) {
+    rate_cmd *= config_.max_slew_rate_radps / rate_cmd_norm;
+  }
+  const Eigen::Vector3d proportional = config_.kd_nm_per_radps * rate_cmd;
   const Eigen::Vector3d derivative = config_.kd_nm_per_radps * rate_error;
   const Eigen::Vector3d integral_term = config_.ki_nm_per_rad_s * integral_.eigen();
   // Feedforward joins the demand here, upstream of both the saturation test and
@@ -110,8 +119,8 @@ bool AttitudePid::update(const math::Quat<math::frames::Body, math::frames::ECI>
     demand *= config_.max_torque_nm / demand_norm;
   }
 
-  const bool integrate =
-      config_.ki_nm_per_rad_s > 0.0 && !saturated && dt_s > 0.0 && dt_s <= config_.max_dt_s;
+  const bool integrate = config_.ki_nm_per_rad_s > 0.0 && !saturated && !rate_limited &&
+                         dt_s > 0.0 && dt_s <= config_.max_dt_s;
   if (integrate) {
     Eigen::Vector3d next = integral_.eigen() + error.eigen() * dt_s;
     for (int i = 0; i < 3; ++i) {
@@ -129,6 +138,7 @@ bool AttitudePid::update(const math::Quat<math::frames::Body, math::frames::ECI>
   out.rate_error_radps = math::Vec3<math::frames::Body>(rate_error);
   out.error_angle_rad = angle_rad;
   out.saturated = saturated;
+  out.rate_limited = rate_limited;
   out.valid = true;
   out.refusal = AttitudePidRefusal::kNone;
   return true;
