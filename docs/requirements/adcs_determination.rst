@@ -935,3 +935,50 @@ The estimation mode ladder
       window closes, which is also the honest launch state and what makes
       ``ST_ALIGN_CAL_CLEAR`` a safe command rather than one that silently degrades
       the solution. Pinned by ``UncalibratedSecondTrackerIsNotFused``.
+
+.. req:: Fine-mode filter usability — retune without loss, covariance re-initialisation, selective processing
+   :id: REQ-ADET-014
+   :status: reviewed
+   :level: L3
+   :tags: adcs, estimation, mekf, operability, fdir
+   :method: Test
+   :derived_from: REQ-ADET-004
+   :allocation: lib/gnc, flight/PolarisFsw/AttitudeEstimator
+   :refs: carpenter2018, dennehy2020
+
+   The fine-mode attitude filter (MEKF) **shall** implement the NESC
+   navigation-filter usability practices of NASA/TP-2018-219822 Ch. 9 and NESC
+   Technical Bulletin 20-03 items (d), (f) and (g):
+
+   * a fine-mode parameter upload **shall** re-tune the running filter in place
+     — attitude, gyro bias, covariance and age kept, no demotion — and a set that
+     fails validation **shall** leave the last valid set in force (TP §9.3);
+   * ``ATT_REINIT_COV(attSigma, biasSigma)`` **shall** re-open the covariance
+     around the current attitude and bias without altering either (TP §9.2);
+   * a three-way ``ACCEPT`` / ``INHIBIT`` / ``FORCE`` policy **shall** be
+     uplinkable per measurement type (sun vector, magnetic field, star-tracker
+     attitude); ``INHIBIT`` **shall** withhold the type from **both** the coarse
+     and the fine chain, ``FORCE`` **shall** apply it to the fine filter past its
+     NIS gate, and forced updates **shall** be counted apart from acceptances and
+     rejections (TP §9.1). ``FORCE`` **shall not** override a numeric fault.
+
+   The fine covariance **shall** be checked for positive semi-definiteness every
+   cycle (TP Ch. 7) and an indefinite covariance reported by event.
+
+   Rationale: before Push 71 **any** parameter upload to the estimator — a
+   star-tracker sigma, an albedo term — rebuilt the MEKF and demoted to coarse,
+   throwing away a converged gyro-bias estimate to change a number that had
+   nothing to do with it; and the only recovery from an over-confident fine
+   filter was ``RESET_ESTIMATOR``, which loses the bias too. Underweighting (TP
+   Ch. 4) is not adopted: the star-tracker measurement is linear in the error
+   state (``H = [I 0]``), and for the sun/magnetic vector measurements the
+   second-order term ``½ tr(H_kk P)`` is ≈ δθ²/2 ≈ 1e-3 rad at a 3° post-coast
+   error against a 1e-2 rad measurement σ — an order below the noise it would
+   be compensating.
+
+   Verified by ``tests/unit/mekf_test.cpp``
+   (``Mekf.RetuneKeepsTheSolutionAndRefusesABadConfig``,
+   ``CovarianceReinitialisationKeepsTheState``,
+   ``ForceOverridesTheGateAndIsCountedApart``) and the ``AttitudeEstimator``
+   component tests ``FineTuningUploadKeepsTheSolution`` and
+   ``FineCovarianceReinitAndMeasurementPolicy``.

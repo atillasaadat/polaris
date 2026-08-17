@@ -113,11 +113,14 @@ inline int compileConfig(const std::string& out_dir, const std::string& err_path
 /// ParameterDb values in force, which is what every other row uses.
 /// @p odResetCycle > 0 commands the orbit filter's OD_RESET on that GNC cycle
 /// (`-R`), the §8.3 reset-and-reseed row's way of getting a mid-run command in.
+/// @p burnSpec, when non-null, is "cycle,durationS,throttle" for `-b`: arm a
+/// §17 BURN_START on that GNC cycle, the burn rows' way of firing a thruster.
 inline pid_t spawnFsw(const std::string& bin, std::uint16_t port, const std::string& prm_path,
                       const std::string& log_path, unsigned magCalSamples = 0,
                       unsigned stAlignPairs = 0, unsigned stAlignUnit = 1, unsigned ctrlMode = 0,
                       const double* ctrlTargetQ = nullptr, int feedforward = -1,
-                      unsigned odResetCycle = 0, int wheelBias = -1) {
+                      unsigned odResetCycle = 0, const char* burnSpec = nullptr,
+                      int odAccelInput = -1, int wheelBias = -1) {
   const pid_t pid = ::fork();
   if (pid == 0) {
     // A child whose log cannot be opened must not fly and report nothing: the
@@ -155,6 +158,16 @@ inline pid_t spawnFsw(const std::string& bin, std::uint16_t port, const std::str
     if (feedforward >= 0) {
       argv_[argc_++] = "-F";
       argv_[argc_++] = ff_str.c_str();
+    }
+    // `-b cycle,durationS,throttle` arms a §17 burn (see spawnFsw's doc).
+    if (burnSpec != nullptr) {
+      argv_[argc_++] = "-b";
+      argv_[argc_++] = burnSpec;
+    }
+    const std::string accel_str = std::to_string(odAccelInput);
+    if (odAccelInput >= 0) {
+      argv_[argc_++] = "-N";
+      argv_[argc_++] = accel_str.c_str();
     }
     if (wheelBias >= 0) {
       argv_[argc_++] = "-W";

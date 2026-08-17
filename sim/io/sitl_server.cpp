@@ -233,6 +233,7 @@ bool SitlServer::ensurePeer() {
     hello.n_gnss = counts_.gnss;
     hello.n_wheel = counts_.wheel;
     hello.n_mtq = counts_.mtq;
+    hello.n_thruster = counts_.thruster;
     hello.macro_dt_ns = macro_dt_ns_;
     if (!sendFrame(reinterpret_cast<const std::uint8_t*>(&hello), sizeof(hello))) {
       return false;
@@ -246,7 +247,7 @@ bool SitlServer::ensurePeer() {
     std::size_t off = 0;
     if (!sitl::readRecord(reply.data(), reply.size(), off, ack) ||
         !sitl::checkHeader(ack.hdr, sitl::MsgType::kHelloAck) || ack.n_wheel != counts_.wheel ||
-        ack.n_mtq != counts_.mtq) {
+        ack.n_mtq != counts_.mtq || ack.n_thruster != counts_.thruster) {
       last_error_ = "HELLO_ACK invalid";
       return false;
     }
@@ -328,6 +329,15 @@ bool SitlServer::exchange(const FswInputs& in, FswOutputs& out) {
     }
     d = math::Vec3<math::frames::Body>(
         Eigen::Vector3d(rec.dipole_am2[0], rec.dipole_am2[1], rec.dipole_am2[2]));
+  }
+  out.thruster_throttles.resize(counts_.thruster);
+  for (double& u : out.thruster_throttles) {
+    sitl::ThrusterCommandRecord rec;
+    if (!sitl::readRecord(reply.data(), reply.size(), roff, rec)) {
+      last_error_ = "STEP_REPLY short (thrusters)";
+      return false;
+    }
+    u = rec.throttle;
   }
   // The §7 duty-cycle on-window for the interval these commands apply over. The
   // loop clamps it to the macro step; a value the FSW never set arrives as zero,

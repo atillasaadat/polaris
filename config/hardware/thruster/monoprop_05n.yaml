@@ -1,0 +1,19 @@
+# Generic 0.5 N green-monopropellant thruster "MONOPROP-05N" (design doc §7,
+# §17). Representative small-satellite class values (Busek BGT-X5 / Aerojet
+# GR-1 class); refine against the unit spec and a hot-fire calibration. Keys
+# match ThrusterSpec::fromParams (sim/actuators/thruster.cpp). The nominal
+# thrust axis is the unit's +z; mount it on the vehicle with `mounting` and
+# give it a `position_m` so the thrust-misalignment torque r x F is real.
+model_id: MONOPROP-05N
+kind: thruster
+description: Generic 0.5 N green-monopropellant thruster, 220 s class
+params:
+  thrust_n: 0.5                    # rated thrust at full throttle [N]
+  isp_s: 220.0                     # specific impulse [s]; mass flow = F/(Isp g0) = 0.23 g/s
+  min_impulse_bit_ns: 0.005        # smallest resolvable impulse [N*s] (10 ms at rated thrust)
+  rise_time_s: 0.05                # valve + chamber pressurisation lag [s]
+  fall_time_s: 0.03                # tail-off lag [s]
+  thrust_scale_error: 0.02         # fixed delivered/rated bias, fraction (unit calibration)
+  thrust_noise_frac: 0.01          # white thrust noise per step, 1-sigma fraction
+  misalignment_rad: 0.005          # thrust vector off the nominal axis [rad] (0.29 deg)
+  misalignment_azimuth_rad: 0.0    # direction of that tilt in the unit's xy plane [rad]

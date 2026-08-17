@@ -39,6 +39,14 @@ class OrbitEstimatorTester : public OrbitEstimatorGTestBase {
   //! to MaxCoastS, then is dropped with OrbitSolutionDropped, and the next fix
   //! re-seeds whole.
   void testCoastsThenDropsAtHorizon();
+  //! A fix inside the degraded band updates on the grown covariance: no re-seed.
+  void testDegradedReacquiresByUpdateNotSeed();
+  //! The burn executor's acceleration is propagated with only when valid and
+  //! no older than MaxAccelAgeS; edges reported once.
+  void testNonGravAccelIsAppliedOnlyWhenFreshAndValid();
+  //! OD_SEED_STATE: refused outside the epoch window or the plausibility band,
+  //! accepted otherwise, and the next fix updates rather than seeds.
+  void testGroundSeedAcceptedAndRefused();
 
   //! A fix at an implausible radius is refused with FIX_IMPLAUSIBLE, the
   //! refusal is edge-gated, and the solution is untouched.
@@ -51,6 +59,21 @@ class OrbitEstimatorTester : public OrbitEstimatorGTestBase {
   //! OD_RESET drops the solution and clears the counters; the next fix
   //! re-seeds.
   void testResetDropsSolution();
+
+  //! NESC TB 20-03 item (g) / TP §9.3: a parameter upload re-tunes the running
+  //! filter and keeps the solution; a bad upload leaves the last valid set in
+  //! force.
+  void testTuningUploadKeepsTheSolution();
+
+  //! TB 20-03 items (d) and (f) / TP §9.1-9.2: OD_REINIT_COV re-opens the
+  //! covariance around the same state; the measurement policy inhibits and
+  //! forces, and says so in telemetry and EVRs.
+  void testCovarianceReinitAndMeasurementPolicy();
+
+  //! TB 20-03 item (e) / TP §9.2: the backup ephemeris is seeded from a FINE
+  //! solution, propagated alongside it, and OD_RESTART_FROM_BACKUP brings a
+  //! dropped solution back from it without an uplink.
+  void testBackupEphemerisRestart();
 
   // ----------------------------------------------------------------------
   // Port handlers
@@ -85,6 +108,7 @@ class OrbitEstimatorTester : public OrbitEstimatorGTestBase {
   bool eop_available_{true};
   OrbitEstimate last_estimate_{};
   U32 estimate_count_{0};
+  U32 cycles_run_{0};
 };
 
 }  // namespace flight

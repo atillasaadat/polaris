@@ -44,6 +44,11 @@ TEST(AttitudeEstimator, NonFinitePositionIsRejected) {
   tester.testNonFinitePositionIsRejected();
 }
 
+TEST(AttitudeEstimator, DegradedOrbitSolutionIsUsedUpToTheSigmaTolerance) {
+  flight::AttitudeEstimatorTester tester;
+  tester.testDegradedOrbitSolutionIsUsedUpToTheSigmaTolerance();
+}
+
 TEST(AttitudeEstimator, OrbitSolutionIsConsumedOnce) {
   flight::AttitudeEstimatorTester tester;
   tester.testOrbitSolutionIsConsumedOnce();
@@ -92,6 +97,18 @@ TEST(AttitudeEstimator, ResetDropsFineMode) {
   RecordProperty("verifies", "REQ-ADET-004");
   flight::AttitudeEstimatorTester tester;
   tester.testResetDropsFineMode();
+}
+
+TEST(AttitudeEstimator, FineTuningUploadKeepsTheSolution) {
+  RecordProperty("verifies", "REQ-ADET-014");
+  flight::AttitudeEstimatorTester tester;
+  tester.testFineTuningUploadKeepsTheSolution();
+}
+
+TEST(AttitudeEstimator, FineCovarianceReinitAndMeasurementPolicy) {
+  RecordProperty("verifies", "REQ-ADET-014");
+  flight::AttitudeEstimatorTester tester;
+  tester.testFineCovarianceReinitAndMeasurementPolicy();
 }
 
 TEST(AttitudeEstimator, MagCalCollectsFitsAndAppliesTheCorrection) {

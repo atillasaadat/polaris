@@ -98,6 +98,8 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
   const scenario::PropagationConfig& prop = config.propagation;
   const time::Tai epoch = config.initial_state.epoch;
   const time::LeapSecondTable leap = time::LeapSecondTable::historical();
+  mass_kg_ = config.spacecraft.mass_kg;
+  std::vector<ThrusterTelemetry> thruster_tlm(vehicle_.thrusters.size());
 
   // --- Data products the sensors (not the forces) need -----------------------
   //
@@ -285,6 +287,21 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
   /// and write the net wrench into the plant for that interval.
   auto applyActuators = [&](std::int64_t at_ns, double dt_s) {
     Eigen::Vector3d torque = Eigen::Vector3d::Zero();
+    Eigen::Vector3d force_body = Eigen::Vector3d::Zero();
+    // Thrusters (§7, §17): delivered force at the mounting, torque r x F about
+    // the body origin, propellant off the vehicle mass. Force is divided by the
+    // *current* mass below.
+    for (std::size_t i = 0; i < vehicle_.thrusters.size(); ++i) {
+      auto& thr = vehicle_.thrusters[i];
+      const auto out = thr.model.step(dt_s);
+      const Eigen::Vector3d f = thr.mounting_dcm * out.force_n;
+      force_body += f;
+      torque += thr.position_body_m.cross(f);
+      mass_kg_ = std::max(1.0e-3, mass_kg_ - out.mass_flow_kg_s * dt_s);
+      thruster_tlm[i].throttle = out.throttle;
+      thruster_tlm[i].delivered_thrust_n = out.delivered_thrust_n;
+      thruster_tlm[i].mass_flow_kg_s = out.mass_flow_kg_s;
+    }
     for (std::size_t i = 0; i < vehicle_.wheels.size(); ++i) {
       const auto out = vehicle_.wheels[i].model.step(dt_s);
       // Reaction torque acts about the wheel's spin axis — the assembly's W
@@ -301,7 +318,14 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
         }
       }
     }
-    wrench_.set(math::Vec3<math::frames::ECI>::Zero(), math::Vec3<math::frames::Body>(torque));
+    // Body force -> ECI acceleration with the truth attitude at the start of the
+    // interval (zero-order hold, like the torque).
+    Eigen::Vector3d accel_eci = Eigen::Vector3d::Zero();
+    if (mass_kg_ > 0.0 && force_body.squaredNorm() > 0.0) {
+      accel_eci = s.attitude.inverse().rotate(math::Vec3<math::frames::Body>(force_body)).eigen() /
+                  mass_kg_;
+    }
+    wrench_.set(math::Vec3<math::frames::ECI>(accel_eci), math::Vec3<math::frames::Body>(torque));
   };
 
   /// Sample one sensor class if due at t_ns; fixed order keeps the run
@@ -433,7 +457,7 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
       static_cast<std::uint64_t>(std::floor(prop.duration_s * prop.fsw_rate_hz + 1.0e-9));
   StreamTap stream;
   if (trace != nullptr) {
-    trace->push_back({0.0, s});
+    trace->push_back({0.0, s, mass_kg_, thruster_tlm});
   }
   stream.write(0.0, s);
 
@@ -548,6 +572,22 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
       }
     }
 
+    // Thruster throttles: held for the whole macro step (§17). With an FSW in
+    // the loop the executor's commands rule; open loop, the scenario's
+    // `thrust_events` schedule fires them.
+    for (std::size_t i = 0; i < vehicle_.thrusters.size(); ++i) {
+      double u = i < commands.thruster_throttles.size() ? commands.thruster_throttles[i] : 0.0;
+      if (!fsw) {
+        const double t_s = static_cast<double>(t_ns) / 1.0e9;
+        for (const scenario::ThrustEvent& ev : config.environment.thrust_events) {
+          if (ev.unit == vehicle_.thrusters[i].name && t_s >= ev.start_s && t_s < ev.stop_s) {
+            u = ev.throttle;
+          }
+        }
+      }
+      vehicle_.thrusters[i].model.commandThrottle(u);
+    }
+
     // Reset the IMU accumulators: the FSW has consumed this interval.
     for (ImuAccumulation& acc : inputs.imus) {
       acc.delta_angle_rad = math::Vec3<math::frames::Body>::Zero();
@@ -557,7 +597,7 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
     }
 
     if (trace != nullptr) {
-      trace->push_back({static_cast<double>(t_ns) / 1.0e9, s});
+      trace->push_back({static_cast<double>(t_ns) / 1.0e9, s, mass_kg_, thruster_tlm});
     }
     stream.write(static_cast<double>(t_ns) / 1.0e9, s);
   }

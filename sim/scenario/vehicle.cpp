@@ -1,6 +1,7 @@
 #include "scenario/vehicle.hpp"
 
 #include <cmath>
+#include <Eigen/Geometry>
 #include <set>
 #include <utility>
 
@@ -158,6 +159,21 @@ bool buildVehicle(const SpacecraftConfig& spacecraft, std::uint64_t seed, Vehicl
                               actuators::ReactionWheel(spec)});
         wheel_axes.push_back(unit.spin_axis.norm() > 0.0 ? unit.spin_axis
                                                          : unit.mounting_dcm.col(2));
+      } else if (unit.kind == "thruster") {
+        const auto spec = actuators::ThrusterSpec::fromParams(unit.params);
+        if (!(spec.thrust_n > 0.0) || !(spec.isp_s > 0.0)) {
+          return fail(error, "thruster '" + unit.name + "' needs thrust_n and isp_s");
+        }
+        // A `thrust_axis` places the unit the way `spin_axis` places a wheel:
+        // one direction, roll about it arbitrary. Otherwise the mounting's +z.
+        Eigen::Matrix3d dcm = unit.mounting_dcm;
+        if (unit.thrust_axis.norm() > 0.0) {
+          dcm = Eigen::Quaterniond::FromTwoVectors(Eigen::Vector3d::UnitZ(),
+                                                   unit.thrust_axis.normalized())
+                    .toRotationMatrix();
+        }
+        out.thrusters.push_back({unit.name, unit.model_id, dcm, unit.mounting_position_m,
+                                 actuators::Thruster(spec, seed, stream)});
       } else if (unit.kind == "magnetorquer") {
         const auto spec = actuators::MagnetorquerSpec::fromParams(unit.params);
         if (!(spec.max_dipole_am2 > 0.0)) {

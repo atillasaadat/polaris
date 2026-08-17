@@ -8,11 +8,11 @@
 ///
 ///   fault                                   | asserted path
 ///   ----------------------------------------|----------------------------------
-///   outage inside the coast horizon         | coasts, no drop, no reference lost
-///   outage past the horizon                 | dropped, reference lost, re-seeded whole
+///   outage inside the fine horizon          | coasts, no drop, no reference lost
+///   outage past the fine horizon            | DEGRADED, reference kept, re-acquired by update
 ///   5 km spoof step inside the horizon      | every spoofed fix refused by the NIS gate
-///   5 km spoof step past the horizon        | dropped, re-seeded *onto the spoof*, then
-///                                           |   truth refused until the next horizon
+///   5 km spoof step past the fine horizon   | refused throughout on the degraded horizon;
+///                                           |   truth accepted on the grown covariance
 ///   receiver clock 5 s behind               | refused as a stale epoch, by name
 ///   OD_RESET mid-run                        | dropped by command, re-seeded next fix
 ///   primary receiver lost, second present   | the second carries it, nothing dropped
@@ -216,13 +216,15 @@ TEST(SitlOdFault, GnssOutageInsideTheHorizonCostsNoReference) {
       << run.log;
 }
 
-/// **A long outage is reported, not coasted on.** Past the horizon the solution
-/// is dropped (§8.3: beyond it the model error is a systematic a stale prior
-/// would only drag the fresh fix toward), the attitude estimator loses its
-/// magnetic reference and says so, and when fixes return the filter re-seeds
-/// whole. The ordering is the case: dropped only after the horizon, re-seeded
-/// only after the outage.
-TEST(SitlOdFault, GnssOutagePastTheHorizonDropsAndReseeds) {
+/// **A long outage is degraded, not dropped.** Until Push 70 the solution was
+/// dropped at the 300 s horizon and the attitude estimator lost its magnetic
+/// pair for no physical reason. Now past the fine horizon the solution is
+/// DEGRADED — coasted with the covariance the process noise grows — the
+/// attitude estimator keeps its reference (its own tolerance is 20 km of
+/// sigma, and an 8x8 model coasts metres), and the returning fixes are
+/// absorbed by update: one seed, no drop. The drop lives 1800 s out
+/// (`TwentyMinuteCoast…` in sitl_od_burn_test.cpp measures the coast itself).
+TEST(SitlOdFault, GnssOutagePastTheFineHorizonIsDegradedNotDropped) {
   RecordProperty("verifies", "REQ-ODP-007");
   POLARIS_REQUIRE_SITL_TOOLCHAIN();
   constexpr double kStopS = kFaultStartS + kOrbitCoastHorizonS + 30.0;  // 370 s
@@ -231,18 +233,19 @@ TEST(SitlOdFault, GnssOutagePastTheHorizonDropsAndReseeds) {
             withGnssOutage(faultMatrixOrbit(430.0, "sitl-od-gnss-long"), kFaultStartS, kStopS));
   expectHealthyRun(run);
   const std::size_t seeded = indexOf(run.log, "Orbit solution seeded");
-  const std::size_t dropped = indexOf(run.log, "Orbit solution dropped");
-  const std::size_t position_lost = indexOf(run.log, "No valid orbit solution");
-  ASSERT_NE(dropped, std::string::npos) << "the solution outlived the coast horizon:\n" << run.log;
-  ASSERT_NE(position_lost, std::string::npos)
-      << "the attitude estimator kept a position the orbit filter had dropped:\n"
+  const std::size_t degraded = indexOf(run.log, "Orbit solution degraded");
+  ASSERT_NE(degraded, std::string::npos) << "the solution never crossed the fine horizon:\n"
+                                         << run.log;
+  EXPECT_LT(seeded, degraded) << run.log;
+  EXPECT_EQ(run.log.find("Orbit solution dropped"), std::string::npos)
+      << "a 330 s outage dropped a solution with an 1800 s degraded horizon:\n"
       << run.log;
-  EXPECT_LT(seeded, dropped) << run.log;
-  EXPECT_LE(dropped, position_lost) << run.log;
-  EXPECT_EQ(countOf(run.log, "Orbit solution seeded"), 2u)
-      << "the filter did not re-acquire whole when fixes returned:\n"
+  EXPECT_EQ(run.log.find("No valid orbit solution"), std::string::npos)
+      << "the attitude estimator lost its magnetic reference on a DEGRADED solution:\n"
       << run.log;
-  EXPECT_LT(dropped, run.log.rfind("Orbit solution seeded")) << run.log;
+  EXPECT_EQ(countOf(run.log, "Orbit solution seeded"), 1u)
+      << "the returning fixes re-seeded instead of updating the degraded solution:\n"
+      << run.log;
 }
 
 // ----------------------------------------------------------------------
@@ -269,15 +272,17 @@ TEST(SitlOdFault, SpoofStepInsideTheHorizonIsRefusedNotFollowed) {
   EXPECT_EQ(run.log.find("No valid orbit solution"), std::string::npos) << run.log;
 }
 
-/// **A spoof that outlasts the horizon wins the seed.** The filter refuses the
-/// lie for 300 s, drops the solution as it must, and then re-seeds from the next
-/// fix — which is the spoof, since a filter with no solution has no basis to
-/// refuse one. When truth returns, *truth* is now the outlier and is refused
-/// until the next horizon expiry. This is the §9.2 residual the design records
-/// as owed to the raw-measurement path: a solution-domain filter cannot tell a
-/// persistent, self-consistent lie from a fix. The row pins the behaviour so a
-/// change to it is deliberate.
-TEST(SitlOdFault, SpoofStepPastTheHorizonReseedsOntoTheSpoof) {
+/// **A spoof that outlasts the fine horizon no longer wins the seed.** Until
+/// Push 70 the filter refused the lie for 300 s, dropped the solution, and
+/// re-seeded from the next fix — the spoof — after which truth was the
+/// outlier. On the degraded horizon the filter keeps refusing the spoof for as
+/// long as it lasts (a 5 km step is ~3000σ of a covariance that grows by
+/// centimetres a minute), and when truth returns it is accepted on that grown
+/// covariance: one seed, no drop, no re-seed onto the lie. The residual moves
+/// out to a spoof longer than the degraded horizon (1800 s), where a filter
+/// with no solution still has no basis to refuse one — the raw-measurement
+/// path §8.3 records as owed is what closes that.
+TEST(SitlOdFault, SpoofStepPastTheFineHorizonIsRefusedThroughout) {
   RecordProperty("verifies", "REQ-ODP-007");
   POLARIS_REQUIRE_SITL_TOOLCHAIN();
   constexpr double kStopS = kFaultStartS + kOrbitCoastHorizonS + 30.0;  // 370 s
@@ -286,16 +291,15 @@ TEST(SitlOdFault, SpoofStepPastTheHorizonReseedsOntoTheSpoof) {
                                     scenario::GnssFaultEvent::Type::kSpoof, kFaultStartS, kStopS,
                                     "gps_a", /*spoofM=*/5000.0));
   expectHealthyRun(run);
-  const std::size_t dropped = indexOf(run.log, "Orbit solution dropped");
-  ASSERT_NE(dropped, std::string::npos) << "the spoof was followed instead of refused:\n"
-                                        << run.log;
-  EXPECT_EQ(countOf(run.log, "Orbit solution seeded"), 2u) << run.log;
-  const std::size_t reseeded = run.log.rfind("Orbit solution seeded");
-  EXPECT_LT(dropped, reseeded) << run.log;
-  // Truth is refused after the re-seed: a NIS refusal edge later than the re-seed.
-  EXPECT_NE(run.log.find(kRefusedByNis, reseeded), std::string::npos)
-      << "returning truth was accepted onto a spoofed seed without a refusal:\n"
+  EXPECT_NE(run.log.find("Orbit solution degraded"), std::string::npos) << run.log;
+  EXPECT_EQ(run.log.find("Orbit solution dropped"), std::string::npos)
+      << "the spoof was followed instead of refused:\n"
       << run.log;
+  EXPECT_EQ(countOf(run.log, "Orbit solution seeded"), 1u)
+      << "the filter re-seeded — onto the spoof or onto truth, neither is right:\n"
+      << run.log;
+  EXPECT_NE(run.log.find(kRefusedByNis), std::string::npos) << run.log;
+  EXPECT_EQ(run.log.find("No valid orbit solution"), std::string::npos) << run.log;
 }
 
 // ----------------------------------------------------------------------

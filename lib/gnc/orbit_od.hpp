@@ -280,25 +280,78 @@
 /// @ref OrbitOd::rejectedCount standing — a filter that has just diverged is
 /// when FDIR most needs to see what it had been rejecting on the way there.
 ///
-/// Past `max_coast_s` without an accepted fix the solution is declared invalid
-/// **and dropped**, and the next fix re-acquires whole. This is the coarse
-/// attitude estimator's discipline, not the attitude MEKF's: the MEKF retains
-/// its state past the horizon because a Kalman gain against a grown covariance
-/// takes the returning measurement almost whole and there is a converged *gyro
-/// bias* worth keeping. Here there is no such parameter — the whole state is
-/// position and velocity, a GNSS fix determines both outright and better than
-/// any coasted prior, and the coarse force model's error past the horizon is
-/// systematic, so blending against a stale prior would drag the fresh fix
-/// toward a known-wrong trajectory for no gain.
+/// **Two coast horizons (Push 70).** Past `max_coast_s` without an accepted
+/// fix the solution is no longer *fine*: the truncation-sized process noise has
+/// grown the covariance to where it is a coasted prediction, and it is reported
+/// as **degraded** (@ref OrbitOd::quality) — still propagated, still published
+/// with its grown covariance, so a consumer whose tolerance is kilometres (the
+/// magnetic reference moves ~1e-3° per km) keeps its position and a consumer
+/// whose tolerance is metres reads the σ and declines. Past
+/// `max_degraded_coast_s` the solution is **dropped** and the next fix
+/// re-acquires whole. Re-acquisition after a degraded coast is by the grown
+/// covariance alone: a returning fix passes the NIS gate because `P` says it
+/// should, and there is deliberately no "N rejections → reseed" rule, which
+/// would let a persistent spoof win the seed (§9.2). Ceresoli et al. measured
+/// what a 20 min coast costs on a J2+drag model (~3 km 3σ in LEO); this 8×8
+/// field's truncation over the same arc is tens of metres, so the degraded
+/// horizon is set from that campaign figure, not from the fine one
+/// [ceresoli2025].
 ///
-/// **Sizing the horizon.** It covers the outage modes the receiver model already
-/// has (§6.2): the cold-start time-to-first-fix, the post-outage reacquisition
-/// delay, and brief dropouts — the same graceful-coasting case the §9.2 FDIR
-/// suite drives. It is not sized to survive a long GNSS loss, because this force
-/// model cannot: see the `q_a` derivation above for why the honest end of a
-/// coast is an invalidity flag rather than a slowly-worsening answer. The
-/// configured value and the receiver figures it was set from are in design doc
-/// §8.3.
+/// **Sizing the fine horizon.** It covers the outage modes the receiver model
+/// already has (§6.2): the cold-start time-to-first-fix, the post-outage
+/// reacquisition delay, and brief dropouts — the same graceful-coasting case
+/// the §9.2 FDIR suite drives. The configured values and the receiver figures
+/// they were set from are in design doc §8.3.
+///
+/// **Non-gravitational acceleration input (Push 70).** A finite burn (§17) is
+/// an acceleration the force model does not know: propagated blind, the filter
+/// lags the truth by ½aΔt², rejects the next fixes as outliers, and coasts a
+/// wrong trajectory through any outage. @ref OrbitOd::propagate therefore takes
+/// an optional @ref NonGravAccelInput — the commanded thrust over mass in ECI
+/// (from the burn executor) or, later, a measured specific force gated on a
+/// burn being active — added to the acceleration over the step (constant over
+/// the step; the Jacobian is untouched since it does not depend on the state)
+/// and its 1σ magnitude uncertainty folded into the process noise as a second
+/// CWNA term over the same step, so a burn is neither a rejection storm nor a
+/// covariance the filter cannot justify. Ceresoli et al. measured the same idea
+/// with an accelerometer through a burn inside an outage: 5 km against 9 km
+/// [ceresoli2025].
+///
+/// ## Usability practices (NASA/TP-2018-219822 Ch. 9; NESC TB 20-03, Push 71)
+///
+/// The NESC navigation-filter best practices [dennehy2020, carpenter2018] add
+/// four operability rules to the estimator itself, and each has an entry point
+/// here rather than a component-side workaround:
+///
+///  - **Tuning without loss of navigation data** (TB 20-03 item g; TP §9.3):
+///    @ref OrbitOd::retune swaps the configuration under a running solution.
+///    Only the coefficients change; the state, covariance, epoch and age are
+///    kept. Rebuilding the filter on a parameter upload — the pre-Push-71
+///    behaviour — threw away a converged solution to change a gate.
+///  - **Covariance re-initialisation without altering the state** (item f; TP
+///    §9.2): @ref OrbitOd::reinitializeCovariance. The TP's remedy for a filter
+///    that has become over-confident ("smug") and is editing good measurements
+///    while its state is still sound — milder than a reset, and it needs no
+///    uplink of a state vector.
+///  - **Selective processing per measurement type** (item d; TP §9.1): every
+///    @ref OrbitOd::ingest takes a @ref GnssMeasurementPolicy — *accept* (the
+///    NIS gate decides), *inhibit* (never applied), *force* (applied past the
+///    gate). Force is the recovery from a gate lock without a reset; inhibit is
+///    the operator's tool against a source the onboard voting has not caught.
+///    Force never overrides a numeric fault: a negative or non-finite NIS still
+///    refuses, because that is the covariance, not the measurement.
+///  - **A backup ephemeris** (item e; TP §9.2) is a *propagated-only copy* of
+///    this filter, and since @ref OrbitOd is a plain value the component keeps
+///    it by copy-assignment and drives it with the same @ref propagate — nothing
+///    here needs to know about it. See `flight/PolarisFsw/OrbitEstimator`.
+///
+/// **Numerical health** (TP Ch. 7): the TP recommends the UDU factorisation for
+/// its stability and because positive-definiteness of `P` is then readable off
+/// `D` for free. Two 6-state filters in double precision with a Joseph update
+/// and explicit symmetrisation do not need the factorisation; what is adopted
+/// is the free check — @ref OrbitOd::covarianceHealthy runs an LDLᵀ on `P` so a
+/// covariance that has gone indefinite is caught between measurements rather
+/// than only when the next innovation returns a negative NIS.
 ///
 /// **Frames, units, conventions.** Position/velocity `Vec3<ECI>` [m], [m/s];
 /// fixes arrive as `Vec3<ECEF>` in GPS time; times TAI (§3.2); covariance m² /
@@ -329,6 +382,19 @@
 ///    during the numerical integration of the orbital motion of an artificial
 ///    satellite", Celestial Mechanics 2, 1970 (the V/W recursion the onboard
 ///    field is evaluated by). [cunningham1970]
+///  - Ceresoli, Colagrossi, Silvestrini & Lavagna, "Robust Onboard Orbit
+///    Determination Through Error Kalman Filtering", Aerospace 12(1):45, 2025
+///    (coasting through outages on a propagator; the thrust acceleration fed to
+///    the filter through a burn; the cost of an unmodelled fix latency).
+///    [ceresoli2025]
+///  - Carpenter & D'Souza (eds.), *Navigation Filter Best Practices*,
+///    NASA/TP-2018-219822, 2018 — §2.3.1 (Joseph/stable update), Ch. 7 (UDU
+///    and the definiteness check), §9.1 (editing and the accept/inhibit/force
+///    flag), §9.2 (covariance re-initialisation, restarts, backup ephemeris),
+///    §9.3 (uplinkable tuning). [carpenter2018]
+///  - Dennehy & Carpenter, "Navigation Filter Design Best Practices", NESC
+///    Technical Bulletin 20-03, 2020 — the summary list items (d)–(g)
+///    implemented here. [dennehy2020]
 
 #include <cstdint>
 #include <Eigen/Core>
@@ -336,6 +402,7 @@
 #include "frames/eci_ecef.hpp"
 #include "frames/eop.hpp"
 #include "gnc/geopotential.hpp"
+#include "gnc/measurement_policy.hpp"
 #include "math/frames.hpp"
 #include "math/typed_vector.hpp"
 #include "state/estimated_state.hpp"
@@ -411,10 +478,15 @@ struct OrbitOdConfig {
   /// structures and a receiver can degrade in one without the other. Must be
   /// positive.
   double velocity_nis_gate{0.0};
-  /// Longest interval without an accepted fix before the solution is declared
-  /// invalid **and dropped** [s]. See the file header for how it is sized and
-  /// why this filter drops where the attitude MEKF retains. Must be positive.
+  /// Longest interval without an accepted fix over which the solution is
+  /// **fine** [s]; past it the solution is degraded (@ref OrbitOd::quality),
+  /// still propagated and published with its grown covariance. See the file
+  /// header. Must be positive.
   double max_coast_s{0.0};
+  /// Longest interval without an accepted fix before the solution is
+  /// **dropped** [s]. Must be finite and >= `max_coast_s`; equal restores the
+  /// pre-Push-70 drop-at-the-horizon policy.
+  double max_degraded_coast_s{0.0};
   /// Largest accepted propagation gap [s]. A longer step is refused
   /// (@ref OrbitOdRefusal::kStepTooLong) rather than integrated, since a clock
   /// glitch must not be absorbed as a legitimate coast. Must be positive and no
@@ -463,25 +535,40 @@ struct OrbitOdConfig {
   bool isValid() const;
 };
 
+/// A known non-gravitational acceleration acting over the next propagation step
+/// (see "Non-gravitational acceleration input" in the file header).
+struct NonGravAccelInput {
+  math::Vec3<math::frames::ECI> accel_m_s2{};  ///< ECI [m/s²], constant over the step
+  double sigma_m_s2{0.0};                      ///< 1σ magnitude uncertainty [m/s²], >= 0
+};
+
+/// The solution's coast verdict (see "Two coast horizons" in the file header).
+enum class OrbitOdQuality : std::uint8_t {
+  kNone = 0,  ///< no solution
+  kDegraded,  ///< past `max_coast_s`: a coasted prediction with a grown covariance
+  kFine,      ///< inside `max_coast_s`
+};
+
 /// Why an entry point declined to act. `kNone` is success; every other value
 /// names a specific, testable condition rather than a bare `false`, so FDIR and
 /// telemetry can distinguish "the clock stopped" from "the fix was absurd" from
 /// "the filter diverged".
 enum class OrbitOdRefusal : std::uint8_t {
   kNone = 0,
-  kUnconfigured,         ///< the config failed @ref OrbitOdConfig::isValid
-  kUninitialised,        ///< no solution yet, and this entry point cannot seed one
-  kNonMonotonicEpoch,    ///< epoch is not strictly after the last (backwards *or* stuck)
-  kStepTooLong,          ///< gap exceeds `max_dt_s`
-  kCoastExpired,         ///< past `max_coast_s`; the solution was dropped
-  kFixNotFinite,         ///< a non-finite component in the fix
-  kFixImplausible,       ///< fix radius outside the configured band (§9.1)
-  kFixSigmaInvalid,      ///< a reported σ that is not positive and finite
-  kFrameConversion,      ///< ECEF→ECI failed, or the epoch is outside EOP coverage
-  kNoVelocityForSeed,    ///< a velocity was required and absent: a seed needs a full PVT, and a
-                         ///< latent fix cannot be advanced to the filter epoch without one
-  kMeasurementRejected,  ///< the NIS gate refused the fix
-  kFilterFault,          ///< non-finite internal result; the solution was dropped
+  kUnconfigured,          ///< the config failed @ref OrbitOdConfig::isValid
+  kUninitialised,         ///< no solution yet, and this entry point cannot seed one
+  kNonMonotonicEpoch,     ///< epoch is not strictly after the last (backwards *or* stuck)
+  kStepTooLong,           ///< gap exceeds `max_dt_s`
+  kCoastExpired,          ///< past `max_degraded_coast_s`; the solution was dropped
+  kFixNotFinite,          ///< a non-finite component in the fix
+  kFixImplausible,        ///< fix radius outside the configured band (§9.1)
+  kFixSigmaInvalid,       ///< a reported σ that is not positive and finite
+  kFrameConversion,       ///< ECEF→ECI failed, or the epoch is outside EOP coverage
+  kNoVelocityForSeed,     ///< a velocity was required and absent: a seed needs a full PVT, and a
+                          ///< latent fix cannot be advanced to the filter epoch without one
+  kMeasurementRejected,   ///< the NIS gate refused the fix
+  kFilterFault,           ///< non-finite internal result; the solution was dropped
+  kMeasurementInhibited,  ///< the position measurement is inhibited by policy (TP §9.1)
 };
 
 /// The refusal's own name, for a log line, a report or a test failure message.
@@ -519,6 +606,8 @@ enum class OrbitOdRefusal : std::uint8_t {
       return "measurement_rejected";
     case OrbitOdRefusal::kFilterFault:
       return "filter_fault";
+    case OrbitOdRefusal::kMeasurementInhibited:
+      return "measurement_inhibited";
   }
   return "unknown";
 }
@@ -535,12 +624,25 @@ struct OrbitOdUpdate {
   double nis{0.0};
   /// The measurement passed its gate and was applied.
   bool accepted{false};
+  /// The measurement was applied **past** its gate under
+  /// @ref MeasurementMode::kForce (implies @ref accepted). Telemetered rather
+  /// than folded into `accepted`, so a forced update is never mistaken for a
+  /// consistent one.
+  bool forced{false};
   /// The update aborted on a non-finite intermediate (singular `S`, non-finite
   /// gain or state) rather than on the gate. Separates a filter-health fault
   /// from a measurement rejection: the two demand different FDIR responses, and
   /// a numeric fault must not masquerade as "the gate refused the fix" while
   /// @ref OrbitOd::rejectedCount stays still.
   bool numeric_fault{false};
+};
+
+/// The editing policy for one @ref OrbitOd::ingest — one @ref MeasurementMode
+/// per measurement type (TP §9.1; `gnc/measurement_policy.hpp`). Defaults to
+/// accept/accept, which is the pre-Push-71 behaviour.
+struct GnssMeasurementPolicy {
+  MeasurementMode position{MeasurementMode::kAccept};
+  MeasurementMode velocity{MeasurementMode::kAccept};
 };
 
 /// Everything @ref OrbitOd::ingest needs from one GNSS fix, in the frame and on
@@ -675,17 +777,30 @@ class OrbitOd {
   OrbitOdRefusal initialize(const time::Tai& epoch, const math::Vec3<math::frames::ECI>& position,
                             const math::Vec3<math::frames::ECI>& velocity, const Covariance& cov);
 
+  /// Seed from a ground-uploaded state (a long outage, a dead receiver):
+  /// isotropic position and velocity σ, no cross terms. Refused when not
+  /// finite, when the radius is outside the plausibility band, or when a σ is
+  /// not positive. Whether the epoch is one the filter can then propagate from
+  /// (not too far behind now, not ahead of it) is the caller's check — the
+  /// library has no clock.
+  OrbitOdRefusal seed(const time::Tai& epoch, const math::Vec3<math::frames::ECI>& position,
+                      const math::Vec3<math::frames::ECI>& velocity, double sigma_pos_m,
+                      double sigma_vel_m_s);
+
   /// Propagate the state and covariance to @p epoch on the onboard force model.
   ///
   /// @param epoch TAI time tag to propagate to; must be **strictly** after the
   ///              last one
   /// @param eop   Earth orientation at @p epoch, for the J2 pole
-  /// @return `kNone` on a completed step. `kCoastExpired` when the step carried
-  ///         the solution past `max_coast_s` — the solution is **dropped**, so
-  ///         the next fix re-acquires whole. `kFilterFault` on a non-finite
-  ///         internal result (also dropped). Everything else leaves the state
-  ///         untouched.
-  OrbitOdRefusal propagate(const time::Tai& epoch, const frames::EopValue& eop);
+  /// @param accel a known non-gravitational acceleration over the step, or
+  ///              `nullptr` for gravity and drag alone (file header)
+  /// @return `kNone` on a completed step (check @ref quality for fine/degraded).
+  ///         `kCoastExpired` when the step carried the solution past
+  ///         `max_degraded_coast_s` — the solution is **dropped**, so the next
+  ///         fix re-acquires whole. `kFilterFault` on a non-finite internal
+  ///         result (also dropped). Everything else leaves the state untouched.
+  OrbitOdRefusal propagate(const time::Tai& epoch, const frames::EopValue& eop,
+                           const NonGravAccelInput* accel = nullptr);
 
   /// Ingest one GNSS fix: GPS→TAI and ECEF→ECI (REQ-CONV-001), propagate to the
   /// fix epoch, then the position and (when reported) velocity updates.
@@ -695,12 +810,18 @@ class OrbitOd {
   /// against a prior that no longer means anything. @ref OrbitOdResult::seeded
   /// says which happened.
   ///
-  /// @param fix the receiver's report, in its own frame and timescale
-  /// @param eop Earth orientation at the fix epoch
-  /// @param out diagnostics and the refusal reason; always fully written
+  /// @param fix    the receiver's report, in its own frame and timescale
+  /// @param eop    Earth orientation at the fix epoch
+  /// @param out    diagnostics and the refusal reason; always fully written
+  /// @param policy per-type accept/inhibit/force (TP §9.1). An inhibited
+  ///               position refuses the whole fix — and a fix cannot seed on an
+  ///               inhibited position or velocity, since a seed uses both — with
+  ///               `kMeasurementInhibited`; an inhibited velocity leaves the
+  ///               velocity update untouched and the fix otherwise processed.
   /// @return `true` iff the fix left the filter with a valid solution, i.e. it
   ///         seeded or at least the position update was accepted
-  bool ingest(const GnssFix& fix, const frames::EopValue& eop, OrbitOdResult& out);
+  bool ingest(const GnssFix& fix, const frames::EopValue& eop, OrbitOdResult& out,
+              const GnssMeasurementPolicy& policy = GnssMeasurementPolicy{});
 
   /// Table-driven propagation. Resolves the EOP for @p epoch from the uploaded
   /// table first, refusing with `kFrameConversion` when the epoch lies outside
@@ -720,15 +841,42 @@ class OrbitOd {
   /// converted on an extrapolated Earth orientation.
   template <std::size_t Capacity>
   bool ingest(const GnssFix& fix, const frames::EopTable<Capacity>& eop,
-              const time::LeapSecondTable& leap, OrbitOdResult& out) {
+              const time::LeapSecondTable& leap, OrbitOdResult& out,
+              const GnssMeasurementPolicy& policy = GnssMeasurementPolicy{}) {
     frames::EopValue e;
     if (!eop.lookup(time::toTai(fix.time_tag), leap, e)) {
       out = OrbitOdResult{};
       out.refusal = OrbitOdRefusal::kFrameConversion;
       return false;
     }
-    return ingest(fix, e, out);
+    return ingest(fix, e, out, policy);
   }
+
+  /// Swap the tuning under a running solution (NESC TB 20-03 item g; TP §9.3):
+  /// the state, covariance, epoch, age and counters are all kept, only the
+  /// coefficients change. Refused with `kUnconfigured`, leaving **everything**
+  /// untouched (including the old configuration), when @p config fails
+  /// @ref OrbitOdConfig::isValid — a running filter must not be made inert by a
+  /// bad upload. A shortened coast horizon takes effect on the next propagate;
+  /// a covariance built under the old `q_a` is carried forward as it is, which
+  /// is the trade the TP recommends over dropping a converged solution.
+  OrbitOdRefusal retune(const OrbitOdConfig& config);
+
+  /// Re-initialise the covariance **without altering the state** (NESC TB 20-03
+  /// item f; TP §9.2): `P = diag(σ_pos² I, σ_vel² I)`, no cross terms. The
+  /// operator's remedy for a filter that has become over-confident and is
+  /// editing good measurements while its state is still sound; milder than
+  /// @ref reset and needs no uplinked state. The age is kept — this says
+  /// nothing about when a fix was last accepted. Refused with `kUninitialised`
+  /// when there is no solution and `kFixSigmaInvalid` on a non-positive σ.
+  OrbitOdRefusal reinitializeCovariance(double sigma_pos_m, double sigma_vel_m_s);
+
+  /// True when there is no solution, or when `P` is positive semi-definite by
+  /// an LDLᵀ factorisation (TP Ch. 7 — the definiteness check a UDU filter gets
+  /// for free, done explicitly here). False is a filter-health signal: the
+  /// covariance is not a covariance, and the next innovation's NIS is
+  /// meaningless whatever sign it comes back with.
+  bool covarianceHealthy() const;
 
   /// Estimated ECI position [m].
   math::Vec3<math::frames::ECI> position() const {
@@ -749,15 +897,26 @@ class OrbitOd {
   /// Time since the last **accepted** fix [s]; grows through outage.
   double ageSeconds() const { return age_s_; }
 
-  /// The solution exists and is inside the coast horizon. Because expiry drops
-  /// the solution, this is equivalent to @ref isInitialised — both are kept
-  /// because they answer different questions and a future change to the
-  /// retention policy would separate them.
-  bool solutionValid() const { return initialised_ && age_s_ <= cfg_.max_coast_s; }
+  /// The solution's coast verdict (file header).
+  OrbitOdQuality quality() const {
+    if (!initialised_) {
+      return OrbitOdQuality::kNone;
+    }
+    return age_s_ <= cfg_.max_coast_s ? OrbitOdQuality::kFine : OrbitOdQuality::kDegraded;
+  }
+
+  /// A solution exists (fine or degraded). A consumer with an accuracy need
+  /// reads the covariance, not this flag.
+  bool solutionValid() const { return initialised_; }
 
   /// Fixes rejected by a NIS gate since construction or @ref reset. A rising
   /// count is the FDIR signal, not a single rejection.
   std::uint32_t rejectedCount() const { return rejected_; }
+
+  /// Updates applied **past** their gate under @ref MeasurementMode::kForce
+  /// since construction or @ref reset. Kept apart from @ref rejectedCount: a
+  /// forced update is neither a rejection nor a consistent acceptance.
+  std::uint32_t forcedCount() const { return forced_; }
 
   /// Analysis-only 6-state NEES `eᵀP⁻¹e` against a known truth, with
   /// `e = [r_true − r̂; v_true − v̂]` (Bar-Shalom §5.4 [barshalom2001]). Averaged
@@ -778,7 +937,7 @@ class OrbitOd {
   /// One 3-row update against a measurement of `H = [I 0]` (position, @p offset
   /// = kPosition) or `H = [0 I]` (velocity, @p offset = kVelocity).
   bool applyUpdate(int offset, const Eigen::Vector3d& measured, const Eigen::Matrix3d& r_cov,
-                   double gate, OrbitOdUpdate& out);
+                   double gate, bool force, OrbitOdUpdate& out);
 
   /// Seed from an already-converted inertial fix. Shared by @ref ingest's
   /// cold-start and re-acquisition paths.
@@ -794,6 +953,7 @@ class OrbitOd {
   time::Tai last_fix_epoch_{};                         ///< epoch of the last ingested fix
   double age_s_{0.0};                                  ///< since the last accepted fix [s]
   std::uint32_t rejected_{0};                          ///< NIS-gate rejections
+  std::uint32_t forced_{0};                            ///< updates applied past the gate
   bool configured_{false};
   bool initialised_{false};
   bool have_fix_{false};  ///< `last_fix_epoch_` is meaningful

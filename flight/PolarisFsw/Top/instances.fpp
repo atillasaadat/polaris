@@ -71,6 +71,11 @@ module flight {
   # the attitude estimator's magnetic and sun references are evaluated at.
   instance orbitEstimator: flight.OrbitEstimator base id 0x10050000
 
+  # Finite-burn executor (design doc §17, §8.3). A flight component: member 3
+  # of the GNC rate group; throttles out to the thrusters (SitlBridge under
+  # SITL) and the commanded acceleration to the orbit estimator.
+  instance burnExecutor: flight.BurnExecutor base id 0x10060000
+
   # Coarse attitude estimator (design doc §8.1, §10). A flight component: it runs
   # on the GNC rate group, consumes the GncPorts measurement seam (fed by
   # SitlBridge under SITL, by Drv sensor drivers on the vehicle) and the

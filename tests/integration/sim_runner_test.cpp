@@ -431,7 +431,8 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
            "params": {"max_dipole_am2": 15.0, "residual_dipole_am2": 0.5},
            "mounting_dcm_row_major": null},
           {"name": "acs_1", "model_id": "THR-GENERIC", "kind": "thruster",
-           "params": {"thrust_n": 0.05}, "mounting_dcm_row_major": null}
+           "params": {"thrust_n": 0.05, "isp_s": 60.0}, "mounting_dcm_row_major": null,
+           "thrust_axis": [0.0, 0.0, -1.0]}
         ]
       },
       "initial_state": {
@@ -503,9 +504,10 @@ TEST(SimIntegration, CompiledArtifactBuildsTheHardwareSuite) {
   // The single wheel's axis is normalised into W: the raw [0,0,2] becomes +z.
   ASSERT_EQ(vehicle.rw_assembly.size(), 1);
   EXPECT_NEAR(vehicle.rw_assembly.matrix()(2, 0), 1.0, 1e-12);
-  // The thruster has no truth model yet, so it is reported rather than dropped.
-  ASSERT_EQ(vehicle.unmodelled.size(), 1u);
-  EXPECT_EQ(vehicle.unmodelled[0], "acs_1:thruster");
+  // The thruster builds (Push 70) with its thrust axis placing the unit's +z.
+  EXPECT_TRUE(vehicle.unmodelled.empty());
+  ASSERT_EQ(vehicle.thrusters.size(), 1u);
+  EXPECT_NEAR(vehicle.thrusters[0].mounting_dcm.col(2).z(), -1.0, 1e-12);
 }
 
 TEST(SimIntegration, AnEnabledTorqueWithoutItsLeverArmIsAConfigError) {

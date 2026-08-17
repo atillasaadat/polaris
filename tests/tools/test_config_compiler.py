@@ -1253,3 +1253,49 @@ def test_wheel_bias_off_is_never_checked_against_the_desat_share(tmp_path):
             bias[i] = 0.0
 
     _resolve_variant(tmp_path, "bias_off", mutate)  # must not raise
+
+
+# --- Burn executor (§17, Push 70) ---------------------------------------------
+
+_THRUSTER_AXES = "flight.burnExecutor.ThrusterAxesBody"
+_THRUSTER_THRUST = "flight.burnExecutor.ThrusterThrustN"
+
+
+def test_shipped_burn_executor_tuning_compiles():
+    # thr_x on body +X, thrust/Isp the MONOPROP-05N catalog's, count 1.
+    resolve(load_config(_TEMPLATE), load_hardware_library(_HARDWARE))  # must not raise
+
+
+def test_thruster_count_against_the_suite_is_refused(tmp_path):
+    def mutate(config):
+        config["spacecraft"]["fsw_parameters"]["flight.burnExecutor.ThrusterCount"] = 2
+
+    with pytest.raises(ConfigError) as exc:
+        _resolve_variant(tmp_path, "thruster_count", mutate)
+    assert "ThrusterCount" in str(exc.value)
+
+
+def test_thruster_axis_contradicting_the_mount_is_refused(tmp_path):
+    def mutate(config):
+        axes = config["spacecraft"]["fsw_parameters"][_THRUSTER_AXES]
+        axes[0], axes[1], axes[2] = 0.0, 1.0, 0.0  # +Y against a +X thruster
+
+    with pytest.raises(ConfigError) as exc:
+        _resolve_variant(tmp_path, "thruster_axis", mutate)
+    assert "thr_x" in str(exc.value)
+
+
+def test_thruster_thrust_contradicting_the_catalog_is_refused(tmp_path):
+    def mutate(config):
+        config["spacecraft"]["fsw_parameters"][_THRUSTER_THRUST][0] = 1.0
+
+    with pytest.raises(ConfigError) as exc:
+        _resolve_variant(tmp_path, "thruster_thrust", mutate)
+    assert "thrust_n" in str(exc.value)
+
+
+def test_thrust_axis_is_emitted_for_the_sim(tmp_path):
+    body = resolve(load_config(_TEMPLATE), load_hardware_library(_HARDWARE))
+    thr = [u for u in body["spacecraft"]["actuators"] if u["kind"] == "thruster"]
+    assert len(thr) == 1
+    assert list(thr[0]["thrust_axis"]) == [1.0, 0.0, 0.0]

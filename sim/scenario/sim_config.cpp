@@ -231,6 +231,24 @@ bool readUnits(const json& parent, const char* key, const std::string& role,
       }
     }
 
+    // Thrust axis (thrusters): optional, null when unset; falls back to the
+    // mounting's +z in the builder.
+    const auto taxis = entry.find("thrust_axis");
+    if (taxis != entry.end() && !taxis->is_null()) {
+      if (!taxis->is_array() || taxis->size() != 3) {
+        return fail(error, role + " '" + unit.name + "' thrust_axis must be a 3-element array");
+      }
+      for (std::size_t i = 0; i < 3; ++i) {
+        if (!(*taxis)[i].is_number()) {
+          return fail(error, role + " '" + unit.name + "' thrust_axis is non-numeric");
+        }
+        unit.thrust_axis(static_cast<Eigen::Index>(i)) = (*taxis)[i].get<double>();
+      }
+      if (unit.thrust_axis.norm() < 1.0e-9) {
+        return fail(error, role + " '" + unit.name + "' thrust_axis is a zero vector");
+      }
+    }
+
     // Mounting position is optional and emitted null when unset; the body origin
     // is the default, which for the near-field coupling is the worst case
     // (co-located rod and magnetometer) rather than a flattering one.
@@ -418,6 +436,25 @@ bool readEnvironment(const json& root, EnvironmentConfig& out, std::string* erro
       }
       fe.clock_jump_s = ev.value("clock_jump_s", 0.0);
       out.gnss_fault_events.push_back(fe);
+    }
+  }
+  const auto burns = node->find("thrust_events");
+  if (burns != node->end() && !burns->is_null()) {
+    if (!burns->is_array()) {
+      return fail(error, "environment.thrust_events must be an array");
+    }
+    for (const json& ev : *burns) {
+      ThrustEvent te;
+      te.unit = ev.value("unit", std::string{});
+      te.start_s = ev.value("start_s", 0.0);
+      te.stop_s = ev.value("stop_s", 0.0);
+      te.throttle = ev.value("throttle", 1.0);
+      if (te.unit.empty() || !(te.stop_s > te.start_s) || !(te.throttle >= 0.0) ||
+          !(te.throttle <= 1.0)) {
+        return fail(error,
+                    "thrust_events entry needs a unit, stop_s > start_s and throttle in [0,1]");
+      }
+      out.thrust_events.push_back(te);
     }
   }
 

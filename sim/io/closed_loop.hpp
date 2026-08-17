@@ -136,6 +136,10 @@ struct FswOutputs {
   /// leaves the rods off, so an FSW that never schedules a window produces no
   /// magnetic torque rather than a full-period one.
   double mtq_on_window_s{0.0};
+  /// Commanded throttle per thruster unit, 0..1, held for the whole macro step
+  /// (§17 finite burns: the FSW holds a throttle for a duration, the plant
+  /// integrates what the thruster delivers). Short = zero-padded (off).
+  std::vector<double> thruster_throttles;
 };
 
 /// The flight side of the macro-step handshake. Phase 3's F´ SITL transport
@@ -148,10 +152,23 @@ using FswCallback = std::function<FswOutputs(const FswInputs&)>;
 /// fractions stay. Read it from the loop for analysis and for pointing metrics.
 using PayloadGeometry = Latest<sensors::PayloadSensorSample>;
 
+/// One thruster's truth at a macro boundary (§17): what the plant delivered
+/// over the step just ended, not what the FSW asked for.
+struct ThrusterTelemetry {
+  double throttle{0.0};            ///< command applied over the step
+  double delivered_thrust_n{0.0};  ///< thrust the plant integrated [N]
+  double mass_flow_kg_s{0.0};      ///< propellant rate at that thrust
+};
+
 /// One record of the loop's own trace: the truth state at a macro boundary.
 struct MacroSample {
   double t_s{0.0};
   state::TruthState state;
+  /// Vehicle mass after propellant depletion [kg] (the config mass while no
+  /// thruster has fired). What the thrust acceleration is computed with; drag
+  /// and SRP keep the build-time mass (see `ClosedLoop::massKg`).
+  double mass_kg{0.0};
+  std::vector<ThrusterTelemetry> thrusters;
 };
 
 /// The §2.4 closed loop. Build a `SimRunner` **with this loop's wrench** (see
@@ -208,6 +225,15 @@ class ClosedLoop {
   /// @ref PayloadGeometry).
   const std::vector<PayloadGeometry>& payloadGeometry() const { return payload_geometry_; }
 
+  /// Current vehicle mass [kg]: the config's `mass_kg` less the propellant the
+  /// thrusters have spent. **What sees it:** the thrust acceleration F/m and
+  /// this trace. **What does not:** the drag and SRP models, which took the
+  /// build-time mass (`SimRunner::build`) — a ponytail: on a 17 kg bus a 0.5 N
+  /// thruster spends 0.23 g/s, so a 10-minute burn is 0.8 % of the mass, under
+  /// the drag coefficient's own uncertainty; make the environment models read a
+  /// shared mass when a mission burns a real fraction of itself.
+  double massKg() const { return mass_kg_; }
+
   /// Data products the loop itself loads (EOP for GNSS ECEF output; the
   /// ephemeris when the runner did not load one but optical sensors need sky
   /// geometry). Defaults to the repo layout via `DataPaths::under`.
@@ -217,6 +243,7 @@ class ClosedLoop {
   scenario::SimRunner& runner_;
   scenario::Vehicle& vehicle_;
   dynamics::CommandedWrench wrench_;
+  double mass_kg_{0.0};
   scenario::DataPaths paths_;
   std::vector<PayloadGeometry> payload_geometry_;
 };

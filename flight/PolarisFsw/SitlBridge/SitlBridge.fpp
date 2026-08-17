@@ -65,6 +65,10 @@ module flight {
     @ next STEP_REPLY
     sync input port mtqCmdIn: MtqDipoleCmd
 
+    @ Latest thruster throttle commands (§17 burn executor), latched for the
+    @ next STEP_REPLY and held by the plant for the whole macro step
+    sync input port thrusterCmdIn: ThrusterThrottleCmd
+
     # ----------------------------------------------------------------------
     # Sensor measurement outputs (the SITL end of the GncPorts seam, §8.0)
     # ----------------------------------------------------------------------
@@ -122,10 +126,11 @@ module flight {
         nMagnetometer: U32,
         nGnss: U32,
         nWheel: U32,
-        nMtq: U32
+        nMtq: U32,
+        nThruster: U32
       ) \
       severity activity high \
-      format "SITL HELLO: imu={} st={} ss={} mag={} gnss={} wheel={} mtq={}"
+      format "SITL HELLO: imu={} st={} ss={} mag={} gnss={} wheel={} mtq={} thruster={}"
 
     @ Periodic progress marker at STEP milestones
     event StepMilestone(macroStep: U64) \

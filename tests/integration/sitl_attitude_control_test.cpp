@@ -139,7 +139,8 @@ RunResult fly(const std::string& tag, const scenario::SimConfig& orbit, unsigned
   }
   const pid_t pid = spawnFsw(fswBinaryPath(), server.port(), prm_path, log_path,
                              /*magCalSamples=*/0, /*stAlignPairs=*/0, /*stAlignUnit=*/1, ctrlMode,
-                             targetQ, feedforward, /*odResetCycle=*/0, wheelBias);
+                             targetQ, feedforward, /*odResetCycle=*/0, /*burnSpec=*/nullptr,
+                             /*odAccelInput=*/-1, wheelBias);
   if (pid < 0) {
     ADD_FAILURE() << "fork failed";
     return result;

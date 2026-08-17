@@ -168,6 +168,10 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! RESET_ESTIMATOR: drop both solutions and re-acquire from cold — the next
   //! TRIAD for coarse, a fresh Davenport seed for fine.
   void RESET_ESTIMATOR_cmdHandler(FwOpcodeType opCode, U32 cmdSeq) override;
+  //! ATT_REINIT_COV: re-open the fine covariance, keep the state (NESC TB
+  //! 20-03 item f; NASA/TP-2018-219822 §9.2).
+  void ATT_REINIT_COV_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, F64 attSigmaRad,
+                                 F64 biasSigmaRadps) override;
 
   //! MAG_CAL_START: open a calibration collection window of @p sampleCount
   //! accepted samples. Refuses (EXECUTION_ERROR + MagCalRejected) on missing
@@ -210,10 +214,12 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! there are no flight defaults (§19.3). Returns true when configured.
   bool refreshCoarseConfig();
 
-  //! Read the fine-mode parameters and rebuild the MEKF with them. Independent
-  //! of refreshCoarseConfig(): a missing fine parameter costs the fine mode
-  //! (FineConfigInvalid, coarse-only operation), not the whole estimator.
-  //! Returns true when the filter is configured.
+  //! Read the fine-mode parameters and apply them to the MEKF — re-tuned in
+  //! place when it is already configured, so an upload keeps the fine solution
+  //! (NESC TB 20-03 item g). Independent of refreshCoarseConfig(): a missing
+  //! fine parameter costs the fine mode (FineConfigInvalid, coarse-only
+  //! operation) only if there was never a valid set; a bad re-upload leaves the
+  //! last valid set in force. Returns true when the filter is configured.
   bool refreshFineConfig();
 
   //! Read the three Earth-albedo-correction parameters and rebuild the
@@ -708,6 +714,7 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
 
   //! Staleness gate [s], cached from the parameter set with the rest of the config.
   F64 max_meas_age_s_{0.0};
+  F64 max_position_sigma_m_{0.0};  //!< MaxPositionSigmaM: the orbit-solution tolerance
 
   //! Magnetic 1-sigma handed to the MEKF and the Davenport seed [rad]: the white
   //! and systematic parts of the same budget, root-sum-squared. The filter treats
@@ -831,6 +838,13 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   bool attitude_valid_{false};
   bool config_invalid_flagged_{false};
   bool fine_config_invalid_flagged_{false};
+  //! Per-measurement editing policy (TP §9.1), U8 mirrors of
+  //! polaris::gnc::MeasurementMode: 0 accept, 1 inhibit, 2 force.
+  U8 sun_meas_mode_{0};
+  U8 mag_meas_mode_{0};
+  U8 st_meas_mode_{0};
+  bool att_policy_reported_{false};
+  bool fine_cov_indefinite_alerted_{false};
   bool albedo_config_invalid_flagged_{false};
   bool st_config_invalid_flagged_{false};
   bool fine_init_failed_flagged_{false};

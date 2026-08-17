@@ -71,6 +71,10 @@ struct UnitConfig {
   /// nonzero it defines the wheel's axis (the clean alternative to a full
   /// mounting DCM); the vehicle builder normalises it into the assembly's W.
   Eigen::Vector3d spin_axis{Eigen::Vector3d::Zero()};
+  /// Thruster nominal thrust axis in the body frame, or zero when unset (the
+  /// unit's +z through `mounting_dcm` then applies). Same idea as `spin_axis`:
+  /// a thruster has one direction and no meaningful roll about it (§7, §17).
+  Eigen::Vector3d thrust_axis{Eigen::Vector3d::Zero()};
   /// Unit origin in the body frame [m]; zero (the body origin) when the config
   /// omitted it. Consumed by the effects that depend on *where* a unit sits
   /// rather than which way it points — today the §7 MTQ/MAG near-field coupling,
@@ -124,6 +128,14 @@ struct GnssFaultEvent {
   double stop_s{0.0};
   Eigen::Vector3d spoof_offset_ecef_m{Eigen::Vector3d::Zero()};  ///< for kSpoof
   double clock_jump_s{0.0};                                      ///< for kClockJump
+};
+
+/// One scheduled open-loop burn (§17); see EnvironmentConfig::thrust_events.
+struct ThrustEvent {
+  std::string unit;
+  double start_s{0.0};
+  double stop_s{0.0};
+  double throttle{1.0};
 };
 
 /// Which perturbations are switched on, and at what fidelity.
@@ -184,6 +196,11 @@ struct EnvironmentConfig {
   bool gnss_noise_enabled{true};
   /// Scheduled GNSS faults injected during the run (§9.2/§23.1.1).
   std::vector<GnssFaultEvent> gnss_fault_events;
+  /// Scheduled truth burns for the **open-loop** path (no FSW): a thruster is
+  /// held at `throttle` over [start_s, stop_s). In SITL, burns are commanded
+  /// by the flight burn executor and this schedule is ignored — the sim never
+  /// fires a thruster the FSW did not ask for on a closed loop.
+  std::vector<ThrustEvent> thrust_events;
 };
 
 /// Propagation span and RK89 step control.

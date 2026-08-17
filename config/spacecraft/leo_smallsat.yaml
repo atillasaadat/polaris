@@ -220,6 +220,14 @@ spacecraft:
       model_id: MTQ-GENERIC
       dipole_axis: [0.0, 0.0, 1.0]
       mounting_position_m: [0.04, 0.04, -0.05]
+    # One green-monoprop thruster on body +X (§17, Push 70): the force acts along
+    # +X, so an along-track burn is a body-+X-along-velocity attitude the §8.5
+    # controller holds. `thrust_axis` is what flight.burnExecutor.ThrusterAxesBody
+    # is checked against; thrust and Isp come from the catalog entry.
+    - name: thr_x
+      model_id: MONOPROP-05N
+      thrust_axis: [1.0, 0.0, 0.0]
+      mounting_position_m: [-0.15, 0.0, 0.0]
   # NOTE: the flight control gains are the `flight.attitudeController.*` entries
   # in fsw_parameters below — that is the §19.3 path the vehicle actually flies.
   # The `gains` block that used to sit here carried placeholder numbers no code
@@ -260,9 +268,23 @@ spacecraft:
     # NIS gates: chi-square with 3 dof at 99.9%.
     flight.orbitEstimator.PositionNisGate: 16.27                # [-]
     flight.orbitEstimator.VelocityNisGate: 16.27                # [-]
-    # Coast horizon (§8.3): ~9x the receiver's 34 s cold start; past it the
-    # solution is dropped and the next fix re-seeds whole.
+    # Fine coast horizon (§8.3): ~9x the receiver's 34 s cold start; past it the
+    # solution is DEGRADED — still propagated and published with the covariance
+    # the process noise grew (Push 70).
     flight.orbitEstimator.MaxCoastS: 300.0                      # [s]
+    # Degraded horizon: past it the solution is dropped and the next fix
+    # re-seeds whole. 30 min: the OD campaign's outage_long scenario measures the
+    # coasted error over that arc against the sim's 32x32 truth (tens of metres
+    # on the 8x8 model — Ceresoli et al. 2025 measured ~3 km over 20 min on J2
+    # alone), and the attitude estimator's MaxPositionSigmaM (20 km) is what a
+    # degraded solution has to stay under to keep the magnetic reference.
+    flight.orbitEstimator.MaxDegradedCoastS: 1800.0             # [s]
+    # Longest age of a burn executor's NonGravAccel record the propagate still
+    # applies: five GNC cycles, so one missed publish coasts rather than
+    # thrusts, and a dead executor never burns forever.
+    flight.orbitEstimator.MaxAccelAgeS: 0.5                     # [s]
+    # OrbitStatus event cadence: once a minute at 10 Hz. 0 = never.
+    flight.orbitEstimator.StatusPeriodCycles: 600
     # Longest single propagation step and the RK4 sub-step ceiling.
     flight.orbitEstimator.MaxDtS: 60.0                          # [s]
     flight.orbitEstimator.MaxStepS: 10.0                        # [s]
@@ -276,6 +298,19 @@ spacecraft:
     # too, before the orbit filter owned it.
     flight.orbitEstimator.MinRadiusM: 6.5e6                     # [m]
     flight.orbitEstimator.MaxRadiusM: 8.0e6                     # [m]
+    # Measurement editing policy (NASA/TP-2018-219822 §9.1; NESC TB 20-03 item
+    # d): 0 accept (the NIS gate decides), 1 inhibit, 2 force past the gate.
+    # Flown at accept; the other two are operator tools, set by uplink and
+    # applied without dropping the solution.
+    flight.orbitEstimator.PositionMeasMode: 0
+    flight.orbitEstimator.VelocityMeasMode: 0
+    # Backup ephemeris re-seed interval (TP §9.2; TB 20-03 item e): a copy of
+    # the filter propagated alongside it and never measurement-updated, so a
+    # restart needs no uplink and the separation is a divergence comparator.
+    # Ten minutes: long enough that the backup is genuinely independent of the
+    # last few fixes, a third of the degraded horizon so it never expires
+    # before it is refreshed. 0 disables it.
+    flight.orbitEstimator.BackupPeriodS: 600.0                  # [s]
     # --- Attitude estimator ------------------------------------------------
     # Sun pair. The FSS is specified 2.0 deg 3-sigma out at the 60 deg field
     # edge (0.5 deg inside 45 deg), so 2.0/3 deg = 11.6 mrad is the conservative
@@ -387,6 +422,12 @@ spacecraft:
     # Staleness window (§9.1): 1.0 s admits the slowest sensor on this vehicle
     # while excluding anything a full second behind the cycle epoch.
     flight.attitudeEstimator.MaxMeasAgeSec: 1.0           # [s]
+    # Orbit-solution tolerance (§8.3, Push 70): the largest position sigma the
+    # magnetic and sun references are evaluated at. The geomagnetic reference
+    # moves ~1e-3 deg per km of position error, so 20 km is 0.02 deg — a
+    # hundredth of the magnetometer's own 1.9 deg systematic — and a DEGRADED
+    # orbit solution keeps the magnetic pair until its coast has grown past it.
+    flight.attitudeEstimator.MaxPositionSigmaM: 20.0e3     # [m]
     # --- Fine mode (MEKF) -------------------------------------------------
     # The filter's angle random walk is GyroArw above and its largest
     # propagation step is MaxDtSec: same gyro, same rate group, so they are not
@@ -433,6 +474,12 @@ spacecraft:
     # tail plus the odd albedo transient, which is exactly what the gate is for.
     flight.attitudeEstimator.MekfRefusalStreak: 5         # [cycles]
     flight.attitudeEstimator.MekfNisStreak: 20            # [cycles]
+    # Measurement editing policy per type (NASA/TP-2018-219822 §9.1; NESC TB
+    # 20-03 item d): 0 accept, 1 inhibit (from both chains), 2 force past the
+    # fine gate. Flown at accept.
+    flight.attitudeEstimator.SunMeasMode: 0
+    flight.attitudeEstimator.MagMeasMode: 0
+    flight.attitudeEstimator.StMeasMode: 0
     # Davenport seed observability gate, lambda_min/lambda_max of the information
     # matrix. Set to match the coarse chain's MinSinAngle = sin(10 deg): two
     # equally-weighted observations separated by theta give
@@ -1207,6 +1254,39 @@ spacecraft:
 
     # One event, then one per 10 s while a saturation or refusal persists.
     flight.attitudeController.AlertCycles: 100
+
+    # --- Burn executor (§17, Push 70) --------------------------------------
+    # The finite-burn seam: the executor holds a throttle on the thruster(s) for
+    # a commanded duration and tells the orbit filter the commanded acceleration
+    # (over its own depleting mass estimate) so the filter propagates through
+    # the burn. Per-unit thrust/Isp are the catalog's; the compiler refuses a
+    # transcription that drifts from it. Pointing during a burn is the §8.5
+    # controller's job; steering and targeting are Phase 8.
+    flight.burnExecutor.ThrusterCount: 1
+    flight.burnExecutor.ThrusterAxesBody: [
+      1.0, 0.0, 0.0,   # 0: thr_x, body +X
+      0.0, 0.0, 0.0,   # 1..7: not installed
+      0.0, 0.0, 0.0,
+      0.0, 0.0, 0.0,
+      0.0, 0.0, 0.0,
+      0.0, 0.0, 0.0,
+      0.0, 0.0, 0.0,
+      0.0, 0.0, 0.0]
+    flight.burnExecutor.ThrusterThrustN: [0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    flight.burnExecutor.ThrusterIspS: [220.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    # Wet mass at configuration — the vehicle's own mass_kg; the executor
+    # depletes its estimate at F/(Isp g0) while burning: 0.5 N / (220 x 9.807)
+    # = 0.23 g/s, so a 120 s burn is 28 g of the 12 kg.
+    flight.burnExecutor.VehicleMassKg: 12.0
+    # 1-sigma thrust knowledge: the catalog's 2 % scale error plus 1 % noise,
+    # rounded up. Reported to the orbit filter as the acceleration's sigma.
+    flight.burnExecutor.ThrustKnowledgeFrac: 0.03
+    # A 0.5 N thruster on 12 kg is 0.042 m/s^2: 600 s is 25 m/s, more than any
+    # single Phase-8 maintenance burn on this vehicle asks for.
+    flight.burnExecutor.MaxBurnDurationS: 600.0
+    # The attitude estimate is published every 100 ms cycle; three missed
+    # cycles is a fault, not a schedule.
+    flight.burnExecutor.MaxAttitudeAgeS: 0.35
   drag_area_m2: 0.06                 # 6U broadside, ~0.2 x 0.3 m
   drag_cd: 2.2
   srp_area_m2: 0.06

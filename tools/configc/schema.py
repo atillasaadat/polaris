@@ -106,6 +106,16 @@ class MountedUnit(_Strict):
             "Ignored for anything that is not a magnetorquer"
         ),
     )
+    thrust_axis: Vec3 | None = Field(
+        default=None,
+        description=(
+            "thruster nominal thrust direction in the body frame (the direction the "
+            "force acts on the vehicle; need not be unit — it is normalised). The "
+            "thruster analogue of spin_axis/dipole_axis. The burn executor's "
+            "ThrusterAxesBody parameter is checked against these (design doc §17). "
+            "Ignored for anything that is not a thruster"
+        ),
+    )
     mounting_position_m: Vec3 | None = Field(
         default=None,
         description=(

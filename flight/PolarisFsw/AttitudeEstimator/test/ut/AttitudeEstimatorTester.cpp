@@ -120,6 +120,7 @@ constexpr F64 kMagMinFieldRatio = 0.5;
 constexpr F64 kMagMaxFieldRatio = 1.6;
 constexpr F64 kMagDisagreementT = 5.0e-6;
 constexpr F64 kMagMaxAttSigmaRad = 0.02;
+constexpr F64 kMaxPositionSigmaM = 20.0e3;  // the reference vehicle's tolerance (§8.3)
 constexpr U32 kMagReadmitCycles = 3;
 constexpr U32 kMagIdentifyConfirmCycles = 2;
 
@@ -230,8 +231,15 @@ bool AttitudeEstimatorTester ::from_getEopAt_handler(FwIndexType portNum, I64 ta
 
 void AttitudeEstimatorTester ::from_estimateOut_handler(FwIndexType portNum,
                                                         const AttitudeEstimate& estimate) {
-  this->last_estimate_ = estimate;
-  ++this->estimate_count_;
+  // Both indices carry the same estimate each cycle (index 0 the controller,
+  // index 1 the burn executor); the count is per cycle, on index 0, and index 1
+  // is checked to be its twin.
+  if (portNum == 0) {
+    this->last_estimate_ = estimate;
+    ++this->estimate_count_;
+  } else {
+    EXPECT_EQ(estimate, this->last_estimate_);
+  }
 }
 
 // ----------------------------------------------------------------------
@@ -266,6 +274,7 @@ void AttitudeEstimatorTester ::setValidParameters(bool withFine, bool withAlbedo
   this->paramSet_MagMaxFieldRatio(kMagMaxFieldRatio, Fw::ParamValid::VALID);
   this->paramSet_MagDisagreementT(kMagDisagreementT, Fw::ParamValid::VALID);
   this->paramSet_MagMaxAttSigmaRad(kMagMaxAttSigmaRad, Fw::ParamValid::VALID);
+  this->paramSet_MaxPositionSigmaM(kMaxPositionSigmaM, Fw::ParamValid::VALID);
   this->paramSet_MagReadmitCycles(kMagReadmitCycles, Fw::ParamValid::VALID);
   this->paramSet_MagIdentifyConfirmCycles(kMagIdentifyConfirmCycles, Fw::ParamValid::VALID);
   if (withStarTracker) {
@@ -302,6 +311,9 @@ void AttitudeEstimatorTester ::setValidParameters(bool withFine, bool withAlbedo
     this->paramSet_MekfRefusalStreak(kMekfRefusalStreak, Fw::ParamValid::VALID);
     this->paramSet_MekfNisStreak(kMekfNisStreak, Fw::ParamValid::VALID);
     this->paramSet_SeedMinObservability(kSeedMinObservability, Fw::ParamValid::VALID);
+    this->paramSet_SunMeasMode(0, Fw::ParamValid::VALID);
+    this->paramSet_MagMeasMode(0, Fw::ParamValid::VALID);
+    this->paramSet_StMeasMode(0, Fw::ParamValid::VALID);
   }
   // paramSet_* only stages values in the harness's table; the component caches
   // them at load, exactly as the topology does after ParameterDb is up.
@@ -581,9 +593,12 @@ void AttitudeEstimatorTester ::feedMeasurements(I64 taiNs, const QuatBI& q_bi,
     orbit.set_epochTaiNs(tag);
     orbit.set_posEciM(toVec3F64(r_eci));
     orbit.set_velEciMps(toVec3F64(Eigen::Vector3d::Zero()));
-    orbit.set_posSigmaM(1.0);
+    orbit.set_posSigmaM(this->orbit_sigma_m_);
     orbit.set_velSigmaMps(0.01);
     orbit.set_ageSec(0.0);
+    orbit.set_quality(this->orbit_valid_ ? (this->orbit_sigma_m_ > 1.0 ? OrbitQuality::DEGRADED
+                                                                       : OrbitQuality::FINE)
+                                         : OrbitQuality::NONE);
     orbit.set_valid(this->orbit_valid_);
     this->invoke_to_orbitStateIn(0, orbit);
   }
@@ -797,6 +812,29 @@ void AttitudeEstimatorTester ::testOrbitSolutionIsConsumedOnce() {
   // reused — a stale solution wearing a valid flag is how a dropped orbit
   // solution would keep feeding the field model for the rest of the mission.
   this->orbit_published_ = false;
+  this->feedMeasurements(kStartTaiNs + kNsPerSecond / 10, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(kStartTaiNs + kNsPerSecond / 10);
+  ASSERT_TLM_PositionValid(1, false);
+  ASSERT_TLM_MagValid(1, false);
+  ASSERT_EVENTS_PositionUnavailable_SIZE(1);
+}
+
+void AttitudeEstimatorTester ::testDegradedOrbitSolutionIsUsedUpToTheSigmaTolerance() {
+  this->loadIgrf();
+  this->setValidParameters();
+  const QuatBI truth(polaris::math::Quaternion::Identity());
+
+  // A DEGRADED solution with a 5 km sigma: inside MaxPositionSigmaM, so the
+  // magnetic reference is evaluated at it and nothing is lost.
+  this->orbit_sigma_m_ = 5.0e3;
+  this->feedMeasurements(kStartTaiNs, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(kStartTaiNs);
+  ASSERT_TLM_PositionValid(0, true);
+  ASSERT_TLM_MagValid(0, true);
+  ASSERT_EVENTS_PositionUnavailable_SIZE(0);
+
+  // 50 km: past the tolerance. Still `valid` on the port, but not usable here.
+  this->orbit_sigma_m_ = 50.0e3;
   this->feedMeasurements(kStartTaiNs + kNsPerSecond / 10, truth, Eigen::Vector3d::Zero(), true);
   this->runCycleAt(kStartTaiNs + kNsPerSecond / 10);
   ASSERT_TLM_PositionValid(1, false);
@@ -1087,6 +1125,135 @@ void AttitudeEstimatorTester ::testResetDropsFineMode() {
   this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
   this->runCycleAt(t);
   ASSERT_EQ(this->last_estimate_.get_mode(), EstimationMode::FINE);
+}
+
+// ----------------------------------------------------------------------
+// NESC navigation-filter usability practices (NASA/TP-2018-219822 Ch. 7, §9;
+// NESC TB 20-03 items d, f, g) — Push 71
+// ----------------------------------------------------------------------
+
+void AttitudeEstimatorTester ::testFineTuningUploadKeepsTheSolution() {
+  this->loadIgrf();
+  this->setValidParameters(true);
+  const QuatBI truth(polaris::math::Quaternion::Identity());
+  const Eigen::Vector3d bias(1.0e-3, -5.0e-4, 8.0e-4);
+  this->gyro_bias_ = bias;
+
+  I64 t = kStartTaiNs;
+  for (int i = 0; i < 300; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+    this->clearHistory();
+  }
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_EQ(this->last_estimate_.get_mode(), EstimationMode::FINE);
+  const Vec3F64 b0 = this->tlmHistory_GyroBias->at(0).arg;
+  const Eigen::Vector3d b_before(b0[0], b0[1], b0[2]);
+  ASSERT_LT((b_before - bias).norm(), 0.5 * bias.norm()) << "converged before the upload";
+  this->clearHistory();
+
+  // The upload: a tighter gate. Re-tuned in place — no demotion, the bias and
+  // the mode kept, and no fresh seed.
+  this->paramSet_MekfNisGate(9.21, Fw::ParamValid::VALID);  // chi-square(2) at 99%
+  this->paramSend_MekfNisGate(0, 0);
+  t += kNsPerSecond / 10;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_FineTuningApplied_SIZE(1);
+  ASSERT_EVENTS_FineTuningApplied(0, true);
+  ASSERT_EVENTS_FineModeDemoted_SIZE(0);
+  ASSERT_EVENTS_FineModeEngaged_SIZE(0);
+  ASSERT_EQ(this->last_estimate_.get_mode(), EstimationMode::FINE);
+  const Vec3F64 b1 = this->tlmHistory_GyroBias->at(0).arg;
+  const Eigen::Vector3d b_after(b1[0], b1[1], b1[2]);
+  EXPECT_LT((b_after - b_before).norm(), 1.0e-5) << "the converged bias survived the upload";
+  this->clearHistory();
+
+  // A bad upload: warned once, the last valid set stays in force, fine mode
+  // keeps running.
+  this->paramSet_MekfRrw(-1.0, Fw::ParamValid::VALID);
+  this->paramSend_MekfRrw(0, 0);
+  t += kNsPerSecond / 10;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_FineConfigInvalid_SIZE(1);
+  ASSERT_EVENTS_FineModeDemoted_SIZE(0);
+  ASSERT_EQ(this->last_estimate_.get_mode(), EstimationMode::FINE);
+}
+
+void AttitudeEstimatorTester ::testFineCovarianceReinitAndMeasurementPolicy() {
+  this->loadIgrf();
+  this->setValidParameters(true);
+  const QuatBI truth(polaris::math::Quaternion::Identity());
+
+  // Not engaged yet: refused.
+  this->sendCmd_ATT_REINIT_COV(0, 0, 0.1, 1.0e-4);
+  ASSERT_CMD_RESPONSE(0, AttitudeEstimator::OPCODE_ATT_REINIT_COV, 0,
+                      Fw::CmdResponse::VALIDATION_ERROR);
+  ASSERT_EVENTS_FineCovarianceReinitRefused_SIZE(1);
+
+  I64 t = kStartTaiNs;
+  for (int i = 0; i < 100; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+    this->clearHistory();
+  }
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_EQ(this->last_estimate_.get_mode(), EstimationMode::FINE);
+  const F64 settled_trace = this->tlmHistory_FineAttCovTrace->at(0).arg;
+  ASSERT_TLM_FineCovarianceHealthy(0, true);
+  this->clearHistory();
+
+  // Re-open the covariance: the next cycle publishes ~3 sigma^2 in the attitude
+  // block, the mode is still FINE, no demotion, no seed.
+  // (Histories were cleared while settling, so these counts start afresh.)
+  this->sendCmd_ATT_REINIT_COV(0, 0, -0.1, 1.0e-4);
+  ASSERT_EVENTS_FineCovarianceReinitRefused_SIZE(1);
+  this->sendCmd_ATT_REINIT_COV(0, 0, 0.1, 1.0e-4);
+  ASSERT_CMD_RESPONSE(1, AttitudeEstimator::OPCODE_ATT_REINIT_COV, 0, Fw::CmdResponse::OK);
+  ASSERT_EVENTS_FineCovarianceReinitialised_SIZE(1);
+  t += kNsPerSecond / 10;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_EQ(this->last_estimate_.get_mode(), EstimationMode::FINE);
+  ASSERT_EVENTS_FineModeDemoted_SIZE(0);
+  ASSERT_EVENTS_FineModeEngaged_SIZE(0);
+  const F64 reopened_trace = this->tlmHistory_FineAttCovTrace->at(0).arg;
+  EXPECT_GT(reopened_trace, 10.0 * settled_trace);
+  EXPECT_LT(reopened_trace, 3.0 * 0.1 * 0.1)
+      << "one update against 0.1 rad has already pulled it in";
+  this->clearHistory();
+
+  // INHIBIT the sun: withheld from both chains. The fine filter keeps running
+  // on the magnetic pair alone; the coarse floor loses its pair.
+  this->paramSet_SunMeasMode(1, Fw::ParamValid::VALID);
+  this->paramSend_SunMeasMode(0, 0);
+  t += kNsPerSecond / 10;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_AttMeasurementPolicyChanged_SIZE(1);
+  ASSERT_EVENTS_AttMeasurementPolicyChanged(0, 1, 0, 0);
+  ASSERT_EQ(this->last_estimate_.get_mode(), EstimationMode::FINE);
+  ASSERT_TLM_SunValid(0, false);
+  ASSERT_TLM_MagValid(0, true);
+  this->clearHistory();
+
+  // FORCE the sun: a sun vector 20 deg off, which the gate would refuse against
+  // a settled covariance, is applied and reported forced — counted apart from
+  // the rejections.
+  this->paramSet_SunMeasMode(2, Fw::ParamValid::VALID);
+  this->paramSend_SunMeasMode(0, 0);
+  this->sun_body_error_rad_ = 20.0 * M_PI / 180.0;
+  t += kNsPerSecond / 10;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_TLM_MekfForced(0, 1u);
+  ASSERT_TLM_MekfRejected(0, 0u);
+  this->sun_body_error_rad_ = 0.0;
 }
 
 // ----------------------------------------------------------------------

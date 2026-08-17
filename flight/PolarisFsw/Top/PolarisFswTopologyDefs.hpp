@@ -113,6 +113,14 @@ struct TopologyState {
   I32 wheelBias = -1;                 //!< SITL/bench only: force the §8.5 wheel-speed bias on
                                       //!< (1) or off (0); negative leaves the ParameterDb
                                       //!< pattern. The zero-crossing A/B row's switch.
+  U32 burnStartCycle = 0;             //!< SITL/bench only: GNC cycle on which to command
+                                      //!< BURN_START (0 = never); with the two below, the
+                                      //!< §17 burn rows' way to fire a burn with no ground link.
+  F64 burnDurationS = 0.0;            //!< SITL/bench only: BURN_START duration [s]
+  F64 burnThrottle = 0.0;             //!< SITL/bench only: BURN_START throttle (0, 1]
+  I32 odAccelInput = -1;              //!< SITL/bench only: 0 = the orbit filter ignores the
+                                      //!< burn executor's acceleration (the "blind" half of
+                                      //!< the burn-in-outage A/B); negative/1 = flight behaviour.
   U32 odResetCycle = 0;               //!< SITL/bench only: GNC cycle on which to command the
                                       //!< orbit filter's OD_RESET (0 = never). The §8.3
                                       //!< reset-and-reseed row needs a command mid-run with no

@@ -36,7 +36,7 @@ using Body = pm::frames::Body;
 //! SigmaSunWhiteRad costs — the whole estimator — and a separate gate would imply
 //! a degraded-but-flying state that does not exist. (The cycle counts are U32 and
 //! are read alongside them.)
-constexpr FwSizeType kParamCount = 19;
+constexpr FwSizeType kParamCount = 20;
 
 //! Number of fine-mode (MEKF + Davenport seed) tuning parameters. Validated
 //! separately: a missing one costs the fine mode, not the whole estimator.
@@ -165,6 +165,7 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
   values[16] = this->paramGet_MagMaxFieldRatio(valids[16]);
   values[17] = this->paramGet_MagDisagreementT(valids[17]);
   values[18] = this->paramGet_MagMaxAttSigmaRad(valids[18]);
+  values[19] = this->paramGet_MaxPositionSigmaM(valids[19]);
   Fw::ParamValid mag_readmit_valid = Fw::ParamValid::INVALID;
   const U32 mag_readmit_cycles = this->paramGet_MagReadmitCycles(mag_readmit_valid);
   Fw::ParamValid mag_confirm_valid = Fw::ParamValid::INVALID;
@@ -194,7 +195,8 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
                                                   "MagMinFieldRatio",
                                                   "MagMaxFieldRatio",
                                                   "MagDisagreementT",
-                                                  "MagMaxAttSigmaRad"};
+                                                  "MagMaxAttSigmaRad",
+                                                  "MaxPositionSigmaM"};
 
   for (FwSizeType i = 0; i < kParamCount; ++i) {
     if (valids[i] != Fw::ParamValid::VALID || !std::isfinite(values[i])) {
@@ -236,6 +238,11 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
   mag_vote_cfg.max_field_ratio = values[16];
   mag_vote_cfg.disagreement_tesla = values[17];
   mag_vote_cfg.max_attitude_sigma_rad = values[18];
+  if (!(values[19] > 0.0)) {
+    this->failConfig("MaxPositionSigmaM must be positive");
+    return false;
+  }
+  this->max_position_sigma_m_ = values[19];
   mag_vote_cfg.readmit_cycles = mag_readmit_cycles;
   mag_vote_cfg.identify_confirm_cycles = mag_confirm_cycles;
   // The library owns the range rules — including that the band must straddle 1,
@@ -413,10 +420,45 @@ bool AttitudeEstimator ::refreshFineConfig() {
     return false;
   }
 
-  // Rebuilding drops any fine solution in flight, for the same reason the coarse
-  // rebuild does: its covariance was computed under the old budget.
-  this->demoteFineMode(FineDemotionReason::COMMANDED);
-  this->mekf_ = polaris::gnc::Mekf(cfg);
+  // The per-measurement editing policy (TP §9.1; TB 20-03 item d).
+  Fw::ParamValid sun_mode_valid = Fw::ParamValid::INVALID;
+  Fw::ParamValid mag_mode_valid = Fw::ParamValid::INVALID;
+  Fw::ParamValid st_mode_valid = Fw::ParamValid::INVALID;
+  const U8 sun_mode = this->paramGet_SunMeasMode(sun_mode_valid);
+  const U8 mag_mode = this->paramGet_MagMeasMode(mag_mode_valid);
+  const U8 st_mode = this->paramGet_StMeasMode(st_mode_valid);
+  if (sun_mode_valid != Fw::ParamValid::VALID || mag_mode_valid != Fw::ParamValid::VALID ||
+      st_mode_valid != Fw::ParamValid::VALID) {
+    this->failFineConfig("SunMeasMode/MagMeasMode/StMeasMode missing from ParameterDb");
+    return false;
+  }
+  static_assert(static_cast<U8>(polaris::gnc::MeasurementMode::kAccept) == 0);
+  static_assert(static_cast<U8>(polaris::gnc::MeasurementMode::kInhibit) == 1);
+  static_assert(static_cast<U8>(polaris::gnc::MeasurementMode::kForce) == 2);
+  if (sun_mode > 2 || mag_mode > 2 || st_mode > 2) {
+    this->failFineConfig("SunMeasMode/MagMeasMode/StMeasMode must be 0, 1 or 2");
+    return false;
+  }
+
+  // TB 20-03 item (g) / TP §9.3: a running fine filter is re-tuned in place —
+  // attitude, bias, covariance and age kept. Only a filter that never had a
+  // valid set is constructed. (Before Push 71 this rebuilt the filter and
+  // demoted, throwing a converged bias away to change a gate.)
+  const bool kept = this->mekf_.isConfigured();
+  if (kept) {
+    (void)this->mekf_.retune(cfg);  // cfg.isValid() held above
+    this->log_ACTIVITY_LO_FineTuningApplied(this->mekf_.isInitialised());
+  } else {
+    this->mekf_ = polaris::gnc::Mekf(cfg);
+  }
+  if (!this->att_policy_reported_ || sun_mode != this->sun_meas_mode_ ||
+      mag_mode != this->mag_meas_mode_ || st_mode != this->st_meas_mode_) {
+    this->log_ACTIVITY_HI_AttMeasurementPolicyChanged(sun_mode, mag_mode, st_mode);
+    this->att_policy_reported_ = true;
+  }
+  this->sun_meas_mode_ = sun_mode;
+  this->mag_meas_mode_ = mag_mode;
+  this->st_meas_mode_ = st_mode;
   this->bias_sigma_init_ = values[3];
   this->seed_min_observability_ = values[4];
   this->refusal_streak_limit_ = refusal_streak;
@@ -624,13 +666,18 @@ void AttitudeEstimator ::failConfig(const char* detail) {
 void AttitudeEstimator ::failFineConfig(const char* detail) {
   // Not fatal, unlike failConfig(): the vehicle keeps the §10 Safe-mode floor
   // and simply never promotes. An operator seeing this has a flyable vehicle.
-  this->demoteFineMode(FineDemotionReason::COMMANDED);
   if (!this->fine_config_invalid_flagged_) {
     const Fw::LogStringArg arg(detail);
     this->log_WARNING_HI_FineConfigInvalid(arg);
     this->fine_config_invalid_flagged_ = true;
   }
-  this->mekf_ = polaris::gnc::Mekf(polaris::gnc::MekfConfig{});
+  // A running fine filter is never made inert by a bad upload (NESC TB 20-03
+  // item g): the last valid set stays in force. Only a filter that never had
+  // one is left inert.
+  if (!this->mekf_.isConfigured()) {
+    this->demoteFineMode(FineDemotionReason::COMMANDED);
+    this->mekf_ = polaris::gnc::Mekf(polaris::gnc::MekfConfig{});
+  }
 }
 
 void AttitudeEstimator ::noteAttitudeLost() {
@@ -850,8 +897,10 @@ double AttitudeEstimator ::stepFineMode(const polaris::time::Tai& epoch,
     }
     const U32 rejected_before = this->mekf_.rejectedCount();
     polaris::gnc::MekfUpdate diagnostics;
-    const bool applied =
-        this->mekf_.update(pairs[i].body, pairs[i].reference, pairs[i].sigma_rad, diagnostics);
+    const U8 mode = (i == 0) ? this->sun_meas_mode_ : this->mag_meas_mode_;
+    const bool force = mode == static_cast<U8>(polaris::gnc::MeasurementMode::kForce);
+    const bool applied = this->mekf_.update(pairs[i].body, pairs[i].reference, pairs[i].sigma_rad,
+                                            diagnostics, force);
     // A gate rejection and a malformed measurement both return false, and they
     // mean opposite things: one is the divergence guard working, the other is
     // the filter refusing input it cannot use. The rejection counter is what
@@ -1107,15 +1156,18 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
   // --- Position and the ECEF->ECI rotation ----------------------------------
   // Both inertial references need the rotation; the magnetic one also needs the
   // position, which is the §8.3 orbit solution the OrbitEstimator published
-  // earlier this cycle. Its `valid` is the orbit filter's own coast-horizon
-  // verdict, so a receiver outage costs the magnetic pair only once the orbit
-  // solution has been dropped — flagged by PositionUnavailable rather than
-  // papered over with the last position it was handed. Consumed **once**: the
-  // latch is cleared here so a producer that stops running cannot leave a
-  // stale solution wearing a valid flag for the rest of the mission.
+  // earlier this cycle. `valid` says a solution exists (fine or degraded); the
+  // published sigma against MaxPositionSigmaM is this consumer's own tolerance
+  // (Push 70) — a coasted, degraded solution keeps the magnetic pair as long as
+  // its covariance is inside what a geomagnetic reference can stand, and it is
+  // PositionUnavailable, not a papered-over last position, once it is not.
+  // Consumed **once**: the latch is cleared here so a producer that stops
+  // running cannot leave a stale solution wearing a valid flag for the rest of
+  // the mission.
   pm::Vec3<ECI> r_eci;
   bool have_position = false;
-  if (this->orbit_.get_valid()) {
+  if (this->orbit_.get_valid() && std::isfinite(this->orbit_.get_posSigmaM()) &&
+      this->orbit_.get_posSigmaM() <= this->max_position_sigma_m_) {
     r_eci = pm::Vec3<ECI>(toEigen(this->orbit_.get_posEciM()));
     have_position = r_eci.isFinite();
   }
@@ -1388,6 +1440,18 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
     this->pub_mag_model_valid_ = std::isfinite(this->pub_mag_model_t_);
   }
 
+  // --- Editing policy (TP §9.1; TB 20-03 item d) ---------------------------
+  // INHIBIT withholds a measurement type from *both* chains: "do not process
+  // this measurement type" is a statement about the source, not about one
+  // consumer of it. The published magnetic field (B-dot's input) is staged
+  // above and is not a measurement of attitude, so it is untouched.
+  if (this->sun_meas_mode_ == static_cast<U8>(polaris::gnc::MeasurementMode::kInhibit)) {
+    in.sun_valid = false;
+  }
+  if (this->mag_meas_mode_ == static_cast<U8>(polaris::gnc::MeasurementMode::kInhibit)) {
+    in.mag_valid = false;
+  }
+
   // --- Star trackers (§8.2) -------------------------------------------------
   // Gathered before the coarse cycle so the alignment tap sees the same cycle's
   // readings as the fusion does, and so the coarse chain's independence from them
@@ -1395,7 +1459,11 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
   // tracker-independent on purpose — it is the §10 Safe-mode floor.
   StarTrackerSample stars[NUM_STARTRACKERIN_INPUT_PORTS];
   U32 star_valid_mask = 0;
-  const int star_count = this->collectStarTrackers(nowNs, stars, star_valid_mask);
+  int star_count = this->collectStarTrackers(nowNs, stars, star_valid_mask);
+  if (this->st_meas_mode_ == static_cast<U8>(polaris::gnc::MeasurementMode::kInhibit)) {
+    star_count = 0;  // withheld from fusion and from seeding (TP §9.1)
+    star_valid_mask = 0;
+  }
   this->tlmWrite_StValidMask(star_valid_mask);
   // The alignment tap, on **uncorrected** readings and only on cycles where the
   // king and the commanded unit both solved. A no-op unless a window is open.
@@ -1486,6 +1554,17 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
   this->tlmWrite_StarTrackerCount(this->star_tracker_count_);
   this->tlmWrite_RefGrade(grade);
   this->tlmWrite_MekfRejected(this->mekf_.rejectedCount());
+  this->tlmWrite_MekfForced(this->mekf_.forcedCount());
+  {
+    // TP Ch. 7: definiteness, asked for once a cycle since P is not factorised.
+    // Edge-gated; ATT_REINIT_COV is the remedy that keeps the state.
+    const bool healthy = this->mekf_.covarianceHealthy();
+    if (!healthy && !this->fine_cov_indefinite_alerted_) {
+      this->log_WARNING_HI_FineCovarianceIndefinite();
+    }
+    this->fine_cov_indefinite_alerted_ = !healthy;
+    this->tlmWrite_FineCovarianceHealthy(healthy);
+  }
   // The running total survives the demotions that clear the filter's own count.
   this->tlmWrite_MekfRejectedTotal(this->fine_rejected_total_ + this->mekf_.rejectedCount());
   this->tlmWrite_FineDemotions(this->fine_demotions_);
@@ -1591,8 +1670,12 @@ void AttitudeEstimator ::emitEstimate(const Eigen::Matrix3d& cov, double age_s) 
   estimate.set_magFieldValid(this->pub_mag_valid_);
   estimate.set_magModelValid(this->pub_mag_model_valid_);
   estimate.set_magRawValid(this->pub_mag_raw_valid_);
-  if (this->isConnected_estimateOut_OutputPort(0)) {
-    this->estimateOut_out(0, estimate);
+  // Every connected consumer: index 0 the controller, index 1 the burn
+  // executor (§17), both the same estimate.
+  for (FwIndexType i = 0; i < NUM_ESTIMATEOUT_OUTPUT_PORTS; ++i) {
+    if (this->isConnected_estimateOut_OutputPort(i)) {
+      this->estimateOut_out(i, estimate);
+    }
   }
 
   this->tlmWrite_EstMode(toEstimationMode(this->state_.mode));
@@ -1630,6 +1713,19 @@ void AttitudeEstimator ::noteReferenceGrade(TableDomain::T domain, TableGrade::T
 // ----------------------------------------------------------------------
 // Command handler implementations
 // ----------------------------------------------------------------------
+
+void AttitudeEstimator ::ATT_REINIT_COV_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, F64 attSigmaRad,
+                                                   F64 biasSigmaRadps) {
+  // TB 20-03 item (f) / TP §9.2: covariance re-opened, attitude and bias kept.
+  if (!this->fine_active_ || !this->mekf_.reinitializeCovariance(attSigmaRad, biasSigmaRadps)) {
+    this->log_WARNING_LO_FineCovarianceReinitRefused();
+    this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::VALIDATION_ERROR);
+    return;
+  }
+  this->fine_cov_indefinite_alerted_ = false;
+  this->log_ACTIVITY_HI_FineCovarianceReinitialised(attSigmaRad, biasSigmaRadps);
+  this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
+}
 
 void AttitudeEstimator ::RESET_ESTIMATOR_cmdHandler(FwOpcodeType opCode, U32 cmdSeq) {
   // Both chains: a reset that left the fine filter converged would keep

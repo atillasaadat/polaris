@@ -76,6 +76,9 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! The orbit solution is consumed once per cycle: a producer that stops
   //! publishing leaves position unavailable, never a stale vector reused.
   void testOrbitSolutionIsConsumedOnce();
+  //! A DEGRADED orbit solution keeps the magnetic reference while its position
+  //! sigma is inside MaxPositionSigmaM, and loses it past that (§8.3, Push 70).
+  void testDegradedOrbitSolutionIsUsedUpToTheSigmaTolerance();
 
   //! RESET_ESTIMATOR drops the solution and re-arms *every* edge-gated alert, so
   //! a still-faulted vehicle reports each fault again rather than staying quiet.
@@ -114,6 +117,17 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! RESET_ESTIMATOR drops the fine solution as well as the coarse one, and the
   //! component re-promotes through a fresh seed rather than a resumed filter.
   void testResetDropsFineMode();
+
+  //! NESC TB 20-03 item (g) / TP §9.3: a fine-mode parameter upload re-tunes
+  //! the running MEKF in place — no demotion, bias kept — and a bad upload
+  //! leaves the last valid set in force.
+  void testFineTuningUploadKeepsTheSolution();
+
+  //! TB 20-03 items (d) and (f) / TP §9.1-9.2: ATT_REINIT_COV re-opens the fine
+  //! covariance around the same attitude and bias; INHIBIT withholds a
+  //! measurement type from both chains; FORCE applies past the gate and is
+  //! counted apart.
+  void testFineCovarianceReinitAndMeasurementPolicy();
 
   //! The whole commanded flow on a magnetometer carrying a known hard/soft iron:
   //! MAG_CAL_START, a tumbling collection window, an accepted fit, and — the
@@ -564,6 +578,7 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! whether one is fed at all (a producer that did not run this cycle).
   bool orbit_valid_{true};
   bool orbit_published_{true};
+  F64 orbit_sigma_m_{1.0};  //!< posSigmaM the fixture publishes (>1 marks it DEGRADED)
 
   //! Where the vehicle is [m, ECEF]: what the fed orbit solution states (in ECI,
   //! rotated with the stubbed EOP) *and* what both inertial references are

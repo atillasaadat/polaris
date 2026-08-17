@@ -377,3 +377,66 @@ TEST(ClosedLoopOrbit, SensorsAgreeWithIndependentlyRecomputedGeometry) {
   EXPECT_LT(max_lat_deg, 45.0 + 0.5);
   EXPECT_GT(max_lat_deg, 40.0);  // and the orbit really is inclined
 }
+
+/// **A scheduled open-loop burn raises the orbit by what F/m says.** One
+/// thruster along body +X, 60 s at full throttle from a 12 kg vehicle: the
+/// along-track velocity gain is ∫F/m dt = 0.5·60/12 = 2.5 m/s (less the lag),
+/// the mass drops by ṁ·t = 0.5/(220·g0)·60 = 13.9 g, and the trace carries the
+/// delivered thrust. With no thrust event nothing changes — the plant never
+/// fires a thruster it was not told to (§17). Attitude here is identity, so
+/// body +X is inertial +X; the vehicle starts on +X so the thrust is radial and
+/// the check is on the velocity change, not the along-track distance.
+TEST(ClosedLoopOrbit, ScheduledBurnChangesVelocityByTheImpulseOverMass) {
+  scenario::SimConfig config = fullEnvironmentOrbit(120.0, 45.0, 10.0);
+  scenario::UnitConfig thr;
+  thr.name = "thr_x";
+  thr.model_id = "MONOPROP-05N";
+  thr.kind = "thruster";
+  thr.params = {{"thrust_n", 0.5}, {"isp_s", 220.0}, {"rise_time_s", 0.05}, {"fall_time_s", 0.03}};
+  thr.thrust_axis = Eigen::Vector3d::UnitX();
+  scenario::SpacecraftConfig sc;
+  sc.actuators.push_back(thr);
+  scenario::ThrustEvent burn;
+  burn.unit = "thr_x";
+  burn.start_s = 30.0;
+  burn.stop_s = 90.0;
+  burn.throttle = 1.0;
+
+  auto fly = [&](bool with_burn, std::vector<io::MacroSample>& trace, double& mass_end) {
+    scenario::SimConfig c = config;
+    if (with_burn) {
+      c.environment.thrust_events.push_back(burn);
+    }
+    scenario::Vehicle vehicle;
+    std::string error;
+    EXPECT_TRUE(scenario::buildVehicle(sc, 1, vehicle, &error)) << error;
+    EXPECT_EQ(vehicle.thrusters.size(), 1u);
+    scenario::SimRunner runner;
+    io::ClosedLoop loop(runner, vehicle);
+    EXPECT_TRUE(runner.build(c, goldenPaths(), &error, loop.wrench())) << error;
+    EXPECT_TRUE(loop.run({}, &trace, &error)) << error;
+    mass_end = loop.massKg();
+  };
+  std::vector<io::MacroSample> quiet;
+  std::vector<io::MacroSample> burned;
+  double mass_quiet = 0.0;
+  double mass_burned = 0.0;
+  fly(false, quiet, mass_quiet);
+  fly(true, burned, mass_burned);
+  ASSERT_EQ(quiet.size(), burned.size());
+
+  // Velocity change from the thrust alone: the difference between the two runs,
+  // projected on inertial +X (identity attitude, +X thruster).
+  const Eigen::Vector3d dv =
+      burned.back().state.velocity.eigen() - quiet.back().state.velocity.eigen();
+  const double expected_dv = 0.5 * 60.0 / 12.0;  // 2.5 m/s, before mass loss (~0.1 %)
+  EXPECT_NEAR(dv.x(), expected_dv, 0.03) << dv.transpose();
+  EXPECT_LT(std::abs(dv.y()) + std::abs(dv.z()), 0.03);
+  EXPECT_NEAR(mass_quiet, 12.0, 1e-12);
+  EXPECT_NEAR(12.0 - mass_burned, 0.5 / (220.0 * 9.80665) * 60.0, 5.0e-4);
+  // The trace saw the burn: delivered thrust at t = 60 s, none at t = 10 s.
+  ASSERT_EQ(burned[600].thrusters.size(), 1u);
+  EXPECT_NEAR(burned[600].thrusters[0].delivered_thrust_n, 0.5, 1e-6);
+  EXPECT_DOUBLE_EQ(burned[100].thrusters[0].delivered_thrust_n, 0.0);
+  EXPECT_LT(burned[600].mass_kg, 12.0);
+}

@@ -38,6 +38,11 @@ params:
   # it is what lib/gnc/orbit_od.hpp's latency correction exists to remove. The
   # flight-side bound (OrbitOdConfig::max_fix_latency_s) must cover it.
   fix_latency_s: 0.05
+  # Delivery jitter on that latency, 1-sigma per fix. Bus and scheduler do not
+  # deliver every message the same milliseconds late (15 +/- 7.5 ms measured on
+  # CubeSat buses, Ceresoli et al. 2025); the fix's time tag is unaffected, so
+  # the flight latency correction stays exact — this exists to prove that.
+  fix_latency_jitter_s: 0.005
 
   # --- Acquisition / reacquisition (datasheet) ----------------------------------
   cold_start_s: 34.0     # "Time to first fix: Cold start < 34 s (typ)"

@@ -32,6 +32,9 @@ add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/OnboardTables/")
 # OnboardTables EOP query, and the source of the position the attitude
 # estimator's references are evaluated at.
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/OrbitEstimator/")
+# BurnExecutor: the §17 finite-burn seam (throttles out, commanded acceleration
+# to the orbit estimator). Depends on GncPorts and SitlPorts.
+add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/BurnExecutor/")
 
 # Coarse attitude determination (design doc §8.1, §10). A flight component: it
 # ships to hardware and consumes the GncPorts measurement seam, whichever source

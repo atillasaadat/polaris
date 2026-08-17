@@ -150,6 +150,7 @@ def _resolve_units(
                 "mounting_dcm_row_major": _mounting_dcm(unit),
                 "spin_axis": unit.spin_axis,
                 "dipole_axis": unit.dipole_axis,
+                "thrust_axis": unit.thrust_axis,
                 "mounting_position_m": unit.mounting_position_m,
                 "noise_enabled": unit.noise_enabled,
             }
@@ -835,6 +836,64 @@ _WHY_BALLISTIC = (
 )
 
 
+_THRUSTER_AXES_PARAM = "flight.burnExecutor.ThrusterAxesBody"
+_WHY_THRUSTER_AXES = (
+    "The burn executor rotates the commanded thrust along this axis to tell the "
+    "orbit filter what acceleration is acting; an axis that disagrees with the "
+    "installed thruster tells the filter the vehicle is being pushed the wrong "
+    "way, and the filter then rejects every fix under the burn."
+)
+
+
+def _check_burn_parameters(body: dict[str, Any]) -> None:
+    """Refuse burn-executor tuning that contradicts the installed thrusters (§17).
+
+    Per-unit thrust and Isp are the catalog's `thrust_n`/`isp_s` for that unit
+    (a transcription, so an equality within float reading), the count is the
+    installed count, and the axes are each unit's `thrust_axis`. Silent when the
+    parameters are absent, so a vehicle without a burn executor compiles as
+    before.
+    """
+    sc = body["spacecraft"]
+    fsw = sc.get("fsw_parameters", {})
+    thrusters = [u for u in sc.get("actuators", []) if u.get("kind") == "thruster"]
+    count = fsw.get("flight.burnExecutor.ThrusterCount")
+    if count is not None and int(count) != len(thrusters):
+        raise ConfigError(
+            f"flight.burnExecutor.ThrusterCount = {count} against {len(thrusters)} installed "
+            f"thruster(s) ({', '.join(u['name'] for u in thrusters) or 'none'}).\n"
+            f"The count bounds the executor's loops over the suite, so a mismatch fires "
+            f"a thruster nothing installed or leaves one silent."
+        )
+    _check_per_unit_boresights(
+        fsw,
+        _THRUSTER_AXES_PARAM,
+        thrusters,
+        "thruster",
+        _WHY_THRUSTER_AXES,
+        expected_fn=_axis_key("thrust_axis"),
+    )
+    for param, key in (
+        ("flight.burnExecutor.ThrusterThrustN", "thrust_n"),
+        ("flight.burnExecutor.ThrusterIspS", "isp_s"),
+    ):
+        values = fsw.get(param)
+        if values is None:
+            continue
+        for index, unit in enumerate(thrusters):
+            catalog = unit.get("params", {}).get(key)
+            if catalog is None or index >= len(values):
+                continue
+            if not _close(float(values[index]), float(catalog), 1.0e-6):
+                raise ConfigError(
+                    f"{param}[{index}] = {float(values[index]):g} against thruster "
+                    f"'{unit['name']}' catalog {key} = {float(catalog):g}.\n"
+                    f"The executor's commanded acceleration and mass depletion are "
+                    f"computed from this number; a value the hardware does not deliver "
+                    f"is an acceleration the orbit filter is told and never gets."
+                )
+
+
 def _check_orbit_parameters(body: dict[str, Any]) -> None:
     """Refuse an OD latency bound the installed receiver cannot meet (§8.3, §19.4).
 
@@ -931,6 +990,7 @@ def resolve(
     _check_star_tracker_parameters(body)
     _check_control_parameters(body)
     _check_orbit_parameters(body)
+    _check_burn_parameters(body)
     _check_catalog_pairs(body["spacecraft"])
     _check_vehicle_pairs(body["spacecraft"])
     resolved = {

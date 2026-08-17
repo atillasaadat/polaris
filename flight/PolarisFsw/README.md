@@ -351,8 +351,9 @@ ephemeris and EOP grades, with edge-gated `ReferenceDegraded`/`ReferenceRecovere
 events. Position is the **orbit estimator's** solution, latched from
 `orbitStateIn` and consumed once per cycle (a producer that stops publishing
 leaves position unavailable rather than a stale vector reused). A receiver
-outage therefore costs the magnetic reference only once the orbit filter has
-dropped its solution at the coast horizon (§8.3); when it does, the estimator
+outage therefore costs the magnetic reference only once the orbit filter's
+published position sigma exceeds `MaxPositionSigmaM` (20 km) or the solution is
+dropped at the degraded horizon (§8.3, 1800 s); when it does, the estimator
 gyro-coasts, flagged by an edge-gated `PositionUnavailable` warning.
 
 **Tuning is ParameterDb, with no defaults, behind two flight validity gates and
@@ -640,10 +641,12 @@ the data it asked for.
    block of `config/spacecraft/leo_smallsat.yaml`.
    Uplink both (`PRM_SET` + `PRM_SAVE`). **Do not follow that with
    `RESET_ESTIMATOR`:** `parameterUpdated` already re-reads the whole set on the
-   next cycle and rebuilds both estimators (which drops and re-seeds the MEKF on
-   the new sigmas, which is what you want), while the reset would additionally
-   *clear the calibration you just measured* and cost another window to get it
-   back.
+   next cycle — the coarse chain is rebuilt on the new sigmas, and the MEKF is
+   **re-tuned in place** (Push 71; NESC TB 20-03 item g) so the fine solution
+   and its converged bias survive — while the reset would additionally *clear
+   the calibration you just measured* and cost another window to get it back.
+   If you do want the fine covariance re-opened on the new sigmas without
+   losing the bias, `ATT_REINIT_COV` is the command for that.
 
 **The applied calibration does not survive a reboot.** It lives in component
 state; nothing is written to `ParameterDb`, and persisting it is deliberately
@@ -810,3 +813,94 @@ cycle already holds the component's mutex and the command port shares it.
 `WheelBiasNms`, the switch of the zero-crossing A/B row (`WheelSpeedBias
 KeepsTheWheelsOffZero`); like `-F` it is applied after the parameters are
 validated, so a bias-off run still flies a validated vehicle.
+`-b cycle,durationS,throttle` arms the burn executor's `BURN_START` for a GNC
+cycle (§17), the burn rows' way of firing the thruster; like `-R` it runs the
+command body from inside the guarded run cycle. `-N 0` makes the orbit
+estimator ignore the burn executor's acceleration — the "blind" half of the
+burn-in-outage A/B (`sitl_od_burn_test.cpp`); absent or `-N 1` is the flight
+behaviour.
+
+## Orbit estimator: thrust, the degraded horizon, the ground seed (§8.3, Push 70)
+
+The `OrbitEstimator` latches the burn executor's `NonGravAccel` on `accelIn`
+and propagates with it when it is valid and no older than `MaxAccelAgeS`
+(invalid or stale means "no thrust known", never the last value), inflating its
+process noise by the record's sigma over the step. Its solution now carries a
+**quality**: FINE through `MaxCoastS` (300 s), DEGRADED through
+`MaxDegradedCoastS` (1800 s) — the coasted prediction with the covariance the
+process noise grew, `OrbitSolutionDegraded` at the edge — and dropped past it
+(`OrbitSolutionDropped`). Consumers gate on `posSigmaM` against their own
+tolerance: the attitude estimator's `MaxPositionSigmaM` is 20 km, so a
+DEGRADED solution keeps the magnetic reference. Fixes returning inside the
+degraded horizon are absorbed by update, not re-seed. `OD_SEED_STATE(epoch, r,
+v, σ)` seeds the filter from the ground for a long outage or a dead receiver
+(refused when older than the degraded horizon or ahead of the latency bound),
+and `OrbitStatus` (every `StatusPeriodCycles`) reports quality, age, sigma and
+position — the event the SITL rows read against truth.
+
+## Navigation-filter usability practices (§8.1, §8.3; Push 71)
+
+Both filters carry the NESC best practices of NASA/TP-2018-219822 Ch. 9 and
+NESC Technical Bulletin 20-03 items (d)–(g), each with its section cited at the
+seam:
+
+- **Tuning without loss of navigation data (item g, TP §9.3).** A parameter
+  upload re-tunes the running filter in place — `OrbitTuningApplied` /
+  `FineTuningApplied` say the solution was kept — and a set that fails
+  validation warns (`OrbitTuningInvalid` / `FineConfigInvalid`) and leaves the
+  last valid set in force. Before Push 71 an upload rebuilt the filter and
+  dropped the solution; on the attitude side *any* estimator parameter demoted
+  the fine mode.
+- **Covariance re-initialisation without altering the state (item f, TP
+  §9.2).** `OD_REINIT_COV(posSigmaM, velSigmaMps)` and
+  `ATT_REINIT_COV(attSigmaRad, biasSigmaRadps)` re-open the covariance around
+  the current state — the mild remedy for an over-confident filter editing good
+  measurements. Refused by name with no solution or a bad sigma.
+- **Selective processing per measurement type (item d, TP §9.1).** U8
+  parameters `PositionMeasMode` / `VelocityMeasMode` and `SunMeasMode` /
+  `MagMeasMode` / `StMeasMode`: 0 `ACCEPT` (the NIS gate decides), 1 `INHIBIT`
+  (never applied — a fix cannot seed on an inhibited half; an inhibited sun or
+  magnetic field is withheld from **both** attitude chains), 2 `FORCE` (applied
+  past the gate; a negative or non-finite NIS still refuses). Changes are
+  reported by `MeasurementPolicyChanged` / `AttMeasurementPolicyChanged`;
+  forced updates are counted apart in `FixesForced` / `MekfForced` (and the
+  refusal `MEASUREMENT_INHIBITED` is its own name).
+- **Backup ephemeris (item e, TP §9.2).** The orbit estimator keeps a copy of
+  the filter seeded from a FINE solution every `BackupPeriodS` (600 s; 0
+  disables; must be under `MaxDegradedCoastS`) and propagates it alongside on
+  the same model with the same thrust input, never a fix (`OrbitBackupSeeded`
+  on the first seed, `OrbitBackupLost` if it coasts out). `OD_RESTART_FROM_BACKUP`
+  makes it the solution with no uplink (`OrbitRestartedFromBackup`, refused by
+  `OrbitBackupRestartRefused` when there is none); `BackupAgeS` and
+  `BackupDivergenceM` are the telemetry, the latter the TP's independent
+  divergence comparator.
+- **Covariance definiteness (TP Ch. 7).** Every cycle both filters factorise
+  `P` (LDLᵀ) — `CovarianceHealthy` / `FineCovarianceHealthy`, with
+  `OrbitCovarianceIndefinite` / `FineCovarianceIndefinite` at the edge. The
+  UDU filter the TP recommends gets this for free from `D`; this is that check
+  done explicitly on a full covariance.
+
+## Finite-burn executor (§17)
+
+`BurnExecutor` (`flight/PolarisFsw/BurnExecutor`, base id `0x10060000`,
+REQ-MAN-001) is the seam the Phase-8 targeting will command: `BURN_START
+(durationS, throttleFrac)` holds a throttle on the configured thrusters for the
+duration, `BURN_ABORT` stops it, and refusals are by name (`UNCONFIGURED`,
+`DURATION`, `THROTTLE`, `ATTITUDE`, `ALREADY_BURNING`); an attitude estimate
+going stale mid-burn aborts it. It is **member 3** of the GNC rate group, after
+the controller — its throttle (`thrusterCmdOut -> sitlBridge.thrusterCmdIn`,
+`ThrusterThrottleSet` in vehicle build order) rides the same STEP_REPLY as the
+wheel and rod commands, and the acceleration it publishes (`accelOut ->
+orbitEstimator.accelIn`, `NonGravAccel`: commanded thrust over its own
+depleting mass estimate, rotated to ECI with the second copy of the attitude
+estimate on `attitudeEstimator.estimateOut[1]`, `sigma = ThrustKnowledgeFrac *
+|a|`) is latched by the orbit estimator for the *next* cycle — the step over
+which that throttle first acts on the plant. Idle it publishes an explicit "no
+thrust" every cycle, so the filter never coasts on a stale vector. Parameters
+(`ThrusterCount`, `ThrusterAxesBody`, `ThrusterThrustN`, `ThrusterIspS`,
+`VehicleMassKg`, `ThrustKnowledgeFrac`, `MaxBurnDurationS`,
+`MaxAttitudeAgeS`) are no-default and configc-checked against the installed
+thruster catalog entries and their `thrust_axis` mounts. Telemetry:
+`BurnStateTlm`, `BurnRemainingS`, `BurnDeltaVMps`, `MassEstimateKg`,
+`ThrottleCmd`. Pointing during a burn is the controller's job; steering and
+targeting are Phase 8.

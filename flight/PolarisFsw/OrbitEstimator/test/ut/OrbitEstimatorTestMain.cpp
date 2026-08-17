@@ -33,9 +33,39 @@ TEST(OrbitEstimator, EopUnavailable) {
   tester.testEopUnavailable();
 }
 
+TEST(OrbitEstimator, DegradedReacquiresByUpdateNotSeed) {
+  flight::OrbitEstimatorTester tester;
+  tester.testDegradedReacquiresByUpdateNotSeed();
+}
+
+TEST(OrbitEstimator, NonGravAccelIsAppliedOnlyWhenFreshAndValid) {
+  flight::OrbitEstimatorTester tester;
+  tester.testNonGravAccelIsAppliedOnlyWhenFreshAndValid();
+}
+
+TEST(OrbitEstimator, GroundSeedAcceptedAndRefused) {
+  flight::OrbitEstimatorTester tester;
+  tester.testGroundSeedAcceptedAndRefused();
+}
+
 TEST(OrbitEstimator, ResetDropsSolution) {
   flight::OrbitEstimatorTester tester;
   tester.testResetDropsSolution();
+}
+
+TEST(OrbitEstimator, TuningUploadKeepsTheSolution) {
+  flight::OrbitEstimatorTester tester;
+  tester.testTuningUploadKeepsTheSolution();
+}
+
+TEST(OrbitEstimator, CovarianceReinitAndMeasurementPolicy) {
+  flight::OrbitEstimatorTester tester;
+  tester.testCovarianceReinitAndMeasurementPolicy();
+}
+
+TEST(OrbitEstimator, BackupEphemerisRestart) {
+  flight::OrbitEstimatorTester tester;
+  tester.testBackupEphemerisRestart();
 }
 
 int main(int argc, char** argv) {
