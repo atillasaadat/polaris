@@ -1203,3 +1203,53 @@ def test_orbit_checks_are_silent_without_the_parameters(tmp_path):
             del fsw[key]
 
     _resolve_variant(tmp_path, "no_orbit_params", mutate)  # must not raise
+
+
+# --- Wheel-speed bias (§8.5, REQ-ACTL-012) ------------------------------------
+
+_WHEEL_BIAS = "flight.attitudeController.WheelBiasNms"
+
+
+def test_shipped_wheel_bias_compiles():
+    # 3.0e-3 N*m*s: under the 0.030 capacity, over 0.75 x the 3.6e-3 desat entry.
+    resolve(load_config(_TEMPLATE), load_hardware_library(_HARDWARE))  # must not raise
+
+
+def test_wheel_bias_at_capacity_is_refused(tmp_path):
+    def mutate(config):
+        config["spacecraft"]["fsw_parameters"][_WHEEL_BIAS][0] = 0.030
+
+    with pytest.raises(ConfigError) as exc:
+        _resolve_variant(tmp_path, "bias_at_capacity", mutate)
+    assert "capacity" in str(exc.value)
+
+
+def test_wheel_bias_under_the_desat_share_is_refused_unless_declared(tmp_path):
+    # 2.0e-3 is under 0.75 x 3.6e-3 = 2.7e-3: a loaded wheel reaches zero before
+    # desaturation engages, which is what the bias exists to prevent.
+    def mutate(config):
+        bias = config["spacecraft"]["fsw_parameters"][_WHEEL_BIAS]
+        for i in range(4):
+            bias[i] = 2.0e-3 if i % 2 == 0 else -2.0e-3
+
+    with pytest.raises(ConfigError) as exc:
+        _resolve_variant(tmp_path, "bias_under_desat", mutate)
+    assert "MomentumDesatEnterNms" in str(exc.value)
+
+    def declared(config):
+        mutate(config)
+        config["spacecraft"].setdefault("fsw_parameter_divergence", {})[_WHEEL_BIAS] = {
+            "catalog_value": 0.75 * 3.6e-3,
+            "reason": "test: accepting a wheel near zero before desaturation",
+        }
+
+    _resolve_variant(tmp_path, "bias_under_desat_declared", declared)  # must not raise
+
+
+def test_wheel_bias_off_is_never_checked_against_the_desat_share(tmp_path):
+    def mutate(config):
+        bias = config["spacecraft"]["fsw_parameters"][_WHEEL_BIAS]
+        for i in range(len(bias)):
+            bias[i] = 0.0
+
+    _resolve_variant(tmp_path, "bias_off", mutate)  # must not raise

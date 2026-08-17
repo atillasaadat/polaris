@@ -45,7 +45,8 @@ void print_usage(const char* app) {
       "absent = no alignment calibration)\n"
       "-F\tdisturbance feedforward tiers as model,observer (0/1 each; SITL/bench "
       "only; absent = the ParameterDb values)\n"
-      "-R\tcommand OD_RESET on GNC cycle N (SITL/bench only; 0/absent = never)\n",
+      "-R\tcommand OD_RESET on GNC cycle N (SITL/bench only; 0/absent = never)\n"
+      "-W\twheel-speed bias 0/1 (SITL/bench only; absent = the ParameterDb pattern)\n",
       app);
 }
 
@@ -90,11 +91,12 @@ int main(int argc, char* argv[]) {
   I32 ff_model = -1;             // <0 = leave the ParameterDb value alone
   I32 ff_observer = -1;
   U32 od_reset_cycle = 0;  // 0 = never command an orbit-filter reset
+  I32 wheel_bias = -1;     // <0 = leave the ParameterDb pattern alone
 
   Os::init();
 
   // Loop while reading the getopt supplied options
-  while ((option = getopt(argc, argv, "hp:a:s:c:q:E:B:I:Y:P:M:A:F:R:")) != -1) {
+  while ((option = getopt(argc, argv, "hp:a:s:c:q:E:B:I:Y:P:M:A:F:R:W:")) != -1) {
     switch (option) {
       // Handle the -a argument for address/hostname
       case 'a':
@@ -232,6 +234,17 @@ int main(int argc, char* argv[]) {
         od_reset_cycle = static_cast<U32>(parsed);
         break;
       }
+      // SITL/bench only: force the §8.5 wheel-speed bias on or off, the
+      // zero-crossing A/B experiment's switch.
+      case 'W': {
+        const long parsed = ::strtol(optarg, nullptr, 10);
+        if (parsed < 0 || parsed > 1) {
+          (void)printf("Invalid wheel-bias spec '%s' (expected 0 or 1)\n", optarg);
+          return 1;
+        }
+        wheel_bias = static_cast<I32>(parsed);
+        break;
+      }
       // Cascade intended: help output
       case 'h':
       // Cascade intended: help output
@@ -261,6 +274,7 @@ int main(int argc, char* argv[]) {
   inputs.ffModel = ff_model;
   inputs.ffObserver = ff_observer;
   inputs.odResetCycle = od_reset_cycle;
+  inputs.wheelBias = wheel_bias;
   inputs.prmDbPath = prm_db_path;
 
   // Setup program shutdown via Ctrl-C

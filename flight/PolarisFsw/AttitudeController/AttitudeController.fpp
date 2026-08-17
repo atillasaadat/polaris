@@ -372,6 +372,30 @@ module flight {
     @ case an operator needs to see. Zero disables compensation on that wheel.
     param WheelFrictionScale: F64PerUnit
 
+    # --- Wheel-speed bias (§8.5; REQ-ACTL-012; lib/gnc/rw_bias.hpp) ---------
+
+    @ Target per-wheel momentum pattern [N*m*s], vehicle build order — the
+    @ wheel-speed bias that keeps every wheel off zero, where the drive LSB,
+    @ the Coulomb sign flip and stiction make it a poor actuator. Only the
+    @ pattern's projection onto the array's **null space** is pursued (on the
+    @ reference pyramid [+b,-b,+b,-b]), so it stores no body momentum, costs no
+    @ pointing and no desaturation, and a mis-set pattern degrades to a smaller
+    @ bias, never a disturbance. **All zero = off** (the toggle). Sized as a
+    @ fraction of WheelCapacityNms — 10 % on the reference vehicle. Inert on a
+    @ three-wheel array (no null space); the bus-level alternative there is
+    @ MomentumTargetBody.
+    param WheelBiasNms: F64PerUnit
+
+    @ Bias servo gain [1/s]: wheel torque per unit null-space momentum error. A
+    @ slow trim (time constant tens to hundreds of seconds), not a loop that
+    @ races pointing. Zero = off.
+    param WheelBiasGainPerS: F64
+
+    @ Cap on the bias servo's per-wheel torque [N*m], applied as one scale on
+    @ the whole vector so the command stays in the null space. Keeps the servo
+    @ a trim against the wheel torque box.
+    param WheelBiasMaxTorqueNm: F64
+
     # --- MTQ/MAG duty-cycle interlock (§7) ---------------------------------
 
     @ Number of installed magnetorquer rods. This push drives an orthogonal triad
@@ -552,6 +576,10 @@ module flight {
     @ clipped: same direction, less of it.
     telemetry AllocScale: F64
 
+    @ Largest per-wheel torque the wheel-speed bias servo commanded this cycle
+    @ [N*m] (0 when the bias is off, converged, or the array has no null space).
+    telemetry WheelBiasTorqueNm: F64
+
     @ Estimated body-rate magnitude [rad/s] this cycle.
     telemetry RateNorm: F64
 
@@ -650,6 +678,13 @@ module flight {
 
     @ The commanded body torque hit PidMaxTorqueNm, or the wheel array saturated.
     @ Bounded cadence.
+    @ The wheel-speed bias servo is engaged (a non-zero pattern in a non-empty
+    @ null space): reports the pattern actually pursued on wheel 0 and the null
+    @ dimension. Once, at configuration.
+    event WheelBiasEngaged(effectiveWheel0Nms: F64, nullDimension: U8) \
+      severity activity high \
+      format "Wheel-speed bias engaged: {} N*m*s on wheel 0, null-space dimension {}"
+
     event TorqueSaturated(demandNm: F64, limitNm: F64, allocScale: F64) \
       severity warning low \
       format "Torque saturated: demand {} N*m against limit {} N*m, allocation scale {}"

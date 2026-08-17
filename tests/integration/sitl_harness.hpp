@@ -117,7 +117,7 @@ inline pid_t spawnFsw(const std::string& bin, std::uint16_t port, const std::str
                       const std::string& log_path, unsigned magCalSamples = 0,
                       unsigned stAlignPairs = 0, unsigned stAlignUnit = 1, unsigned ctrlMode = 0,
                       const double* ctrlTargetQ = nullptr, int feedforward = -1,
-                      unsigned odResetCycle = 0) {
+                      unsigned odResetCycle = 0, int wheelBias = -1) {
   const pid_t pid = ::fork();
   if (pid == 0) {
     // A child whose log cannot be opened must not fly and report nothing: the
@@ -144,17 +144,25 @@ inline pid_t spawnFsw(const std::string& bin, std::uint16_t port, const std::str
         feedforward < 0 ? std::string("")
                         : std::to_string(feedforward) + "," + std::to_string(feedforward);
     const std::string reset_str = std::to_string(odResetCycle);
-    if (feedforward < 0) {
-      ::execl(bin.c_str(), bin.c_str(), "-s", port_str.c_str(), "-P", prm_path.c_str(), "-Y",
-              kEpochDecimalYear, "-M", cal_str.c_str(), "-A", align_str.c_str(), "-c",
-              ctrl_str.c_str(), "-q", target_str.c_str(), "-R", reset_str.c_str(),
-              static_cast<char*>(nullptr));
-    } else {
-      ::execl(bin.c_str(), bin.c_str(), "-s", port_str.c_str(), "-P", prm_path.c_str(), "-Y",
-              kEpochDecimalYear, "-M", cal_str.c_str(), "-A", align_str.c_str(), "-c",
-              ctrl_str.c_str(), "-q", target_str.c_str(), "-F", ff_str.c_str(), "-R",
-              reset_str.c_str(), static_cast<char*>(nullptr));
+    const std::string bias_str = std::to_string(wheelBias);
+    // Optional overrides are passed only when asked for, so a row that does not
+    // set one flies the ParameterDb value rather than a default of ours.
+    const char* argv_[32] = {
+        bin.c_str(),       "-s", port_str.c_str(),   "-P", prm_path.c_str(),  "-Y",
+        kEpochDecimalYear, "-M", cal_str.c_str(),    "-A", align_str.c_str(), "-c",
+        ctrl_str.c_str(),  "-q", target_str.c_str(), "-R", reset_str.c_str()};
+    int argc_ = 17;
+    if (feedforward >= 0) {
+      argv_[argc_++] = "-F";
+      argv_[argc_++] = ff_str.c_str();
     }
+    if (wheelBias >= 0) {
+      argv_[argc_++] = "-W";
+      argv_[argc_++] = bias_str.c_str();
+    }
+    argv_[argc_] = nullptr;
+    // execv takes char* const*; the strings are not modified.
+    ::execv(bin.c_str(), const_cast<char* const*>(argv_));
     _exit(127);  // exec failed
   }
   return pid;

@@ -176,6 +176,13 @@ void AttitudeControllerTester ::setValidParameters(F64 dutyFactor, F64 settleSec
     friction_scale[i] = i < kWheelCount ? 1.0 : 0.0;
   }
   this->paramSet_WheelFrictionScale(friction_scale, friction_valid);
+  F64PerUnit bias_pattern;
+  for (U32 i = 0; i < F64PerUnit::SIZE; ++i) {
+    bias_pattern[i] = 0.0;  // off: the component tests measure the loop without a bias
+  }
+  this->paramSet_WheelBiasNms(bias_pattern, Fw::ParamValid::VALID);
+  this->paramSet_WheelBiasGainPerS(0.0, Fw::ParamValid::VALID);
+  this->paramSet_WheelBiasMaxTorqueNm(0.0, Fw::ParamValid::VALID);
 
   Vec3F64PerUnit rod_axes;
   for (U32 i = 0; i < Vec3F64PerUnit::SIZE; ++i) {
@@ -989,6 +996,84 @@ void AttitudeControllerTester ::testWheelCapacityMonitorSeesNullSpaceMomentum() 
   this->runCycleAt(t);
   ASSERT_EVENTS_WheelCapacityRecovered_SIZE(1);
   ASSERT_EVENTS_WheelNearCapacity_SIZE(0);
+}
+
+void AttitudeControllerTester ::testWheelBiasServoAddsNullSpaceTorqueOnly() {
+  this->setValidParameters();
+  // Bias on: [+b,-b,+b,-b] at 10 % of capacity, a slow trim.
+  const double b = 0.1 * kWheelCapacityNms;
+  F64PerUnit pattern;
+  for (U32 i = 0; i < F64PerUnit::SIZE; ++i) {
+    pattern[i] = i < kWheelCount ? ((i % 2 == 0) ? b : -b) : 0.0;
+  }
+  this->paramSet_WheelBiasNms(pattern, Fw::ParamValid::VALID);
+  this->paramSet_WheelBiasGainPerS(0.02, Fw::ParamValid::VALID);
+  this->paramSet_WheelBiasMaxTorqueNm(1.0e-3, Fw::ParamValid::VALID);
+  this->component.loadParameters();
+  this->setWheelSpeeds(0.0);  // wheels at rest: the whole pattern is the error
+
+  // Ten degrees off, POINT: pointing torque plus the bias trim.
+  const double angle = 10.0 * M_PI / 180.0;
+  const pm::Quaternion attitude =
+      pm::Quaternion::FromAxisAngle(Eigen::Vector3d::UnitX(), angle).canonical();
+  this->setEstimate(attitude, Eigen::Vector3d::Zero(), 1.0e-4, kStartTaiNs);
+  this->runCycleAt(kStartTaiNs);
+  this->sendCmd_CTRL_SET_TARGET_Q(0, 0, 1.0, 0.0, 0.0, 0.0);
+  this->sendCmd_CTRL_MODE_SET(0, 0, AttitudeController::CtrlMode::POINT);
+  this->clearHistory();
+  this->setEstimate(attitude, Eigen::Vector3d::Zero(), 1.0e-4, kStartTaiNs + kPeriodNs);
+  this->runCycleAt(kStartTaiNs + kPeriodNs);
+
+  ASSERT_EVENTS_WheelBiasEngaged_SIZE(0);  // engaged at configuration, before clearHistory
+  ASSERT_TLM_TorqueCmd_SIZE(1);
+  const Vec3F64 torque = this->tlmHistory_TorqueCmd->at(0).arg;
+  // The wheels deliver exactly the PID torque — the bias trim is invisible to
+  // the body — and every wheel carries the trim on top: gain * b in the pattern.
+  const double s = 1.0 / std::sqrt(3.0);
+  const double signs[4][3] = {{1, 1, 1}, {-1, 1, 1}, {-1, -1, 1}, {1, -1, 1}};
+  Eigen::Vector3d delivered = Eigen::Vector3d::Zero();
+  double null_content = 0.0;
+  for (U32 i = 0; i < kWheelCount; ++i) {
+    const Eigen::Vector3d axis(-signs[i][0] * s, -signs[i][1] * s, -signs[i][2] * s);
+    delivered += axis * this->last_wheels_[i];
+    null_content += this->last_wheels_[i] * ((i % 2 == 0) ? 0.5 : -0.5);
+  }
+  EXPECT_NEAR(delivered.x(), torque[0], 1.0e-12);
+  EXPECT_NEAR(delivered.y(), torque[1], 1.0e-12);
+  EXPECT_NEAR(delivered.z(), torque[2], 1.0e-12);
+  // Projection of the command onto the null vector [+,-,+,-]/2: gain*b*|pattern|
+  // = 0.02 * b * 2 (the min-norm allocation contributes nothing there).
+  EXPECT_NEAR(null_content, 0.02 * b * 2.0, 1.0e-12);
+  ASSERT_TLM_WheelBiasTorqueNm_SIZE(1);
+  EXPECT_NEAR(this->tlmHistory_WheelBiasTorqueNm->at(0).arg, 0.02 * b, 1.0e-12);
+
+  // Wheels already at the pattern: the trim rests and only pointing remains.
+  this->clearHistory();
+  for (U32 i = 0; i < kWheelCount; ++i) {
+    this->wheel_speed_radps_[i] = pattern[i] / kWheelInertiaKgm2;
+    this->wheel_speed_valid_[i] = true;
+  }
+  this->setEstimate(attitude, Eigen::Vector3d::Zero(), 1.0e-4, kStartTaiNs + 2 * kPeriodNs);
+  this->runCycleAt(kStartTaiNs + 2 * kPeriodNs);
+  ASSERT_TLM_WheelBiasTorqueNm_SIZE(1);
+  EXPECT_NEAR(this->tlmHistory_WheelBiasTorqueNm->at(0).arg, 0.0, 1.0e-12);
+}
+
+void AttitudeControllerTester ::testWheelBiasPastCapacityIsRefused() {
+  this->setValidParameters();
+  F64PerUnit pattern;
+  for (U32 i = 0; i < F64PerUnit::SIZE; ++i) {
+    pattern[i] = 0.0;
+  }
+  pattern[0] = kWheelCapacityNms;  // a "bias" that is the whole wheel
+  this->paramSet_WheelBiasNms(pattern, Fw::ParamValid::VALID);
+  this->paramSet_WheelBiasGainPerS(0.02, Fw::ParamValid::VALID);
+  this->paramSet_WheelBiasMaxTorqueNm(1.0e-3, Fw::ParamValid::VALID);
+  this->component.loadParameters();
+  this->setEstimate(pm::Quaternion::Identity(), Eigen::Vector3d::Zero(), 1.0e-4, kStartTaiNs);
+  this->runCycleAt(kStartTaiNs);
+  ASSERT_EVENTS_ConfigInvalid_SIZE(1);
+  ASSERT_EVENTS_WheelBiasEngaged_SIZE(0);
 }
 
 void AttitudeControllerTester ::testMomentumEnvelopeAndWheelDropout() {

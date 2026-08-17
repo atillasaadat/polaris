@@ -806,3 +806,7 @@ single attempt would always be refused. `-R <cycle>` runs the orbit estimator's
 `OD_RESET` body on that GNC cycle (§8.3), for the reset-and-reseed SITL row; it
 is the one hook that does *not* go through the command port, because the run
 cycle already holds the component's mutex and the command port shares it.
+`-W 0/1` forces the §8.5 wheel-speed bias off or on regardless of
+`WheelBiasNms`, the switch of the zero-crossing A/B row (`WheelSpeedBias
+KeepsTheWheelsOffZero`); like `-F` it is applied after the parameters are
+validated, so a bias-off run still flies a validated vehicle.

@@ -104,6 +104,12 @@ class AttitudeControllerTester : public AttitudeControllerGTestBase {
   //! rather than understating it, and holds the latch where it was.
   void testMomentumEnvelopeAndWheelDropout();
   void testWheelCapacityMonitorSeesNullSpaceMomentum();
+  //! The wheel-speed bias servo adds a null-space trim (zero body torque),
+  //! rests when the wheels sit at the pattern, and refuses a pattern past
+  //! capacity.
+  void testWheelBiasServoAddsNullSpaceTorqueOnly();
+  //! A bias pattern at or past WheelCapacityNms is a configuration refusal.
+  void testWheelBiasPastCapacityIsRefused();
 
  private:
   // ----------------------------------------------------------------------

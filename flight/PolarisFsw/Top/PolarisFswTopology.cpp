@@ -218,6 +218,9 @@ void setupTopology(const TopologyState& state) {
   if (state.ffModel >= 0 && state.ffObserver >= 0) {
     attitudeController.setFeedforwardAtStartup(state.ffModel != 0, state.ffObserver != 0);
   }
+  if (state.wheelBias >= 0) {
+    attitudeController.setWheelBiasAtStartup(state.wheelBias != 0);
+  }
   // The §8.3 twin: arm an OD_RESET for a given GNC cycle. The command handler's
   // own body runs when the cycle comes (the run cycle holds the component mutex,
   // so it is not re-dispatched through the command port).

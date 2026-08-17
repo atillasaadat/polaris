@@ -32,6 +32,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cmath>
 #include <sstream>
 #include <string>
@@ -102,6 +103,9 @@ struct RunResult {
   /// (there is no wheel-speed limit in the drive path, Push 69), so it is read
   /// from the plant.
   double peak_wheel_momentum_nms = 0.0;
+  /// Truth wheel speeds [rad/s] at each exchanged step, per wheel — what the
+  /// wheel-speed bias row counts zero crossings on.
+  std::vector<std::array<double, 4>> wheel_speed_radps;
   /// Commanded body-dipole magnitude [A·m²] at each exchanged step, so a row can
   /// say *when* the rods were driven and correlate that with what the vehicle did.
   std::vector<double> rod_dipole_am2;
@@ -116,7 +120,7 @@ struct RunResult {
 /// against a run that did not happen.
 template <typename PerStep>
 RunResult fly(const std::string& tag, const scenario::SimConfig& orbit, unsigned ctrlMode,
-              const double* targetQ, PerStep perStep, int feedforward = -1) {
+              const double* targetQ, PerStep perStep, int feedforward = -1, int wheelBias = -1) {
   RunResult result;
   const std::string work_dir =
       "build-artifacts/test-control-" + tag + "-" + std::to_string(::getpid());
@@ -135,7 +139,7 @@ RunResult fly(const std::string& tag, const scenario::SimConfig& orbit, unsigned
   }
   const pid_t pid = spawnFsw(fswBinaryPath(), server.port(), prm_path, log_path,
                              /*magCalSamples=*/0, /*stAlignPairs=*/0, /*stAlignUnit=*/1, ctrlMode,
-                             targetQ, feedforward);
+                             targetQ, feedforward, /*odResetCycle=*/0, wheelBias);
   if (pid < 0) {
     ADD_FAILURE() << "fork failed";
     return result;
@@ -186,10 +190,13 @@ RunResult fly(const std::string& tag, const scenario::SimConfig& orbit, unsigned
     for (const io::WheelCommand& w : out.wheels) {
       result.peak_wheel_torque = std::max(result.peak_wheel_torque, std::abs(w.value));
     }
-    for (const auto& wheel : vehicle.wheels) {
+    std::array<double, 4> speeds{};
+    for (std::size_t i = 0; i < vehicle.wheels.size() && i < speeds.size(); ++i) {
       result.peak_wheel_momentum_nms =
-          std::max(result.peak_wheel_momentum_nms, std::abs(wheel.model.momentum()));
+          std::max(result.peak_wheel_momentum_nms, std::abs(vehicle.wheels[i].model.momentum()));
+      speeds[i] = vehicle.wheels[i].model.speed();
     }
+    result.wheel_speed_radps.push_back(speeds);
     Eigen::Vector3d commanded = Eigen::Vector3d::Zero();
     for (const pm::Vec3<pm::frames::Body>& d : out.magnetorquer_dipoles) {
       commanded += d.eigen();
@@ -362,6 +369,37 @@ TEST(SitlAttitudeControl, DetumblesFromFiveDegreesPerSecond) {
   // The interlock stayed healthy throughout a run that drove the rods every
   // cycle — the negative claim row 4 makes in full.
   EXPECT_EQ(countOf(run.log, "Magnetorquer stuck-on: rod"), 0u);
+}
+
+/// Zero crossings of each truth wheel's speed from step @p from on: strict sign
+/// changes only, so a wheel leaving rest is not a crossing.
+std::size_t wheelZeroCrossings(const RunResult& run, std::size_t from) {
+  std::size_t crossings = 0;
+  for (std::size_t w = 0; w < 4; ++w) {
+    int last_sign = 0;
+    for (std::size_t k = from; k < run.wheel_speed_radps.size(); ++k) {
+      const double v = run.wheel_speed_radps[k][w];
+      const int sign = (v > 0.0) - (v < 0.0);
+      if (sign != 0 && last_sign != 0 && sign != last_sign) {
+        ++crossings;
+      }
+      if (sign != 0) {
+        last_sign = sign;
+      }
+    }
+  }
+  return crossings;
+}
+
+/// Smallest |wheel speed| over any wheel from step @p from on [rad/s].
+double minAbsWheelSpeed(const RunResult& run, std::size_t from) {
+  double m = INFINITY;
+  for (std::size_t k = from; k < run.wheel_speed_radps.size(); ++k) {
+    for (double v : run.wheel_speed_radps[k]) {
+      m = std::min(m, std::abs(v));
+    }
+  }
+  return m;
 }
 
 // ======================================================================
@@ -1024,6 +1062,96 @@ TEST(SitlAttitudeControl, DetumblesThenAcquiresSunPointing) {
   // The tumble actually died: truth rate at the end is fine-pointing quiet,
   // far below the handover rate the wheels were given.
   EXPECT_LT(b.trace.back().state.body_rate.eigen().norm(), 0.2 * M_PI / 180.0);
+}
+
+// ======================================================================
+// Row 9 — the wheel-speed bias, on and off (§8.5; REQ-ACTL-012)
+// ======================================================================
+
+/// **The bias keeps the wheels off zero, and off zero they point better.** The
+/// same loaded hold flown twice, `-W 0/1`. Zero-momentum wheels under a small
+/// secular load cross zero speed repeatedly (measured 21 crossings in the last
+/// 250 s), and every crossing is a Coulomb sign flip and a pass through the
+/// stiction band where the sim's rotor is held at rest and the command reaches
+/// nothing. With the null-space bias engaged — [+b,-b,+b,-b] at 10 % of
+/// capacity, no body momentum — no wheel crosses zero after the servo has
+/// converged, the slowest wheel stays out of the stiction band, and the tail
+/// pointing is better (0.0119 deg against 0.0144 deg), at no cost in
+/// saturation or capacity.
+///
+/// **What the row does not claim.** On an *unloaded* hold the biased vehicle
+/// points worse (0.0102 deg against 0.0029 deg): a wheel held at rest by
+/// stiction pays no friction, while a spinning one pays the half of its Coulomb
+/// friction the 0.5 feedforward trim leaves — a real cost of the bias on this
+/// vehicle, and a reason to fly the trim closer to 1 once a rundown has been
+/// measured. It is not a reason to fly wheels at rest: a stuck wheel is an
+/// actuator that does nothing until the command exceeds breakaway, which is
+/// the failure mode the bias exists to remove.
+///
+/// **Sizing note recorded here.** The 2 rad/s tail minimum with the bias on is
+/// thin: the desaturation threshold (3.6e-3 N*m*s body) loads the worst wheel
+/// by 0.75 x 3.6e-3 = 2.7e-3 N*m*s (min-norm, along a spin axis), against a
+/// 3.0e-3 bias. The rule is bias >= 0.75 x MomentumDesatEnterNms if no wheel is
+/// to approach zero before desaturation engages; 10 % of capacity just meets it
+/// on this vehicle. A larger bias buys margin at the price of friction.
+TEST(SitlAttitudeControl, WheelSpeedBiasKeepsTheWheelsOffZero) {
+  RecordProperty("verifies", "REQ-ACTL-012");
+  std::string why;
+  if (toolchainMissing(why)) {
+    GTEST_SKIP() << why;
+  }
+  const pm::Quat<pm::frames::Body, pm::frames::ECI> target = faultMatrixAttitude();
+  const pm::Quaternion tq = target.core();
+  const double target_q[4] = {tq.w(), tq.x(), tq.y(), tq.z()};
+  constexpr double kRunS = 400.0;
+  constexpr std::size_t kTailFrom = 1500;     // 150 s: the servo's ~3 time constants
+  constexpr double kStictionBandRadps = 0.5;  // the catalog wheel's Karnopp band
+
+  auto flyBias = [&](const char* tag, int bias) {
+    scenario::SimConfig orbit = loadingOrbit(kRunS, "sitl-wheel-bias", kLoadingDipoleAm2);
+    orbit.initial_state.attitude = target;
+    return fly(tag, orbit, /*ctrlMode=*/2, target_q, noFaults, /*feedforward=*/-1, bias);
+  };
+  const RunResult off = flyBias("bias-off", 0);
+  const RunResult on = flyBias("bias-on", 1);
+  ASSERT_TRUE(off.sim_healthy);
+  ASSERT_TRUE(on.sim_healthy);
+  ASSERT_GT(on.wheel_speed_radps.size(), kTailFrom + 500);
+  ASSERT_EQ(on.wheel_speed_radps.size(), off.wheel_speed_radps.size());
+
+  auto tailError = [&](const RunResult& run) {
+    double worst = 0.0;
+    for (std::size_t i = run.trace.size() - 500; i < run.trace.size(); ++i) {
+      worst = std::max(worst, run.trace[i].state.attitude.core().angularDistance(tq));
+    }
+    return worst;
+  };
+  const std::size_t crossings_off = wheelZeroCrossings(off, kTailFrom);
+  const std::size_t crossings_on = wheelZeroCrossings(on, kTailFrom);
+  const double min_speed_on = minAbsWheelSpeed(on, kTailFrom);
+  const double err_off = tailError(off);
+  const double err_on = tailError(on);
+  RecordProperty("zero_crossings_tail_bias_off", std::to_string(crossings_off));
+  RecordProperty("zero_crossings_tail_bias_on", std::to_string(crossings_on));
+  RecordProperty("min_wheel_speed_tail_bias_on_radps", std::to_string(min_speed_on));
+  RecordProperty("pointing_tail_bias_off_deg", std::to_string(err_off * 180.0 / M_PI));
+  RecordProperty("pointing_tail_bias_on_deg", std::to_string(err_on * 180.0 / M_PI));
+
+  // 1. The bias engaged in the on run and not in the off run.
+  EXPECT_EQ(countOf(on.log, "Wheel-speed bias engaged"), 1u) << on.log;
+  EXPECT_EQ(countOf(off.log, "Wheel-speed bias engaged"), 0u) << off.log;
+  // 2. Unbiased wheels cross zero under load; biased ones do not, and the
+  //    slowest biased wheel stays out of the stiction band.
+  EXPECT_GT(crossings_off, 0u) << "the unbiased wheels never crossed zero — the load is gone";
+  EXPECT_EQ(crossings_on, 0u) << "a biased wheel crossed zero after the servo converged";
+  EXPECT_GT(min_speed_on, kStictionBandRadps);
+  // 3. Pointing: no worse with the bias on a loaded vehicle, and both in class.
+  EXPECT_LE(err_on, err_off) << (err_on * 180.0 / M_PI) << " deg with, " << (err_off * 180.0 / M_PI)
+                             << " deg without";
+  EXPECT_LT(err_on, 0.05 * M_PI / 180.0);
+  // 4. The mechanism: no saturation, no envelope event, no wheel near capacity.
+  expectMechanismHealthy(off, "bias_off", /*maxSaturationEvents=*/0, /*maxDemotions=*/0);
+  expectMechanismHealthy(on, "bias_on", /*maxSaturationEvents=*/0, /*maxDemotions=*/0);
 }
 
 }  // namespace
