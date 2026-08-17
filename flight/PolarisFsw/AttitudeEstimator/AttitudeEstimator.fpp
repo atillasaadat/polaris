@@ -868,6 +868,16 @@ module flight {
     @ and it would never learn one.
     param MekfBiasSigmaInit: F64
 
+    @ Gyro-bias correlation time [s] (NASA/TP-2018-219822 §5.2.4; Push 72).
+    @ **0 = random-walk bias** (the flown value). Positive makes the bias a
+    @ first-order Gauss-Markov process with bounded variance sigma_u^2 tau/2,
+    @ whose estimate decays toward zero at exp(-dt/tau) between measurements —
+    @ the TP's recommendation where measurements are continually available,
+    @ and its §5.2.7 caveat where they are not. The reference IMU model carries
+    @ a constant turn-on bias under its 100 s in-run drift, which is why 0 is
+    @ flown; see MekfConfig::bias_tau_s. Must be finite and >= 0.
+    param MekfBiasTauSec: F64
+
     @ Consecutive cycles on which the filter refused a propagate or an update
     @ (malformed input, not a gate rejection) before fine mode is demoted. Must
     @ be positive.

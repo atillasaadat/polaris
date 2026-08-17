@@ -308,6 +308,7 @@ void AttitudeEstimatorTester ::setValidParameters(bool withFine, bool withAlbedo
     this->paramSet_MekfAttNisGate(kMekfAttNisGate, Fw::ParamValid::VALID);
     this->paramSet_MekfMaxCoastSec(kMekfMaxCoastSec, Fw::ParamValid::VALID);
     this->paramSet_MekfBiasSigmaInit(kMekfBiasSigmaInit, Fw::ParamValid::VALID);
+    this->paramSet_MekfBiasTauSec(this->mekf_bias_tau_s_, Fw::ParamValid::VALID);
     this->paramSet_MekfRefusalStreak(kMekfRefusalStreak, Fw::ParamValid::VALID);
     this->paramSet_MekfNisStreak(kMekfNisStreak, Fw::ParamValid::VALID);
     this->paramSet_SeedMinObservability(kSeedMinObservability, Fw::ParamValid::VALID);
@@ -556,7 +557,12 @@ void AttitudeEstimatorTester ::feedMeasurements(I64 taiNs, const QuatBI& q_bi,
   // second unit's mounting misalignment, which is what ST_ALIGN_CAL estimates.
   for (FwIndexType unit = 0; unit < this->star_unit_count_; ++unit) {
     StarTrackerMeas st;
-    polaris::math::Quaternion measured = q_bi.core();
+    // Under a modelled tracker latency (Push 72) the unit reports the attitude
+    // it exposed a frame ago, tagged then: the test supplies that attitude and
+    // the lag.
+    polaris::math::Quaternion measured = this->star_attitude_override_.has_value()
+                                             ? this->star_attitude_override_->core()
+                                             : q_bi.core();
     const Eigen::Vector3d& theta = this->star_error_[unit];
     const double angle = theta.norm();
     if (angle > 0.0) {
@@ -572,7 +578,7 @@ void AttitudeEstimatorTester ::feedMeasurements(I64 taiNs, const QuatBI& q_bi,
     q[2] = measured.y();
     q[3] = measured.z();
     st.set_qBodyEci(q);
-    st.set_timeTagNs(tag);
+    st.set_timeTagNs(tag - this->star_tag_lag_ns_);
     st.set_valid(this->star_valid_[unit]);
     this->invoke_to_starTrackerIn(unit, st);
   }
@@ -1254,6 +1260,103 @@ void AttitudeEstimatorTester ::testFineCovarianceReinitAndMeasurementPolicy() {
   ASSERT_TLM_MekfForced(0, 1u);
   ASSERT_TLM_MekfRejected(0, 0u);
   this->sun_body_error_rad_ = 0.0;
+}
+
+// ----------------------------------------------------------------------
+// NASA/TP-2018-219822 §3.1 / §5.2.4 fidelity items — Push 72
+// ----------------------------------------------------------------------
+
+void AttitudeEstimatorTester ::testStarTrackerLatencyIsCompensatedOnTheFilterRate() {
+  this->loadIgrf();
+  this->setValidParameters(/*withFine=*/true, /*withAlbedo=*/false, /*withStarTracker=*/true);
+  this->star_unit_count_ = 1;  // the king alone: no alignment fit needed
+
+  // A 0.5 deg/s slew about body Z — the slew-rate limit — so a 100 ms tracker
+  // latency is 0.05 deg = 0.87 mrad, ten times the tracker's sigma.
+  const Eigen::Vector3d rate(0.0, 0.0, 0.5 * M_PI / 180.0);
+  auto truthAt = [&](I64 taiNs) {
+    const double t = static_cast<double>(taiNs - kStartTaiNs) / 1.0e9;
+    return QuatBI(polaris::math::Quaternion::FromAxisAngle(Eigen::Vector3d::UnitZ(), rate.z() * t));
+  };
+  // Acquire and settle on the tracker with no latency.
+  I64 t = kStartTaiNs;
+  for (int i = 0; i < 30; ++i) {
+    this->feedMeasurements(t, truthAt(t), rate, true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+    this->clearHistory();
+  }
+  this->feedMeasurements(t, truthAt(t), rate, true);
+  this->runCycleAt(t);
+  ASSERT_EQ(this->last_estimate_.get_mode(), EstimationMode::FINE);
+  ASSERT_TLM_FineSource(0, FineSource::STAR_TRACKER);
+  this->clearHistory();
+
+  // Now the tracker behaves as the sim's delay line makes it: it reports the
+  // frame exposed one period ago, tagged one period ago.
+  const I64 lag_ns = kNsPerSecond / 10;
+  this->star_tag_lag_ns_ = lag_ns;
+  for (int i = 0; i < 30; ++i) {
+    t += kNsPerSecond / 10;
+    this->star_attitude_override_ = truthAt(t - lag_ns);
+    this->feedMeasurements(t, truthAt(t), rate, true);
+    this->runCycleAt(t);
+    ASSERT_EQ(this->last_estimate_.get_mode(), EstimationMode::FINE) << "cycle " << i;
+    ASSERT_TLM_FineSource(0, FineSource::STAR_TRACKER);
+    EXPECT_LT(this->publishedErrorRad(truthAt(t)), 2.0e-4) << "cycle " << i;
+    this->clearHistory();
+  }
+  t += kNsPerSecond / 10;
+  this->star_attitude_override_ = truthAt(t - lag_ns);
+  this->feedMeasurements(t, truthAt(t), rate, true);
+  this->runCycleAt(t);
+  // The latent tracker was fused every cycle — no gate rejections, no unit
+  // isolation, no fall back to the vector pairs — and the published attitude is
+  // the *current* one, not the one a frame ago.
+  ASSERT_TLM_MekfRejected(0, 0u);
+  ASSERT_EVENTS_FineSourceChanged_SIZE(0);
+  ASSERT_EVENTS_FineModeDemoted_SIZE(0);
+  EXPECT_LT(this->publishedErrorRad(truthAt(t)), 2.0e-4);
+  EXPECT_GT(this->publishedErrorRad(truthAt(t - lag_ns)), 5.0e-4)
+      << "the published attitude is not the latent one";
+  this->star_attitude_override_.reset();
+  this->star_tag_lag_ns_ = 0;
+}
+
+void AttitudeEstimatorTester ::testGaussMarkovBiasOptionIsAcceptedAndBounded() {
+  this->loadIgrf();
+  this->mekf_bias_tau_s_ = 100.0;
+  this->setValidParameters(true);
+  const QuatBI truth(polaris::math::Quaternion::Identity());
+  const Eigen::Vector3d bias(1.0e-3, -5.0e-4, 8.0e-4);
+  this->gyro_bias_ = bias;
+
+  I64 t = kStartTaiNs;
+  for (int i = 0; i < 300; ++i) {
+    this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+    this->clearHistory();
+  }
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_FineConfigInvalid_SIZE(0);
+  ASSERT_EQ(this->last_estimate_.get_mode(), EstimationMode::FINE);
+  // Continually measured, the FOGM bias converges like the random walk did.
+  const Vec3F64 b = this->tlmHistory_GyroBias->at(0).arg;
+  const Eigen::Vector3d b_est(b[0], b[1], b[2]);
+  EXPECT_LT((b_est - bias).norm(), 0.5 * bias.norm());
+  this->clearHistory();
+
+  // A negative correlation time is refused as fine config; the running filter
+  // keeps its last valid set (TB 20-03 item g).
+  this->paramSet_MekfBiasTauSec(-1.0, Fw::ParamValid::VALID);
+  this->paramSend_MekfBiasTauSec(0, 0);
+  t += kNsPerSecond / 10;
+  this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_FineConfigInvalid_SIZE(1);
+  ASSERT_EQ(this->last_estimate_.get_mode(), EstimationMode::FINE);
 }
 
 // ----------------------------------------------------------------------

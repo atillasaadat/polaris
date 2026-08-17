@@ -135,6 +135,20 @@ struct StarTrackerSpec {
   /// Native attitude-solution rate [Hz]; informational — the §2.4 interface
   /// buffer decides when the FSW actually gets a new solution.
   double update_rate_hz = 0.0;
+  /// **Solution latency** [s] (Push 72; NASA/TP-2018-219822 §3.1): the interval
+  /// between the instant a frame's stars were exposed — the epoch the reported
+  /// attitude is *valid* at, and the one `StarTrackerMeasurement::time_tag`
+  /// carries — and the instant the solution leaves the unit. Exposure,
+  /// centroiding and identification take about one update period; no vendor
+  /// quotes it, so the catalog value is a modelling choice recorded as such.
+  /// Modelled as a delay line, exactly as the receiver's `fix_latency_s`:
+  /// `sample()` returns the newest solution that has been in the line at least
+  /// this long, tagged at its own measurement epoch, so the onboard filter can
+  /// advance it (`Mekf::updateAttitude(..., latency_s)`) rather than absorb
+  /// ω·τ of attitude error. Zero delivers each solution as it is computed. The
+  /// same poll-rate caveat as the receiver applies: a caller polling more
+  /// slowly than the latency gets a whole poll of delay.
+  double latency_s = 0.0;
   /// Full circular field of view [rad].
   double fov_rad = 0.0;
   /// Bright-body exclusion, as absolute boresight-to-limb angles (§6.1).
@@ -336,6 +350,22 @@ class StarTracker {
 
   Eigen::Vector3d fault_bias_ = Eigen::Vector3d::Zero();
   bool fault_dropout_ = false;
+
+  /// The solution computed at @p epoch, before the latency delay line.
+  StarTrackerMeasurement solve(const time::Tai& epoch, double dt, const StarTrackerInput& input);
+
+  /// Latency delay line (see `StarTrackerSpec::latency_s`). Sized for the
+  /// deepest sensible latency at the highest update rate; a longer line drops
+  /// its oldest entry, counted in @ref pendingDropped.
+  static constexpr std::size_t kMaxPending = 16;
+  StarTrackerMeasurement pending_[kMaxPending]{};
+  std::int64_t pending_due_ns_[kMaxPending]{};  ///< TAI ns the solution leaves the unit
+  std::size_t pending_count_ = 0;
+  std::uint64_t pending_dropped_ = 0;
+
+ public:
+  /// Solutions discarded because the delay line overflowed (a scenario error).
+  std::uint64_t pendingDropped() const { return pending_dropped_; }
 };
 
 }  // namespace polaris::sim::sensors

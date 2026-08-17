@@ -982,3 +982,65 @@ The estimation mode ladder
    ``ForceOverridesTheGateAndIsCountedApart``) and the ``AttitudeEstimator``
    component tests ``FineTuningUploadKeepsTheSolution`` and
    ``FineCovarianceReinitAndMeasurementPolicy``.
+
+.. req:: Fine-mode filter fidelity — order-invariant update, covariance reset, bias model, tracker latency
+   :id: REQ-ADET-015
+   :status: reviewed
+   :level: L3
+   :tags: adcs, estimation, mekf, star_tracker
+   :method: Test
+   :derived_from: REQ-ADET-004, REQ-ADET-007
+   :allocation: lib/gnc, flight/PolarisFsw/AttitudeEstimator, sim/sensors
+   :refs: carpenter2018, reynolds2008
+
+   The fine-mode attitude filter **shall** implement the measurement-processing
+   and attitude-estimation practices of NASA/TP-2018-219822 Ch. 3, Ch. 5 and
+   Ch. 8 that its structure allows:
+
+   * **Order-invariant same-epoch update** (TP §3.2, Algorithm 3.1): all
+     measurements of one GNC epoch **shall** be linearised at the same reference
+     attitude, each innovation taken against the corrections already
+     accumulated, and the multiplicative reset applied **once** per epoch, so
+     the result does not depend on the order the trackers and the vector pairs
+     are processed in. A propagation **shall** close an open batch first.
+   * **Reynolds covariance reset** (TP Eq. 8.76): on each reset the attitude
+     covariance **shall** be re-expressed in the corrected frame,
+     ``P ← (I − [δθ̂×]/2) P (I − [δθ̂×]/2)ᵀ``, unless configured off.
+   * **Gauss-Markov gyro bias option** (TP §5.2.4): a configurable correlation
+     time ``MekfBiasTauSec`` **shall** select a first-order Gauss-Markov bias
+     model with bounded variance ``σ_u² τ/2``; zero **shall** keep the random
+     walk. The reference vehicle flies zero (its IMU's turn-on bias is
+     constant; TP §5.2.7).
+   * **Star-tracker latency** (TP §3.1): the truth model **shall** deliver a
+     tracker's solution ``latency_s`` after the frame it describes, tagged at
+     that frame's epoch (a delay line, as the receiver's fix latency is), and
+     the filter **shall** advance a solution tagged behind the epoch on its own
+     bias-corrected rate before comparing it, inflating ``R`` by the rate error
+     integrated over the latency; a latency without a usable rate **shall** be
+     refused. The staleness window ``MaxMeasAgeSec`` **shall** exceed the
+     installed trackers' catalogued latency (configc-enforced flight/sim pair).
+
+   Rationale: at the 0.5 °/s slew limit a 100 ms tracker latency is 0.87 mrad,
+   ten times the AURIGA's cross-boresight σ — uncompensated, a slewing vehicle
+   gates every tracker sample and falls to the sun/magnetic rung (measured in
+   ``Mekf.LatentAttitudeMeasurementIsAdvancedOnTheFilterRate``: NIS above the
+   gate uncompensated, innovation < 1e-6 rad compensated). The TP records the
+   order dependence of sequential resets as a known divergence mechanism when a
+   large prior error meets a precise measurement, and Reynolds found the
+   covariance reset speeds convergence on exactly the large-update case
+   re-acquisition presents.
+
+   Verified by ``tests/unit/mekf_test.cpp``
+   (``SameEpochBatchIsInvariantToMeasurementOrder``,
+   ``ReynoldsCovarianceResetRotatesPByHalfTheCorrection``,
+   ``GaussMarkovBiasIsBoundedAndDecaysAtTheCorrelationTime``,
+   ``LatentAttitudeMeasurementIsAdvancedOnTheFilterRate``),
+   ``tests/unit/sim_sensors_star_tracker_test.cpp``
+   (``LatencyDeliversTheEarlierSolutionTaggedAtItsOwnEpoch``), the
+   ``AttitudeEstimator`` component tests
+   ``StarTrackerLatencyIsCompensatedOnTheFilterRate`` and
+   ``GaussMarkovBiasOptionIsAcceptedAndBounded``, the configc pair test
+   ``test_staleness_window_under_the_tracker_latency_is_refused``, and — with
+   the AURIGA entry now carrying ``latency_s: 0.1`` — every star-tracker SITL
+   row of ``tests/integration/sitl_fault_matrix_test.cpp``, which flies the
+   delayed tracker end to end.

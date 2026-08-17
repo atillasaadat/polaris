@@ -721,3 +721,21 @@ fixture was found in the innovation sequence, not in review.
   because `H` is linear for GNSS/ST and the sun/mag second-order term is
   ~1e-3 rad against 1e-2 rad σ — written down, so the next reader does not
   re-derive it or add a parameter nobody can tune.
+
+## Latency is a sim-and-FSW item, and the tag is the whole of it (P72, ADET)
+
+- **A time tag that is only a freshness gate is a latency you are not
+  correcting.** The tracker's tag had been carried since P48 and read once,
+  as `fresh()`. Every sensor that stamps its own measurement epoch should be
+  asked: does anything *use* the difference between that stamp and now?
+- **Model the latency in the truth before compensating it in the flight
+  code**, or the compensation is verified against nothing. The delay-line
+  pattern already existed for GNSS; the tracker got the same one, and the
+  SITL rows then flew the delayed tracker end to end for free.
+- **A flight/sim pair needs its configc check the day it is born.**
+  `MaxMeasAgeSec` vs `latency_s` was checked in the same push as the sim
+  field, so a catalog change cannot silently stale every tracker sample.
+- **Batching changes what an accessor means mid-cycle.** `attitude()` inside
+  an open batch is the reference, not the running estimate; the residual
+  monitors and the publish had to sit after `endBatch()`, and a re-seed
+  inside a batch closes it. Say so in the accessor's doc.

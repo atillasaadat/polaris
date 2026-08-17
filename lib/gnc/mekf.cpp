@@ -64,9 +64,9 @@ bool MekfConfig::isValid() const {
   const bool finite = std::isfinite(arw_rad_per_sqrt_s) &&
                       std::isfinite(rrw_rad_per_s_per_sqrt_s) && std::isfinite(nis_gate) &&
                       std::isfinite(attitude_nis_gate) && std::isfinite(max_coast_s) &&
-                      std::isfinite(max_dt_s);
+                      std::isfinite(max_dt_s) && std::isfinite(bias_tau_s);
   return finite && arw_rad_per_sqrt_s > 0.0 && rrw_rad_per_s_per_sqrt_s >= 0.0 && nis_gate > 0.0 &&
-         attitude_nis_gate > 0.0 && max_coast_s > 0.0 && max_dt_s > 0.0;
+         attitude_nis_gate > 0.0 && max_coast_s > 0.0 && max_dt_s > 0.0 && bias_tau_s >= 0.0;
 }
 
 Mekf::Mekf(const MekfConfig& config) : cfg_(config), configured_(config.isValid()) {}
@@ -80,6 +80,71 @@ void Mekf::dropSolution() {
   age_s_ = 0.0;
   initialised_ = false;
   rate_valid_ = false;
+  dx_acc_.setZero();
+  batch_open_ = false;
+}
+
+void Mekf::beginBatch() {
+  // TP §3.2 / Algorithm 3.1: corrections accumulate against one reference until
+  // endBatch(). Idempotent — a second begin does not discard what is pending.
+  batch_open_ = true;
+}
+
+bool Mekf::endBatch() {
+  if (!batch_open_) {
+    return true;
+  }
+  batch_open_ = false;
+  if (!initialised_) {
+    dx_acc_.setZero();
+    return true;
+  }
+  const Eigen::Matrix<double, kDim, 1> dx = dx_acc_;
+  dx_acc_.setZero();
+  return applyReset(dx);
+}
+
+bool Mekf::applyCorrection(const Eigen::Matrix<double, kDim, 1>& dx) {
+  if (batch_open_) {
+    dx_acc_ += dx;
+    return dx_acc_.allFinite();
+  }
+  return applyReset(dx);
+}
+
+bool Mekf::applyReset(const Eigen::Matrix<double, kDim, 1>& dx) {
+  // Reference-attitude reset: q̂⁺ = δq̂ ⊗ q̂, exact axis-angle rather than the
+  // small-angle [1, δθ/2], so a large correction (re-acquisition after a coast)
+  // stays a proper rotation. The error state is zero by construction afterwards
+  // — it is never stored outside a batch.
+  const Eigen::Vector3d dtheta = dx.head<3>();
+  const double dtheta_norm = dtheta.norm();
+  if (dtheta_norm > kMinRotationAngleRad) {
+    const math::Quaternion dq = math::Quaternion::FromAxisAngle(dtheta / dtheta_norm, dtheta_norm);
+    math::Quaternion corrected = dq * attitude_;
+    if (!corrected.normalize()) {
+      dropSolution();
+      return false;
+    }
+    attitude_ = corrected.canonical();
+    if (cfg_.reynolds_reset) {
+      // TP Eq. 8.76 (Reynolds 2008): the reset re-expresses the attitude
+      // covariance in the corrected frame — to first order a rotation by δθ̂/2.
+      // Applied to the attitude rows and columns of the full P, so the
+      // attitude–bias cross terms follow the frame too.
+      Covariance g = Covariance::Identity();
+      g.block<3, 3>(kAttitude, kAttitude) = Eigen::Matrix3d::Identity() - 0.5 * skew(dtheta);
+      p_ = g * p_ * g.transpose();
+      symmetrise(p_);
+    }
+  }
+  bias_ += dx.tail<3>();
+
+  if (!attitude_.isFinite() || !bias_.allFinite() || !p_.allFinite()) {
+    dropSolution();
+    return false;
+  }
+  return true;
 }
 
 bool Mekf::retune(const MekfConfig& config) {
@@ -159,6 +224,10 @@ bool Mekf::initialize(const time::Tai& epoch,
   bias_ = gyro_bias.eigen();
   rate_.setZero();
   rate_valid_ = false;
+  // A seed inside a batch supersedes whatever the batch had accumulated
+  // against the old reference; the batch is closed rather than carried.
+  dx_acc_.setZero();
+  batch_open_ = false;
   // Cross-covariance between the seed attitude and the seed bias is zero: the
   // single-frame initializer knows nothing about the gyro, and claiming a
   // correlation it did not measure would be the filter inventing information.
@@ -184,6 +253,11 @@ bool Mekf::propagate(const time::Tai& epoch, const math::Vec3<math::frames::Body
   // solution.
   const double dt_s = (epoch - last_epoch_).seconds();
   if (!(dt_s > 0.0)) {
+    return false;
+  }
+  // TP §8.9.2: "it is imperative to perform a reset before beginning the time
+  // propagation" — an open batch is closed here rather than propagated.
+  if (batch_open_ && !endBatch()) {
     return false;
   }
   last_epoch_ = epoch;
@@ -232,9 +306,17 @@ bool Mekf::propagate(const time::Tai& epoch, const math::Vec3<math::frames::Body
     }
   }
 
+  // First-order Gauss-Markov bias (TP §5.2.4) when τ > 0: Φ₂₂ = e^{−Δt/τ} I
+  // and the estimate decays with it; τ = 0 is the random walk (Φ₂₂ = I).
+  const bool fogm = cfg_.bias_tau_s > 0.0;
+  const double phi_b = fogm ? std::exp(-dt_s / cfg_.bias_tau_s) : 1.0;
+  if (fogm) {
+    bias_ *= phi_b;
+  }
   Covariance phi = Covariance::Identity();
   phi.block<3, 3>(kAttitude, kAttitude) = phi11;
   phi.block<3, 3>(kAttitude, kGyroBias) = phi12;
+  phi.block<3, 3>(kGyroBias, kGyroBias) = phi_b * Eigen::Matrix3d::Identity();
 
   // --- Discrete process noise (Markley & Crassidis Eq. 6.93 form) ----------
   // The off-diagonal −½σ_u²dt² blocks are the point: they encode that an
@@ -250,7 +332,11 @@ bool Mekf::propagate(const time::Tai& epoch, const math::Vec3<math::frames::Body
   const Eigen::Matrix3d q_cross = (-0.5 * sigma_u_sq * dt_s * dt_s) * id;
   q_d.block<3, 3>(kAttitude, kGyroBias) = q_cross;
   q_d.block<3, 3>(kGyroBias, kAttitude) = q_cross;
-  q_d.block<3, 3>(kGyroBias, kGyroBias) = (sigma_u_sq * dt_s) * id;
+  // FOGM: Q₂₂ = σ_u² τ/2 (1 − e^{−2Δt/τ}) — σ_u² Δt for Δt ≪ τ, bounded at
+  // σ_u² τ/2 as Δt → ∞ (TP §5.2.4, Eq. 5.27); the O(Δt²) and O(Δt³) blocks are
+  // left in their random-walk form, whose FOGM corrections are O(Δt/τ) relative.
+  q_d.block<3, 3>(kGyroBias, kGyroBias) =
+      (fogm ? sigma_u_sq * cfg_.bias_tau_s * 0.5 * (1.0 - phi_b * phi_b) : sigma_u_sq * dt_s) * id;
 
   p_ = phi * p_ * phi.transpose() + q_d;
   symmetrise(p_);
@@ -280,12 +366,15 @@ bool Mekf::update(const math::Vec3<math::frames::Body>& body_meas,
 
   // --- Innovation ----------------------------------------------------------
   const Eigen::Vector3d b_pred = attitude_.rotate(r_ref);
-  const Eigen::Vector3d y = b_meas - b_pred;
   // H = [[b̂_pred ×] 0₃]: to first order the predicted direction moves by
   // −[δθ×]b̂_pred, so the innovation is +[b̂_pred×]δθ under the sign convention
   // of mekf.hpp (q_true = δq ⊗ q̂).
   Eigen::Matrix<double, 3, kDim> h = Eigen::Matrix<double, 3, kDim>::Zero();
   h.block<3, 3>(0, kAttitude) = skew(b_pred);
+  // Inside a batch the reference has not moved for the corrections already
+  // accumulated, so the innovation is taken against them: `y_j − H_j x̂_{j−1}`
+  // (TP Algorithm 3.1). Outside a batch dx_acc_ is zero and this is `y_j`.
+  const Eigen::Vector3d y = b_meas - b_pred - h * dx_acc_;
 
   const double r_var = sigma_rad * sigma_rad;
   const Eigen::Matrix3d s = h * p_ * h.transpose() + r_var * Eigen::Matrix3d::Identity();
@@ -343,26 +432,7 @@ bool Mekf::update(const math::Vec3<math::frames::Body>& body_meas,
   p_ = ikh * p_ * ikh.transpose() + r_var * (k_gain * k_gain.transpose());
   symmetrise(p_);
 
-  // Reference-attitude reset: q̂⁺ = δq̂ ⊗ q̂, exact axis-angle rather than the
-  // small-angle [1, δθ/2], so a large correction (re-acquisition after a coast)
-  // stays a proper rotation. The error state is zero by construction afterwards
-  // — it is never stored.
-  const Eigen::Vector3d dtheta = dx.head<3>();
-  const double dtheta_norm = dtheta.norm();
-  if (dtheta_norm > kMinRotationAngleRad) {
-    const math::Quaternion dq = math::Quaternion::FromAxisAngle(dtheta / dtheta_norm, dtheta_norm);
-    math::Quaternion corrected = dq * attitude_;
-    if (!corrected.normalize()) {
-      dropSolution();
-      out = MekfUpdate{};
-      return false;
-    }
-    attitude_ = corrected.canonical();
-  }
-  bias_ += dx.tail<3>();
-
-  if (!attitude_.isFinite() || !bias_.allFinite() || !p_.allFinite()) {
-    dropSolution();
+  if (!applyCorrection(dx)) {
     out = MekfUpdate{};
     return false;
   }
@@ -373,7 +443,8 @@ bool Mekf::update(const math::Vec3<math::frames::Body>& body_meas,
 }
 
 bool Mekf::updateAttitude(const math::Quat<math::frames::Body, math::frames::ECI>& measured,
-                          const Eigen::Matrix3d& noise_cov, MekfUpdate& out, bool force) {
+                          const Eigen::Matrix3d& noise_cov, MekfUpdate& out, bool force,
+                          double latency_s) {
   out = MekfUpdate{};
   if (!configured_ || !initialised_) {
     return false;
@@ -382,15 +453,42 @@ bool Mekf::updateAttitude(const math::Quat<math::frames::Body, math::frames::ECI
   if (!q_meas.isFinite() || !q_meas.normalize()) {
     return false;
   }
-  if (!noise_cov.allFinite()) {
+  if (!noise_cov.allFinite() || !std::isfinite(latency_s) || latency_s < 0.0) {
     return false;
+  }
+  // --- Measurement latency (TP §3.1) --------------------------------------
+  // The tracker's solution describes the body frame at t_meas = t_k − τ. It is
+  // advanced to the filter epoch on the filter's own bias-corrected rate,
+  // q_now = exp([ω̂×] τ) ⊗ q_meas — the same increment propagate() applies —
+  // and R picks up the rate error integrated over τ: the gyro's white noise
+  // (σ_v² τ) and the bias uncertainty (τ² P_bb). Without a usable rate this
+  // epoch there is nothing to advance on, and a non-zero latency is refused
+  // rather than applied on a rate of zero.
+  Eigen::Matrix3d r_latency = Eigen::Matrix3d::Zero();
+  if (latency_s > 0.0) {
+    if (!rate_valid_) {
+      return false;
+    }
+    const double rate_norm = rate_.norm();
+    const double angle = rate_norm * latency_s;
+    if (angle > kMinRotationAngleRad) {
+      math::Quaternion advanced =
+          math::Quaternion::FromAxisAngle(rate_ / rate_norm, angle) * q_meas;
+      if (!advanced.normalize()) {
+        return false;
+      }
+      q_meas = advanced;
+    }
+    const double sigma_v_sq = cfg_.arw_rad_per_sqrt_s * cfg_.arw_rad_per_sqrt_s;
+    r_latency = (sigma_v_sq * latency_s) * Eigen::Matrix3d::Identity() +
+                (latency_s * latency_s) * p_.block<3, 3>(kGyroBias, kGyroBias);
   }
   // R is a trust boundary for the same reason the seed covariance is: an
   // indefinite R makes S indefinite, and the NIS could then come back negative
   // and sail through a one-sided gate. Symmetrised first because a caller
   // building `A D Aᵀ` gets a matrix symmetric in exact arithmetic and not
   // bitwise, then required positive-definite by a successful Cholesky.
-  const Eigen::Matrix3d r_cov = 0.5 * (noise_cov + noise_cov.transpose());
+  const Eigen::Matrix3d r_cov = 0.5 * (noise_cov + noise_cov.transpose()) + r_latency;
   const Eigen::LLT<Eigen::Matrix3d> r_llt(r_cov);
   if (r_llt.info() != Eigen::Success) {
     return false;
@@ -403,7 +501,8 @@ bool Mekf::updateAttitude(const math::Quat<math::frames::Body, math::frames::ECI
   // reduction `nees` uses, so the innovation is in the filter's own error
   // coordinates by construction rather than by a linearisation that happens to
   // agree for small angles.
-  const Eigen::Vector3d z = rotationVector(q_meas * attitude_.inverse());
+  // Inside a batch, against the corrections already accumulated (TP Alg. 3.1).
+  const Eigen::Vector3d z = rotationVector(q_meas * attitude_.inverse()) - dx_acc_.head<3>();
   // H = [I₃ 0₃]: the measurement *is* the attitude, so it sees the attitude
   // error directly and the gyro bias not at all.
   Eigen::Matrix<double, 3, kDim> h = Eigen::Matrix<double, 3, kDim>::Zero();
@@ -452,22 +551,7 @@ bool Mekf::updateAttitude(const math::Quat<math::frames::Body, math::frames::ECI
   p_ = ikh * p_ * ikh.transpose() + k_gain * r_cov * k_gain.transpose();
   symmetrise(p_);
 
-  const Eigen::Vector3d dtheta = dx.head<3>();
-  const double dtheta_norm = dtheta.norm();
-  if (dtheta_norm > kMinRotationAngleRad) {
-    const math::Quaternion dq = math::Quaternion::FromAxisAngle(dtheta / dtheta_norm, dtheta_norm);
-    math::Quaternion corrected = dq * attitude_;
-    if (!corrected.normalize()) {
-      dropSolution();
-      out = MekfUpdate{};
-      return false;
-    }
-    attitude_ = corrected.canonical();
-  }
-  bias_ += dx.tail<3>();
-
-  if (!attitude_.isFinite() || !bias_.allFinite() || !p_.allFinite()) {
-    dropSolution();
+  if (!applyCorrection(dx)) {
     out = MekfUpdate{};
     return false;
   }

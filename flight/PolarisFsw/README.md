@@ -880,6 +880,23 @@ seam:
   UDU filter the TP recommends gets this for free from `D`; this is that check
   done explicitly on a full covariance.
 
+## Fine-mode filter fidelity (§8.1; Push 72)
+
+The MEKF took NASA/TP-2018-219822's Ch. 3/5/8 items (REQ-ADET-015): every
+epoch's trackers and vector pairs are processed as one **batch** — one
+reference, one reset (TP §3.2, Algorithm 3.1), so the order no longer matters
+— with the **Reynolds covariance reset** (Eq. 8.76) on each reset;
+`MekfBiasTauSec` selects a **Gauss-Markov gyro bias** (TP §5.2.4; 0 = random
+walk, which the reference vehicle flies — its STIM300 turn-on bias is
+constant, TP §5.2.7); and **star-tracker latency** is modelled (the AURIGA
+catalog entry's `latency_s: 0.1`, a delay line like the receiver's) and
+compensated (TP §3.1): each `StarTrackerSample` carries its own time tag, the
+filter advances the solution on its bias-corrected rate over the latency and
+inflates `R` for the rate error, and configc refuses a `MaxMeasAgeSec` that
+does not exceed the trackers' latency. Sun and magnetic samples are not
+latency-corrected: at their σ (~10 mrad) a 100 ms lag at the slew limit is
+under a tenth of a sigma.
+
 ## Finite-burn executor (§17)
 
 `BurnExecutor` (`flight/PolarisFsw/BurnExecutor`, base id `0x10060000`,

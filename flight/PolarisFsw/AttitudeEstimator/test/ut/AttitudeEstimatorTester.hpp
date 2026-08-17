@@ -129,6 +129,15 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! counted apart.
   void testFineCovarianceReinitAndMeasurementPolicy();
 
+  //! TP §3.1 (Push 72): a star tracker reporting the frame it exposed one period
+  //! ago, tagged then, is advanced on the filter's rate — a slewing vehicle
+  //! keeps its trackers fused instead of gating them at ω·τ.
+  void testStarTrackerLatencyIsCompensatedOnTheFilterRate();
+
+  //! TP §5.2.4 (Push 72): MekfBiasTauSec > 0 flies the Gauss-Markov bias and
+  //! the fine mode still converges; a negative value is refused as fine config.
+  void testGaussMarkovBiasOptionIsAcceptedAndBounded();
+
   //! The whole commanded flow on a magnetometer carrying a known hard/soft iron:
   //! MAG_CAL_START, a tumbling collection window, an accepted fit, and — the
   //! assertion that matters — the *estimator's* attitude error collapses, which
@@ -596,6 +605,13 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! Time tag offset applied to the fed measurements [ns] — negative values age
   //! them for the staleness test.
   I64 meas_time_offset_ns_{0};
+  //! Star-tracker latency knobs (Push 72): the attitude the trackers report
+  //! instead of the cycle's truth, and how far behind the cycle they tag it.
+  std::optional<polaris::math::Quat<polaris::math::frames::Body, polaris::math::frames::ECI>>
+      star_attitude_override_{};
+  I64 star_tag_lag_ns_{0};
+  //! MekfBiasTauSec staged by setValidParameters (0 = random walk).
+  F64 mekf_bias_tau_s_{0.0};
 
   //! Constant gyro bias [rad/s] added to the reported delta-angle while the sun
   //! and magnetic vectors keep following the *true* attitude: the error the MEKF

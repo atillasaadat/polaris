@@ -30,6 +30,7 @@ params:
   tracking_accel_deg_s2: 1.0
   lost_in_space_s: 10.0              # representative time to first fix
   update_rate_hz: 2.0                # attitude solution rate
+  latency_s: 0.5                     # modelling choice: one solution period; not a datasheet field (Push 72)
   fov_deg: 15.0                      # circular field of view
   sun_exclusion_deg: 45.0            # baffle exclusion half-angle from the solar limb
   earth_exclusion_deg: 25.0          # from the Earth limb
