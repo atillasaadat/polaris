@@ -118,6 +118,17 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! component re-promotes through a fresh seed rather than a resumed filter.
   void testResetDropsFineMode();
 
+  //! NESC TB 20-03 item (g) / TP §9.3: a fine-mode parameter upload re-tunes
+  //! the running MEKF in place — no demotion, bias kept — and a bad upload
+  //! leaves the last valid set in force.
+  void testFineTuningUploadKeepsTheSolution();
+
+  //! TB 20-03 items (d) and (f) / TP §9.1-9.2: ATT_REINIT_COV re-opens the fine
+  //! covariance around the same attitude and bias; INHIBIT withholds a
+  //! measurement type from both chains; FORCE applies past the gate and is
+  //! counted apart.
+  void testFineCovarianceReinitAndMeasurementPolicy();
+
   //! The whole commanded flow on a magnetometer carrying a known hard/soft iron:
   //! MAG_CAL_START, a tumbling collection window, an accepted fit, and — the
   //! assertion that matters — the *estimator's* attitude error collapses, which

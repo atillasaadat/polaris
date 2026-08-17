@@ -967,3 +967,149 @@ TEST(Mekf, WritesTheCanonicalEstimatedState) {
 }
 
 }  // namespace
+
+// ===========================================================================
+// NESC navigation-filter usability practices (NASA/TP-2018-219822 Ch. 7, §9;
+// NESC TB 20-03 items d, f, g) — Push 71
+// ===========================================================================
+
+namespace {
+
+/// A settled filter tracking the identity attitude on a perfect sun vector.
+gnc::Mekf settledFilter(double sigma_rad, int steps = 100) {
+  gnc::Mekf filter(defaultConfig());
+  const pm::Quaternion q0 = pm::Quaternion::Identity();
+  EXPECT_TRUE(seedFromDavenport(filter, 0.0, q0.rotate(kSunEci), q0.rotate(kMagEci), sigma_rad,
+                                sigma_rad, 1.0e-8 * Eigen::Matrix3d::Identity()));
+  for (int step = 1; step <= steps; ++step) {
+    EXPECT_TRUE(filter.propagate(epochAt(step * kDt),
+                                 pm::Vec3<frames::Body>(Eigen::Vector3d::Zero()), true));
+    gnc::MekfUpdate up{};
+    EXPECT_TRUE(filter.update(pm::Vec3<frames::Body>(q0.rotate(kSunEci)),
+                              pm::Vec3<frames::ECI>(kSunEci), sigma_rad, up));
+  }
+  return filter;
+}
+
+}  // namespace
+
+/// TB 20-03 item (g) / TP §9.3: a tuning change under a running solution keeps
+/// the solution. Before Push 71 the component rebuilt the filter and threw the
+/// converged attitude and bias away to change a gate.
+TEST(Mekf, RetuneKeepsTheSolutionAndRefusesABadConfig) {
+  RecordProperty("verifies", "REQ-ADET-014");
+  const double sigma = 1.0 * kDeg;
+  gnc::Mekf filter = settledFilter(sigma);
+  const pm::Quaternion before = filter.attitude().core();
+  const gnc::Mekf::Covariance p_before = filter.covariance();
+  const double age_before = filter.ageSeconds();
+
+  gnc::MekfConfig tighter = defaultConfig();
+  tighter.nis_gate = 5.99;  // chi-square(2) at 95%: a real change of behaviour
+  tighter.max_coast_s = 120.0;
+  ASSERT_TRUE(filter.retune(tighter));
+  EXPECT_TRUE(filter.isInitialised());
+  EXPECT_EQ(errorDeg(filter.attitude().core(), before), 0.0);
+  EXPECT_TRUE(filter.covariance() == p_before);
+  EXPECT_EQ(filter.ageSeconds(), age_before);
+
+  // The new tuning is the one that governs: a 30 deg outlier is rejected against
+  // the tighter gate, and the count is where it was (retune is not a reset).
+  const Eigen::Vector3d bad =
+      pm::Quaternion::FromAxisAngle(Eigen::Vector3d::UnitZ(), 30.0 * kDeg).rotate(kSunEci);
+  gnc::MekfUpdate up{};
+  EXPECT_FALSE(
+      filter.update(pm::Vec3<frames::Body>(bad), pm::Vec3<frames::ECI>(kSunEci), sigma, up));
+  EXPECT_EQ(filter.rejectedCount(), 1u);
+
+  // An invalid upload changes nothing — not the state, not the configuration
+  // in force: a running filter is never made inert by a bad table.
+  gnc::MekfConfig bad_cfg = tighter;
+  bad_cfg.arw_rad_per_sqrt_s = -1.0;
+  EXPECT_FALSE(filter.retune(bad_cfg));
+  EXPECT_TRUE(filter.isConfigured());
+  EXPECT_TRUE(filter.isInitialised());
+  EXPECT_FALSE(
+      filter.update(pm::Vec3<frames::Body>(bad), pm::Vec3<frames::ECI>(kSunEci), sigma, up));
+  EXPECT_EQ(filter.rejectedCount(), 2u) << "the tighter gate is still the one in force";
+}
+
+/// TB 20-03 item (f) / TP §9.2: the covariance is re-opened, the attitude and
+/// the converged bias are untouched, and the next good measurement is taken
+/// almost whole (the gain against a wide P is ~1) rather than edited.
+TEST(Mekf, CovarianceReinitialisationKeepsTheState) {
+  RecordProperty("verifies", "REQ-ADET-014");
+  const double sigma = 1.0 * kDeg;
+  gnc::Mekf filter = settledFilter(sigma);
+  const pm::Quaternion before = filter.attitude().core();
+  const Eigen::Vector3d bias_before = filter.gyroBias().eigen();
+
+  EXPECT_FALSE(filter.reinitializeCovariance(0.0, 1.0e-4));
+  EXPECT_FALSE(filter.reinitializeCovariance(0.1, -1.0));
+  ASSERT_TRUE(filter.reinitializeCovariance(10.0 * kDeg, 1.0e-4));
+  EXPECT_EQ(errorDeg(filter.attitude().core(), before), 0.0);
+  EXPECT_TRUE(filter.gyroBias().eigen() == bias_before);
+  const gnc::Mekf::Covariance p = filter.covariance();
+  EXPECT_NEAR(p(0, 0), (10.0 * kDeg) * (10.0 * kDeg), 1e-12);
+  EXPECT_NEAR(p(3, 3), 1.0e-8, 1e-20);
+  EXPECT_EQ(p(0, 3), 0.0);
+  EXPECT_TRUE(filter.covarianceHealthy());
+
+  // A measurement that the settled covariance would have gated is now taken —
+  // that is the point of re-opening P: the filter can be pulled back without a
+  // reset and without losing the bias.
+  const Eigen::Vector3d off =
+      pm::Quaternion::FromAxisAngle(Eigen::Vector3d::UnitZ(), 5.0 * kDeg).rotate(kSunEci);
+  gnc::MekfUpdate up{};
+  ASSERT_TRUE(
+      filter.propagate(epochAt(10.1), pm::Vec3<frames::Body>(Eigen::Vector3d::Zero()), true));
+  EXPECT_TRUE(
+      filter.update(pm::Vec3<frames::Body>(off), pm::Vec3<frames::ECI>(kSunEci), sigma, up));
+  EXPECT_TRUE(up.accepted);
+  EXPECT_FALSE(up.forced);
+  EXPECT_GT(errorDeg(filter.attitude().core(), before), 3.0);
+
+  gnc::Mekf uninitialised(defaultConfig());
+  EXPECT_FALSE(uninitialised.reinitializeCovariance(0.1, 1e-4));
+  EXPECT_TRUE(uninitialised.covarianceHealthy()) << "no solution: nothing to be indefinite";
+}
+
+/// TB 20-03 item (d) / TP §9.1: the "force" editing flag applies a measurement
+/// the gate would reject, and says so — counted apart from both the rejections
+/// and the consistent acceptances.
+TEST(Mekf, ForceOverridesTheGateAndIsCountedApart) {
+  RecordProperty("verifies", "REQ-ADET-014");
+  const double sigma = 1.0 * kDeg;
+  gnc::Mekf filter = settledFilter(sigma);
+  const pm::Quaternion before = filter.attitude().core();
+
+  const Eigen::Vector3d bad =
+      pm::Quaternion::FromAxisAngle(Eigen::Vector3d::UnitZ(), 30.0 * kDeg).rotate(kSunEci);
+  gnc::MekfUpdate up{};
+  EXPECT_TRUE(filter.update(pm::Vec3<frames::Body>(bad), pm::Vec3<frames::ECI>(kSunEci), sigma, up,
+                            /*force=*/true));
+  EXPECT_TRUE(up.accepted);
+  EXPECT_TRUE(up.forced);
+  EXPECT_GT(up.nis, defaultConfig().nis_gate);
+  EXPECT_EQ(filter.forcedCount(), 1u);
+  EXPECT_EQ(filter.rejectedCount(), 0u);
+  // Applied at the settled gain — a fraction of the 30 deg, but not zero, which
+  // is what a rejection would leave.
+  EXPECT_GT(errorDeg(filter.attitude().core(), before), 0.1) << "the update was applied";
+
+  // The attitude path has the same flag.
+  const pm::Quaternion far_off =
+      pm::Quaternion::FromAxisAngle(Eigen::Vector3d::UnitY(), 40.0 * kDeg);
+  const Eigen::Matrix3d r = (0.01 * kDeg) * (0.01 * kDeg) * Eigen::Matrix3d::Identity();
+  gnc::MekfUpdate att{};
+  EXPECT_FALSE(filter.updateAttitude(pm::Quat<frames::Body, frames::ECI>(far_off), r, att));
+  EXPECT_EQ(filter.rejectedCount(), 1u);
+  EXPECT_TRUE(filter.updateAttitude(pm::Quat<frames::Body, frames::ECI>(far_off), r, att,
+                                    /*force=*/true));
+  EXPECT_TRUE(att.forced);
+  EXPECT_EQ(filter.forcedCount(), 2u);
+  EXPECT_LT(errorDeg(filter.attitude().core(), far_off), 1.0);
+
+  filter.reset();
+  EXPECT_EQ(filter.forcedCount(), 0u);
+}

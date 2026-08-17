@@ -53,6 +53,21 @@ TEST(OrbitEstimator, ResetDropsSolution) {
   tester.testResetDropsSolution();
 }
 
+TEST(OrbitEstimator, TuningUploadKeepsTheSolution) {
+  flight::OrbitEstimatorTester tester;
+  tester.testTuningUploadKeepsTheSolution();
+}
+
+TEST(OrbitEstimator, CovarianceReinitAndMeasurementPolicy) {
+  flight::OrbitEstimatorTester tester;
+  tester.testCovarianceReinitAndMeasurementPolicy();
+}
+
+TEST(OrbitEstimator, BackupEphemerisRestart) {
+  flight::OrbitEstimatorTester tester;
+  tester.testBackupEphemerisRestart();
+}
+
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

@@ -50,6 +50,8 @@ OrbitEstimator::OdRefusal::T toFpp(pg::OrbitOdRefusal r) {
   static_assert(static_cast<U8>(pg::OrbitOdRefusal::kMeasurementRejected) ==
                 E::MEASUREMENT_REJECTED);
   static_assert(static_cast<U8>(pg::OrbitOdRefusal::kFilterFault) == E::FILTER_FAULT);
+  static_assert(static_cast<U8>(pg::OrbitOdRefusal::kMeasurementInhibited) ==
+                E::MEASUREMENT_INHIBITED);
   // -Wswitch on refusalName() is what catches a *new* enumerator; the asserts
   // above catch a renumbering of an existing one.
   return static_cast<OrbitEstimator::OdRefusal::T>(static_cast<U8>(r));
@@ -62,7 +64,9 @@ OrbitEstimator::OdRefusal::T toFpp(pg::OrbitOdRefusal r) {
 // ----------------------------------------------------------------------
 
 OrbitEstimator ::OrbitEstimator(const char* compName)
-    : OrbitEstimatorComponentBase(compName), od_(pg::OrbitOdConfig{}) {}
+    : OrbitEstimatorComponentBase(compName),
+      od_(pg::OrbitOdConfig{}),
+      backup_(pg::OrbitOdConfig{}) {}
 
 // ----------------------------------------------------------------------
 // Handlers
@@ -243,7 +247,7 @@ void OrbitEstimator ::run_handler(FwIndexType portNum, U32 context) {
       this->noteRefusal(static_cast<U8>(slot), pg::OrbitOdRefusal::kFrameConversion);
     } else {
       pg::OrbitOdResult result;
-      const bool ok = this->od_.ingest(fix, eop_fix, result);
+      const bool ok = this->od_.ingest(fix, eop_fix, result, this->policy_);
       this->last_result_ = result;
       if (ok) {
         ++this->fixes_accepted_;
@@ -259,7 +263,89 @@ void OrbitEstimator ::run_handler(FwIndexType portNum, U32 context) {
     }
   }
 
+  // --- 3. The backup ephemeris and the covariance's health -----------------
+  this->serviceBackup(nowNs, have_eop_now ? &eop_now : nullptr, accel);
+  {
+    // TP Ch. 7: definiteness is what a UDU filter reads off D for free; a full-P
+    // filter asks once a cycle. Edge-gated: indefinite is a state, not an event
+    // stream. The remedy that keeps the state is OD_REINIT_COV.
+    const bool healthy = this->od_.covarianceHealthy();
+    if (!healthy && !this->cov_indefinite_alerted_) {
+      this->log_WARNING_HI_OrbitCovarianceIndefinite();
+    }
+    this->cov_indefinite_alerted_ = !healthy;
+    this->tlmWrite_CovarianceHealthy(healthy);
+  }
+
   this->publish(nowNs);
+}
+
+void OrbitEstimator ::serviceBackup(I64 nowNs, const polaris::frames::EopValue* eopNow,
+                                    const pg::NonGravAccelInput* accel) {
+  // TP §9.2 / TB 20-03 item (e): "a backup ephemeris, unaltered by measurement
+  // updates since initialization ... For extended operations, it will usually
+  // be necessary to re-seed the backup with a current filter state at periodic
+  // intervals." The backup is a value copy of the filter, propagated on the
+  // same force model with the same thrust input, never given a fix.
+  if (this->backup_period_s_ <= 0.0) {
+    if (this->backup_valid_) {
+      this->backup_valid_ = false;  // the operator switched it off
+    }
+  } else {
+    if (this->backup_valid_ && eopNow != nullptr) {
+      const polaris::time::Tai now = polaris::time::Tai::fromNanosecondsSinceEpoch(nowNs);
+      if (this->backup_.epoch() < now) {
+        const pg::OrbitOdRefusal r = this->backup_.propagate(now, *eopNow, accel);
+        if (r == pg::OrbitOdRefusal::kCoastExpired || r == pg::OrbitOdRefusal::kFilterFault) {
+          this->backup_valid_ = false;
+          this->log_WARNING_LO_OrbitBackupLost();
+        }
+      }
+    }
+    // Re-seed from a FINE solution — never from a degraded one, which is itself
+    // a coasted prediction and would make the comparator compare a coast to a
+    // coast — every BackupPeriodS, or immediately when there is none.
+    const bool fine = this->od_.isInitialised() &&
+                      this->od_.quality() == pg::OrbitOdQuality::kFine &&
+                      this->od_.covarianceHealthy();
+    const double since_s = static_cast<double>(nowNs - this->backup_seeded_ns_) / 1.0e9;
+    if (fine && (!this->backup_valid_ || since_s >= this->backup_period_s_)) {
+      const bool first = !this->backup_valid_;
+      this->backup_ = this->od_;
+      this->backup_valid_ = true;
+      this->backup_seeded_ns_ = nowNs;
+      if (first) {
+        this->log_ACTIVITY_LO_OrbitBackupSeeded();
+      }
+    }
+  }
+  const bool both = this->backup_valid_ && this->od_.isInitialised();
+  this->tlmWrite_BackupAgeS(
+      this->backup_valid_ ? static_cast<F64>(nowNs - this->backup_seeded_ns_) / 1.0e9 : -1.0);
+  this->tlmWrite_BackupDivergenceM(
+      both ? (this->od_.position().eigen() - this->backup_.position().eigen()).norm() : -1.0);
+}
+
+bool OrbitEstimator ::restartFromBackup() {
+  if (!this->backup_valid_ || !this->backup_.isInitialised()) {
+    this->log_WARNING_LO_OrbitBackupRestartRefused();
+    return false;
+  }
+  const F64 age_s = static_cast<F64>(this->currentTaiNs() - this->backup_seeded_ns_) / 1.0e9;
+  const F64 divergence_m =
+      this->od_.isInitialised()
+          ? (this->od_.position().eigen() - this->backup_.position().eigen()).norm()
+          : -1.0;
+  // The backup becomes the solution; the counters and the fix-epoch memory are
+  // the backup's own copies from when it was seeded, which is the honest
+  // history of the state now flown. The backup itself is kept: a second
+  // restart from the same backup is legitimate.
+  this->od_ = this->backup_;
+  this->last_result_ = pg::OrbitOdResult{};
+  this->last_refusal_ = pg::OrbitOdRefusal::kNone;
+  this->last_alerted_refusal_ = pg::OrbitOdRefusal::kNone;
+  this->log_ACTIVITY_HI_OrbitRestartedFromBackup(age_s, divergence_m);
+  return true;
 }
 
 void OrbitEstimator ::publish(I64 nowNs) {
@@ -325,6 +411,7 @@ void OrbitEstimator ::publish(I64 nowNs) {
   this->tlmWrite_FixesAccepted(this->fixes_accepted_);
   this->tlmWrite_FixesRefused(this->fixes_refused_);
   this->tlmWrite_LastRefusal(OdRefusal(toFpp(this->last_refusal_)));
+  this->tlmWrite_FixesForced(this->od_.forcedCount());
 }
 
 // ----------------------------------------------------------------------
@@ -338,7 +425,12 @@ bool OrbitEstimator ::applyParameters() {
       this->log_WARNING_HI_OrbitTuningInvalid(arg);
       this->tuning_alerted_ = true;
     }
-    this->configured_ = false;
+    // A running filter is never made inert by a bad upload (TB 20-03 item g):
+    // the last valid set stays in force. Only a filter that never had one is
+    // left inert.
+    if (!this->od_.isConfigured()) {
+      this->configured_ = false;
+    }
     return false;
   };
 
@@ -393,12 +485,53 @@ bool OrbitEstimator ::applyParameters() {
   POLARIS_GET(cfg.max_fix_latency_s, paramGet_MaxFixLatencyS, "MaxFixLatencyS");
   POLARIS_GET(cfg.min_radius_m, paramGet_MinRadiusM, "MinRadiusM");
   POLARIS_GET(cfg.max_radius_m, paramGet_MaxRadiusM, "MaxRadiusM");
+  U8 pos_mode = 0;
+  U8 vel_mode = 0;
+  F64 backup_period_s = 0.0;
+  POLARIS_GET(pos_mode, paramGet_PositionMeasMode, "PositionMeasMode");
+  POLARIS_GET(vel_mode, paramGet_VelocityMeasMode, "VelocityMeasMode");
+  POLARIS_GET(backup_period_s, paramGet_BackupPeriodS, "BackupPeriodS");
 #undef POLARIS_GET
 
   if (!cfg.isValid()) {
     return fail("OrbitOdConfig::isValid failed");
   }
-  this->od_ = pg::OrbitOd(cfg);
+  // The U8 parameter mirrors the library enum value for value (TP §9.1).
+  static_assert(static_cast<U8>(pg::MeasurementMode::kAccept) == 0);
+  static_assert(static_cast<U8>(pg::MeasurementMode::kInhibit) == 1);
+  static_assert(static_cast<U8>(pg::MeasurementMode::kForce) == 2);
+  if (pos_mode > 2 || vel_mode > 2) {
+    return fail("PositionMeasMode/VelocityMeasMode must be 0, 1 or 2");
+  }
+  if (!std::isfinite(backup_period_s) || backup_period_s < 0.0 ||
+      backup_period_s >= cfg.max_degraded_coast_s) {
+    return fail("BackupPeriodS must be in [0, MaxDegradedCoastS)");
+  }
+
+  // TB 20-03 item (g) / TP §9.3: a running filter is re-tuned in place; only a
+  // filter that never had a valid set is constructed. The backup follows.
+  const bool kept = this->od_.isConfigured();
+  if (kept) {
+    (void)this->od_.retune(cfg);  // cfg.isValid() held above
+    (void)this->backup_.retune(cfg);
+  } else {
+    this->od_ = pg::OrbitOd(cfg);
+    this->backup_ = pg::OrbitOd(cfg);
+  }
+  if (this->configured_) {
+    // A re-read after a valid set: an upload. First-time configuration is not
+    // "tuning applied", it is bring-up.
+    this->log_ACTIVITY_LO_OrbitTuningApplied(kept && this->od_.isInitialised());
+  }
+  const pg::GnssMeasurementPolicy policy{static_cast<pg::MeasurementMode>(pos_mode),
+                                         static_cast<pg::MeasurementMode>(vel_mode)};
+  if (!this->policy_reported_ || policy.position != this->policy_.position ||
+      policy.velocity != this->policy_.velocity) {
+    this->log_ACTIVITY_HI_MeasurementPolicyChanged(pos_mode, vel_mode);
+    this->policy_reported_ = true;
+  }
+  this->policy_ = policy;
+  this->backup_period_s_ = backup_period_s;
   this->max_coast_s_ = cfg.max_coast_s;
   this->max_degraded_coast_s_ = cfg.max_degraded_coast_s;
   this->max_fix_latency_s_ = cfg.max_fix_latency_s;
@@ -409,8 +542,10 @@ bool OrbitEstimator ::applyParameters() {
 
 void OrbitEstimator ::parameterUpdated(FwPrmIdType id) {
   static_cast<void>(id);
-  // Rebuilding the filter drops the solution: a covariance built under the old
-  // tuning is a claim about a different filter. The next fix re-seeds.
+  // Re-tune in place (TB 20-03 item g; TP §9.3): a covariance built under the
+  // old q_a is carried forward rather than the solution being thrown away —
+  // the trade the TP recommends. A set that fails validation warns and leaves
+  // the old one in force.
   (void)this->applyParameters();
 }
 
@@ -465,6 +600,25 @@ void OrbitEstimator ::OD_SEED_STATE_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, 
   this->last_alerted_refusal_ = pg::OrbitOdRefusal::kNone;
   this->log_ACTIVITY_HI_OrbitSeededFromGround(posSigmaM);
   this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
+}
+
+void OrbitEstimator ::OD_REINIT_COV_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, F64 posSigmaM,
+                                               F64 velSigmaMps) {
+  const pg::OrbitOdRefusal r = this->od_.reinitializeCovariance(posSigmaM, velSigmaMps);
+  if (r != pg::OrbitOdRefusal::kNone) {
+    this->log_WARNING_LO_OrbitCovarianceReinitRefused(OdRefusal(toFpp(r)));
+    this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::VALIDATION_ERROR);
+    return;
+  }
+  this->cov_indefinite_alerted_ = false;
+  this->log_ACTIVITY_HI_OrbitCovarianceReinitialised(posSigmaM, velSigmaMps);
+  this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
+}
+
+void OrbitEstimator ::OD_RESTART_FROM_BACKUP_cmdHandler(FwOpcodeType opCode, U32 cmdSeq) {
+  this->cmdResponse_out(
+      opCode, cmdSeq,
+      this->restartFromBackup() ? Fw::CmdResponse::OK : Fw::CmdResponse::EXECUTION_ERROR);
 }
 
 }  // namespace flight

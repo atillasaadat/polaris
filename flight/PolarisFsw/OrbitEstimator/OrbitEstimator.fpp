@@ -24,6 +24,19 @@ module flight {
   # (300 s, §8.3), then the solution is **dropped** and the next fix re-seeds
   # whole — never blended against a stale prior (§8.3).
   #
+  # **NESC navigation-filter usability practices (Push 71).** The operability
+  # rules of NASA/TP-2018-219822 Ch. 9 and NESC Technical Bulletin 20-03 items
+  # (d)-(g) live at this seam: tuning uploads re-tune the running filter rather
+  # than dropping its solution (item g, TP §9.3); OD_REINIT_COV re-opens the
+  # covariance without touching the state (item f, TP §9.2); the per-type
+  # accept/inhibit/force policy is two parameters (item d, TP §9.1); and a
+  # **backup ephemeris** — a copy of the filter propagated alongside it and
+  # never measurement-updated, re-seeded every BackupPeriodS — is kept so the
+  # filter can be restarted without an uplinked state vector and so the
+  # separation between the two is an independent divergence comparator (item
+  # e, TP §9.2). The covariance is checked for definiteness every cycle (TP Ch.
+  # 7's free UDU check, done explicitly).
+  #
   # **Passive, guarded, and the same threading argument as the estimator.** The
   # fixes arrive on the producer's thread (SitlBridge's under SITL, a receiver
   # driver's on hardware) while `run` executes on the rate group's, and the
@@ -91,6 +104,7 @@ module flight {
       NO_VELOCITY_FOR_SEED = 10 @< a seed or a latent fix needs a velocity and the fix has none
       MEASUREMENT_REJECTED = 11 @< the NIS gate refused the fix
       FILTER_FAULT = 12 @< non-finite internal result; the solution was dropped
+      MEASUREMENT_INHIBITED = 13 @< the position measurement is inhibited by policy (TP §9.1)
     }
 
     # ----------------------------------------------------------------------
@@ -122,6 +136,25 @@ module flight {
       velSigmaMps: F64 @< 1-sigma velocity, isotropic [m/s]
     ) \
       opcode 1
+
+    @ Re-initialise the covariance **without altering the state** (NESC TB
+    @ 20-03 item f; NASA/TP-2018-219822 §9.2): P = diag(posSigma^2 I,
+    @ velSigma^2 I). The remedy for a filter that has become over-confident and
+    @ is editing good fixes while its state is still sound — milder than
+    @ OD_RESET, no uplinked state needed. Refused with no solution or a
+    @ non-positive sigma.
+    guarded command OD_REINIT_COV(
+      posSigmaM: F64 @< 1-sigma position, isotropic [m]
+      velSigmaMps: F64 @< 1-sigma velocity, isotropic [m/s]
+    ) \
+      opcode 2
+
+    @ Restart the filter from the backup ephemeris (NESC TB 20-03 item e; TP
+    @ §9.2): the propagated-only copy replaces the solution — state, covariance
+    @ and age — with no uplink. Refused when there is no backup, or the backup
+    @ itself has coasted past MaxDegradedCoastS.
+    guarded command OD_RESTART_FROM_BACKUP \
+      opcode 3
 
     # ----------------------------------------------------------------------
     # Parameters (design doc §19.3 — no defaults; a missing value refuses).
@@ -203,6 +236,23 @@ module flight {
     @ Upper edge of the plausibility band [m].
     param MaxRadiusM: F64
 
+    @ Editing policy for the position measurement (NASA/TP-2018-219822 §9.1;
+    @ NESC TB 20-03 item d): 0 = ACCEPT (the NIS gate decides), 1 = INHIBIT
+    @ (never applied — and a fix cannot seed on an inhibited half), 2 = FORCE
+    @ (applied past the gate; a numeric fault still refuses). Mirrors
+    @ `polaris::gnc::MeasurementMode`. A U8 rather than an enum because configc
+    @ emits scalars only.
+    param PositionMeasMode: U8
+
+    @ Editing policy for the velocity measurement; same encoding.
+    param VelocityMeasMode: U8
+
+    @ Interval at which the backup ephemeris is re-seeded from the FINE
+    @ solution [s] (TP §9.2: "re-seed the backup with a current filter state at
+    @ periodic intervals"). 0 disables the backup. Must be below
+    @ MaxDegradedCoastS, or the backup would expire before it was refreshed.
+    param BackupPeriodS: F64
+
     # ----------------------------------------------------------------------
     # Telemetry
     # ----------------------------------------------------------------------
@@ -251,6 +301,22 @@ module flight {
 
     @ The most recent refusal.
     telemetry LastRefusal: OdRefusal
+
+    @ Updates applied past their gate under FORCE since start or OD_RESET
+    @ (TP §9.1). Never folded into FixesAccepted: a forced update is not a
+    @ consistent one.
+    telemetry FixesForced: U32
+
+    @ Time since the backup ephemeris was last seeded from the solution [s];
+    @ -1 when there is none.
+    telemetry BackupAgeS: F64
+
+    @ Separation between the solution and the backup ephemeris [m] — the
+    @ TP §9.2 divergence comparator; -1 when either is missing.
+    telemetry BackupDivergenceM: F64
+
+    @ The covariance factorised positive semi-definite this cycle (TP Ch. 7).
+    telemetry CovarianceHealthy: bool
 
     # ----------------------------------------------------------------------
     # Events
@@ -326,6 +392,56 @@ module flight {
     event OrbitReset \
       severity activity high \
       format "Orbit estimator reset: solution dropped, next fix re-seeds"
+
+    @ A parameter upload was applied to the running filter (NESC TB 20-03 item
+    @ g): the solution was kept, not rebuilt.
+    event OrbitTuningApplied(solutionKept: bool) \
+      severity activity low \
+      format "Orbit estimator tuning applied; solution kept: {}"
+
+    @ OD_REINIT_COV accepted.
+    event OrbitCovarianceReinitialised(posSigmaM: F64, velSigmaMps: F64) \
+      severity activity high \
+      format "Orbit covariance re-initialised: position sigma {} m, velocity sigma {} m/s; state kept"
+
+    @ OD_REINIT_COV refused: no solution, or a bad sigma.
+    event OrbitCovarianceReinitRefused(reason: OdRefusal) \
+      severity warning low \
+      format "Orbit covariance re-initialisation refused: {}"
+
+    @ OD_RESTART_FROM_BACKUP accepted: the backup ephemeris is now the solution.
+    event OrbitRestartedFromBackup(backupAgeS: F64, divergenceM: F64) \
+      severity activity high \
+      format "Orbit solution restarted from backup ephemeris seeded {} s ago ({} m from the dropped solution)"
+
+    @ OD_RESTART_FROM_BACKUP refused: no backup ephemeris is held.
+    event OrbitBackupRestartRefused \
+      severity warning low \
+      format "Orbit restart from backup refused: no backup ephemeris"
+
+    @ The backup ephemeris was re-seeded from the FINE solution. Edge (first
+    @ seed and every re-seed after a loss), not every period.
+    event OrbitBackupSeeded \
+      severity activity low \
+      format "Orbit backup ephemeris seeded from the solution"
+
+    @ The backup ephemeris coasted past the degraded horizon or faulted, and
+    @ is no longer available for a restart.
+    event OrbitBackupLost \
+      severity warning low \
+      format "Orbit backup ephemeris lost: coast expired or fault"
+
+    @ The covariance is not positive semi-definite (TP Ch. 7). Edge. The next
+    @ innovation's NIS is meaningless; OD_REINIT_COV is the remedy that keeps
+    @ the state.
+    event OrbitCovarianceIndefinite \
+      severity warning high \
+      format "Orbit covariance is indefinite: re-initialise it (OD_REINIT_COV) or reset"
+
+    @ The measurement editing policy changed (TP §9.1). Edge on either value.
+    event MeasurementPolicyChanged(positionMode: U8, velocityMode: U8) \
+      severity activity high \
+      format "GNSS measurement policy: position mode {}, velocity mode {} (0 accept, 1 inhibit, 2 force)"
 
     # ----------------------------------------------------------------------
     # Standard AC ports

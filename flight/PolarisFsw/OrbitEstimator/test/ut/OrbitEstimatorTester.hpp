@@ -60,6 +60,21 @@ class OrbitEstimatorTester : public OrbitEstimatorGTestBase {
   //! re-seeds.
   void testResetDropsSolution();
 
+  //! NESC TB 20-03 item (g) / TP §9.3: a parameter upload re-tunes the running
+  //! filter and keeps the solution; a bad upload leaves the last valid set in
+  //! force.
+  void testTuningUploadKeepsTheSolution();
+
+  //! TB 20-03 items (d) and (f) / TP §9.1-9.2: OD_REINIT_COV re-opens the
+  //! covariance around the same state; the measurement policy inhibits and
+  //! forces, and says so in telemetry and EVRs.
+  void testCovarianceReinitAndMeasurementPolicy();
+
+  //! TB 20-03 item (e) / TP §9.2: the backup ephemeris is seeded from a FINE
+  //! solution, propagated alongside it, and OD_RESTART_FROM_BACKUP brings a
+  //! dropped solution back from it without an uplink.
+  void testBackupEphemerisRestart();
+
   // ----------------------------------------------------------------------
   // Port handlers
   // ----------------------------------------------------------------------

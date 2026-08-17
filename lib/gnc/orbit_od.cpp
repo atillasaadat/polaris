@@ -306,8 +306,53 @@ void OrbitOd::reset() {
   // needs to see how many fixes it had been rejecting, and a monotonicity guard
   // that a fault could clear would let a replayed fix back in.
   rejected_ = 0;
+  forced_ = 0;
   have_fix_ = false;
   last_fix_epoch_ = time::Tai{};
+}
+
+OrbitOdRefusal OrbitOd::retune(const OrbitOdConfig& config) {
+  // TB 20-03 item (g) / TP §9.3: the tuning changes, the navigation data does
+  // not. Only the configuration is swapped; a bad upload leaves the running
+  // filter — configuration included — exactly as it was.
+  if (!config.isValid()) {
+    return OrbitOdRefusal::kUnconfigured;
+  }
+  cfg_ = config;
+  configured_ = true;
+  return OrbitOdRefusal::kNone;
+}
+
+OrbitOdRefusal OrbitOd::reinitializeCovariance(double sigma_pos_m, double sigma_vel_m_s) {
+  // TB 20-03 item (f) / TP §9.2: the covariance is re-opened, the state is kept.
+  if (!configured_) {
+    return OrbitOdRefusal::kUnconfigured;
+  }
+  if (!initialised_) {
+    return OrbitOdRefusal::kUninitialised;
+  }
+  if (!std::isfinite(sigma_pos_m) || !std::isfinite(sigma_vel_m_s) || !(sigma_pos_m > 0.0) ||
+      !(sigma_vel_m_s > 0.0)) {
+    return OrbitOdRefusal::kFixSigmaInvalid;
+  }
+  p_.setZero();
+  p_.block<3, 3>(kPosition, kPosition) = sigma_pos_m * sigma_pos_m * Eigen::Matrix3d::Identity();
+  p_.block<3, 3>(kVelocity, kVelocity) =
+      sigma_vel_m_s * sigma_vel_m_s * Eigen::Matrix3d::Identity();
+  return OrbitOdRefusal::kNone;
+}
+
+bool OrbitOd::covarianceHealthy() const {
+  // TP Ch. 7: a UDU filter reads definiteness off D for free; a full-P filter
+  // has to ask. LDLᵀ is the pivoted, stack-only, fixed-size way to ask a 6×6.
+  if (!initialised_) {
+    return true;
+  }
+  if (!p_.allFinite()) {
+    return false;
+  }
+  const Eigen::LDLT<Covariance> ldlt(p_);
+  return ldlt.info() == Eigen::Success && ldlt.isPositive();
 }
 
 OrbitOdRefusal OrbitOd::initialize(const time::Tai& epoch,
@@ -490,7 +535,7 @@ OrbitOdRefusal OrbitOd::seedFrom(const time::Tai& epoch, const Eigen::Vector3d& 
 }
 
 bool OrbitOd::applyUpdate(int offset, const Eigen::Vector3d& measured, const Eigen::Matrix3d& r_cov,
-                          double gate, OrbitOdUpdate& out) {
+                          double gate, bool force, OrbitOdUpdate& out) {
   out = OrbitOdUpdate{};
 
   // H = [I 0] (position) or [0 I] (velocity), so HPHᵀ is the corresponding 3×3
@@ -527,9 +572,21 @@ bool OrbitOd::applyUpdate(int offset, const Eigen::Vector3d& measured, const Eig
   // Written as an accept range rather than `nis > gate`: if P ever went
   // indefinite, S would follow and the NIS could come back **negative**, which a
   // one-sided "too large?" test waves straight through.
-  if (!(nis >= 0.0 && nis <= gate)) {
+  //
+  // Under `force` (TP §9.1's "force" flag) the gate is overridden — but only the
+  // *gate*: a negative NIS is the covariance gone indefinite, and no operator
+  // flag makes an update against that meaningful, so it stays a numeric fault.
+  if (!(nis >= 0.0)) {
     ++rejected_;
     return false;
+  }
+  if (nis > gate) {
+    if (!force) {
+      ++rejected_;
+      return false;
+    }
+    ++forced_;
+    out.forced = true;
   }
 
   Eigen::Matrix<double, kDim, 3> h_t = Eigen::Matrix<double, kDim, 3>::Zero();
@@ -563,7 +620,8 @@ bool OrbitOd::applyUpdate(int offset, const Eigen::Vector3d& measured, const Eig
   return true;
 }
 
-bool OrbitOd::ingest(const GnssFix& fix, const frames::EopValue& eop, OrbitOdResult& out) {
+bool OrbitOd::ingest(const GnssFix& fix, const frames::EopValue& eop, OrbitOdResult& out,
+                     const GnssMeasurementPolicy& policy) {
   out = OrbitOdResult{};
   if (!configured_) {
     out.refusal = OrbitOdRefusal::kUnconfigured;
@@ -638,7 +696,22 @@ bool OrbitOd::ingest(const GnssFix& fix, const frames::EopValue& eop, OrbitOdRes
   // fix, three orders under a receiver's 0.03 m/s velocity σ; it is neglected,
   // and it is neglected in the direction that makes R slightly optimistic.)
 
+  // TP §9.1 editing policy. An inhibited position is the whole fix withheld: it
+  // is the measurement the solution stands on. A seed needs both halves, so
+  // either inhibited refuses the seed too — an operator who has inhibited
+  // velocity on a cold filter starts it with OD_SEED_STATE instead.
+  const bool position_inhibited = policy.position == MeasurementMode::kInhibit;
+  const bool velocity_inhibited = policy.velocity == MeasurementMode::kInhibit;
+  if (position_inhibited) {
+    out.refusal = OrbitOdRefusal::kMeasurementInhibited;
+    return false;
+  }
+
   auto seed = [&](void) -> bool {
+    if (velocity_inhibited) {
+      out.refusal = OrbitOdRefusal::kMeasurementInhibited;
+      return false;
+    }
     if (!fix.velocity_valid) {
       out.refusal = OrbitOdRefusal::kNoVelocityForSeed;
       return false;
@@ -745,8 +818,8 @@ bool OrbitOd::ingest(const GnssFix& fix, const frames::EopValue& eop, OrbitOdRes
   out.fix_latency_s = latency_s;
 
   // --- Sequential 3-row updates --------------------------------------------
-  const bool pos_ok =
-      applyUpdate(kPosition, r_eci.eigen(), r_pos_eci, cfg_.position_nis_gate, out.position);
+  const bool pos_ok = applyUpdate(kPosition, r_eci.eigen(), r_pos_eci, cfg_.position_nis_gate,
+                                  policy.position == MeasurementMode::kForce, out.position);
   if (!pos_ok) {
     // A failed position update either tripped the gate or faulted on a
     // non-finite intermediate; either way the velocity is not folded in against
@@ -760,10 +833,11 @@ bool OrbitOd::ingest(const GnssFix& fix, const frames::EopValue& eop, OrbitOdRes
   }
   age_s_ = 0.0;
 
-  if (fix.velocity_valid) {
+  if (fix.velocity_valid && !velocity_inhibited) {
     const Eigen::Matrix3d r_vel =
         (fix.velocity_sigma_m_s * fix.velocity_sigma_m_s) * Eigen::Matrix3d::Identity();
-    if (!applyUpdate(kVelocity, v_eci.eigen(), r_vel, cfg_.velocity_nis_gate, out.velocity)) {
+    if (!applyUpdate(kVelocity, v_eci.eigen(), r_vel, cfg_.velocity_nis_gate,
+                     policy.velocity == MeasurementMode::kForce, out.velocity)) {
       // The position was accepted, so the solution stands and stays valid; the
       // velocity half is reported rejected. A receiver whose velocity degrades
       // while its position is fine is a real mode, and it must not cost the

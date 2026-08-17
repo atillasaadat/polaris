@@ -182,3 +182,92 @@ Source: design doc §8.3, §11. Fully populated in Phase 6; firm seeds below.
    (``tests/mc``), the ``OrbitEstimator`` component tests
    (``NonGravAccelIsAppliedOnlyWhenFreshAndValid``, ``GroundSeedAcceptedAndRefused``)
    and the SITL rows of ``tests/integration/sitl_od_burn_test.cpp``.
+
+.. req:: Navigation-filter usability practices — retune, covariance re-initialisation, selective processing, backup ephemeris
+   :id: REQ-ODP-009
+   :status: reviewed
+   :level: L3
+   :tags: od, estimation, operability, fdir
+   :method: Test
+   :derived_from: REQ-ODP-001, REQ-ODP-007
+   :allocation: lib/gnc, flight/PolarisFsw/OrbitEstimator
+   :refs: carpenter2018, dennehy2020
+
+   The onboard orbit filter **shall** implement the NESC navigation-filter
+   usability practices of NASA/TP-2018-219822 Ch. 9 and NESC Technical Bulletin
+   20-03 items (d)–(g):
+
+   * **(g) tuning without loss of navigation data** (TP §9.3): a parameter
+     upload **shall** re-tune the running filter in place — state, covariance,
+     epoch, age and counters kept — and a set that fails validation **shall**
+     leave the last valid set in force rather than make a running filter inert;
+   * **(f) covariance re-initialisation without altering the state** (TP §9.2):
+     ``OD_REINIT_COV(posSigma, velSigma)`` **shall** set the covariance to the
+     commanded isotropic values and leave position, velocity and age untouched;
+   * **(d) selective processing per measurement type** (TP §9.1): a three-way
+     ``ACCEPT`` / ``INHIBIT`` / ``FORCE`` policy **shall** be uplinkable per
+     measurement type (position, velocity); ``INHIBIT`` **shall** withhold the
+     type regardless of the residual-edit (NIS) test, ``FORCE`` **shall** apply it
+     regardless of that test, and a forced update **shall** be counted apart from
+     both acceptances and rejections. ``FORCE`` **shall not** override a numeric
+     fault (a negative or non-finite NIS);
+   * **(e) a backup ephemeris** (TP §9.2): a copy of the solution, unaltered by
+     measurement updates since it was seeded and re-seeded from a FINE solution
+     every ``BackupPeriodS``, **shall** be propagated alongside the filter;
+     ``OD_RESTART_FROM_BACKUP`` **shall** restore the solution from it without an
+     uplinked state vector, and the separation between the two **shall** be
+     telemetered as an independent divergence comparator.
+
+   The covariance **shall** be checked for positive semi-definiteness every cycle
+   (TP Ch. 7 — the check a UDU filter gets for free from ``D``) and an
+   indefinite covariance reported by event.
+
+   Rationale: these are the operability rules NASA's navigators codified from
+   Gemini/Apollo through Shuttle and Orion, "without a failure ever attributed
+   to an EKF" [dennehy2020]. Before Push 71 a parameter upload rebuilt the filter
+   and dropped a converged solution to change a gate, the only recovery from an
+   over-confident filter was ``OD_RESET`` (which needed a new fix) or
+   ``OD_SEED_STATE`` (which needed an uplink), and there was no way for the
+   ground to withhold or force a measurement type. Underweighting (TP Ch. 4) is
+   deliberately **not** adopted: the GNSS position and velocity measurement
+   models are linear (``H = [I 0]``, ``[0 I]``), so the second-order term the
+   technique compensates is identically zero here. The UDU factorisation (TP
+   Ch. 7) is likewise not adopted for a 6-state double-precision filter with a
+   Joseph update and explicit symmetrisation; only its definiteness check is.
+
+   Verified by ``tests/unit/orbit_od_test.cpp``
+   (``OrbitOdUsability.RetuneKeepsTheSolutionAndRefusesABadConfig``,
+   ``CovarianceReinitialisationKeepsTheState``,
+   ``MeasurementPolicyInhibitsAndForces``) and the ``OrbitEstimator`` component
+   tests ``TuningUploadKeepsTheSolution``,
+   ``CovarianceReinitAndMeasurementPolicy`` and ``BackupEphemerisRestart``.
+
+.. req:: Time-scale exposure of the orbit filter — a misapplied leap second is refused, not absorbed
+   :id: REQ-ODP-010
+   :status: reviewed
+   :level: L3
+   :tags: od, time, fdir
+   :method: Test
+   :derived_from: REQ-ODP-001, REQ-CONV-001
+   :allocation: lib/gnc, lib/frames
+   :refs: carpenter2018
+
+   The orbit filter **shall** run on a continuous time scale (TAI) internally
+   (NASA/TP-2018-219822 §6.3), and the one place a discontinuous scale reaches
+   it — the leap-second table (ΔAT) that the ECEF→ECI reduction of a GNSS fix
+   passes through on the way to UT1 — **shall** be a refusal, not an absorption:
+   a tracking filter offered a fix converted through a leap-second table stale
+   by one leap (a 15 arcsec Earth-rotation error, ~500 m at LEO) **shall** refuse
+   it on the NIS gate and leave the solution untouched.
+
+   Recorded limit: a **cold** filter has no prior and therefore no gate, so it
+   seeds on such a fix and flies a self-consistent solution rotated by that
+   angle. Consumers that work in ECEF (the magnetic reference, ground-station
+   geometry) round-trip through the same table and are unaffected; the exposure
+   is confined to inertial consumers, and to a table that is stale at cold
+   start — which the §11.3 table-validity monitoring is what should catch.
+
+   Verified by ``tests/unit/orbit_od_test.cpp``
+   (``OrbitOdTimeScales.AStaleLeapSecondTableIsRefusedByATrackingFilterAndOnlyRotatesASeed``),
+   which measures both the refusal (innovation 300–700 m, solution within 5 m of
+   truth) and the seed-path rotation.

@@ -99,6 +99,18 @@ TEST(AttitudeEstimator, ResetDropsFineMode) {
   tester.testResetDropsFineMode();
 }
 
+TEST(AttitudeEstimator, FineTuningUploadKeepsTheSolution) {
+  RecordProperty("verifies", "REQ-ADET-014");
+  flight::AttitudeEstimatorTester tester;
+  tester.testFineTuningUploadKeepsTheSolution();
+}
+
+TEST(AttitudeEstimator, FineCovarianceReinitAndMeasurementPolicy) {
+  RecordProperty("verifies", "REQ-ADET-014");
+  flight::AttitudeEstimatorTester tester;
+  tester.testFineCovarianceReinitAndMeasurementPolicy();
+}
+
 TEST(AttitudeEstimator, MagCalCollectsFitsAndAppliesTheCorrection) {
   RecordProperty("verifies", "REQ-ADET-005");
   flight::AttitudeEstimatorTester tester;

@@ -48,6 +48,7 @@ constexpr F64 kMaxStepS = 10.0;
 constexpr F64 kMaxFixLatencyS = 0.2;
 constexpr F64 kMinRadiusM = 6.5e6;
 constexpr F64 kMaxRadiusM = 8.0e6;
+constexpr F64 kBackupPeriodS = 60.0;
 
 // The reference receiver's reported accuracies (NovAtel OEM7600 catalog entry).
 constexpr F64 kPosSigmaH = 1.0;
@@ -155,6 +156,9 @@ void OrbitEstimatorTester ::setValidParameters() {
   this->paramSet_MaxFixLatencyS(kMaxFixLatencyS, Fw::ParamValid::VALID);
   this->paramSet_MinRadiusM(kMinRadiusM, Fw::ParamValid::VALID);
   this->paramSet_MaxRadiusM(kMaxRadiusM, Fw::ParamValid::VALID);
+  this->paramSet_PositionMeasMode(0, Fw::ParamValid::VALID);
+  this->paramSet_VelocityMeasMode(0, Fw::ParamValid::VALID);
+  this->paramSet_BackupPeriodS(kBackupPeriodS, Fw::ParamValid::VALID);
   // paramSet_* only stages values in the harness's table; the component's base
   // caches them at load, exactly as the topology does once ParameterDb is up.
   this->component.loadParameters();
@@ -559,6 +563,197 @@ void OrbitEstimatorTester ::testResetDropsSolution() {
   this->runCycleAt(kStartTaiNs + 2 * kNsPerSecond);
   ASSERT_TRUE(this->last_estimate_.get_valid());
   ASSERT_EVENTS_OrbitSeeded_SIZE(2);
+  ASSERT_TLM_FixesAccepted(this->tlmHistory_FixesAccepted->size() - 1, 1u);
+}
+
+// ----------------------------------------------------------------------
+// NESC navigation-filter usability practices (NASA/TP-2018-219822 Ch. 7, §9;
+// NESC TB 20-03 items d-g) — Push 71
+// ----------------------------------------------------------------------
+
+void OrbitEstimatorTester ::testTuningUploadKeepsTheSolution() {
+  this->setValidParameters();
+  this->startTruthAt(kStartTaiNs);
+  I64 t = kStartTaiNs;
+  for (int s = 0; s <= 5; ++s) {
+    t = kStartTaiNs + s * kNsPerSecond;
+    this->sendFixAt(t);
+    this->runCycleAt(t);
+  }
+  ASSERT_TRUE(this->last_estimate_.get_valid());
+  const Eigen::Vector3d r_before = toEigen(this->last_estimate_.get_posEciM());
+  ASSERT_EVENTS_OrbitTuningApplied_SIZE(0);
+
+  // An upload: a tighter gate and a shorter fine horizon. The solution stays.
+  this->paramSet_PositionNisGate(7.81, Fw::ParamValid::VALID);
+  this->paramSend_PositionNisGate(0, 0);
+  this->paramSet_MaxCoastS(120.0, Fw::ParamValid::VALID);
+  this->paramSend_MaxCoastS(0, 0);
+  ASSERT_EVENTS_OrbitTuningApplied_SIZE(2);
+  ASSERT_EVENTS_OrbitTuningApplied(0, true);
+  ASSERT_EVENTS_OrbitTuningApplied(1, true);
+  ASSERT_EVENTS_OrbitReset_SIZE(0);
+  t += kNsPerSecond / 10;
+  this->runCycleAt(t);
+  ASSERT_TRUE(this->last_estimate_.get_valid()) << "the solution survived the upload";
+  EXPECT_LT((toEigen(this->last_estimate_.get_posEciM()) - r_before).norm(), 800.0)
+      << "one 100 ms step of the same trajectory, not a re-seed";
+  ASSERT_EVENTS_OrbitSeeded_SIZE(1);
+  const U32 accepted_before =
+      this->tlmHistory_FixesAccepted->at(this->tlmHistory_FixesAccepted->size() - 1).arg;
+  EXPECT_EQ(accepted_before, 6u) << "the counters were kept, not rebuilt";
+
+  // A bad upload: warned, and the last valid set stays in force — the filter
+  // keeps running and keeps taking fixes.
+  this->paramSet_MaxCoastS(-1.0, Fw::ParamValid::VALID);
+  this->paramSend_MaxCoastS(0, 0);
+  ASSERT_EVENTS_OrbitTuningInvalid_SIZE(1);
+  ASSERT_EVENTS_OrbitTuningApplied_SIZE(2);
+  t = kStartTaiNs + 7 * kNsPerSecond;
+  this->sendFixAt(t);
+  this->runCycleAt(t);
+  ASSERT_TRUE(this->last_estimate_.get_valid());
+  ASSERT_TLM_FixesAccepted(this->tlmHistory_FixesAccepted->size() - 1, 7u);
+  ASSERT_EVENTS_FixRefused_SIZE(0);
+}
+
+void OrbitEstimatorTester ::testCovarianceReinitAndMeasurementPolicy() {
+  this->setValidParameters();
+
+  // Before the first cycle the parameters have not been applied: OD_REINIT_COV
+  // has no filter to act on, and says which.
+  this->sendCmd_OD_REINIT_COV(0, 0, 100.0, 1.0);
+  ASSERT_CMD_RESPONSE(0, OrbitEstimator::OPCODE_OD_REINIT_COV, 0,
+                      Fw::CmdResponse::VALIDATION_ERROR);
+  ASSERT_EVENTS_OrbitCovarianceReinitRefused_SIZE(1);
+  ASSERT_EVENTS_OrbitCovarianceReinitRefused(0, OrbitEstimator::OdRefusal::UNCONFIGURED);
+
+  this->startTruthAt(kStartTaiNs);
+  I64 t = kStartTaiNs;
+  for (int s = 0; s <= 5; ++s) {
+    t = kStartTaiNs + s * kNsPerSecond;
+    this->sendFixAt(t);
+    this->runCycleAt(t);
+  }
+  ASSERT_TRUE(this->last_estimate_.get_valid());
+  const Eigen::Vector3d r_before = toEigen(this->last_estimate_.get_posEciM());
+  const F64 sigma_before = this->last_estimate_.get_posSigmaM();
+  ASSERT_LT(sigma_before, 3.0);
+  const std::size_t healthy_idx = this->tlmHistory_CovarianceHealthy->size() - 1;
+  ASSERT_TLM_CovarianceHealthy(healthy_idx, true);
+
+  // Re-open the covariance: the state is untouched, the published sigma is the
+  // commanded one, and a bad sigma is refused.
+  this->sendCmd_OD_REINIT_COV(0, 0, 100.0, -1.0);
+  ASSERT_EVENTS_OrbitCovarianceReinitRefused_SIZE(2);
+  ASSERT_EVENTS_OrbitCovarianceReinitRefused(1, OrbitEstimator::OdRefusal::FIX_SIGMA_INVALID);
+  this->sendCmd_OD_REINIT_COV(0, 0, 100.0, 1.0);
+  ASSERT_CMD_RESPONSE(2, OrbitEstimator::OPCODE_OD_REINIT_COV, 0, Fw::CmdResponse::OK);
+  ASSERT_EVENTS_OrbitCovarianceReinitialised_SIZE(1);
+  ASSERT_EVENTS_OrbitCovarianceReinitialised(0, 100.0, 1.0);
+  t += kNsPerSecond / 10;
+  this->runCycleAt(t);
+  ASSERT_TRUE(this->last_estimate_.get_valid());
+  EXPECT_LT((toEigen(this->last_estimate_.get_posEciM()) - r_before).norm(), 800.0)
+      << "state kept (one 100 ms step)";
+  EXPECT_NEAR(this->last_estimate_.get_posSigmaM(), 100.0 * std::sqrt(3.0), 1.0)
+      << "P = diag(100^2 I, ...): sqrt(trace) over three axes, plus 100 ms of growth";
+  ASSERT_EVENTS_OrbitSeeded_SIZE(1);
+
+  // Policy: INHIBIT the position measurement. The fix is refused by name, not
+  // gated, and the solution keeps coasting.
+  this->paramSet_PositionMeasMode(1, Fw::ParamValid::VALID);
+  this->paramSend_PositionMeasMode(0, 0);
+  ASSERT_EVENTS_MeasurementPolicyChanged_SIZE(2);  // bring-up (0,0), then (1,0)
+  ASSERT_EVENTS_MeasurementPolicyChanged(1, 1, 0);
+  t = kStartTaiNs + 7 * kNsPerSecond;
+  this->sendFixAt(t);
+  this->runCycleAt(t);
+  ASSERT_TRUE(this->last_estimate_.get_valid());
+  ASSERT_EVENTS_FixRefused_SIZE(1);
+  ASSERT_EVENTS_FixRefused(0, 0, OrbitEstimator::OdRefusal::MEASUREMENT_INHIBITED, 1u);
+  ASSERT_TLM_LastRefusal(
+      this->tlmHistory_LastRefusal->size() - 1,
+      OrbitEstimator::OdRefusal(OrbitEstimator::OdRefusal::MEASUREMENT_INHIBITED));
+
+  // FORCE: a fix 2 km out in radius, which the gate would refuse against a
+  // ~1 m sigma, is applied and reported as forced — counted apart from the
+  // accepted and the refused.
+  this->paramSet_PositionMeasMode(2, Fw::ParamValid::VALID);
+  this->paramSend_PositionMeasMode(0, 0);
+  ASSERT_EVENTS_MeasurementPolicyChanged_SIZE(3);
+  t = kStartTaiNs + 8 * kNsPerSecond;
+  const double radius = pc::gravity::kReferenceRadius + kAltitudeM;
+  this->sendFixAt(t, 1.0 + 2000.0 / radius);
+  this->runCycleAt(t);
+  ASSERT_TRUE(this->last_estimate_.get_valid());
+  ASSERT_TLM_FixesForced(this->tlmHistory_FixesForced->size() - 1, 1u);
+  ASSERT_EVENTS_FixRefused_SIZE(1);
+  Eigen::Vector3d r_true;
+  Eigen::Vector3d v_true;
+  this->truthAt(t, r_true, v_true);
+  EXPECT_GT((toEigen(this->last_estimate_.get_posEciM()) - r_true).norm(), 100.0)
+      << "the forced fix moved the state off the truth";
+}
+
+void OrbitEstimatorTester ::testBackupEphemerisRestart() {
+  this->setValidParameters();
+
+  // No backup yet: the restart is refused by name.
+  this->sendCmd_OD_RESTART_FROM_BACKUP(0, 0);
+  ASSERT_CMD_RESPONSE(0, OrbitEstimator::OPCODE_OD_RESTART_FROM_BACKUP, 0,
+                      Fw::CmdResponse::EXECUTION_ERROR);
+  ASSERT_EVENTS_OrbitBackupRestartRefused_SIZE(1);
+
+  this->startTruthAt(kStartTaiNs);
+  I64 t = kStartTaiNs;
+  for (int s = 0; s <= 5; ++s) {
+    t = kStartTaiNs + s * kNsPerSecond;
+    this->sendFixAt(t);
+    this->runCycleAt(t);
+  }
+  ASSERT_TRUE(this->last_estimate_.get_valid());
+  // Seeded from the first FINE solution (the seed cycle itself), then
+  // propagated alongside: age climbs, the divergence between two copies of the
+  // same solution on the same model is at the round-off level.
+  ASSERT_EVENTS_OrbitBackupSeeded_SIZE(1);
+  const std::size_t last = this->tlmHistory_BackupAgeS->size() - 1;
+  EXPECT_NEAR(this->tlmHistory_BackupAgeS->at(last).arg, 5.0, 1.0e-6);
+  const F64 divergence = this->tlmHistory_BackupDivergenceM->at(last).arg;
+  EXPECT_GE(divergence, 0.0);
+  EXPECT_LT(divergence, 1.0) << "the fixes are on the model; the two copies agree";
+
+  // The solution is lost (a commanded reset stands in for a fault or a halt).
+  this->sendCmd_OD_RESET(0, 0);
+  ASSERT_EVENTS_OrbitReset_SIZE(1);
+  t += kNsPerSecond / 10;
+  this->runCycleAt(t);
+  ASSERT_FALSE(this->last_estimate_.get_valid());
+  ASSERT_TLM_BackupDivergenceM(this->tlmHistory_BackupDivergenceM->size() - 1, -1.0);
+  EXPECT_GE(this->tlmHistory_BackupAgeS->at(this->tlmHistory_BackupAgeS->size() - 1).arg, 5.0)
+      << "the backup outlives the solution";
+
+  // Restart from the backup: no uplink, no fix — the solution is back on the
+  // truth to the accuracy of the model it was propagated on.
+  this->sendCmd_OD_RESTART_FROM_BACKUP(0, 0);
+  ASSERT_CMD_RESPONSE(2, OrbitEstimator::OPCODE_OD_RESTART_FROM_BACKUP, 0, Fw::CmdResponse::OK);
+  ASSERT_EVENTS_OrbitRestartedFromBackup_SIZE(1);
+  t += kNsPerSecond / 10;
+  this->runCycleAt(t);
+  ASSERT_TRUE(this->last_estimate_.get_valid());
+  Eigen::Vector3d r_true;
+  Eigen::Vector3d v_true;
+  this->truthAt(t, r_true, v_true);
+  EXPECT_LT((toEigen(this->last_estimate_.get_posEciM()) - r_true).norm(), 1.0);
+  ASSERT_EVENTS_OrbitSeeded_SIZE(1);
+  ASSERT_TLM_FixesAccepted(this->tlmHistory_FixesAccepted->size() - 1, 0u);
+
+  // Fixes resume against the restored solution — an update, not a seed.
+  t = kStartTaiNs + 7 * kNsPerSecond;
+  this->sendFixAt(t);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_OrbitSeeded_SIZE(1);
+  ASSERT_EVENTS_FixRefused_SIZE(0);
   ASSERT_TLM_FixesAccepted(this->tlmHistory_FixesAccepted->size() - 1, 1u);
 }
 
