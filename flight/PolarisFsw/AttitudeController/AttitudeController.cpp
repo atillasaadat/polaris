@@ -186,6 +186,7 @@ bool AttitudeController ::applyParameters() {
   POLARIS_GET(pid.max_integral_rad_s, paramGet_PidMaxIntegralRadS, "PidMaxIntegralRadS");
   POLARIS_GET(pid.max_torque_nm, paramGet_PidMaxTorqueNm, "PidMaxTorqueNm");
   POLARIS_GET(pid.max_dt_s, paramGet_PidMaxDtSec, "PidMaxDtSec");
+  POLARIS_GET(pid.max_slew_rate_radps, paramGet_PidMaxSlewRateRadps, "PidMaxSlewRateRadps");
 
   polaris::gnc::RwAllocationConfig alloc;
   F64 wheel_max_torque = 0.0;

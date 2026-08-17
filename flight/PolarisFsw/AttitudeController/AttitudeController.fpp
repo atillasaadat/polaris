@@ -277,6 +277,12 @@ module flight {
     @ the PD terms still act, the integral is not advanced across it.
     param PidMaxDtSec: F64
 
+    @ Slew-rate limit [rad/s] on the commanded rate (Kp/Kd)*dtheta, saturated by
+    @ norm (Wie & Lu's rate-limited eigenaxis form). Outside it POINT is a
+    @ constant-rate slew with pure rate damping, so a large error or a tumble
+    @ handed to POINT is not a bang-bang manoeuvre with the wheels pinned.
+    param PidMaxSlewRateRadps: F64
+
     # --- Wheel allocation (lib/gnc/rw_allocation.hpp) -----------------------
 
     @ Number of installed reaction wheels, 3..GncMaxUnits.

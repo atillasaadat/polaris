@@ -39,6 +39,7 @@ constexpr F64 kPidKd = 3.1e-2;
 constexpr F64 kPidMaxIntegral = 0.5;
 constexpr F64 kPidMaxTorqueNm = 0.02;
 constexpr F64 kPidMaxDtSec = 0.5;
+constexpr F64 kPidMaxSlewRateRadps = 1.0;  // wide open: the component tests exercise the PID
 constexpr U32 kWheelCount = 4;
 constexpr F64 kWheelMaxTorqueNm = 0.025;
 constexpr F64 kAllocMinConditioning = 0.05;
@@ -141,6 +142,7 @@ void AttitudeControllerTester ::setValidParameters(F64 dutyFactor, F64 settleSec
   this->paramSet_PidMaxIntegralRadS(kPidMaxIntegral, Fw::ParamValid::VALID);
   this->paramSet_PidMaxTorqueNm(kPidMaxTorqueNm, Fw::ParamValid::VALID);
   this->paramSet_PidMaxDtSec(kPidMaxDtSec, Fw::ParamValid::VALID);
+  this->paramSet_PidMaxSlewRateRadps(kPidMaxSlewRateRadps, Fw::ParamValid::VALID);
   this->paramSet_WheelCount(kWheelCount, Fw::ParamValid::VALID);
   this->paramSet_WheelMaxTorqueNm(kWheelMaxTorqueNm, Fw::ParamValid::VALID);
   this->paramSet_AllocMinConditioning(kAllocMinConditioning, Fw::ParamValid::VALID);
