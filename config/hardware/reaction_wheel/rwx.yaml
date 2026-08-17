@@ -16,6 +16,8 @@ params:
   dry_friction_nm: 0.000008      # Coulomb friction torque [N·m]
   viscous_friction_nm_s: 0.0000004  # viscous friction ∝ speed [N·m/(rad/s)]
   aero_friction_nm_s2: 0.0         # aero friction ∝ speed² [N·m/(rad/s)²]
+  stiction_nm: 0.000016            # breakaway torque, 2x Coulomb (representative; unit calibration)
+  stiction_band_rad_s: 0.5         # Karnopp band, ~5 rpm: below it the rotor is "at rest"
   torque_quantization_nm: 0.000008 # drive torque LSB [N·m]
   static_imbalance_kg_m: 0.0       # Us [kg·m] — radial force = Us·ω² (jitter)
   dynamic_imbalance_kg_m2: 0.0     # Ud [kg·m²] — radial torque = Ud·ω² (jitter)

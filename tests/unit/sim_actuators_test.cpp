@@ -195,6 +195,60 @@ TEST(ReactionWheel, StuckAndRunawayFaults) {
   EXPECT_NEAR(runaway.step(0.001).reaction_torque_nm, -1.0, 1e-9) << "runaway: peak torque";
 }
 
+/// **Stiction holds a near-zero rotor and hides the command from the body.**
+/// The physical fact behind a wheel-speed bias (§8.5): a sub-breakaway command
+/// on a rotor inside the Karnopp band moves nothing, so the body gets no
+/// reaction; a command above breakaway spins it up and control returns.
+TEST(ReactionWheel, StictionHoldsASlowRotorAgainstASubBreakawayTorque) {
+  act::ReactionWheelSpec spec = idealWheel();
+  spec.dry_friction_nm = 1.0e-5;
+  spec.stiction_nm = 2.0e-5;
+  spec.stiction_band_rad_s = 0.5;
+  act::ReactionWheel rw(spec);
+  const double dt = 0.1;
+
+  // Below breakaway from rest: nothing moves, nothing reaches the body.
+  rw.commandTorque(1.5e-5);
+  for (int i = 0; i < 50; ++i) {
+    const auto out = rw.step(dt);
+    EXPECT_DOUBLE_EQ(out.reaction_torque_nm, 0.0);
+    EXPECT_DOUBLE_EQ(rw.speed(), 0.0);
+  }
+  // Above breakaway: spins up against Coulomb friction, reaction as commanded
+  // less the friction the rotor now overcomes.
+  rw.commandTorque(3.0e-5);
+  const auto moving = rw.step(dt);
+  EXPECT_GT(rw.speed(), 0.0);
+  EXPECT_NEAR(moving.reaction_torque_nm, -3.0e-5, 1e-12);  // first step: ω was 0, no friction yet
+  // A slow rotor coasting into the band with the drive off is arrested: the
+  // arrest is the one reaction the body sees, then silence.
+  act::ReactionWheel slow(spec);
+  slow.commandTorque(0.0);
+  // Give it a residual speed inside the band by a short push then no command.
+  slow.commandTorque(1.0e-3);
+  slow.step(0.1);  // ω = 1e-3*0.1/1e-3 = 0.1 rad/s
+  slow.commandTorque(0.0);
+  const auto arrest = slow.step(dt);
+  EXPECT_DOUBLE_EQ(slow.speed(), 0.0);
+  EXPECT_NEAR(arrest.reaction_torque_nm, spec.rotor_inertia_kg_m2 * 0.1 / dt, 1e-12);
+  EXPECT_DOUBLE_EQ(slow.step(dt).reaction_torque_nm, 0.0);
+}
+
+/// Outside the band the model is unchanged: a fast rotor never sticks even
+/// with the drive commanding less than breakaway.
+TEST(ReactionWheel, StictionDoesNotTouchARotorOutsideTheBand) {
+  act::ReactionWheelSpec spec = idealWheel();
+  spec.stiction_nm = 2.0e-5;
+  spec.stiction_band_rad_s = 0.5;
+  act::ReactionWheel rw(spec);
+  rw.commandTorque(1.0e-2);
+  rw.step(0.1);  // ω = 1 rad/s
+  rw.commandTorque(1.0e-5);
+  const auto out = rw.step(0.1);
+  EXPECT_NEAR(out.reaction_torque_nm, -1.0e-5, 1e-15);
+  EXPECT_GT(rw.speed(), 1.0);
+}
+
 TEST(ReactionWheel, NonPositiveDtIsANoOp) {
   act::ReactionWheel rw(idealWheel());
   rw.commandTorque(0.05);

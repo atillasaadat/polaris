@@ -31,6 +31,11 @@ namespace {
 //! the rest of the component uses.
 const F64 kNoValue = std::numeric_limits<F64>::quiet_NaN();
 
+//! Fraction of WheelCapacityNms at which WheelNearCapacity fires. A fixed
+//! policy rather than a parameter: the number that varies per vehicle is the
+//! capacity, and 90 % is where a wheel has one desaturation's worth of headroom.
+constexpr double kWheelCapacityAlertFraction = 0.9;
+
 Vec3F64 toVec3F64(const Eigen::Vector3d& v) {
   Vec3F64 out;
   out[0] = v[0];
@@ -72,6 +77,8 @@ bool AttitudeController ::updateMomentum(I64 nowNs) {
     // clearing on absence is how a monitor un-alarms itself by losing its input.
     this->tlmWrite_StoredMomentum(toVec3F64(Eigen::Vector3d(kNoValue, kNoValue, kNoValue)));
     this->tlmWrite_StoredMomentumNms(kNoValue);
+    this->tlmWrite_MaxWheelMomentumNms(kNoValue);
+    this->tlmWrite_NullSpaceMomentumNms(kNoValue);
     this->tlmWrite_MomentumValid(false);
     // The refusal itself is FDIR-visible, not just a gap on a strip chart: one
     // dead tachometer takes out desaturation *and* both §9 momentum monitors,
@@ -103,7 +110,24 @@ bool AttitudeController ::updateMomentum(I64 nowNs) {
   this->momentum_refusal_streak_ = 0;
   this->tlmWrite_StoredMomentum(toVec3F64(this->momentum_state_.stored_nms.eigen()));
   this->tlmWrite_StoredMomentumNms(this->momentum_state_.stored_norm_nms);
+  this->tlmWrite_MaxWheelMomentumNms(this->momentum_state_.max_wheel_nms);
+  this->tlmWrite_NullSpaceMomentumNms(this->momentum_state_.null_space_nms);
   this->tlmWrite_MomentumValid(true);
+
+  // §9 per-wheel capacity monitor, edge-gated both ways on the one comparison.
+  // Watches the largest single wheel, not the body sum: the envelope below is
+  // blind to null-space momentum, and this is the alarm for what it cannot see.
+  const bool near_capacity =
+      this->momentum_state_.max_wheel_nms > kWheelCapacityAlertFraction * this->wheel_capacity_nms_;
+  if (near_capacity && !this->wheel_capacity_alerted_) {
+    this->log_WARNING_HI_WheelNearCapacity(this->momentum_state_.max_wheel_nms,
+                                           this->wheel_capacity_nms_,
+                                           this->momentum_state_.null_space_nms);
+    this->wheel_capacity_alerted_ = true;
+  } else if (!near_capacity && this->wheel_capacity_alerted_) {
+    this->log_ACTIVITY_HI_WheelCapacityRecovered(this->momentum_state_.max_wheel_nms);
+    this->wheel_capacity_alerted_ = false;
+  }
 
   // §9 envelope monitor, edge-gated both ways on the one comparison.
   if (this->momentum_state_.envelope_exceeded && !this->envelope_alerted_) {

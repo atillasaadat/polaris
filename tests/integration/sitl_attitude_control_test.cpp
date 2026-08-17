@@ -97,6 +97,11 @@ struct RunResult {
   double peak_rod_off_axis[3] = {0.0, 0.0, 0.0};
   double peak_on_window_s = 0.0;
   double peak_wheel_torque = 0.0;
+  /// Largest |momentum| any single wheel of the truth vehicle carried [N·m·s] —
+  /// the number the wheel-capacity check below is on. The FSW cannot see it
+  /// (there is no wheel-speed limit in the drive path, Push 69), so it is read
+  /// from the plant.
+  double peak_wheel_momentum_nms = 0.0;
   /// Commanded body-dipole magnitude [A·m²] at each exchanged step, so a row can
   /// say *when* the rods were driven and correlate that with what the vehicle did.
   std::vector<double> rod_dipole_am2;
@@ -181,6 +186,10 @@ RunResult fly(const std::string& tag, const scenario::SimConfig& orbit, unsigned
     for (const io::WheelCommand& w : out.wheels) {
       result.peak_wheel_torque = std::max(result.peak_wheel_torque, std::abs(w.value));
     }
+    for (const auto& wheel : vehicle.wheels) {
+      result.peak_wheel_momentum_nms =
+          std::max(result.peak_wheel_momentum_nms, std::abs(wheel.model.momentum()));
+    }
     Eigen::Vector3d commanded = Eigen::Vector3d::Zero();
     for (const pm::Vec3<pm::frames::Body>& d : out.magnetorquer_dipoles) {
       commanded += d.eigen();
@@ -233,6 +242,49 @@ double peakRateFrom(const std::vector<io::MacroSample>& trace, std::size_t from)
 // ======================================================================
 // Row 1 — closed-loop detumble
 // ======================================================================
+
+/// The reference wheel's momentum capacity [N·m·s] (`config/hardware/reaction_wheel/
+/// rwx.yaml`, `max_momentum_nms`) and the flight torque limit (`PidMaxTorqueNm`).
+/// Pinned rather than read so a change fails these rows with a number.
+constexpr double kWheelCapacityNms = 0.030;
+constexpr double kPidMaxTorqueNm = 0.0015;
+
+/// **The mechanism, not only the outcome.** Push 67 found a POINT entry that
+/// passed its pointing bound for two pushes while, underneath it, the wheels
+/// sat pinned (~80 saturation events), stored momentum left its envelope and the
+/// fine mode was demoted a dozen times — every one of those on the event stream
+/// and none of them asserted. Every POINT row now records these on its artifact
+/// and bounds them: @p maxSaturationEvents for the `TorqueSaturated` edges a row
+/// may legitimately see (a hold: none; an entry from a tumble: the first cycles
+/// damping to the slew limit), zero momentum-envelope excursions and fine-mode
+/// demotions unless the row says otherwise, and — the one no event carries — no
+/// wheel of the truth vehicle ever past its momentum capacity.
+void expectMechanismHealthy(const RunResult& run, const char* tag, std::size_t maxSaturationEvents,
+                            std::size_t maxDemotions = 0) {
+  const std::size_t saturations = countOf(run.log, "TorqueSaturated");
+  const std::size_t envelope = countOf(run.log, "MomentumEnvelopeExceeded");
+  const std::size_t demotions = countOf(run.log, "Fine mode demoted");
+  const std::size_t refused = countOf(run.log, "ControlRefused");
+  const std::string prefix = std::string(tag) + "_";
+  ::testing::Test::RecordProperty(prefix + "torque_saturation_events", std::to_string(saturations));
+  ::testing::Test::RecordProperty(prefix + "momentum_envelope_events", std::to_string(envelope));
+  ::testing::Test::RecordProperty(prefix + "fine_demotions", std::to_string(demotions));
+  ::testing::Test::RecordProperty(prefix + "control_refused_events", std::to_string(refused));
+  ::testing::Test::RecordProperty(prefix + "peak_wheel_torque_over_limit",
+                                  std::to_string(run.peak_wheel_torque / kPidMaxTorqueNm));
+  ::testing::Test::RecordProperty(prefix + "peak_wheel_momentum_over_capacity",
+                                  std::to_string(run.peak_wheel_momentum_nms / kWheelCapacityNms));
+  EXPECT_LE(saturations, maxSaturationEvents)
+      << tag << ": the wheels were pinned " << saturations << " times:\n"
+      << run.log;
+  EXPECT_EQ(envelope, 0u) << tag << ": stored momentum left its envelope:\n" << run.log;
+  EXPECT_LE(demotions, maxDemotions)
+      << tag << ": the fine mode was demoted " << demotions << " times under control:\n"
+      << run.log;
+  EXPECT_LT(run.peak_wheel_momentum_nms, kWheelCapacityNms)
+      << tag << ": a wheel was driven past its momentum capacity (" << run.peak_wheel_momentum_nms
+      << " N*m*s)";
+}
 
 TEST(SitlAttitudeControl, DetumblesFromFiveDegreesPerSecond) {
   RecordProperty("verifies", "REQ-ACTL-001");
@@ -382,6 +434,9 @@ TEST(SitlAttitudeControl, InertialHoldConvergesUnderThePointingBound) {
   // a different failure and is asserted absent separately.
   EXPECT_LE(countOf(run.log, "Control refused in mode POINT"), 1u);
   EXPECT_EQ(countOf(run.log, "POINT (2): QUALITY_FLOOR"), 0u);
+  // A 10 deg hold from rest never asks for the torque limit: no saturation, no
+  // envelope excursion, no demotion, no wheel near capacity.
+  expectMechanismHealthy(run, "hold", /*maxSaturationEvents=*/0);
 
   // **The quiet side of the §8.5/§9 momentum monitors, and the row that makes
   // their positives evidence.** This is the nominal vehicle: the modelled
@@ -750,6 +805,10 @@ TEST(SitlAttitudeControl, DesaturationDumpsMomentumWhilePointingHolds) {
   // is the desaturation's and nothing else's.
   EXPECT_GT(run.peak_on_window_s, 0.0);
   EXPECT_GT(run.peak_wheel_torque, 0.0);
+  // The loading dipole is sized to fill the wheels, not to pin them: the row
+  // asserts the desaturation *worked* above, and here that it never had to work
+  // against saturation, an envelope excursion or a demotion.
+  expectMechanismHealthy(run, "desat", /*maxSaturationEvents=*/0);
   // The interlock stayed healthy through a run that drives the rods in POINT —
   // the mode in which the stuck-on monitor is otherwise most confident.
   EXPECT_EQ(countOf(run.log, "Magnetorquer stuck-on: rod"), 0u);
@@ -795,6 +854,8 @@ TEST(SitlAttitudeControl, FeedforwardImprovesPointingAndTheAnomalyMonitorFires) 
   const RunResult without_ff =
       fly("ff-off", orbit_off, /*ctrlMode=*/2, target_q, noFaults, /*feedforward=*/0);
   ASSERT_TRUE(without_ff.sim_healthy);
+  expectMechanismHealthy(with_ff, "ff_on", /*maxSaturationEvents=*/0);
+  expectMechanismHealthy(without_ff, "ff_off", /*maxSaturationEvents=*/0);
   ASSERT_GT(with_ff.trace.size(), 3500u);
   ASSERT_EQ(with_ff.trace.size(), without_ff.trace.size());
 
@@ -950,9 +1011,12 @@ TEST(SitlAttitudeControl, DetumblesThenAcquiresSunPointing) {
   }
   RecordProperty("sun_angle_tail_worst_deg", std::to_string(worst_tail_deg));
   RecordProperty("sun_angle_final_deg", std::to_string(sun_angle_deg(b.trace.back().state)));
-  // The storm, visible in the artifact: how many times the fine mode was demoted
-  // on the way in (measured 11-13 on both plants, Push 67).
-  RecordProperty("fine_demotions", std::to_string(countOf(b.log, "Fine mode demoted")));
+  // The mechanism of the entry, bounded (Push 69). Before the slew-rate limit
+  // (Push 68) this row measured 11-13 fine-mode demotions and ~80 saturation
+  // events and passed; with it, 1 and 2. The bounds are sized to the latter: a
+  // handful of saturated cycles damping 3 deg/s down to the slew limit, at most
+  // a couple of demotions, and never a wheel past capacity.
+  expectMechanismHealthy(b, "sunpoint", /*maxSaturationEvents=*/10, /*maxDemotions=*/2);
   // Measured tail 0.012 deg at 450 s; 2 deg is the class bound, not a fit.
   EXPECT_LT(worst_tail_deg, 2.0) << "sun acquisition did not converge: worst tail angle "
                                  << worst_tail_deg << " deg";

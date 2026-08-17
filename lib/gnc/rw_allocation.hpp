@@ -28,11 +28,15 @@
 ///    torque, hence roughly the dissipation, and the pseudo-inverse is a constant
 ///    of the geometry so it is factorised once at construction and every cycle is
 ///    one fixed-size matrix–vector product.
-///  - **Minimum–maximum (L-∞):** minimise \f$\max_i|u_i|\f$ subject to the same
-///    equality. This is the allocation that matters when a wheel is near its
-///    torque box: the L2 solution can put one wheel at its limit while others idle,
-///    and the L-∞ solution spreads the demand so the array saturates as late as
-///    possible. The solution set is \f$\mathbf u_p + \alpha\mathbf n\f$ with
+///  - **Minimum–maximum (L-∞):** minimise \f$\max_i|u_i|/L_i\f$ — the largest
+///    wheel torque *in units of that wheel's limit* \f$L_i\f$ — subject to the
+///    same equality. This is the allocation that matters when a wheel is near
+///    its torque box: the L2 solution can put one wheel at its limit while
+///    others idle, and the L-∞ solution spreads the demand so the array
+///    saturates as late as possible; weighting by the limits is what makes that
+///    literally true when the limits differ, and reduces to the plain
+///    \f$\max_i|u_i|\f$ when they are equal (every wheel on the reference
+///    vehicle). The solution set is \f$\mathbf u_p + \alpha\mathbf n\f$ with
 ///    \f$\mathbf u_p\f$ the L2 solution and \f$\mathbf n\f$ spanning the null
 ///    space; for a **four-wheel** array the null space is one-dimensional and
 ///    \f$f(\alpha)=\max_i|u_{p,i}+\alpha n_i|\f$ is a convex piecewise-linear

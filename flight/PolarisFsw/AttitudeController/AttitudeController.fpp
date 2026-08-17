@@ -452,6 +452,14 @@ module flight {
     @ MomentumDesatEnterNms.
     param MomentumEnvelopeNms: F64
 
+    @ One wheel's momentum capacity [N*m*s] (the catalog's max_momentum_nms; the
+    @ config compiler cross-checks it). The §9 per-wheel monitor watches the
+    @ largest single-wheel momentum against it — a number the body-momentum
+    @ envelope cannot see, because a four-wheel array can carry momentum in its
+    @ null space (wheels spinning against each other) that sums to nothing in
+    @ body axes while one wheel walks to its stop.
+    param WheelCapacityNms: F64
+
     @ Cross-product desaturation gain k_d [1/s] in m = k_d (dh x B)/||B||^2. The
     @ perpendicular momentum error decays with time constant 1/k_d while the rods
     @ are unsaturated — the duty division inside the law is what keeps the duty
@@ -568,6 +576,16 @@ module flight {
 
     @ ||h|| [N*m*s], the quantity MomentumEnvelopeNms gates.
     telemetry StoredMomentumNms: F64
+
+    @ Largest single-wheel momentum max_i |I_w w_i| [N*m*s], the quantity the
+    @ WheelCapacityNms monitor gates. Not bounded by StoredMomentumNms.
+    telemetry MaxWheelMomentumNms: F64
+
+    @ Norm of the wheel-momentum vector's null-space component [N*m*s]: momentum
+    @ the wheels hold against each other that produces no body momentum. Zero on
+    @ a three-wheel array; growth here is a wheel drifting toward its stop where
+    @ no body-momentum threshold will see it.
+    telemetry NullSpaceMomentumNms: F64
 
     @ The wheel-momentum accounting produced a usable state this cycle. False
     @ means desaturation and the §9 envelope and momentum-anomaly monitors are
@@ -710,6 +728,18 @@ module flight {
     event MomentumEnvelopeRecovered(momentumNms: F64) \
       severity activity high \
       format "Stored momentum back inside the envelope at {} N*m*s"
+
+    @ A wheel is above 90 % of WheelCapacityNms (§9). Edge-gated on the crossing.
+    @ This is the per-wheel alarm the envelope is not: it fires whether the
+    @ momentum is body momentum or null-space momentum the body cannot see.
+    event WheelNearCapacity(maxWheelNms: F64, capacityNms: F64, nullSpaceNms: F64) \
+      severity warning high \
+      format "A wheel holds {} N*m*s of its {} N*m*s capacity ({} N*m*s of it in the null space)"
+
+    @ Every wheel is back under 90 % of its capacity. The recovery edge.
+    event WheelCapacityRecovered(maxWheelNms: F64) \
+      severity activity high \
+      format "Largest wheel momentum back to {} N*m*s"
 
     @ The observed unmodelled secular torque has been outside the modelled
     @ disturbance budget for DisturbanceAnomalyCycles consecutive updates (§9).

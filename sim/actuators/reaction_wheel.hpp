@@ -15,9 +15,14 @@
 /// **Friction** follows the RW-0.4 rundown model (its ICD): a Coulomb (dry) term,
 /// a viscous (wet) term ∝ speed, and an aerodynamic term ∝ speed² (only relevant
 /// on the ground / in residual atmosphere). The Coulomb term opposes the spin
-/// (−sign(ω)·mag); at exactly ω = 0 it is zero — this model does not include
-/// static friction / stiction holding a stopped rotor against a sub-threshold
-/// torque, which is immaterial at the µN·m friction levels here. **Power** is the sum of copper
+/// (−sign(ω)·mag); at exactly ω = 0 it is zero. **Stiction** is Karnopp's
+/// zero-velocity band [karnopp1985]: inside `|ω| < stiction_band_rad_s` a rotor
+/// whose net motor torque cannot beat `stiction_nm` is held at rest, absorbing
+/// the command in static friction and delivering **no** reaction to the body —
+/// which is what "a wheel near zero speed does not control the vehicle" means
+/// physically, and the reason an ACS carries a wheel-speed bias (§8.5). Both
+/// default to 0 (no band, the pre-Push-69 model); the catalog wheel carries
+/// representative values. **Power** is the sum of copper
 /// loss (I²R, I = τ/Kt) and mechanical power (τ·ω), the latter signed so that braking returns
 /// energy to the bus — the regenerative behaviour the ICD calls out.
 ///
@@ -59,6 +64,8 @@ struct ReactionWheelSpec {
   double dry_friction_nm = 0.0;          ///< Coulomb friction (opposes spin)
   double viscous_friction_nm_s = 0.0;    ///< viscous friction ∝ speed [N·m/(rad/s)]
   double aero_friction_nm_s2 = 0.0;      ///< aero friction ∝ speed² [N·m/(rad/s)²]
+  double stiction_nm = 0.0;              ///< breakaway torque holding a rotor at rest (0 = none)
+  double stiction_band_rad_s = 0.0;      ///< Karnopp band: |ω| below this counts as "at rest"
   double torque_quantization_nm = 0.0;   ///< drive torque LSB (0 = none)
   double static_imbalance_kg_m = 0.0;    ///< Us: radial force = Us·ω²
   double dynamic_imbalance_kg_m2 = 0.0;  ///< Ud: radial torque = Ud·ω²
@@ -117,8 +124,13 @@ struct ReactionWheelOutput {
 /// integrates
 /// \f[
 ///   \dot\omega = \frac{\tau_m + \tau_f}{I}, \qquad
-///   \omega' = \omega + \dot\omega\,\Delta t.
+///   \omega' = \omega + \dot\omega\,\Delta t,
 /// \f]
+/// unless it is **stuck**: with \f$|\omega| < \omega_{sb}\f$ and
+/// \f$|\tau_m| \le \tau_{s}\f$ the rotor is brought to and held at rest
+/// (\f$\omega' = 0\f$, the motor torque absorbed by static friction), so the
+/// body sees only the reaction of whatever residual speed was arrested and then
+/// nothing until the command exceeds the breakaway torque.
 /// If \f$|\omega'|\f$ exceeds the speed ceiling \f$\omega_{\max}\f$ it is clamped,
 /// \f$\dot\omega\f$ is backed out from the clamped motion, and the implied motor
 /// torque is recomputed \f$\tau_m = I\dot\omega - \tau_f\f$, so a saturated wheel

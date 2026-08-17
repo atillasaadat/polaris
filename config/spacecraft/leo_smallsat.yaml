@@ -1108,6 +1108,11 @@ spacecraft:
     # before: it is an analysis limit, and the vehicle must be told when it leaves
     # the regime its own margin evidence covers.
     flight.attitudeController.MomentumEnvelopeNms: 7.2e-3
+    # One wheel's momentum capacity, the catalog's max_momentum_nms (configc
+    # cross-checks it). The §9 per-wheel monitor alarms at 90 % of it on the
+    # largest single wheel — the alarm the envelope above cannot raise, since
+    # four wheels can hold null-space momentum that sums to nothing in body axes.
+    flight.attitudeController.WheelCapacityNms: 0.030
     flight.attitudeController.MomentumDesatEnterNms: 3.6e-3
     flight.attitudeController.MomentumDesatExitNms: 1.08e-3
     flight.attitudeController.MomentumDesatConfirmCycles: 50

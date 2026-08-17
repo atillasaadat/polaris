@@ -29,6 +29,8 @@ ReactionWheelSpec ReactionWheelSpec::fromParams(const std::map<std::string, doub
   s.dry_friction_nm = get(p, "dry_friction_nm");
   s.viscous_friction_nm_s = get(p, "viscous_friction_nm_s");
   s.aero_friction_nm_s2 = get(p, "aero_friction_nm_s2");
+  s.stiction_nm = get(p, "stiction_nm");
+  s.stiction_band_rad_s = get(p, "stiction_band_rad_s");
   s.torque_quantization_nm = get(p, "torque_quantization_nm");
   s.static_imbalance_kg_m = get(p, "static_imbalance_kg_m");
   s.dynamic_imbalance_kg_m2 = get(p, "dynamic_imbalance_kg_m2");
@@ -81,9 +83,20 @@ ReactionWheelOutput ReactionWheel::step(double dt) {
         std::round(motor_torque / spec_.torque_quantization_nm) * spec_.torque_quantization_nm;
   }
 
-  // 2. Rotor dynamics: I·ω̇ = motor torque − bearing friction.
+  // 2. Rotor dynamics: I·ω̇ = motor torque − bearing friction — unless the rotor
+  //    is inside the stiction band and the motor cannot break it away, in which
+  //    case static friction holds it at rest and the command reaches the body
+  //    only as the arrest of whatever residual speed there was.
   double omega_dot = (inertia_ > 0.0) ? (motor_torque + friction) / inertia_ : 0.0;
   double new_speed = speed_ + omega_dot * dt;
+  const bool stuck_by_stiction = spec_.stiction_nm > 0.0 && !fault_runaway_ &&
+                                 std::abs(speed_) < spec_.stiction_band_rad_s &&
+                                 std::abs(motor_torque) <= spec_.stiction_nm;
+  if (stuck_by_stiction) {
+    new_speed = 0.0;
+    omega_dot = (new_speed - speed_) / dt;
+    motor_torque = 0.0;  // absorbed in static friction: no mechanical work, no torque out
+  }
 
   // Momentum/speed ceiling: the torque box cannot push past max speed. Clamp and
   // back out the acceleration that was actually delivered, so the reaction torque

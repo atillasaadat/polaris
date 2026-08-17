@@ -138,28 +138,38 @@ bool RwAllocator::allocate(const math::Vec3<math::frames::Body>& torque_cmd,
   }
 
   if (method == RwAllocationMethod::kMinMax && has_null_) {
-    // f(alpha) = max_i |u_i + alpha n_i| is convex and piecewise linear, so its
-    // minimum sits at a breakpoint of the upper envelope: a crossing of two of
-    // the |affine| pieces, or a piece's own zero. Evaluate every candidate and
-    // keep the best. alpha = 0 is always in the list, so the L-infinity answer
-    // is never worse than the L2 one it started from.
+    // f(alpha) = max_i |w_i + alpha m_i| with w_i = u_i / L_i and m_i = n_i / L_i
+    // — the wheel torques *in units of each wheel's own limit*, so what is
+    // minimised is the box utilisation, which is what "saturates as late as
+    // possible" means when the limits differ (with equal limits it is the plain
+    // L-infinity). Convex and piecewise linear, so the minimum sits at a
+    // breakpoint of the upper envelope: a crossing of two of the |affine|
+    // pieces, or a piece's own zero. Evaluate every candidate and keep the
+    // best. alpha = 0 is always in the list, so the answer is never worse than
+    // the L2 one it started from.
+    double w[kMaxWheels];
+    double m[kMaxWheels];
+    for (int i = 0; i < n; ++i) {
+      w[i] = u[i] / config_.max_torque_nm[i];
+      m[i] = null_[i] / config_.max_torque_nm[i];
+    }
     double candidates[kMaxCandidates];
     int count = 0;
     candidates[count++] = 0.0;
     for (int i = 0; i < n; ++i) {
-      if (std::abs(null_[i]) > kTiny) {
-        candidates[count++] = -u[i] / null_[i];
+      if (std::abs(m[i]) > kTiny) {
+        candidates[count++] = -w[i] / m[i];
       }
     }
     for (int i = 0; i < n; ++i) {
       for (int j = i + 1; j < n; ++j) {
-        const double diff = null_[i] - null_[j];
+        const double diff = m[i] - m[j];
         if (std::abs(diff) > kTiny) {
-          candidates[count++] = (u[j] - u[i]) / diff;
+          candidates[count++] = (w[j] - w[i]) / diff;
         }
-        const double sum = null_[i] + null_[j];
+        const double sum = m[i] + m[j];
         if (std::abs(sum) > kTiny) {
-          candidates[count++] = -(u[i] + u[j]) / sum;
+          candidates[count++] = -(w[i] + w[j]) / sum;
         }
       }
     }
@@ -167,7 +177,7 @@ bool RwAllocator::allocate(const math::Vec3<math::frames::Body>& torque_cmd,
     double best_alpha = 0.0;
     double best_max = 0.0;
     for (int i = 0; i < n; ++i) {
-      best_max = std::max(best_max, std::abs(u[i]));
+      best_max = std::max(best_max, std::abs(w[i]));
     }
     for (int c = 0; c < count; ++c) {
       const double alpha = candidates[c];
@@ -176,7 +186,7 @@ bool RwAllocator::allocate(const math::Vec3<math::frames::Body>& torque_cmd,
       }
       double worst = 0.0;
       for (int i = 0; i < n; ++i) {
-        worst = std::max(worst, std::abs(u[i] + alpha * null_[i]));
+        worst = std::max(worst, std::abs(w[i] + alpha * m[i]));
       }
       // Strict improvement only: ties keep the earlier candidate, so the result
       // is a deterministic function of the inputs.

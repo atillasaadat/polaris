@@ -208,8 +208,9 @@ struct MomentumConfig {
   /// envelope inside the desat threshold would fire before the law that fixes it.
   double envelope_nms = 0.0;
 
-  /// Count in range, every installed axis finite and non-zero, inertia positive,
-  /// thresholds positive and ordered, confirmation count non-zero.
+  /// Count in range, every installed axis finite and unit, the axes spanning the
+  /// body (`W Wᵀ` positive definite), inertia positive, thresholds positive and
+  /// ordered, confirmation count non-zero.
   bool isValid() const;
 };
 
@@ -231,6 +232,23 @@ struct MomentumState {
   /// `desat_enter_nms` until it has been under `desat_exit_nms` for
   /// `desat_confirm_cycles` consecutive cycles.
   bool desat_required = false;
+
+  /// Largest single-wheel momentum \f$\max_i |I_w\omega_i|\f$ [N·m·s]. **Not
+  /// bounded by @ref stored_norm_nms**: on a four-wheel array the wheels can
+  /// carry momentum in the array's null space — spinning against each other —
+  /// that sums to nothing in body axes, so the envelope, the desat threshold and
+  /// the observer are all blind to it while a wheel walks to its capacity. This
+  /// is the number a per-wheel capacity monitor has to watch (§9), and it is
+  /// reported here so the blindness is visible rather than structural.
+  double max_wheel_nms = 0.0;
+
+  /// Norm of the wheel-momentum vector's null-space component [N·m·s]: the part
+  /// of \f$I_w\boldsymbol\omega_w\f$ that produces no body momentum at all.
+  /// Zero for a three-wheel array. Nothing here acts on it — a null-space
+  /// equalisation term belongs to the allocation, and the reference vehicle's
+  /// L2 allocation injects none — but a growing value is a wheel drifting
+  /// toward a limit the body-momentum thresholds will never see.
+  double null_space_nms = 0.0;
 
   /// @ref stored_norm_nms is above `envelope_nms` (§9). Reported on the *stored*
   /// momentum rather than the error, because the analysis the envelope comes from
@@ -289,6 +307,9 @@ class MomentumManager {
   void reset();
 
  private:
+  /// `(W Wᵀ)⁻¹ v` over the installed axes — the min-norm decomposition's kernel.
+  Eigen::Vector3d gramInverseTimes(const Eigen::Vector3d& v) const;
+
   MomentumConfig config_{};
   bool configured_ = false;
   /// True while a desaturation is in progress; the `RateHysteresis` below decides

@@ -61,6 +61,7 @@ constexpr F64 kMomentumEnterNms = 1.0e-3;
 constexpr F64 kMomentumExitNms = 3.0e-4;
 constexpr U32 kMomentumConfirmCycles = 5;
 constexpr F64 kMomentumEnvelopeNms = 2.0e-3;
+constexpr F64 kWheelCapacityNms = 0.030;
 constexpr F64 kDesatGainPerSec = 0.2;
 constexpr F64 kObserverTauSec = 200.0;
 constexpr F64 kDisturbanceBudgetNm = 2.0e-5;
@@ -199,6 +200,7 @@ void AttitudeControllerTester ::setValidParameters(F64 dutyFactor, F64 settleSec
   this->paramSet_MomentumDesatExitNms(kMomentumExitNms, Fw::ParamValid::VALID);
   this->paramSet_MomentumDesatConfirmCycles(kMomentumConfirmCycles, Fw::ParamValid::VALID);
   this->paramSet_MomentumEnvelopeNms(kMomentumEnvelopeNms, Fw::ParamValid::VALID);
+  this->paramSet_WheelCapacityNms(kWheelCapacityNms, Fw::ParamValid::VALID);
   this->paramSet_DesatGainPerSec(kDesatGainPerSec, Fw::ParamValid::VALID);
   this->paramSet_FeedforwardModelEnable(1, Fw::ParamValid::VALID);
   this->paramSet_FeedforwardObserverEnable(1, Fw::ParamValid::VALID);
@@ -261,8 +263,8 @@ double AttitudeControllerTester ::speedForMomentum(double momentumNms) {
 }
 
 void AttitudeControllerTester ::setWheelSpeeds(double speedRadps, bool valid) {
-  this->wheel_speed_radps_ = speedRadps;
   for (U32 i = 0; i < kWheelCount; ++i) {
+    this->wheel_speed_radps_[i] = speedRadps;
     this->wheel_speed_valid_[i] = valid;
   }
 }
@@ -274,7 +276,7 @@ void AttitudeControllerTester ::runCycleAt(I64 taiNs) {
   this->invoke_to_estimateIn(0, this->estimate_);
   for (U32 i = 0; i < kWheelCount; ++i) {
     WheelSpeedMeas meas;
-    meas.set_speedRadps(this->wheel_speed_radps_);
+    meas.set_speedRadps(this->wheel_speed_radps_[i]);
     meas.set_timeTagNs(taiNs);
     meas.set_valid(this->wheel_speed_valid_[i]);
     this->invoke_to_wheelSpeedIn(static_cast<FwIndexType>(i), meas);
@@ -941,6 +943,50 @@ void AttitudeControllerTester ::testWheelFrictionFeedforward() {
   this->setEstimate(attitude, Eigen::Vector3d::Zero(), 1.0e-4, t);
   this->runCycleAt(t);
   ASSERT_EVENTS_ConfigInvalid_SIZE(1);
+}
+
+void AttitudeControllerTester ::testWheelCapacityMonitorSeesNullSpaceMomentum() {
+  this->setValidParameters();
+  // Wheels spinning against each other in the pyramid's null pattern
+  // [+,-,+,-]: the body momentum sums to zero, so the envelope monitor, the
+  // desaturation threshold and the observer are all quiet — while every wheel
+  // holds 95 % of its capacity. This is the case the per-wheel monitor exists for.
+  const double w = 0.95 * kWheelCapacityNms / kWheelInertiaKgm2;
+  const double pattern[4] = {w, -w, w, -w};
+  for (U32 i = 0; i < kWheelCount; ++i) {
+    this->wheel_speed_radps_[i] = pattern[i];
+    this->wheel_speed_valid_[i] = true;
+  }
+  I64 t = kStartTaiNs;
+  this->setEstimate(pm::Quaternion::Identity(), Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_MomentumEnvelopeExceeded_SIZE(0);
+  ASSERT_TLM_StoredMomentumNms_SIZE(1);
+  EXPECT_NEAR(this->tlmHistory_StoredMomentumNms->at(0).arg, 0.0, 1.0e-9);
+  ASSERT_TLM_MaxWheelMomentumNms_SIZE(1);
+  EXPECT_NEAR(this->tlmHistory_MaxWheelMomentumNms->at(0).arg, 0.95 * kWheelCapacityNms, 1.0e-9);
+  ASSERT_TLM_NullSpaceMomentumNms_SIZE(1);
+  EXPECT_NEAR(this->tlmHistory_NullSpaceMomentumNms->at(0).arg, 2.0 * 0.95 * kWheelCapacityNms,
+              1.0e-9);  // ||[+,-,+,-]|| * h_i
+  ASSERT_EVENTS_WheelNearCapacity_SIZE(1);
+  ASSERT_EVENTS_WheelCapacityRecovered_SIZE(0);
+
+  // Persisting: one event, however long.
+  for (int i = 0; i < 3; ++i) {
+    t += kPeriodNs;
+    this->setEstimate(pm::Quaternion::Identity(), Eigen::Vector3d::Zero(), 1.0e-4, t);
+    this->runCycleAt(t);
+  }
+  ASSERT_EVENTS_WheelNearCapacity_SIZE(1);
+
+  // Back under 90 %: the recovery edge, once.
+  this->clearHistory();
+  this->setWheelSpeeds(0.5 * kWheelCapacityNms / kWheelInertiaKgm2);
+  t += kPeriodNs;
+  this->setEstimate(pm::Quaternion::Identity(), Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_WheelCapacityRecovered_SIZE(1);
+  ASSERT_EVENTS_WheelNearCapacity_SIZE(0);
 }
 
 void AttitudeControllerTester ::testMomentumEnvelopeAndWheelDropout() {

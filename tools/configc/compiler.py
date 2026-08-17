@@ -487,6 +487,18 @@ _CATALOG_PAIRS: tuple[tuple[str, str, str, Any, str, float, str], ...] = (
         "never saturated.",
     ),
     (
+        "flight.attitudeController.WheelCapacityNms",
+        "reaction_wheel",
+        "max_momentum_nms",
+        _catalog("max_momentum_nms"),
+        _Reduce.BOUND,
+        1.0e-9,
+        "The per-wheel capacity monitor alarms at a fraction of this on the "
+        "largest single wheel — the only alarm that sees null-space momentum — so "
+        "a value above the hardware's rating lets a wheel walk to its stop with "
+        "the monitor still quiet, and every body-momentum threshold quiet with it.",
+    ),
+    (
         "flight.attitudeController.WheelInertiaKgm2",
         "reaction_wheel",
         "max_momentum_nms / (max_speed_rpm * 2*pi/60)",

@@ -103,6 +103,7 @@ class AttitudeControllerTester : public AttitudeControllerGTestBase {
   //! the same comparison; a wheel with no usable speed refuses the momentum sum
   //! rather than understating it, and holds the latch where it was.
   void testMomentumEnvelopeAndWheelDropout();
+  void testWheelCapacityMonitorSeesNullSpaceMomentum();
 
  private:
   // ----------------------------------------------------------------------
@@ -169,7 +170,7 @@ class AttitudeControllerTester : public AttitudeControllerGTestBase {
 
   //! The estimate and the wheel tachometers staged for the next cycle.
   AttitudeEstimate estimate_{};
-  double wheel_speed_radps_{0.0};
+  double wheel_speed_radps_[4] = {0.0, 0.0, 0.0, 0.0};
   bool wheel_speed_valid_[4] = {true, true, true, true};
 };
 

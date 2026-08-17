@@ -975,6 +975,7 @@ def _wheel_catalog(key: str) -> float:
 #: (parameter, the truth-side token the message must name, the unit it must name).
 _TRUTH_PAIRS = [
     ("flight.attitudeController.WheelMaxTorqueNm", "max_torque_nm", "rw_1"),
+    ("flight.attitudeController.WheelCapacityNms", "max_momentum_nms", "rw_1"),
     ("flight.attitudeController.WheelInertiaKgm2", "max_momentum_nms", "rw_1"),
     ("flight.attitudeController.WheelDryFrictionNm", "dry_friction_nm", "rw_1"),
     (

@@ -12,6 +12,7 @@
 
 #include <cmath>
 #include <Eigen/Geometry>
+#include <Eigen/SVD>
 
 #include "gnc/attitude_pid.hpp"
 #include "gnc/bdot.hpp"
@@ -20,6 +21,7 @@
 #include "math/frames.hpp"
 #include "math/quaternion.hpp"
 #include "math/typed_vector.hpp"
+#include "random/rng.hpp"
 
 namespace {
 
@@ -604,6 +606,147 @@ TEST(RwAllocation, NonFiniteCommandsAreRefused) {
   EXPECT_EQ(r.refusal, gnc::RwAllocationRefusal::kBadInput);
   for (int i = 0; i < 4; ++i) {
     EXPECT_EQ(r.torque_nm[i], 0.0);
+  }
+}
+
+/// Brute force for the four-wheel array: the L-infinity optimum over the 1-D
+/// null space `u_p + alpha n`, found by a fine scan and a local refinement, in
+/// units of each wheel's limit. Independent of the library's breakpoint search
+/// so it can convict it.
+double bruteForceMinMax(const gnc::RwAllocationConfig& c, const Eigen::Vector3d& tau) {
+  // Pseudo-inverse and null direction recomputed here, not borrowed.
+  Eigen::Matrix<double, 3, 4> a = c.axes.leftCols<4>();
+  const Eigen::Matrix<double, 4, 3> pinv = a.transpose() * (a * a.transpose()).inverse();
+  const Eigen::Vector4d up = pinv * tau;
+  const Eigen::JacobiSVD<Eigen::Matrix<double, 3, 4>> svd(a, Eigen::ComputeFullV);
+  const Eigen::Vector4d n = svd.matrixV().col(3);
+  auto f = [&](double alpha) {
+    double worst = 0.0;
+    for (int i = 0; i < 4; ++i) {
+      worst = std::max(worst, std::abs(up[i] + alpha * n[i]) / c.max_torque_nm[i]);
+    }
+    return worst;
+  };
+  double best_alpha = 0.0;
+  double best = f(0.0);
+  const double span = 4.0 * up.norm() / n.cwiseAbs().minCoeff();
+  for (int k = -20000; k <= 20000; ++k) {
+    const double alpha = span * static_cast<double>(k) / 20000.0;
+    const double v = f(alpha);
+    if (v < best) {
+      best = v;
+      best_alpha = alpha;
+    }
+  }
+  // Ternary refinement on the convex function around the scan minimum.
+  double lo = best_alpha - span / 20000.0;
+  double hi = best_alpha + span / 20000.0;
+  for (int it = 0; it < 200; ++it) {
+    const double m1 = lo + (hi - lo) / 3.0;
+    const double m2 = hi - (hi - lo) / 3.0;
+    if (f(m1) < f(m2)) {
+      hi = m2;
+    } else {
+      lo = m1;
+    }
+  }
+  return std::min(best, f(0.5 * (lo + hi)));
+}
+
+TEST(RwAllocation, MinMaxIsTheTrueOptimumOverTheNullSpace) {
+  RecordProperty("verifies", "REQ-ACTL-002");
+  // The breakpoint search against an independent brute force, on random torques
+  // and on a box whose limits differ per wheel — so it is the *weighted* optimum
+  // (largest wheel torque in units of its own limit) that is checked.
+  gnc::RwAllocationConfig c = pyramidConfig();
+  const double limits[4] = {0.025, 0.010, 0.040, 0.015};
+  for (int i = 0; i < 4; ++i) {
+    c.max_torque_nm[i] = limits[i];
+  }
+  const gnc::RwAllocator a(c);
+  polaris::random::SplitMix64 rng(0x1A11u);
+  for (int k = 0; k < 300; ++k) {
+    const Eigen::Vector3d tau =
+        5.0e-3 * Eigen::Vector3d(rng.gaussian(), rng.gaussian(), rng.gaussian());
+    gnc::RwAllocationResult r;
+    ASSERT_TRUE(a.allocate(pm::Vec3<Body>(tau), gnc::RwAllocationMethod::kMinMax, r));
+    ASSERT_FALSE(r.saturated);
+    double utilisation = 0.0;
+    for (int i = 0; i < 4; ++i) {
+      utilisation = std::max(utilisation, std::abs(r.torque_nm[i]) / limits[i]);
+    }
+    EXPECT_NEAR(utilisation, bruteForceMinMax(c, tau), 1e-9) << "case " << k;
+    EXPECT_NEAR((deliveredTorque(c, r) - tau).norm(), 0.0, 1e-15);
+  }
+}
+
+TEST(RwAllocation, WeightedMinMaxDelaysSaturationOnAnUnequalBox) {
+  RecordProperty("verifies", "REQ-ACTL-002");
+  // The whole point of the L-infinity choice, stated on the box it is meant for:
+  // with unequal limits the delivered fraction under min-max is never below the
+  // L2 one, and is strictly above it somewhere.
+  gnc::RwAllocationConfig c = pyramidConfig();
+  const double limits[4] = {0.025, 0.008, 0.025, 0.025};
+  for (int i = 0; i < 4; ++i) {
+    c.max_torque_nm[i] = limits[i];
+  }
+  const gnc::RwAllocator a(c);
+  bool ever_strictly_better = false;
+  for (int i = 0; i < 200; ++i) {
+    const double u = static_cast<double>(i) / 200.0;
+    const Eigen::Vector3d tau =
+        4.0e-2 * Eigen::Vector3d(std::cos(7.0 * u), std::sin(11.0 * u), std::cos(3.0 * u));
+    gnc::RwAllocationResult l2;
+    gnc::RwAllocationResult linf;
+    ASSERT_TRUE(a.allocate(pm::Vec3<Body>(tau), gnc::RwAllocationMethod::kMinNorm, l2));
+    ASSERT_TRUE(a.allocate(pm::Vec3<Body>(tau), gnc::RwAllocationMethod::kMinMax, linf));
+    EXPECT_GE(linf.scale, l2.scale - 1e-15);
+    if (linf.scale > l2.scale + 1e-9) {
+      ever_strictly_better = true;
+    }
+    // Every wheel inside its own box, to rounding.
+    for (int w = 0; w < 4; ++w) {
+      EXPECT_LE(std::abs(linf.torque_nm[w]), limits[w] * (1.0 + 1e-12));
+      EXPECT_LE(std::abs(l2.torque_nm[w]), limits[w] * (1.0 + 1e-12));
+    }
+    // Delivered torque is exactly scale * commanded, both methods.
+    EXPECT_NEAR((deliveredTorque(c, linf) - linf.scale * tau).norm(), 0.0, 1e-15);
+    EXPECT_NEAR((deliveredTorque(c, l2) - l2.scale * tau).norm(), 0.0, 1e-15);
+  }
+  EXPECT_TRUE(ever_strictly_better);
+}
+
+TEST(RwAllocation, EveryThreeOfFourSubsetIsExactAndTheTwoMethodsAgree) {
+  RecordProperty("verifies", "REQ-ACTL-002");
+  // A wheel failure hands the allocator the three survivors as a compacted
+  // 3-column array: no null space, one exact solution, both methods identical,
+  // for every choice of the failed wheel.
+  const gnc::RwAllocationConfig full = pyramidConfig();
+  const Eigen::Vector3d tau(6.0e-4, -3.0e-4, 2.0e-4);
+  for (int failed = 0; failed < 4; ++failed) {
+    gnc::RwAllocationConfig c = pyramidConfig();
+    c.wheel_count = 3;
+    int col = 0;
+    for (int i = 0; i < 4; ++i) {
+      if (i == failed) {
+        continue;
+      }
+      c.axes.col(col) = full.axes.col(i);
+      c.max_torque_nm[col] = full.max_torque_nm[i];
+      ++col;
+    }
+    c.axes.col(3).setZero();
+    const gnc::RwAllocator a(c);
+    ASSERT_TRUE(a.isConfigured()) << "failed wheel " << failed;
+    gnc::RwAllocationResult l2;
+    gnc::RwAllocationResult linf;
+    ASSERT_TRUE(a.allocate(pm::Vec3<Body>(tau), gnc::RwAllocationMethod::kMinNorm, l2));
+    ASSERT_TRUE(a.allocate(pm::Vec3<Body>(tau), gnc::RwAllocationMethod::kMinMax, linf));
+    for (int i = 0; i < 3; ++i) {
+      EXPECT_NEAR(l2.torque_nm[i], linf.torque_nm[i], 1e-15);
+    }
+    EXPECT_EQ(l2.torque_nm[3], 0.0);
+    EXPECT_NEAR((deliveredTorque(c, l2) - tau).norm(), 0.0, 1e-15);
   }
 }
 

@@ -127,6 +127,7 @@ add_library(polaris_gnc
   gnc/rw_allocation.cpp
   gnc/rw_friction.cpp
   gnc/momentum.cpp
+  gnc/rw_bias.cpp
   gnc/disturbance.cpp
   gnc/dipole_estimation.cpp
   gnc/geopotential.cpp

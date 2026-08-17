@@ -328,6 +328,7 @@ class AttitudeController final : public AttitudeControllerComponentBase {
   Eigen::Vector3d inertia_diag_kgm2_{Eigen::Vector3d::Zero()};
   Eigen::Vector3d residual_dipole_am2_{Eigen::Vector3d::Zero()};
   F64 momentum_envelope_nms_{0.0};
+  F64 wheel_capacity_nms_{0.0};  //!< one wheel's momentum capacity (WheelCapacityNms)
   F64 disturbance_budget_nm_{0.0};
   bool feedforward_model_{false};
   bool feedforward_observer_{false};
@@ -398,6 +399,7 @@ class AttitudeController final : public AttitudeControllerComponentBase {
   DesatOverride::T desat_override_{DesatOverride::AUTO};
   bool desat_active_{false};
   bool envelope_alerted_{false};
+  bool wheel_capacity_alerted_{false};  //!< WheelNearCapacity edge latch
   bool anomaly_alerted_{false};
 
   //! Consecutive cycles the momentum accounting has refused — the

@@ -1,6 +1,8 @@
 #include "gnc/momentum.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <Eigen/Cholesky>
 
 namespace polaris::gnc {
 namespace {
@@ -76,6 +78,15 @@ bool MomentumConfig::isValid() const {
       return false;
     }
   }
+  // The axes must span the body: W W^T singular means a body axis no wheel can
+  // load or unload, and the min-norm decomposition below has no meaning.
+  Eigen::Matrix3d gram = Eigen::Matrix3d::Zero();
+  for (int i = 0; i < wheel_count; ++i) {
+    gram += spin_axes.col(i) * spin_axes.col(i).transpose();
+  }
+  if (!(gram.ldlt().isPositive()) || !(gram.determinant() > 1.0e-9)) {
+    return false;
+  }
   if (!std::isfinite(rotor_inertia_kgm2) || !(rotor_inertia_kgm2 > 0.0)) {
     return false;
   }
@@ -94,6 +105,14 @@ bool MomentumConfig::isValid() const {
   // envelope >= ||target|| + enter: anything less lets a biased vehicle trip
   // the envelope at a stored momentum the desat law was never asked to unload.
   return std::isfinite(envelope_nms) && envelope_nms >= target_nms.norm() + desat_enter_nms;
+}
+
+Eigen::Vector3d MomentumManager::gramInverseTimes(const Eigen::Vector3d& v) const {
+  Eigen::Matrix3d gram = Eigen::Matrix3d::Zero();
+  for (int i = 0; i < config_.wheel_count; ++i) {
+    gram += config_.spin_axes.col(i) * config_.spin_axes.col(i).transpose();
+  }
+  return gram.ldlt().solve(v);
 }
 
 MomentumManager::MomentumManager(const MomentumConfig& config)
@@ -126,6 +145,8 @@ bool MomentumManager::update(const double* wheel_speeds_radps, const bool* wheel
     return refuseMomentum(MomentumRefusal::kBadInput, out);
   }
   Eigen::Vector3d stored = Eigen::Vector3d::Zero();
+  Eigen::Matrix<double, kMaxWheels, 1> wheel_nms = Eigen::Matrix<double, kMaxWheels, 1>::Zero();
+  double max_wheel = 0.0;
   for (int i = 0; i < config_.wheel_count; ++i) {
     if (!wheel_valid[i]) {
       return refuseMomentum(MomentumRefusal::kWheelInvalid, out, i);
@@ -133,17 +154,32 @@ bool MomentumManager::update(const double* wheel_speeds_radps, const bool* wheel
     if (!std::isfinite(wheel_speeds_radps[i])) {
       return refuseMomentum(MomentumRefusal::kBadInput, out, i);
     }
-    stored += (config_.rotor_inertia_kgm2 * wheel_speeds_radps[i]) * config_.spin_axes.col(i);
+    wheel_nms(i) = config_.rotor_inertia_kgm2 * wheel_speeds_radps[i];
+    max_wheel = std::max(max_wheel, std::abs(wheel_nms(i)));
+    stored += wheel_nms(i) * config_.spin_axes.col(i);
   }
   const Eigen::Vector3d error = stored - config_.target_nms;
   if (!stored.allFinite() || !error.allFinite()) {
     return refuseMomentum(MomentumRefusal::kBadInput, out);
   }
+  // Null-space content: the wheel momenta less their minimum-norm realisation
+  // of the body momentum, W^+ h. For N = 3 the pseudo-inverse is the inverse
+  // and this is identically zero; for N = 4 it is the against-each-other spin
+  // the body-momentum thresholds cannot see.
+  const Eigen::Vector3d gram_solve = gramInverseTimes(stored);
+  double null_space_sq = 0.0;
+  for (int i = 0; i < config_.wheel_count; ++i) {
+    const double min_norm_i = config_.spin_axes.col(i).dot(gram_solve);  // (W^T (WW^T)^-1 h)_i
+    null_space_sq += (wheel_nms(i) - min_norm_i) * (wheel_nms(i) - min_norm_i);
+  }
+  const double null_space = std::sqrt(null_space_sq);
 
   out.stored_nms = math::Vec3<math::frames::Body>(stored);
   out.error_nms = math::Vec3<math::frames::Body>(error);
   out.stored_norm_nms = stored.norm();
   out.error_norm_nms = error.norm();
+  out.max_wheel_nms = max_wheel;
+  out.null_space_nms = std::isfinite(null_space) ? null_space : 0.0;
   out.desat_required = hysteresis_.update(out.error_norm_nms);
   out.envelope_exceeded = out.stored_norm_nms > config_.envelope_nms;
   out.valid = true;

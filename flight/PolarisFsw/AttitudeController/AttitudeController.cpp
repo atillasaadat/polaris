@@ -328,6 +328,10 @@ bool AttitudeController ::applyParameters() {
   POLARIS_GET(momentum.desat_enter_nms, paramGet_MomentumDesatEnterNms, "MomentumDesatEnterNms");
   POLARIS_GET(momentum.desat_exit_nms, paramGet_MomentumDesatExitNms, "MomentumDesatExitNms");
   POLARIS_GET(momentum.envelope_nms, paramGet_MomentumEnvelopeNms, "MomentumEnvelopeNms");
+  POLARIS_GET(this->wheel_capacity_nms_, paramGet_WheelCapacityNms, "WheelCapacityNms");
+  if (!(this->wheel_capacity_nms_ > 0.0)) {
+    return fail("WheelCapacityNms must be positive");
+  }
   POLARIS_GET(desat.gain_per_s, paramGet_DesatGainPerSec, "DesatGainPerSec");
   POLARIS_GET(observer.tau_s, paramGet_ObserverTauSec, "ObserverTauSec");
   POLARIS_GET(this->disturbance_budget_nm_, paramGet_DisturbanceBudgetNm, "DisturbanceBudgetNm");
