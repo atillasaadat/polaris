@@ -641,3 +641,18 @@ fixture was found in the innovation sequence, not in review.
   Size a settling window from the measured settling time plus a stated
   margin, and record the settling time on the artifact so a drift shows up
   as a number before it shows up as a failure.
+
+## A torque clip is not a slew-rate limit (P68, control)
+
+- **Check the large-signal regime of a law tuned for the small one.** The
+  PID's gains were sized for a small-angle bandwidth and every accuracy row
+  measured a hold; the first row that entered POINT from 100° found `Kp·δθ`
+  at 85× the torque limit and a bang-bang slew that cost the estimator a
+  dozen demotions. Before shipping a linear law, compute its demand at the
+  largest error the mode can be entered with, and if it exceeds the
+  actuator by more than the clip can absorb, add the rate limit the
+  literature already has (Wie & Lu 1995) rather than a bigger window.
+- **Assert the mechanism, not only the outcome.** The row's outcome (a 2°
+  tail) passed for two pushes while the storm ran underneath it. The
+  demotion and saturation counts were on the log the whole time; they are
+  now bounded on the row, so the storm fails a test the day it returns.

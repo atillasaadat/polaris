@@ -50,6 +50,7 @@ gnc::AttitudePidConfig pidConfig(double ki = 2.0e-4) {
   c.max_integral_rad_s = 0.5;
   c.max_torque_nm = 0.02;
   c.max_dt_s = 0.5;
+  c.max_slew_rate_radps = 1.0;  // wide open: the classic PID for the tests below
   return c;
 }
 
@@ -440,6 +441,66 @@ TEST(AttitudePid, TorqueSaturationPreservesTheCommandedDirection) {
   const Eigen::Vector3d commanded = out.torque_nm.eigen().normalized();
   const Eigen::Vector3d wanted = out.attitude_error_rad.eigen().normalized();
   EXPECT_NEAR(commanded.dot(wanted), 1.0, 1e-12);
+}
+
+TEST(AttitudePid, SlewRateLimitCapsTheCommandedRateAlongTheEigenaxis) {
+  RecordProperty("verifies", "REQ-ACTL-002");
+  gnc::AttitudePidConfig c = pidConfig(0.0);
+  c.max_slew_rate_radps = 0.01;  // 0.57 deg/s
+  gnc::AttitudePid pid(c);
+  const Eigen::Vector3d axis = Eigen::Vector3d(1.0, -2.0, 0.5).normalized();
+  const QuatBI est(pm::Quaternion::FromAxisAngle(axis, 1.7).canonical());  // ~97 deg off
+  const QuatBI ref(pm::Quaternion::Identity());
+  gnc::AttitudePidResult out;
+
+  // At rest and far off: the command is kd * omega_max along the error's
+  // eigenaxis — a constant-rate slew, not kp * (a 1.7 rad error).
+  ASSERT_TRUE(pid.update(est, pm::Vec3<Body>(Eigen::Vector3d::Zero()), ref,
+                         pm::Vec3<Body>(Eigen::Vector3d::Zero()), 0.1, out));
+  EXPECT_TRUE(out.rate_limited);
+  EXPECT_FALSE(out.saturated);
+  EXPECT_NEAR(out.torque_nm.eigen().norm(), c.kd_nm_per_radps * c.max_slew_rate_radps, 1e-12);
+  EXPECT_NEAR(out.torque_nm.eigen().normalized().dot(out.attitude_error_rad.eigen().normalized()),
+              1.0, 1e-12);
+
+  // Already slewing at the limit along the eigenaxis: no torque asked for.
+  const Eigen::Vector3d at_limit =
+      c.max_slew_rate_radps * out.attitude_error_rad.eigen().normalized();
+  ASSERT_TRUE(pid.update(est, pm::Vec3<Body>(at_limit), ref,
+                         pm::Vec3<Body>(Eigen::Vector3d::Zero()), 0.1, out));
+  EXPECT_TRUE(out.rate_limited);
+  EXPECT_NEAR(out.torque_nm.eigen().norm(), 0.0, 1e-12);
+
+  // Faster than the limit (a tumble handed to POINT): pure rate damping back to
+  // the limit, bounded — never kp times a large error.
+  ASSERT_TRUE(pid.update(est, pm::Vec3<Body>(3.0 * at_limit), ref,
+                         pm::Vec3<Body>(Eigen::Vector3d::Zero()), 0.1, out));
+  EXPECT_NEAR(out.torque_nm.eigen().norm(), 2.0 * c.kd_nm_per_radps * c.max_slew_rate_radps, 1e-12);
+  EXPECT_LT(out.torque_nm.eigen().dot(at_limit), 0.0);
+
+  // Inside the limit the law is the unchanged PID.
+  const QuatBI near(pm::Quaternion::FromAxisAngle(axis, 0.01).canonical());
+  ASSERT_TRUE(pid.update(near, pm::Vec3<Body>(Eigen::Vector3d::Zero()), ref,
+                         pm::Vec3<Body>(Eigen::Vector3d::Zero()), 0.1, out));
+  EXPECT_FALSE(out.rate_limited);
+  EXPECT_NEAR(out.torque_nm.eigen().norm(), c.kp_nm_per_rad * 2.0 * std::sin(0.005), 1e-12);
+}
+
+TEST(AttitudePid, IntegratorIsFrozenWhileRateLimited) {
+  gnc::AttitudePidConfig c = pidConfig();
+  c.max_slew_rate_radps = 0.01;
+  gnc::AttitudePid pid(c);
+  const QuatBI est(pm::Quaternion::FromAxisAngle(Eigen::Vector3d::UnitZ(), 1.5).canonical());
+  const QuatBI ref(pm::Quaternion::Identity());
+  gnc::AttitudePidResult first;
+  gnc::AttitudePidResult second;
+  ASSERT_TRUE(pid.update(est, pm::Vec3<Body>(Eigen::Vector3d::Zero()), ref,
+                         pm::Vec3<Body>(Eigen::Vector3d::Zero()), 0.1, first));
+  ASSERT_TRUE(pid.update(est, pm::Vec3<Body>(Eigen::Vector3d::Zero()), ref,
+                         pm::Vec3<Body>(Eigen::Vector3d::Zero()), 0.1, second));
+  ASSERT_TRUE(second.rate_limited);
+  // Identical torque on two rate-limited cycles: nothing accumulated.
+  EXPECT_NEAR((first.torque_nm.eigen() - second.torque_nm.eigen()).norm(), 0.0, 1e-15);
 }
 
 TEST(AttitudePid, BadInputsAreRefusedRatherThanCommanded) {
