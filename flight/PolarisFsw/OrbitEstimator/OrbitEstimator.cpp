@@ -132,10 +132,21 @@ void OrbitEstimator ::noteRefusal(U8 unit, pg::OrbitOdRefusal refusal) {
   }
 }
 
+void OrbitEstimator ::commandResetAtCycle(U32 cycle) {
+  this->reset_at_cycle_ = cycle;
+}
+
 void OrbitEstimator ::run_handler(FwIndexType portNum, U32 context) {
   static_cast<void>(portNum);
   static_cast<void>(context);
   const I64 nowNs = this->currentTaiNs();
+  if (++this->cycle_ == this->reset_at_cycle_) {
+    // Not through the command port: this runs inside the guarded run handler,
+    // and the command port is guarded by the same (non-recursive) mutex. What
+    // runs is the command handler's own body, so the reset flown is the flight
+    // reset — only the dispatch is skipped.
+    this->resetFilter();
+  }
 
   if (!this->configured_ && !this->applyParameters()) {
     // Inert: publish "no solution" so a consumer never reads a stale vector,
@@ -338,7 +349,7 @@ void OrbitEstimator ::parameterUpdated(FwPrmIdType id) {
 // Commands
 // ----------------------------------------------------------------------
 
-void OrbitEstimator ::OD_RESET_cmdHandler(FwOpcodeType opCode, U32 cmdSeq) {
+void OrbitEstimator ::resetFilter() {
   this->od_.reset();
   this->last_result_ = pg::OrbitOdResult{};
   this->fixes_accepted_ = 0;
@@ -346,6 +357,10 @@ void OrbitEstimator ::OD_RESET_cmdHandler(FwOpcodeType opCode, U32 cmdSeq) {
   this->last_refusal_ = pg::OrbitOdRefusal::kNone;
   this->last_alerted_refusal_ = pg::OrbitOdRefusal::kNone;
   this->log_ACTIVITY_HI_OrbitReset();
+}
+
+void OrbitEstimator ::OD_RESET_cmdHandler(FwOpcodeType opCode, U32 cmdSeq) {
+  this->resetFilter();
   this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
 }
 

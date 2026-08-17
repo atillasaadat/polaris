@@ -593,3 +593,25 @@ fixture was found in the innovation sequence, not in review.
   undone before the next fix. A GNSS row must inject through the schedule;
   the sensor rows' per-step hooks work only because those sensors have no
   schedule. Documented on the row that learned it.
+
+## The orbit filter's fault rows on the topology (P66, SITL)
+
+- **A passive component cannot dispatch its own command from a guarded
+  handler.** Guarded ports and the command port share the component's
+  non-recursive mutex, so `get_cmdIn_InputPort(0)->invoke(...)` from inside
+  `run_handler` deadlocks — the SITL row's only symptom was "sim not
+  healthy" after a timeout. A bench hook that must fire mid-cycle runs the
+  command handler's *body* (factored into a private method the handler also
+  calls) and says so in the comment; the startup hooks (`-M`, `-A`, `-c`) may
+  still dispatch through the port because they run before the rate group.
+- **A row's premise must be re-checked in the log it produces, not in the
+  fixture comment.** The Push 65 outage row's comment placed the first fix
+  "near 37 s" (the catalogue cold start); the harness receiver has no cold
+  start and seeds on the first cycle. Harmless there, but a horizon row
+  whose timing derives from a comment is one changed default away from
+  asserting nothing. Read one kept log (`POLARIS_KEEP_SITL_LOGS=1`) per row
+  before trusting the assertion.
+- **A stale run log is a false finding.** A leftover `build-artifacts/`
+  directory from an earlier fixture state read as "the filter rejected every
+  fix for 300 s" on main; the fresh run was healthy. Match the log's mtime
+  to the run before diagnosing from it.

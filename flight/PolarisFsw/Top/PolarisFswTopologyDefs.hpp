@@ -110,6 +110,11 @@ struct TopologyState {
   I32 ffObserver = -1;                //!< SITL/bench only: the tier-2 twin of ffModel, same
                                       //!< default for the same reason. The observer still runs
                                       //!< when this is 0; it is also the §9 anomaly monitor.
+  U32 odResetCycle = 0;               //!< SITL/bench only: GNC cycle on which to command the
+                                      //!< orbit filter's OD_RESET (0 = never). The §8.3
+                                      //!< reset-and-reseed row needs a command mid-run with no
+                                      //!< ground link; it dispatches the real opcode through the
+                                      //!< component's own command port, like magCalSamples.
   const char* prmDbPath;              //!< ParameterDb file emitted by the config compiler
                                       //!< (§19.3); nullptr = the FileHandling default "PrmDb.dat"
   CdhCore::SubtopologyState cdhCore;  //!< Subtopology state for CdhCore

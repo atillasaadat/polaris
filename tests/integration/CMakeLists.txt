@@ -11,6 +11,7 @@
 add_executable(polaris_integration_tests
   sitl_attitude_control_test.cpp
   sitl_fault_matrix_test.cpp
+  sitl_od_fault_test.cpp
   sitl_attitude_tuning_test.cpp
   sim_sitl_lockstep_test.cpp
   sim_closed_loop_orbit_test.cpp

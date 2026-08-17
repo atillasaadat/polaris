@@ -225,6 +225,7 @@ module flight {
       # One GNSS receiver, to the §8.3 orbit estimator — the attitude estimator
       # no longer reads the receiver; it reads the orbit solution.
       PolarisSitl.sitlBridge.gnssOut[0]          -> orbitEstimator.gnssIn[0]
+      PolarisSitl.sitlBridge.gnssOut[1]          -> orbitEstimator.gnssIn[1]
       # Two star trackers, king-referenced (§8.2). Unit 0 is st_a, the **king**:
       # its mounting defines the body frame, so it is the one index here that is a
       # vehicle-integration decision rather than a wiring choice — StKingUnit must

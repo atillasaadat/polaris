@@ -111,10 +111,13 @@ inline int compileConfig(const std::string& out_dir, const std::string& err_path
 /// tiers on (1) or off (0) with `-F model,observer`, so a row can fly the same
 /// vehicle both ways and measure the difference. Negative leaves the committed
 /// ParameterDb values in force, which is what every other row uses.
+/// @p odResetCycle > 0 commands the orbit filter's OD_RESET on that GNC cycle
+/// (`-R`), the §8.3 reset-and-reseed row's way of getting a mid-run command in.
 inline pid_t spawnFsw(const std::string& bin, std::uint16_t port, const std::string& prm_path,
                       const std::string& log_path, unsigned magCalSamples = 0,
                       unsigned stAlignPairs = 0, unsigned stAlignUnit = 1, unsigned ctrlMode = 0,
-                      const double* ctrlTargetQ = nullptr, int feedforward = -1) {
+                      const double* ctrlTargetQ = nullptr, int feedforward = -1,
+                      unsigned odResetCycle = 0) {
   const pid_t pid = ::fork();
   if (pid == 0) {
     // A child whose log cannot be opened must not fly and report nothing: the
@@ -140,15 +143,17 @@ inline pid_t spawnFsw(const std::string& bin, std::uint16_t port, const std::str
     const std::string ff_str =
         feedforward < 0 ? std::string("")
                         : std::to_string(feedforward) + "," + std::to_string(feedforward);
+    const std::string reset_str = std::to_string(odResetCycle);
     if (feedforward < 0) {
       ::execl(bin.c_str(), bin.c_str(), "-s", port_str.c_str(), "-P", prm_path.c_str(), "-Y",
               kEpochDecimalYear, "-M", cal_str.c_str(), "-A", align_str.c_str(), "-c",
-              ctrl_str.c_str(), "-q", target_str.c_str(), static_cast<char*>(nullptr));
+              ctrl_str.c_str(), "-q", target_str.c_str(), "-R", reset_str.c_str(),
+              static_cast<char*>(nullptr));
     } else {
       ::execl(bin.c_str(), bin.c_str(), "-s", port_str.c_str(), "-P", prm_path.c_str(), "-Y",
               kEpochDecimalYear, "-M", cal_str.c_str(), "-A", align_str.c_str(), "-c",
-              ctrl_str.c_str(), "-q", target_str.c_str(), "-F", ff_str.c_str(),
-              static_cast<char*>(nullptr));
+              ctrl_str.c_str(), "-q", target_str.c_str(), "-F", ff_str.c_str(), "-R",
+              reset_str.c_str(), static_cast<char*>(nullptr));
     }
     _exit(127);  // exec failed
   }
