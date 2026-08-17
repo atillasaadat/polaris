@@ -291,6 +291,54 @@ TEST(MagCalibration, PostCalibrationSystematicMeetsTheHalfDegreeTarget) {
   EXPECT_GT(worst_uncalibrated, 1.0) << "uncalibrated systematic implausibly small";
 }
 
+/// **A nearly constant field magnitude must not ship a scale error.** The
+/// linear fit carries the quadric's constant as a free tenth parameter although
+/// the model has none (`c = βᵀAβ` identically); when `F` barely moves over the
+/// window — a real LEO arc swings it ~6 %, not the ±35 % of `fieldMagnitude()`
+/// above — the constant column and `tr(A)` are nearly collinear and the split
+/// is decided by noise. On the reference vehicle that shipped as a 0.7 %
+/// magnitude scale error reported as a 7.5 mrad residual against a 2.2 mrad
+/// noise floor (Push 67). The solve now absorbs that constant into `A`'s scale:
+/// this pins it, on the flight-like case, with the two numbers that expose it —
+/// the mean of the corrected magnitude over the modelled one, and the residual
+/// against the sensor's own noise floor.
+TEST(MagCalibration, NearlyConstantFieldMagnitudeShipsNoScaleError) {
+  constexpr int kOrbitSamples = 4500;                        // the flight window: 450 s at 10 Hz
+  constexpr double kFieldMean = 23.0e-6;                     // [T] the reference orbit's mean
+  constexpr double kFieldSwing = 0.03;                       // ±3 %: the ~6 % span measured on it
+  const double noise_floor_rad = kSensorNoise / kFieldMean;  // 2.2 mrad
+  for (int seed = 0; seed < 4; ++seed) {
+    polaris::random::SplitMix64 rng(polaris::random::streamSeed(0xC0A57u, seed));
+    const Iron iron = drawIron(rng);
+    gnc::MagCalibrationAccumulator acc(referenceConfig());
+    std::vector<Sample> samples;
+    for (int k = 0; k < kOrbitSamples; ++k) {
+      Sample s;
+      s.truth_direction = coneDirection(Eigen::Vector3d::UnitZ(), M_PI, rng);
+      const double f = kFieldMean * (1.0 + kFieldSwing * std::sin(0.002 * k));
+      s.m = iron.s * (f * s.truth_direction) + iron.b +
+            kSensorNoise * Eigen::Vector3d(rng.gaussian(), rng.gaussian(), rng.gaussian());
+      s.field_t = f;
+      samples.push_back(s);
+    }
+    ASSERT_EQ(feed(acc, samples), kOrbitSamples);
+    gnc::MagCalibrationResult cal{};
+    ASSERT_TRUE(acc.solve(cal)) << "seed " << seed;
+
+    double sum_ratio = 0.0;
+    for (const Sample& s : samples) {
+      sum_ratio +=
+          gnc::applyMagCalibration(cal, pm::Vec3<frames::Body>(s.m)).eigen().norm() / s.field_t;
+    }
+    const double mean_ratio = sum_ratio / kOrbitSamples;
+    EXPECT_NEAR(mean_ratio, 1.0, 5.0e-4)
+        << "seed " << seed << ": the correction ships a magnitude scale error";
+    EXPECT_LT(cal.residual_angle_rad, 1.6 * noise_floor_rad)
+        << "seed " << seed << ": residual " << cal.residual_angle_rad
+        << " rad is not at the sensor's noise floor " << noise_floor_rad;
+  }
+}
+
 TEST(MagCalibration, ResultIsInvariantToTheNominalFieldPreconditioner) {
   // nominal_field_t only scales the normal equations, so the calibration must
   // not depend on it. That is the claim the header makes; this pins it.

@@ -227,13 +227,6 @@ inline pm::Quat<pm::frames::Body, pm::frames::ECI> sunPointingAttitude() {
 ///
 /// @p durationS the arc to fly; the caller sizes it from where its transition is
 /// expected, since SITL wall time is roughly a tenth of sim time.
-/// Free-drift plant: no gravity at all. Two pre-Push-65 control rows were tuned
-/// on it (see the note in estimationOrbit) and opt into it by name until they
-/// are re-baselined on a real orbit; nothing new should. It cannot be combined
-/// with the orbit estimator's position — a filter whose model is gravity does
-/// not track a straight line — which is why the estimation rows do not use it.
-constexpr int kFreeDriftPlant = -1;
-
 inline scenario::SimConfig estimationOrbit(double durationS = 10.0, int gravityDegree = 8) {
   scenario::SimConfig c;
   c.scenario_name = "sitl-attitude-tuning";
@@ -252,12 +245,15 @@ inline scenario::SimConfig estimationOrbit(double durationS = 10.0, int gravityD
   // rejection in a SITL row means the row, not the fixture. This read `-1`
   // ("two-body", said the comment) until Push 65's orbit estimator was the first
   // consumer to notice that -1 is *free drift*: every SITL row before it flew a
-  // straight line at 7.6 km/s. Two control rows tuned on that plant (sun
-  // acquisition, feedforward A/B) still ask for kFreeDriftPlant explicitly, with
-  // their re-baselining recorded as owed; the magnetometer-calibration row was
-  // re-baselined in place (7.45 mrad on the orbit against 2.43 straight); and
-  // everything else now orbits. The plant is still not under test; the field costs a
-  // 45-coefficient recursion per RK stage.
+  // straight line at 7.6 km/s. Push 67 finished the move: the two control rows
+  // tuned on the straight line (sun acquisition, feedforward A/B) were
+  // re-baselined on the orbit — longer windows, no physics — and the
+  // magnetometer-calibration residual that read 7.45 mrad on the orbit against
+  // 2.43 straight turned out to be a fit defect the straight line had hidden
+  // (a free constant term, `lib/gnc/mag_calibration`), now 2.23 mrad. Nothing
+  // asks for free drift any more, and nothing should: the orbit filter's model
+  // is gravity, so a straight line has no position. The plant is still not
+  // under test; the field costs a 45-coefficient recursion per RK stage.
   c.environment.gravity_degree = gravityDegree;
   c.environment.magnetic_field = scenario::MagneticModel::kIgrf;
   c.environment.drag_enabled = false;

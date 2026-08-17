@@ -338,6 +338,7 @@ class MagCalibrationAccumulator {
   Eigen::Matrix<double, kParameters, 1> rhs_{Eigen::Matrix<double, kParameters, 1>::Zero()};
   /// `Σ m̂ₖm̂ₖᵀ` over unit measurement directions — the coverage moment.
   Eigen::Matrix3d directions_{Eigen::Matrix3d::Zero()};
+  double sum_f2_{0.0};          ///< `Σ fₖ²`, for the mean of the squared field
   double sum_f2_squared_{0.0};  ///< `Σ fₖ⁴`, closing the residual sum of squares
   double sum_field_t_{0.0};     ///< `Σ Fₖ` [T], for the mean field
   std::int32_t count_{0};

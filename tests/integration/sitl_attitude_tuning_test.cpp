@@ -304,17 +304,20 @@ TEST(SitlMagCalibration, CommandedCalibrationCollectsFitsAndApplies) {
   //    §8.1 commits the calibration at (0.5 deg = 8.7 mrad). The floor is the
   //    magnetometer's own noise, 0.05 uT on a ~30 uT field = 1.7 mrad.
   //
-  //    Measured: **7.45 mrad on the orbiting plant**, 2.43 mrad on the free-drift
-  //    (straight-line) plant this row was tuned on until Push 65 — the same figure
-  //    with the pre-65 estimator on the orbiting plant, so it is the plant, not
-  //    the orbit filter. The bound was 5 mrad against that 2.43. Why a real arc
-  //    triples the fit residual (field-gradient sampling over the window is the
-  //    suspect) is an investigation still owed; until it lands, the bound is the
-  //    committed class limit and not a number chosen to pass.
+  //    Measured: **2.23 mrad on the orbiting plant** (Push 67), against a 2.17
+  //    mrad noise floor. It read 7.45 mrad from Push 65 to 67, and 2.43 on the
+  //    free-drift plant before that — and the difference was never the plant's
+  //    physics: the fit carried the quadric's constant as a free parameter, and
+  //    with the field magnitude nearly constant over a real arc (~6 % swing;
+  //    the straight line climbed ~1000 km and swept far more) that constant was
+  //    decided by noise and shipped as a 0.7 % magnitude scale error. The
+  //    solve now absorbs it into the soft-iron scale (`lib/gnc/mag_calibration`,
+  //    `NearlyConstantFieldMagnitudeShipsNoScaleError`), and the bound sits at
+  //    1.6× the noise floor rather than at the class limit.
   const double residual = valueAfter(log, "residual=");
   const double coverage = valueAfter(log, "coverage=");
   EXPECT_TRUE(std::isfinite(residual)) << "no residual in the completion event:\n" << log;
-  EXPECT_LT(residual, 8.7e-3) << "calibration residual " << residual << " rad is too large:\n"
+  EXPECT_LT(residual, 3.5e-3) << "calibration residual " << residual << " rad is too large:\n"
                               << log;
   EXPECT_GE(coverage, 0.35) << "the tumble did not span enough field directions:\n" << log;
 

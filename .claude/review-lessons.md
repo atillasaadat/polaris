@@ -615,3 +615,29 @@ fixture was found in the innovation sequence, not in review.
   directory from an earlier fixture state read as "the filter rejected every
   fix for 300 s" on main; the fresh run was healthy. Match the log's mtime
   to the run before diagnosing from it.
+
+## A straight-line plant hid a fit defect for twenty pushes (P67, lib)
+
+- **A parameter the model does not have is a defect waiting for the data
+  that exposes it.** The ellipsoid fit carried the quadric's constant as a
+  free tenth unknown; the model fixes it (`c = βᵀAβ`). Every test swept the
+  field magnitude widely enough to pin it by accident; the first realistic
+  window (6 % swing) let noise decide it and shipped a 0.7 % scale error.
+  When a linear least-squares model has an algebraic constraint among its
+  parameters, either eliminate the parameter or enforce the constraint after
+  the solve — and put a unit test on the *least-informative* input the
+  flight case produces, not the most.
+- **"Same figure with the old code, so it is the plant" is not a root
+  cause.** Push 65 correctly showed the residual tripling was not the orbit
+  filter, then attributed it to plant physics and moved the bound to the
+  class limit. Two hypotheses were left untested (pairing skew, fit
+  conditioning) and one hour of experiment — an ideal sensor, then the same
+  solve offline — settled both. A moved bound with an owed investigation is
+  acceptable; an owed investigation that outlives the next push is not.
+- **A convergence window tuned to pass has no margin by construction.**
+  Both control rows converged with 10–40 s to spare on the plant they were
+  tuned on; the plant change did not alter the physics (all disturbance
+  torques off was bit-identical), it moved a chaotic settling by one cycle.
+  Size a settling window from the measured settling time plus a stated
+  margin, and record the settling time on the artifact so a drift shows up
+  as a number before it shows up as a failure.
