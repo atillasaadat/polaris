@@ -54,8 +54,6 @@ constexpr F64 kTriadGain = 1.0;
 constexpr F64 kMaxCoastSec = 5.0;
 constexpr F64 kMaxDtSec = 1.0;
 constexpr F64 kMaxMeasAgeSec = 0.5;
-constexpr F64 kMinPositionRadiusM = 6.4e6;
-constexpr F64 kMaxPositionRadiusM = 5.0e7;
 
 //! Multi-IMU voting gates (§8.2). The rate limit is 30 deg/s, the reference
 //! vehicle's; the disagreement gate is 0.5 deg/s. Re-admission is deliberately
@@ -252,8 +250,6 @@ void AttitudeEstimatorTester ::setValidParameters(bool withFine, bool withAlbedo
   this->paramSet_MaxCoastSec(kMaxCoastSec, Fw::ParamValid::VALID);
   this->paramSet_MaxDtSec(kMaxDtSec, Fw::ParamValid::VALID);
   this->paramSet_MaxMeasAgeSec(kMaxMeasAgeSec, Fw::ParamValid::VALID);
-  this->paramSet_MinPositionRadiusM(kMinPositionRadiusM, Fw::ParamValid::VALID);
-  this->paramSet_MaxPositionRadiusM(kMaxPositionRadiusM, Fw::ParamValid::VALID);
   this->paramSet_SigmaSunAlbedoUncorrRad(kSigmaSunAlbedoUncorr, Fw::ParamValid::VALID);
   this->paramSet_SigmaSunEphemRad(kSigmaSunEphem, Fw::ParamValid::VALID);
   this->paramSet_SigmaSunEphemPreciseRad(kSigmaSunEphemPrecise, Fw::ParamValid::VALID);
@@ -569,15 +565,28 @@ void AttitudeEstimatorTester ::feedMeasurements(I64 taiNs, const QuatBI& q_bi,
     this->invoke_to_starTrackerIn(unit, st);
   }
 
-  GnssMeas gnss;
-  gnss.set_posEcefM(toVec3F64(this->position_override_.has_value() ? *this->position_override_
-                                                                   : this->position_ecef_));
-  gnss.set_velEcefMps(toVec3F64(Eigen::Vector3d::Zero()));
-  // The receiver stamps GPS time; the component applies TAI = GPS + 19 s.
-  gnss.set_timeTagGpsNs(polaris::time::toGps(polaris::time::Tai::fromNanosecondsSinceEpoch(tag))
-                            .nanosecondsSinceEpoch());
-  gnss.set_valid(this->gnss_valid_);
-  this->invoke_to_gnssIn(0, gnss);
+  // The orbit solution the OrbitEstimator would have published this cycle:
+  // the fixture position stated in ECI with the same rotation the component's
+  // stubbed EOP produces, so the references and the position agree by
+  // construction. Skipped entirely when the producer is "absent" — the
+  // component must not see a valid latch it was not handed this cycle.
+  if (this->orbit_published_) {
+    OrbitEstimate orbit;
+    const Eigen::Vector3d r_ecef =
+        this->position_override_.has_value() ? *this->position_override_ : this->position_ecef_;
+    const Eigen::Vector3d r_eci =
+        this->position_override_.has_value()
+            ? r_ecef  // an override is stated in ECI directly (it is what the gate sees)
+            : rotationAt(tag).rotate(pm::Vec3<ECEF>(r_ecef)).eigen();
+    orbit.set_epochTaiNs(tag);
+    orbit.set_posEciM(toVec3F64(r_eci));
+    orbit.set_velEciMps(toVec3F64(Eigen::Vector3d::Zero()));
+    orbit.set_posSigmaM(1.0);
+    orbit.set_velSigmaMps(0.01);
+    orbit.set_ageSec(0.0);
+    orbit.set_valid(this->orbit_valid_);
+    this->invoke_to_orbitStateIn(0, orbit);
+  }
 }
 
 // ----------------------------------------------------------------------
@@ -688,7 +697,11 @@ void AttitudeEstimatorTester ::testStaleMeasurementsAreExcluded() {
   ASSERT_TLM_GyroValid(0, false);
   ASSERT_TLM_SunValid(0, false);
   ASSERT_TLM_MagValid(0, false);
-  ASSERT_TLM_PositionValid(0, false);
+  // The position is not a measurement and is not staleness-gated here: it is
+  // the orbit filter's own product, published this cycle at this cycle's epoch,
+  // carrying its own coast-horizon validity (§8.3). Its freshness is the
+  // consume-once latch, tested separately.
+  ASSERT_TLM_PositionValid(0, true);
   ASSERT_TLM_EstMode(0, EstimationMode::INVALID);
   ASSERT_EVENTS_AttitudeAcquired_SIZE(0);
 }
@@ -732,7 +745,7 @@ void AttitudeEstimatorTester ::testPositionLossBlocksTheMagneticPair() {
   this->setValidParameters();
   const QuatBI truth(polaris::math::Quaternion::Identity());
 
-  this->gnss_valid_ = false;
+  this->orbit_valid_ = false;
   this->feedMeasurements(kStartTaiNs, truth, Eigen::Vector3d::Zero(), true);
   this->runCycleAt(kStartTaiNs);
 
@@ -751,15 +764,16 @@ void AttitudeEstimatorTester ::testPositionLossBlocksTheMagneticPair() {
   ASSERT_EVENTS_PositionUnavailable_SIZE(1);
 }
 
-void AttitudeEstimatorTester ::testImplausiblePositionIsRejected() {
+void AttitudeEstimatorTester ::testNonFinitePositionIsRejected() {
   this->loadIgrf();
   this->setValidParameters();
   const QuatBI truth(polaris::math::Quaternion::Identity());
 
-  // A fix flagged valid and perfectly fresh, but at a radius no spacecraft
-  // occupies. Left ungated it would reach the field model and the sun reference
-  // while PositionValid still read true.
-  this->position_override_ = Eigen::Vector3d(1.0e3, 0.0, 0.0);
+  // A solution flagged valid but non-finite off the port. Left ungated it would
+  // reach the field model and the sun reference while PositionValid still read
+  // true. (The plausibility band itself is the orbit estimator's gate now, on
+  // the fix; this component gates only what a port cannot promise.)
+  this->position_override_ = Eigen::Vector3d(std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0);
   this->feedMeasurements(kStartTaiNs, truth, Eigen::Vector3d::Zero(), true);
   this->runCycleAt(kStartTaiNs);
 
@@ -767,13 +781,27 @@ void AttitudeEstimatorTester ::testImplausiblePositionIsRejected() {
   ASSERT_TLM_MagValid(0, false);
   ASSERT_EVENTS_PositionUnavailable_SIZE(1);
   ASSERT_TLM_EstMode(0, EstimationMode::INVALID);
+}
 
-  // Same for a non-finite position off the wire.
-  this->position_override_ = Eigen::Vector3d(std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0);
+void AttitudeEstimatorTester ::testOrbitSolutionIsConsumedOnce() {
+  this->loadIgrf();
+  this->setValidParameters();
+  const QuatBI truth(polaris::math::Quaternion::Identity());
+
+  // Cycle 1: the producer published, and the position is used.
+  this->feedMeasurements(kStartTaiNs, truth, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(kStartTaiNs);
+  ASSERT_TLM_PositionValid(0, true);
+
+  // Cycle 2: the producer did not run. The latch from cycle 1 must not be
+  // reused — a stale solution wearing a valid flag is how a dropped orbit
+  // solution would keep feeding the field model for the rest of the mission.
+  this->orbit_published_ = false;
   this->feedMeasurements(kStartTaiNs + kNsPerSecond / 10, truth, Eigen::Vector3d::Zero(), true);
   this->runCycleAt(kStartTaiNs + kNsPerSecond / 10);
   ASSERT_TLM_PositionValid(1, false);
   ASSERT_TLM_MagValid(1, false);
+  ASSERT_EVENTS_PositionUnavailable_SIZE(1);
 }
 
 void AttitudeEstimatorTester ::testResetReArmsEveryAlert() {
@@ -783,7 +811,7 @@ void AttitudeEstimatorTester ::testResetReArmsEveryAlert() {
 
   // Get every edge-gated alert to fire once: coarse references and no position.
   this->stub_grade_ = TableGrade::COARSE;
-  this->gnss_valid_ = false;
+  this->orbit_valid_ = false;
   this->feedMeasurements(kStartTaiNs, truth, Eigen::Vector3d::Zero(), true);
   this->runCycleAt(kStartTaiNs);
   ASSERT_EVENTS_PositionUnavailable_SIZE(1);
@@ -992,7 +1020,7 @@ void AttitudeEstimatorTester ::testCoastDemotesFineMode() {
   // there is no position to evaluate the field model at, so the magnetic pair
   // goes with it. 30 cycles = 3 s, past the 2 s fine coast horizon but inside
   // the coarse chain's 5 s one.
-  this->gnss_valid_ = false;
+  this->orbit_valid_ = false;
   for (int i = 0; i < 30; ++i) {
     t += kNsPerSecond / 10;
     this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), false);
@@ -1431,12 +1459,12 @@ void AttitudeEstimatorTester ::testAlbedoCorrectionSkippedWithoutGeometry() {
   // No position fix. The correction refuses rather than assuming a nominal
   // altitude — a guessed geometry would inject a bias the size of the one it
   // removes, pointed wherever the guess happened to point.
-  this->gnss_valid_ = false;
+  this->orbit_valid_ = false;
   this->feedMeasurements(t, truth, Eigen::Vector3d::Zero(), true);
   this->runCycleAt(t);
   EXPECT_TRUE(std::isnan(this->tlmHistory_SunAlbedoCorrection->at(2).arg))
       << "corrected without a position fix";
-  this->gnss_valid_ = true;
+  this->orbit_valid_ = true;
 
   // Earth behind the sensor: the vehicle turns until nadir is out of the field.
   // Normal, frequent, and the correct answer is zero rather than a small number.

@@ -125,7 +125,8 @@ module flight {
   @ Per cycle the component: picks the first valid, fresh unit of each sensor
   @ type off its measurement port arrays; builds the inertial references (Sun
   @ position from OnboardTables, geomagnetic field from the onboard IGRF-14
-  @ evaluated at the GNSS position and rotated ECEF->ECI with onboard EOP); runs
+  @ evaluated at the §8.3 orbit solution and rotated ECEF->ECI with onboard
+  @ EOP); runs
   @ one coarse cycle; arbitrates fine vs coarse; and publishes whichever solution
   @ is active plus its health telemetry. No math and no I/O live here — the
   @ algorithms are in lib/gnc, the field model in lib/environment, the tables
@@ -179,10 +180,9 @@ module flight {
   @    ephemeris) that combining cannot average down, so a second unit at a worse
   @    incidence buys noise reduction on the small term and nothing on the large
   @    one. Ties break to the lowest index, so the choice is deterministic.
-  @  - **Magnetometers and GNSS: first valid, fresh unit**, a deterministic
-  @    priority in vehicle build order. Unchanged, and honest: there is one of
-  @    each on the reference vehicle, and a combination rule with no redundancy
-  @    to exercise is untested code.
+  @  - **Magnetometers: voted** (§8.2, two units on the reference vehicle);
+  @    position is not selected here at all — it arrives once per cycle from
+  @    the OrbitEstimator, which owns the receiver (§8.3).
   @  - **Star trackers: counted only.** The tracker joins the MEKF in the next
   @    §8.2 push; the coarse chain must stay tracker-independent to remain the
   @    Safe-mode floor (§10).
@@ -253,10 +253,13 @@ module flight {
     @ Magnetometer field measurements, one port per unit in vehicle build order.
     guarded input port magnetometerIn: [GncMaxUnits] MagnetometerMeasPort
 
-    @ GNSS PVT fixes, one port per unit. The position is what the IGRF reference
-    @ is evaluated at; this component does not estimate orbit state (§8.3 owns
-    @ that) and does not consume the velocity.
-    guarded input port gnssIn: [GncMaxUnits] GnssMeasPort
+    @ The onboard orbit solution (§8.3), published by the OrbitEstimator earlier
+    @ in the same rate-group cycle. Its ECI position is what the IGRF reference
+    @ and the sun parallax are evaluated at; this component does not see the
+    @ receiver and does not consume the velocity. Guarded like the sensor ports:
+    @ the producer runs on the rate-group thread today, but the port contract
+    @ must not depend on that.
+    guarded input port orbitStateIn: OrbitEstimatePort
 
     @ Star-tracker attitude solutions, one port per unit — the finest rung of the
     @ §8.2 mode ladder, fused into the MEKF as **attitude** measurements
@@ -299,8 +302,7 @@ module flight {
     @ grade (precise Chebyshev vs coarse analytic fallback).
     output port getBodyPosition: GetBodyPosition
 
-    @ EOP at the cycle epoch, for the ECEF->ECI rotation of the modelled field
-    @ (and of the GNSS position).
+    @ EOP at the cycle epoch, for the ECEF->ECI rotation of the modelled field.
     output port getEopAt: GetEopAt
 
     @ The published attitude estimate (§8.0), for guidance/control/FDIR. Emitted
@@ -334,8 +336,8 @@ module flight {
     @
     @ **Samples, not seconds, on purpose.** Every gate the fit applies is in
     @ samples, and a sample only enters when that cycle had a valid magnetometer
-    @ reading *and* a modelled IGRF field to compare it against — so a GNSS
-    @ outage, a sensor dropout, or (once the §7 MTQ/MAG interlock lands) a
+    @ reading *and* a modelled IGRF field to compare it against — so a position
+    @ outage (the orbit solution dropped, §8.3), a sensor dropout, or a §7
     @ magnetorquer-on window all cost samples without costing wall-clock. A
     @ duration would let the ground command a window that quietly collected a
     @ tenth of the data it asked for; a sample count says what the fit will
@@ -343,7 +345,7 @@ module flight {
     @ MAG_CAL_ABORT at any time.
     @
     @ The window also closes itself after ten cycles per sample asked for, so a
-    @ loss of magnetometer or GNSS signal mid-collection cannot leave the vehicle
+    @ loss of magnetometer or position mid-collection cannot leave the vehicle
     @ telemetering COLLECTING forever waiting on a completion that can no longer
     @ arrive. The fit is attempted on whatever was collected: enough and it
     @ succeeds, too little and MagCalRejected(SAMPLES) is the honest report.
@@ -385,7 +387,7 @@ module flight {
     @
     @ **Pairs, not samples.** A pair enters only on a cycle where the king *and*
     @ @p unit both delivered a fresh, valid solution — so an Earth or Sun keep-out
-    @ on either unit costs pairs without costing wall-clock, exactly as a GNSS
+    @ on either unit costs pairs without costing wall-clock, exactly as a position
     @ outage costs the magnetometer window its samples. Simultaneity is what makes
     @ the estimate an alignment rather than a smear: at 0.1 deg/s a one-cycle skew
     @ is already 36 arcsec, comparable to what is being measured.
@@ -535,14 +537,6 @@ module flight {
     @ and no larger than MaxCoastSec: a staleness window wider than the coast
     @ horizon would keep feeding the estimator data it has already outlived.
     param MaxMeasAgeSec: F64
-
-    @ Smallest geocentric radius accepted from a GNSS fix [m] (§9.1 range gate).
-    @ A position below this is not a place this vehicle can be, so the fix is
-    @ excluded rather than propagated into the field model and the sun reference.
-    param MinPositionRadiusM: F64
-
-    @ Largest geocentric radius accepted from a GNSS fix [m] (§9.1 range gate).
-    param MaxPositionRadiusM: F64
 
     # --- Multi-IMU voting (§8.2) -------------------------------------------
     # Part of the **coarse** validity gate above rather than a set of their own,
@@ -1084,7 +1078,7 @@ module flight {
     @ found this cycle.
     telemetry MagValid: bool
 
-    @ A valid, fresh GNSS position was available this cycle. Without one there is
+    @ A valid orbit solution was available this cycle. Without one there is
     @ no magnetic reference, so the estimator coasts on the gyro.
     telemetry PositionValid: bool
 
@@ -1718,15 +1712,16 @@ module flight {
       severity activity high \
       format "Inter-tracker alignment cleared on unit {}"
 
-    @ No valid GNSS position was available, so the geomagnetic reference could
+    @ No valid orbit solution was available, so the geomagnetic reference could
     @ not be evaluated and the magnetic pair was excluded this cycle. With no
     @ magnetic pair there is no TRIAD, so the estimator gyro-coasts. Edge-gated.
-    @ Action: check GNSS validity/jamming telemetry. Sustained loss ends in
-    @ AttitudeLost once the coast horizon expires; an onboard orbit propagator
-    @ (§8.3) is what will remove this dependency.
+    @ Action: check the OrbitEstimator's telemetry — the orbit filter coasts a
+    @ receiver outage for its coast horizon (§8.3), so this fires only once the
+    @ solution has been dropped, or before it was ever seeded. Sustained loss
+    @ ends in AttitudeLost once the attitude coast horizon expires.
     event PositionUnavailable \
       severity warning low \
-      format "No valid GNSS position: magnetic reference unavailable, coasting"
+      format "No valid orbit solution: magnetic reference unavailable, coasting"
 
     @ The onboard IGRF-14 snapshot could not be loaded at setup, so there is no
     @ modelled field and the magnetic pair can never be formed. The estimator

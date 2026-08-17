@@ -571,7 +571,9 @@ _VEHICLE_PAIRS: tuple[tuple[str, str, Any, str, str], ...] = (
 #: behind by a check that no longer exists, and both read as protection that is
 #: not there.
 _CROSS_CHECKED_PARAMS = frozenset(
-    [pair[0] for pair in _CATALOG_PAIRS] + [pair[0] for pair in _VEHICLE_PAIRS]
+    [pair[0] for pair in _CATALOG_PAIRS]
+    + [pair[0] for pair in _VEHICLE_PAIRS]
+    + ["flight.orbitEstimator.DragBallisticCoeffM2PerKg"]
 )
 
 
@@ -771,6 +773,76 @@ def _check_control_parameters(body: dict[str, Any]) -> None:
             )
 
 
+_MAX_FIX_LATENCY_PARAM = "flight.orbitEstimator.MaxFixLatencyS"
+_BALLISTIC_PARAM = "flight.orbitEstimator.DragBallisticCoeffM2PerKg"
+_WHY_BALLISTIC = (
+    "The onboard filter's drag term integrates on this coefficient while the sim "
+    "propagates the vehicle on drag_cd * drag_area_m2 / mass_kg, so a stale value "
+    "is a systematic along-track acceleration error the filter absorbs into its "
+    "process noise — invisible while GNSS is available, and the coast error the "
+    "horizon was sized without."
+)
+
+
+def _check_orbit_parameters(body: dict[str, Any]) -> None:
+    """Refuse an OD latency bound the installed receiver cannot meet (§8.3, §19.4).
+
+    `MaxFixLatencyS` is the flight side of a flight/sim pair: the receiver's
+    catalog entry carries `fix_latency_s`, the sim realises it as a delay line,
+    and the filter refuses any fix older than the bound as a clock fault. A bound
+    *below* the receiver's own latency therefore refuses every fix the receiver
+    delivers, and the vehicle reports it as a stream of clock faults on a healthy
+    receiver. An inequality rather than an equality — the bound is a ceiling with
+    margin, not a transcription — so it takes no declared divergence.
+    """
+    sc = body["spacecraft"]
+    fsw = sc.get("fsw_parameters", {})
+    divergences = sc.get("fsw_parameter_divergence", {})
+    # The ballistic coefficient is a *derivation* of three vehicle fields, written
+    # to the digits a human writes: 1e-3 relative admits that and nothing else.
+    if _BALLISTIC_PARAM in fsw and all(
+        k in sc for k in ("drag_cd", "drag_area_m2", "mass_kg")
+    ):
+        expected = (
+            float(sc["drag_cd"]) * float(sc["drag_area_m2"]) / float(sc["mass_kg"]),
+        )
+        truth = "drag_cd * drag_area_m2 / mass_kg"
+        if not _divergence_declared(
+            divergences, _BALLISTIC_PARAM, expected, truth, 1.0e-3
+        ):
+            actual = (float(fsw[_BALLISTIC_PARAM]),)
+            if not _close(actual[0], expected[0], 1.0e-3):
+                _refuse_mismatch(
+                    _BALLISTIC_PARAM,
+                    actual,
+                    expected,
+                    truth,
+                    "the vehicle config's own drag_cd, drag_area_m2 and mass_kg",
+                    _WHY_BALLISTIC,
+                )
+    if _MAX_FIX_LATENCY_PARAM not in fsw:
+        return
+    receivers = [u for u in sc.get("sensors", []) if u.get("kind") == "gnss"]
+    latencies = {
+        u["name"]: float(u.get("params", {})["fix_latency_s"])
+        for u in receivers
+        if u.get("params", {}).get("fix_latency_s") is not None
+    }
+    if not latencies:
+        return
+    bound = float(fsw[_MAX_FIX_LATENCY_PARAM])
+    worst = max(latencies.values())
+    if bound < worst:
+        raise ConfigError(
+            f"{_MAX_FIX_LATENCY_PARAM} = {bound} s is below the installed receiver's "
+            f"own fix latency ({', '.join(f'{n} = {v} s' for n, v in latencies.items())}).\n"
+            f"The orbit filter refuses any fix older than this bound as a clock "
+            f"fault, so a bound under the receiver's catalogued latency refuses "
+            f"every fix a healthy receiver delivers. Raise the bound to cover "
+            f"fix_latency_s with margin (the reference vehicle flies 4x)."
+        )
+
+
 def _config_hash(resolved_body: dict[str, Any]) -> str:
     """SHA-256 over the canonical resolved config — everything that determines output."""
     canonical = json.dumps(resolved_body, sort_keys=True, separators=(",", ":"))
@@ -807,6 +879,7 @@ def resolve(
     _check_albedo_parameters(body)
     _check_star_tracker_parameters(body)
     _check_control_parameters(body)
+    _check_orbit_parameters(body)
     _check_catalog_pairs(body["spacecraft"])
     _check_vehicle_pairs(body["spacecraft"])
     resolved = {

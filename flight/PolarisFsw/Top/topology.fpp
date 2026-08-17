@@ -28,6 +28,7 @@ module flight {
   # ----------------------------------------------------------------------
     instance sitlTime
     instance onboardTables
+    instance orbitEstimator
     instance attitudeEstimator
     instance attitudeController
     instance rateGroup1
@@ -144,6 +145,15 @@ module flight {
       # §11.3). Both are synchronous, lock-free point queries.
       attitudeEstimator.getBodyPosition -> onboardTables.getBodyPosition
       attitudeEstimator.getEopAt        -> onboardTables.getEopAt
+      # The orbit estimator reads EOP for the ECEF->ECI ingest reduction and
+      # the force model's Earth orientation (§8.3).
+      orbitEstimator.getEopAt           -> onboardTables.getEopAt
+
+      # The §8.3 orbit solution to the attitude estimator: the position its
+      # magnetic and sun references are evaluated at, published earlier in the
+      # same rate-group cycle. Through an outage the estimator coasts on this
+      # rather than losing the magnetic pair on the next cycle.
+      orbitEstimator.orbitStateOut        -> attitudeEstimator.orbitStateIn
 
       # The §8.0 estimate to its consumer, and the §7 duty-cycle schedule back:
       # a cycle within the rate group, closed deliberately. The estimator runs
@@ -167,16 +177,19 @@ module flight {
     connections Sitl {
       PolarisSitl.sitlBridge.timeSetOut -> sitlTime.timeSetIn
 
-      # The barrier-driven 10 Hz GNC cycle (§2.4): the estimator is the first
-      # member of the SITL rate group, so it runs on this step's measurements
-      # before anything that would act on the estimate. On hardware the SITL
-      # subtopology is dropped and this connection becomes a wall-clock 10 Hz
-      # rate group instead (recipe: PolarisFsw/README.md).
-      PolarisSitl.sitlRateGroup.RateGroupMemberOut[0] -> attitudeEstimator.run
-      # Member 1 is the controller: it acts on the solution member 0 just
+      # The barrier-driven 10 Hz GNC cycle (§2.4), in dependency order. Member 0
+      # is the orbit estimator: it folds in this step's GNSS fix and publishes
+      # the position everything downstream is evaluated at. Member 1 is the
+      # attitude estimator, which places its magnetic and sun references on that
+      # position and runs on this step's measurements. On hardware the SITL
+      # subtopology is dropped and this becomes a wall-clock 10 Hz rate group
+      # instead (recipe: PolarisFsw/README.md).
+      PolarisSitl.sitlRateGroup.RateGroupMemberOut[0] -> orbitEstimator.run
+      PolarisSitl.sitlRateGroup.RateGroupMemberOut[1] -> attitudeEstimator.run
+      # Member 2 is the controller: it acts on the solution member 1 just
       # published, in the same cycle, and its commands ride the STEP_REPLY the
       # bridge builds after the group returns (§2.4 step 4).
-      PolarisSitl.sitlRateGroup.RateGroupMemberOut[1] -> attitudeController.run
+      PolarisSitl.sitlRateGroup.RateGroupMemberOut[2] -> attitudeController.run
       attitudeController.wheelCmdOut -> PolarisSitl.sitlBridge.wheelCmdIn
       attitudeController.mtqCmdOut   -> PolarisSitl.sitlBridge.mtqCmdIn
 
@@ -209,7 +222,9 @@ module flight {
       # attributed by the modelled field, never split down the middle.
       PolarisSitl.sitlBridge.magnetometerOut[0]  -> attitudeEstimator.magnetometerIn[0]
       PolarisSitl.sitlBridge.magnetometerOut[1]  -> attitudeEstimator.magnetometerIn[1]
-      PolarisSitl.sitlBridge.gnssOut[0]          -> attitudeEstimator.gnssIn[0]
+      # One GNSS receiver, to the §8.3 orbit estimator — the attitude estimator
+      # no longer reads the receiver; it reads the orbit solution.
+      PolarisSitl.sitlBridge.gnssOut[0]          -> orbitEstimator.gnssIn[0]
       # Two star trackers, king-referenced (§8.2). Unit 0 is st_a, the **king**:
       # its mounting defines the body frame, so it is the one index here that is a
       # vehicle-integration decision rather than a wiring choice — StKingUnit must

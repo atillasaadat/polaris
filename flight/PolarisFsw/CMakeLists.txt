@@ -27,6 +27,12 @@ add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/SitlBridge/")
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/OnboardTablesPorts/")
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/OnboardTables/")
 
+# Onboard orbit determination (design doc §8.3, §9.2). A flight component: the
+# F´ seam around lib/gnc/orbit_od, fed by the GncPorts GNSS seam and the
+# OnboardTables EOP query, and the source of the position the attitude
+# estimator's references are evaluated at.
+add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/OrbitEstimator/")
+
 # Coarse attitude determination (design doc §8.1, §10). A flight component: it
 # ships to hardware and consumes the GncPorts measurement seam, whichever source
 # fills it (SitlBridge under SITL, Drv sensor drivers on the vehicle).

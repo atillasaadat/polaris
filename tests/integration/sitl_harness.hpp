@@ -222,7 +222,14 @@ inline pm::Quat<pm::frames::Body, pm::frames::ECI> sunPointingAttitude() {
 ///
 /// @p durationS the arc to fly; the caller sizes it from where its transition is
 /// expected, since SITL wall time is roughly a tenth of sim time.
-inline scenario::SimConfig estimationOrbit(double durationS = 10.0) {
+/// Free-drift plant: no gravity at all. Two pre-Push-65 control rows were tuned
+/// on it (see the note in estimationOrbit) and opt into it by name until they
+/// are re-baselined on a real orbit; nothing new should. It cannot be combined
+/// with the orbit estimator's position — a filter whose model is gravity does
+/// not track a straight line — which is why the estimation rows do not use it.
+constexpr int kFreeDriftPlant = -1;
+
+inline scenario::SimConfig estimationOrbit(double durationS = 10.0, int gravityDegree = 8) {
   scenario::SimConfig c;
   c.scenario_name = "sitl-attitude-tuning";
   c.spacecraft.name = "leo-smallsat-ref";
@@ -235,7 +242,18 @@ inline scenario::SimConfig estimationOrbit(double durationS = 10.0) {
   // Near-inertially-fixed: the sun stays in the sensor's 60 deg field for the
   // whole run, so an acquisition failure means the estimator, not the geometry.
   c.initial_state.body_rate = pm::Vec3<pm::frames::Body>(Eigen::Vector3d(0.0, 0.0, 1.0e-3));
-  c.environment.gravity_degree = -1;  // two-body: the plant is not under test
+  // 8x8 EGM2008 by default — the same truncation the flight orbit filter
+  // carries, so the filter's model error against this plant is zero and a NIS
+  // rejection in a SITL row means the row, not the fixture. This read `-1`
+  // ("two-body", said the comment) until Push 65's orbit estimator was the first
+  // consumer to notice that -1 is *free drift*: every SITL row before it flew a
+  // straight line at 7.6 km/s. Two control rows tuned on that plant (sun
+  // acquisition, feedforward A/B) still ask for kFreeDriftPlant explicitly, with
+  // their re-baselining recorded as owed; the magnetometer-calibration row was
+  // re-baselined in place (7.45 mrad on the orbit against 2.43 straight); and
+  // everything else now orbits. The plant is still not under test; the field costs a
+  // 45-coefficient recursion per RK stage.
+  c.environment.gravity_degree = gravityDegree;
   c.environment.magnetic_field = scenario::MagneticModel::kIgrf;
   c.environment.drag_enabled = false;
   c.environment.srp_enabled = false;

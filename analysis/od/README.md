@@ -18,9 +18,11 @@ Carlo). Requirements REQ-ODP-001, -005, -006 in
 | The interchange | JSONL under `build-artifacts/` | A derived artifact. Never committed. |
 
 Unlike the detumble driver this one runs **in-process** rather than forking the
-deployment: `OrbitOd` is flight code called directly, and its F´ component seam
-does not exist yet. When that seam lands, this driver should move to the forked
-form for the same reason detumble uses it.
+deployment: `OrbitOd` is flight code called directly. Its F´ component seam
+(`flight/PolarisFsw/OrbitEstimator`, Push 65) exists now, so moving this driver
+to the forked form — for the same reason detumble uses it — is owed; the
+campaign's statistics are unaffected either way, since the component is a thin
+wrapper and the filter under test is the same object.
 
 ## Running the campaign
 

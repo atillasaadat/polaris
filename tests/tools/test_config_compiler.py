@@ -1136,3 +1136,69 @@ def test_truth_cross_checks_are_silent_on_a_vehicle_without_the_hardware():
     # already says never becomes a requirement on what it must say.
     config = Config.model_validate(_minimal_config_dict())
     resolve(config, load_hardware_library(_HARDWARE))  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Orbit-estimator parameters against the receiver and the vehicle (§8.3, §19.4)
+# ---------------------------------------------------------------------------
+
+_MAX_FIX_LATENCY = "flight.orbitEstimator.MaxFixLatencyS"
+_BALLISTIC = "flight.orbitEstimator.DragBallisticCoeffM2PerKg"
+
+
+def _resolve_variant(tmp_path, name, mutate):
+    config = yaml.safe_load(_TEMPLATE.read_text(encoding="utf-8"))
+    mutate(config)
+    path = tmp_path / f"{name}.yaml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    return resolve(load_config(path), load_hardware_library(_HARDWARE))
+
+
+def test_shipped_orbit_tuning_compiles():
+    # The shipped vehicle: the latency bound covers the OEM7600's catalogued
+    # fix_latency_s and the ballistic coefficient is the vehicle's own.
+    resolve(load_config(_TEMPLATE), load_hardware_library(_HARDWARE))  # must not raise
+
+
+def test_fix_latency_bound_below_the_receiver_is_refused(tmp_path):
+    # The filter refuses any fix older than the bound as a clock fault, so a bound
+    # under the receiver's own latency refuses every fix a healthy receiver
+    # delivers — the flight/sim pair the §8.3 seam owed (P57 class).
+    def mutate(config):
+        config["spacecraft"]["fsw_parameters"][_MAX_FIX_LATENCY] = 0.02
+
+    with pytest.raises(ConfigError) as exc:
+        _resolve_variant(tmp_path, "latency_bound_too_low", mutate)
+    message = str(exc.value)
+    assert "gps_a" in message
+    assert "0.05" in message
+
+
+def test_fix_latency_bound_at_the_receiver_is_accepted(tmp_path):
+    # An inequality, not a transcription: equal to the receiver's figure passes
+    # (zero margin, but not wrong).
+    def mutate(config):
+        config["spacecraft"]["fsw_parameters"][_MAX_FIX_LATENCY] = 0.05
+
+    _resolve_variant(tmp_path, "latency_bound_equal", mutate)  # must not raise
+
+
+def test_ballistic_coefficient_contradicting_the_vehicle_is_refused(tmp_path):
+    # C_d*A/m written twice — once as the sim's drag inputs, once as the flight
+    # filter's coefficient — is the same-number-twice class the other vehicle
+    # pairs guard.
+    def mutate(config):
+        config["spacecraft"]["fsw_parameters"][_BALLISTIC] = 0.02
+
+    with pytest.raises(ConfigError) as exc:
+        _resolve_variant(tmp_path, "stale_ballistic", mutate)
+    assert "drag_cd * drag_area_m2 / mass_kg" in str(exc.value)
+
+
+def test_orbit_checks_are_silent_without_the_parameters(tmp_path):
+    def mutate(config):
+        fsw = config["spacecraft"]["fsw_parameters"]
+        for key in [k for k in fsw if k.startswith("flight.orbitEstimator.")]:
+            del fsw[key]
+
+    _resolve_variant(tmp_path, "no_orbit_params", mutate)  # must not raise

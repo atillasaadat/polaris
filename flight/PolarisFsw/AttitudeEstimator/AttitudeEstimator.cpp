@@ -36,7 +36,7 @@ using Body = pm::frames::Body;
 //! SigmaSunWhiteRad costs — the whole estimator — and a separate gate would imply
 //! a degraded-but-flying state that does not exist. (The cycle counts are U32 and
 //! are read alongside them.)
-constexpr FwSizeType kParamCount = 21;
+constexpr FwSizeType kParamCount = 19;
 
 //! Number of fine-mode (MEKF + Davenport seed) tuning parameters. Validated
 //! separately: a missing one costs the fine mode, not the whole estimator.
@@ -156,17 +156,15 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
   values[7] = this->paramGet_MaxCoastSec(valids[7]);
   values[8] = this->paramGet_MaxDtSec(valids[8]);
   values[9] = this->paramGet_MaxMeasAgeSec(valids[9]);
-  values[10] = this->paramGet_MinPositionRadiusM(valids[10]);
-  values[11] = this->paramGet_MaxPositionRadiusM(valids[11]);
-  values[12] = this->paramGet_SigmaSunAlbedoUncorrRad(valids[12]);
-  values[13] = this->paramGet_SigmaSunEphemRad(valids[13]);
-  values[14] = this->paramGet_SigmaSunEphemPreciseRad(valids[14]);
-  values[15] = this->paramGet_ImuMaxRateRadps(valids[15]);
-  values[16] = this->paramGet_ImuDisagreementRadps(valids[16]);
-  values[17] = this->paramGet_MagMinFieldRatio(valids[17]);
-  values[18] = this->paramGet_MagMaxFieldRatio(valids[18]);
-  values[19] = this->paramGet_MagDisagreementT(valids[19]);
-  values[20] = this->paramGet_MagMaxAttSigmaRad(valids[20]);
+  values[10] = this->paramGet_SigmaSunAlbedoUncorrRad(valids[10]);
+  values[11] = this->paramGet_SigmaSunEphemRad(valids[11]);
+  values[12] = this->paramGet_SigmaSunEphemPreciseRad(valids[12]);
+  values[13] = this->paramGet_ImuMaxRateRadps(valids[13]);
+  values[14] = this->paramGet_ImuDisagreementRadps(valids[14]);
+  values[15] = this->paramGet_MagMinFieldRatio(valids[15]);
+  values[16] = this->paramGet_MagMaxFieldRatio(valids[16]);
+  values[17] = this->paramGet_MagDisagreementT(valids[17]);
+  values[18] = this->paramGet_MagMaxAttSigmaRad(valids[18]);
   Fw::ParamValid mag_readmit_valid = Fw::ParamValid::INVALID;
   const U32 mag_readmit_cycles = this->paramGet_MagReadmitCycles(mag_readmit_valid);
   Fw::ParamValid mag_confirm_valid = Fw::ParamValid::INVALID;
@@ -188,8 +186,6 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
                                                   "MaxCoastSec",
                                                   "MaxDtSec",
                                                   "MaxMeasAgeSec",
-                                                  "MinPositionRadiusM",
-                                                  "MaxPositionRadiusM",
                                                   "SigmaSunAlbedoUncorrRad",
                                                   "SigmaSunEphemRad",
                                                   "SigmaSunEphemPreciseRad",
@@ -222,8 +218,8 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
   }
 
   polaris::gnc::ImuVoteConfig vote_cfg;
-  vote_cfg.max_rate_radps = values[15];
-  vote_cfg.disagreement_radps = values[16];
+  vote_cfg.max_rate_radps = values[13];
+  vote_cfg.disagreement_radps = values[14];
   vote_cfg.readmit_cycles = readmit_cycles;
   vote_cfg.identify_confirm_cycles = confirm_cycles;
   if (!vote_cfg.isValid()) {
@@ -236,10 +232,10 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
     return false;
   }
   polaris::gnc::MagVoteConfig mag_vote_cfg;
-  mag_vote_cfg.min_field_ratio = values[17];
-  mag_vote_cfg.max_field_ratio = values[18];
-  mag_vote_cfg.disagreement_tesla = values[19];
-  mag_vote_cfg.max_attitude_sigma_rad = values[20];
+  mag_vote_cfg.min_field_ratio = values[15];
+  mag_vote_cfg.max_field_ratio = values[16];
+  mag_vote_cfg.disagreement_tesla = values[17];
+  mag_vote_cfg.max_attitude_sigma_rad = values[18];
   mag_vote_cfg.readmit_cycles = mag_readmit_cycles;
   mag_vote_cfg.identify_confirm_cycles = mag_confirm_cycles;
   // The library owns the range rules — including that the band must straddle 1,
@@ -258,7 +254,7 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
   // it — every cycle supplies its own through CoarseAttitudeInput — so what
   // matters is that it passes isValid() and that, if a future caller ever did
   // fall back to it, it would err wide rather than narrow.
-  cfg.sigma_sun_sys_rad = std::hypot(values[12], values[13]);
+  cfg.sigma_sun_sys_rad = std::hypot(values[10], values[11]);
   cfg.sigma_mag_white_rad = values[2];
   cfg.sigma_mag_sys_rad = values[3];
   cfg.gyro_arw = values[4];
@@ -277,10 +273,6 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
     this->failConfig("MaxMeasAgeSec must be positive and <= MaxCoastSec");
     return false;
   }
-  if (!(values[10] > 0.0) || !(values[11] > values[10])) {
-    this->failConfig("position radius gate must satisfy 0 < Min < Max");
-    return false;
-  }
   // Each pair must be ordered: the degraded member wider than the good one. A
   // pair the other way round says the albedo correction makes the measurement
   // worse, or that the analytic fallback beats the DE440 tables — configuration
@@ -292,11 +284,11 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
   // arguments and would absorb a sign typo silently — a negative sigma would
   // pass both this validation and every runtime finiteness check while quietly
   // meaning its own absolute value.
-  if (!(values[1] >= 0.0) || !(values[12] >= values[1])) {
+  if (!(values[1] >= 0.0) || !(values[10] >= values[1])) {
     this->failConfig("need 0 <= SigmaSunAlbedoRad <= SigmaSunAlbedoUncorrRad");
     return false;
   }
-  if (!(values[14] >= 0.0) || !(values[13] >= values[14])) {
+  if (!(values[12] >= 0.0) || !(values[11] >= values[12])) {
     this->failConfig("need 0 <= SigmaSunEphemPreciseRad <= SigmaSunEphemRad");
     return false;
   }
@@ -317,8 +309,6 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
   this->mag_ambiguous_cycles_ = 0;
   this->imu_ambiguity_escalate_cycles_ = escalate_cycles;
   this->max_meas_age_s_ = values[9];
-  this->min_position_radius_m_ = values[10];
-  this->max_position_radius_m_ = values[11];
   // The MEKF and the Davenport seed take one sigma per source, and the filter
   // treats it as white. The systematic part is therefore root-sum-squared in
   // here rather than carried separately as the coarse chain carries it: an
@@ -331,9 +321,9 @@ bool AttitudeEstimator ::refreshCoarseConfig() {
   // between two constants is arithmetic the configuration already knows.
   this->sigma_sun_white_rad_ = cfg.sigma_sun_white_rad;
   this->sigma_sun_albedo_corr_rad_ = values[1];
-  this->sigma_sun_albedo_uncorr_rad_ = values[12];
-  this->sigma_sun_ephem_rad_ = values[13];
-  this->sigma_sun_ephem_precise_rad_ = values[14];
+  this->sigma_sun_albedo_uncorr_rad_ = values[10];
+  this->sigma_sun_ephem_rad_ = values[11];
+  this->sigma_sun_ephem_precise_rad_ = values[12];
   this->config_invalid_flagged_ = false;
   return true;
 }
@@ -445,12 +435,10 @@ void AttitudeEstimator ::setSunSigmaForCycle(double albedoSigmaRad, double ephem
   this->sigma_sun_total_cycle_ = std::hypot(this->sigma_sun_white_rad_, this->sigma_sun_sys_cycle_);
 }
 
-double AttitudeEstimator ::applyAlbedoCorrection(FwIndexType sunIndex, const pm::Vec3<ECEF>& r_ecef,
-                                                 const pm::Quat<ECI, ECEF>& q_eci_ecef,
+double AttitudeEstimator ::applyAlbedoCorrection(FwIndexType sunIndex, const pm::Vec3<ECI>& r_eci,
                                                  const pm::Vec3<ECI>& sun_geocentric,
-                                                 bool havePositionAndRotation,
-                                                 bool haveSunGeocentric, double ephemSigmaRad,
-                                                 pm::Vec3<Body>& sunBody) {
+                                                 bool havePosition, bool haveSunGeocentric,
+                                                 double ephemSigmaRad, pm::Vec3<Body>& sunBody) {
   // **The one application point** for the Earth-albedo correction (§8.1), called
   // between unit selection and every consumer for the same reason the
   // magnetometer calibration is applied where it is: the coarse chain, the MEKF
@@ -459,8 +447,8 @@ double AttitudeEstimator ::applyAlbedoCorrection(FwIndexType sunIndex, const pm:
   //
   // Unlike the magnetometer calibration this is a **model, not a commanded
   // calibration**: it needs geometry, not collected data, so it is always on and
-  // there is no state to persist. What it does need is a position fix, the
-  // ECEF->ECI rotation, and an attitude to place the Earth in the sensor's field
+  // there is no state to persist. What it does need is a position (the §8.3
+  // orbit solution) and an attitude to place the Earth in the sensor's field
   // with — and that attitude is last cycle's published solution.
   //
   // When any of those is missing the correction is skipped and the *wider*
@@ -469,7 +457,7 @@ double AttitudeEstimator ::applyAlbedoCorrection(FwIndexType sunIndex, const pm:
   // pointed in an arbitrary direction.
   this->setSunSigmaForCycle(this->sigma_sun_albedo_uncorr_rad_, ephemSigmaRad);
 
-  if (!this->albedo_configured_ || !havePositionAndRotation || !haveSunGeocentric ||
+  if (!this->albedo_configured_ || !havePosition || !haveSunGeocentric ||
       !this->state_.valid.attitude) {
     return kNoValue;
   }
@@ -485,7 +473,6 @@ double AttitudeEstimator ::applyAlbedoCorrection(FwIndexType sunIndex, const pm:
     return kNoValue;
   }
 
-  const pm::Vec3<ECI> r_eci = q_eci_ecef.rotate(r_ecef);
   pm::Vec3<ECI> r_hat;
   if (!r_eci.normalized(r_hat)) {
     return kNoValue;
@@ -980,8 +967,9 @@ void AttitudeEstimator ::magnetometerIn_handler(FwIndexType portNum, const Magne
   this->mag_[portNum] = meas;
 }
 
-void AttitudeEstimator ::gnssIn_handler(FwIndexType portNum, const GnssMeas& meas) {
-  this->gnss_[portNum] = meas;
+void AttitudeEstimator ::orbitStateIn_handler(FwIndexType portNum, const OrbitEstimate& estimate) {
+  static_cast<void>(portNum);
+  this->orbit_ = estimate;
 }
 
 void AttitudeEstimator ::mtqActuationIn_handler(FwIndexType portNum, const MtqActuation& state) {
@@ -1118,15 +1106,20 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
 
   // --- Position and the ECEF->ECI rotation ----------------------------------
   // Both inertial references need the rotation; the magnetic one also needs the
-  // position, which today comes straight off GNSS. There is no onboard orbit
-  // propagator yet (§8.3), so a GNSS outage costs the magnetic pair — flagged
-  // by PositionUnavailable rather than papered over with a guessed position.
-  pm::Vec3<ECEF> r_ecef;
-  const GnssMeas* const gnss = this->selectGnss(nowNs);
-  const bool have_position = gnss != nullptr;
-  if (have_position) {
-    r_ecef = pm::Vec3<ECEF>(toEigen(gnss->get_posEcefM()));
+  // position, which is the §8.3 orbit solution the OrbitEstimator published
+  // earlier this cycle. Its `valid` is the orbit filter's own coast-horizon
+  // verdict, so a receiver outage costs the magnetic pair only once the orbit
+  // solution has been dropped — flagged by PositionUnavailable rather than
+  // papered over with the last position it was handed. Consumed **once**: the
+  // latch is cleared here so a producer that stops running cannot leave a
+  // stale solution wearing a valid flag for the rest of the mission.
+  pm::Vec3<ECI> r_eci;
+  bool have_position = false;
+  if (this->orbit_.get_valid()) {
+    r_eci = pm::Vec3<ECI>(toEigen(this->orbit_.get_posEciM()));
+    have_position = r_eci.isFinite();
   }
+  this->orbit_.set_valid(false);
 
   TableGrade::T eop_grade = TableGrade::UNAVAILABLE;
   pm::Quat<ECI, ECEF> q_eci_ecef;
@@ -1157,11 +1150,10 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
     if (this->getBodyPosition_out(0, OnboardBody::SUN, nowNs, sunPos)) {
       pm::Vec3<ECI> to_sun(sunPos.get_x(), sunPos.get_y(), sunPos.get_z());
       have_sun_geocentric = to_sun.normalized(sun_geocentric);
-      if (have_position && have_rotation) {
+      if (have_position) {
         // Geocentric to spacecraft-centric. Worth ~4e-5 rad at LEO — far below
-        // the coarse budget, but it costs one subtraction and the rotation is
-        // already in hand for the field.
-        to_sun = to_sun - q_eci_ecef.rotate(r_ecef);
+        // the coarse budget, but it costs one subtraction.
+        to_sun = to_sun - r_eci;
       }
       have_sun_ref = to_sun.normalized(sun_ref);
       ephem_grade = sunPos.get_grade();
@@ -1177,6 +1169,9 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
   if (have_position && have_rotation && this->igrf_.good()) {
     double year = 0.0;
     pm::Vec3<ECEF> b_ecef;
+    // The field model is Earth-fixed: the inertial position goes to ECEF with
+    // the inverse of the rotation the field comes back with.
+    const pm::Vec3<ECEF> r_ecef = q_eci_ecef.inverse().rotate(r_eci);
     if (polaris::time::decimalYear(epoch, this->leap_, year)) {
       // Refuse a field the loaded snapshot cannot honestly model. The horizon is
       // the one the IAGA file itself implies — the next tabulated epoch, or five
@@ -1199,14 +1194,13 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
     }
   }
 
-  // Stage the position for the published product (§8.0). Valid only with **both**
-  // a fix and the rotation, since ECEF metres are not an inertial position; a
-  // consumer that took the ECEF vector for an ECI one would have its nadir
-  // direction wrong by the Earth-rotation angle, which is a plausible-looking
-  // error of up to 180 degrees.
-  if (have_position && have_rotation) {
-    this->pub_position_eci_ = q_eci_ecef.rotate(r_ecef);
-    this->pub_position_valid_ = this->pub_position_eci_.isFinite();
+  // Stage the position for the published product (§8.0): the same ECI vector
+  // the references above were evaluated at, so a consumer placing this attitude
+  // and the orbit estimator's own port cannot disagree about where the vehicle
+  // was this cycle.
+  if (have_position) {
+    this->pub_position_eci_ = r_eci;
+    this->pub_position_valid_ = true;
   }
 
   // Edge-gated position alert: no position means no field model, hence no TRIAD.
@@ -1295,9 +1289,9 @@ void AttitudeEstimator ::run_handler(FwIndexType portNum, U32 context) {
   double albedo_applied_rad = kNoValue;
   if (sun != nullptr && have_sun_ref) {
     pm::Vec3<Body> sun_body(toEigen(sun->get_dirBody()));
-    albedo_applied_rad = this->applyAlbedoCorrection(
-        sun_index, r_ecef, q_eci_ecef, sun_geocentric, have_position && have_rotation,
-        have_sun_geocentric, ephem_sigma_rad, sun_body);
+    albedo_applied_rad =
+        this->applyAlbedoCorrection(sun_index, r_eci, sun_geocentric, have_position,
+                                    have_sun_geocentric, ephem_sigma_rad, sun_body);
 
     in.sun_body = sun_body;
     in.sun_ref = sun_ref;

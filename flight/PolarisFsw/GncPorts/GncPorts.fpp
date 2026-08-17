@@ -92,12 +92,37 @@ module flight {
 
   @ One GNSS receiver's PVT fix, in the frame and timescale the receiver reports
   @ (§3.2): ECEF metres and GPS time. The consumer applies TAI = GPS + 19 s and
-  @ the ECEF->ECI reduction on ingest (REQ-CONV-001) — never the producer.
+  @ the ECEF->ECI reduction on ingest (REQ-CONV-001) — never the producer. The
+  @ per-fix accuracies are the receiver's own reported figures (§6.2, §8.3): the
+  @ orbit filter's R is built from them, in the local horizontal/vertical basis
+  @ they are stated in, so a fix that does not report them (zero) is one the
+  @ filter refuses rather than one it guesses a covariance for.
   struct GnssMeas {
     posEcefM: Vec3F64 @< position, ECEF [m]
     velEcefMps: Vec3F64 @< velocity, ECEF [m/s]
     timeTagGpsNs: I64 @< GPS ns as stamped by the receiver
+    posSigmaHM: F64 @< reported per-axis horizontal position 1-sigma [m]
+    posSigmaVM: F64 @< reported vertical (up) position 1-sigma [m]
+    velSigmaMps: F64 @< reported per-axis velocity 1-sigma [m/s]
+    velValid: bool @< velEcefMps/velSigmaMps carry a solution this fix
     valid: bool @< the receiver reports this fix as usable (§9.1)
+  }
+
+  @ The onboard orbit solution (§8.3), orbit estimator -> every consumer that
+  @ needs where the vehicle is: the attitude estimator's magnetic and sun
+  @ references, guidance, FDIR. ECI (ICRF/J2000) metres and metres per second at
+  @ @ epochTaiNs, with the 1-sigma figures the filter's own covariance carries.
+  @ `valid` is the filter's coast-horizon verdict (§8.3): false means the
+  @ solution was dropped, and a consumer MUST treat position as unavailable
+  @ rather than reuse the last vector (§9.1).
+  struct OrbitEstimate {
+    epochTaiNs: I64 @< TAI ns this solution is valid at
+    posEciM: Vec3F64 @< position, ECI [m]
+    velEciMps: Vec3F64 @< velocity, ECI [m/s]
+    posSigmaM: F64 @< sqrt(trace) of the position covariance [m]
+    velSigmaMps: F64 @< sqrt(trace) of the velocity covariance [m/s]
+    ageSec: F64 @< time since the last accepted fix [s]
+    valid: bool @< the solution is inside the coast horizon and finite
   }
 
   @ One star tracker's attitude solution. Defined now so the fine-mode (MEKF)
@@ -149,19 +174,17 @@ module flight {
 
   @ The attitude part of the canonical onboard state (§8.0) as published by the
   @ attitude estimator: what guidance, control and FDIR need every cycle. The
-  @ orbit fields of `polaris::state::EstimatedState` are deliberately absent
-  @ until the §8.3 orbit filter owns them — publishing zeros for a field nobody
-  @ estimates yet is how a consumer ends up trusting one.
+  @ orbit block of `polaris::state::EstimatedState` lives on OrbitEstimate, the
+  @ §8.3 orbit estimator's own product; it is not repeated here.
   @
-  @ `posEciM` is the **one** exception, and it is one on purpose: it is not an
-  @ estimate but the GNSS fix the estimator is *already* using to place its own
-  @ magnetic reference, rotated ECEF->ECI with the same onboard EOP. The §8.5
-  @ gravity-gradient feedforward needs the nadir direction and nothing else on the
-  @ vehicle knows where the vehicle is. It carries `posValid`, which is false
-  @ whenever there is no fresh fix or no rotation — during the receiver's cold
-  @ start, for instance — and it comes with **no velocity**, because a velocity is
-  @ what a consumer would build a propagation on and there is no propagator yet.
-  @ When §8.3 lands, the orbit block replaces this field rather than joining it.
+  @ `posEciM` is the **one** orbit field carried, and it is here on purpose: it
+  @ is the position the estimator's own magnetic and sun references were
+  @ evaluated at this cycle — the OrbitEstimate it consumed, not a second
+  @ estimate — so a consumer of this attitude can place it without racing the
+  @ orbit estimator's port. The §8.5 gravity-gradient feedforward needs the nadir
+  @ direction and nothing else. It carries `posValid`, false whenever the orbit
+  @ solution was unavailable, and no velocity: a consumer that wants to
+  @ propagate reads OrbitEstimate.
   @
   @ The magnetic block is here rather than on a second port because the estimator
   @ is the vehicle's **one** gate on magnetometer data: it votes the units (§8.2),
@@ -192,14 +215,14 @@ module flight {
     magFieldTimeTagNs: I64 @< TAI ns the accepted magnetometer sample was taken at
     magModelMagnitudeT: F64 @< onboard IGRF field magnitude at the estimated position [T]
     magRawMagnitudeT: F64 @< largest raw magnetometer magnitude admitted by the §7 interlock this cycle [T]
-    posEciM: Vec3F64 @< spacecraft position, ECI [m] — the GNSS fix the estimator already uses, **not** an orbit-filter product (see the note above)
+    posEciM: Vec3F64 @< spacecraft position, ECI [m] — the §8.3 orbit solution the estimator's references were computed at this cycle
     mode: EstimationMode @< active estimation mode
     attitudeValid: bool @< qBodyEci and attCovDiagRad2 are usable
     rateValid: bool @< bodyRateRadps is usable
     magFieldValid: bool @< magFieldBody/magFieldTimeTagNs are usable this cycle
     magModelValid: bool @< magModelMagnitudeT is usable this cycle
     magRawValid: bool @< magRawMagnitudeT is usable this cycle
-    posValid: bool @< posEciM is usable this cycle (a fresh fix and the ECEF->ECI rotation were both available)
+    posValid: bool @< posEciM is usable this cycle (the orbit solution was valid)
   }
 
   @ IMU increments, sensor source -> estimator.
@@ -211,8 +234,11 @@ module flight {
   @ Magnetometer field, sensor source -> estimator.
   port MagnetometerMeasPort(meas: MagnetometerMeas)
 
-  @ GNSS PVT fix, sensor source -> estimator.
+  @ GNSS PVT fix, sensor source -> orbit estimator.
   port GnssMeasPort(meas: GnssMeas)
+
+  @ Orbit solution, orbit estimator -> attitude estimator / guidance / FDIR.
+  port OrbitEstimatePort(estimate: OrbitEstimate)
 
   @ Star-tracker attitude, sensor source -> estimator.
   port StarTrackerMeasPort(meas: StarTrackerMeas)

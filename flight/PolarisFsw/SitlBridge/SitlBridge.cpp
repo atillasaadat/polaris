@@ -246,6 +246,13 @@ void SitlBridge ::publishMeasurements(I64 epochTaiNs) {
     meas.set_posEcefM(toVec3(rec.position_ecef_m));
     meas.set_velEcefMps(toVec3(rec.velocity_ecef_mps));
     meas.set_timeTagGpsNs(rec.time_tag_gps_ns);
+    meas.set_posSigmaHM(rec.position_sigma_h_m);
+    meas.set_posSigmaVM(rec.position_sigma_v_m);
+    meas.set_velSigmaMps(rec.velocity_sigma_mps);
+    // The wire has no separate velocity flag: the receiver model reports a
+    // velocity whenever it reports a fix, and its accuracy figure is what says
+    // whether that velocity is a solution (positive) or a placeholder (zero).
+    meas.set_velValid(rec.velocity_sigma_mps > 0.0);
     meas.set_valid(rec.valid != 0 && rec.fresh != 0);
     this->gnssOut_out(static_cast<FwIndexType>(i), meas);
   }

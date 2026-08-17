@@ -10,9 +10,8 @@
 // measurement set the estimators consume, and it is read on its own.
 //
 // What lives here: the per-type combination rules — the IMU vote and its FDIR
-// edges, best-illuminated sun-sensor selection, first-valid magnetometer and
-// GNSS selection, and the per-unit albedo boresight lookup that follows the
-// selected sun sensor.
+// edges, best-illuminated sun-sensor selection, the magnetometer vote, and the
+// per-unit albedo boresight lookup that follows the selected sun sensor.
 //
 // What does not: the estimation cycle that calls them (AttitudeEstimator.cpp)
 // and the correction application points inside it, whose whole value is that
@@ -366,7 +365,7 @@ bool AttitudeEstimator ::sunBoresightFor(FwIndexType index, pm::Vec3<Body>& out)
 }
 
 // ----------------------------------------------------------------------
-// Magnetometer and GNSS: first valid, fresh unit
+// Magnetometers: the §8.2 vote
 // ----------------------------------------------------------------------
 
 bool AttitudeEstimator ::voteMagField(I64 nowTaiNs, const pm::Vec3<Body>& magRefBody,
@@ -526,35 +525,6 @@ bool AttitudeEstimator ::voteMagField(I64 nowTaiNs, const pm::Vec3<Body>& magRef
   field = result.field_tesla;
   index = static_cast<FwIndexType>(result.published_index);
   return true;
-}
-
-const GnssMeas* AttitudeEstimator ::selectGnss(I64 nowTaiNs) const {
-  for (FwIndexType i = 0; i < NUM_GNSSIN_INPUT_PORTS; ++i) {
-    const GnssMeas& m = this->gnss_[i];
-    if (!m.get_valid()) {
-      continue;
-    }
-    // §9.1 range gate. A GNSS fix is wire data from outside the FSW, and a
-    // non-finite or absurd position does not fail loudly downstream — it
-    // poisons *both* references (a NaN radius through the field model, a NaN
-    // sun direction through r_eci) while every validity flag still reads true.
-    // So it is checked here, with the other per-source gates.
-    const Eigen::Vector3d r(m.get_posEcefM()[0], m.get_posEcefM()[1], m.get_posEcefM()[2]);
-    if (!r.allFinite()) {
-      continue;
-    }
-    const double radius = r.norm();
-    if (radius < this->min_position_radius_m_ || radius > this->max_position_radius_m_) {
-      continue;
-    }
-    // The receiver stamps GPS time; TAI = GPS + 19 s on ingest (§3.2).
-    const polaris::time::Tai tag =
-        polaris::time::toTai(polaris::time::Gps::fromNanosecondsSinceEpoch(m.get_timeTagGpsNs()));
-    if (fresh(nowTaiNs, tag.nanosecondsSinceEpoch(), this->max_meas_age_s_)) {
-      return &this->gnss_[i];
-    }
-  }
-  return nullptr;
 }
 
 }  // namespace flight

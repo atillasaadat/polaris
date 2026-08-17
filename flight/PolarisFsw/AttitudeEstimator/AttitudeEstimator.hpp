@@ -4,7 +4,7 @@
 //         arbitration (§8.1, §10; REQ-ADET-002, REQ-ADET-003, REQ-ADET-004)
 //
 // The F´ wrapper around polaris::gnc::CoarseAttitudeEstimator and
-// polaris::gnc::Mekf: gathers sun, magnetometer, gyro and GNSS measurements off
+// polaris::gnc::Mekf: gathers sun, magnetometer, gyro and star-tracker measurements off
 // its port arrays, builds the inertial references (Sun from OnboardTables,
 // geomagnetic field from the onboard IGRF-14 snapshot), runs one coarse cycle
 // per rate-group call, arbitrates fine vs coarse, and publishes whichever
@@ -127,8 +127,8 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! Latch one magnetometer's field measurement for the next cycle.
   void magnetometerIn_handler(FwIndexType portNum, const MagnetometerMeas& meas) override;
 
-  //! Latch one GNSS fix for the next cycle (position only is consumed).
-  void gnssIn_handler(FwIndexType portNum, const GnssMeas& meas) override;
+  //! Latch the orbit solution the OrbitEstimator published this cycle (§8.3).
+  void orbitStateIn_handler(FwIndexType portNum, const OrbitEstimate& estimate) override;
 
   //! Latch one star tracker's attitude solution for the next cycle (§8.2). The
   //! coarse chain never reads it — it must stay tracker-independent to remain the
@@ -261,17 +261,13 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   //! independent and therefore add in quadrature.
   void setSunSigmaForCycle(double albedoSigmaRad, double ephemSigmaRad);
 
-  //! TODO: eight parameters is one past comfortable. Fold the geometry into a
-  //! small input struct **when a third reference term arrives** — not before,
-  //! since a struct for one call site is indirection without a payer. (The §8.2
-  //! per-unit boresights did not trigger it: they replaced the measurement
-  //! pointer with an index, leaving the count where it was.)
+  //! The one application point for the Earth-albedo correction: the ECI position
+  //! is the §8.3 orbit solution, so the ECEF vector and the rotation the fix
+  //! used to arrive as are no longer this function's business.
   double applyAlbedoCorrection(
-      FwIndexType sunIndex, const polaris::math::Vec3<polaris::math::frames::ECEF>& r_ecef,
-      const polaris::math::Quat<polaris::math::frames::ECI, polaris::math::frames::ECEF>&
-          q_eci_ecef,
-      const polaris::math::Vec3<polaris::math::frames::ECI>& sun_geocentric,
-      bool havePositionAndRotation, bool haveSunGeocentric, double ephemSigmaRad,
+      FwIndexType sunIndex, const polaris::math::Vec3<polaris::math::frames::ECI>& r_eci,
+      const polaris::math::Vec3<polaris::math::frames::ECI>& sun_geocentric, bool havePosition,
+      bool haveSunGeocentric, double ephemSigmaRad,
       polaris::math::Vec3<polaris::math::frames::Body>& sunBody);
 
   //! Read the seven MagCal* parameters and rebuild the calibration accumulator.
@@ -368,13 +364,6 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
                     const polaris::math::Vec3<polaris::math::frames::Body>& magRefBody,
                     bool haveAttitude, double attitudeSigmaRad, double modelledMagnitudeT,
                     polaris::math::Vec3<polaris::math::frames::Body>& field, FwIndexType& index);
-
-  //! First valid, fresh unit on its port array, or nullptr. "Fresh" is
-  //! |now - timeTag| <= MaxMeasAgeSec (§9.1 staleness gate). Bounded loop; index
-  //! order is vehicle build order, so this is a deterministic priority. Kept as
-  //! first-valid honestly: there is one GNSS receiver, and a combination rule with
-  //! no redundancy to exercise is untested code.
-  const GnssMeas* selectGnss(I64 nowTaiNs) const;
 
   //! One star tracker's contribution to a cycle: its solution already stated in
   //! the king's frame, and the body-axes measurement covariance built from its own
@@ -668,7 +657,9 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   ImuMeas imu_[NUM_IMUIN_INPUT_PORTS]{};
   SunSensorMeas sun_[NUM_SUNSENSORIN_INPUT_PORTS]{};
   MagnetometerMeas mag_[NUM_MAGNETOMETERIN_INPUT_PORTS]{};
-  GnssMeas gnss_[NUM_GNSSIN_INPUT_PORTS]{};
+  //! The orbit solution latched for this cycle (§8.3). Default-constructed is
+  //! `valid == false`; a producer that never runs leaves position unavailable.
+  OrbitEstimate orbit_{};
   StarTrackerMeas star_[NUM_STARTRACKERIN_INPUT_PORTS]{};
 
   //! Latest magnetorquer duty-cycle schedule (§7). `have_mtq_schedule_` stays
@@ -700,11 +691,10 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
   bool pub_mag_model_valid_{false};
   bool pub_mag_raw_valid_{false};
 
-  //! This cycle's position in ECI, staged for the published estimate. It is the
-  //! GNSS fix this component already rotated for its own magnetic reference, not
-  //! an orbit estimate (§8.3 owns that) — published because the §8.5
-  //! gravity-gradient feedforward needs the nadir direction and nothing else on
-  //! the vehicle knows where the vehicle is. Cleared every cycle with the rest.
+  //! This cycle's position in ECI, staged for the published estimate: the §8.3
+  //! orbit solution this component evaluated its own references at — published
+  //! because the §8.5 gravity-gradient feedforward needs the nadir direction
+  //! without racing the OrbitEstimator's port. Cleared every cycle with the rest.
   polaris::math::Vec3<polaris::math::frames::ECI> pub_position_eci_{};
   bool pub_position_valid_{false};
 
@@ -718,11 +708,6 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
 
   //! Staleness gate [s], cached from the parameter set with the rest of the config.
   F64 max_meas_age_s_{0.0};
-
-  //! §9.1 range gate on a GNSS fix [m], geocentric radius. Zero until configured,
-  //! which rejects every fix — the estimator is inert without tuning anyway.
-  F64 min_position_radius_m_{0.0};
-  F64 max_position_radius_m_{0.0};
 
   //! Magnetic 1-sigma handed to the MEKF and the Davenport seed [rad]: the white
   //! and systematic parts of the same budget, root-sum-squared. The filter treats

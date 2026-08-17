@@ -39,9 +39,14 @@ TEST(AttitudeEstimator, PositionLossBlocksTheMagneticPair) {
   tester.testPositionLossBlocksTheMagneticPair();
 }
 
-TEST(AttitudeEstimator, ImplausiblePositionIsRejected) {
+TEST(AttitudeEstimator, NonFinitePositionIsRejected) {
   flight::AttitudeEstimatorTester tester;
-  tester.testImplausiblePositionIsRejected();
+  tester.testNonFinitePositionIsRejected();
+}
+
+TEST(AttitudeEstimator, OrbitSolutionIsConsumedOnce) {
+  flight::AttitudeEstimatorTester tester;
+  tester.testOrbitSolutionIsConsumedOnce();
 }
 
 TEST(AttitudeEstimator, ResetReArmsEveryAlert) {

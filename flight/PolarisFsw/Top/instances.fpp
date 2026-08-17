@@ -65,6 +65,12 @@ module flight {
   # a flight component (ships to hardware), not SITL infrastructure.
   instance onboardTables: flight.OnboardTables base id 0x10020000
 
+  # Onboard orbit estimator (design doc §8.3, §9.2). A flight component: it runs
+  # on the GNC rate group ahead of the attitude estimator, consumes the GncPorts
+  # GNSS seam and the OnboardTables EOP query, and publishes the orbit solution
+  # the attitude estimator's magnetic and sun references are evaluated at.
+  instance orbitEstimator: flight.OrbitEstimator base id 0x10050000
+
   # Coarse attitude estimator (design doc §8.1, §10). A flight component: it runs
   # on the GNC rate group, consumes the GncPorts measurement seam (fed by
   # SitlBridge under SITL, by Drv sensor drivers on the vehicle) and the

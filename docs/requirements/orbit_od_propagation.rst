@@ -10,7 +10,7 @@ Source: design doc §8.3, §11. Fully populated in Phase 6; firm seeds below.
    :tags: od, estimation
    :method: Test
    :derived_from: REQ-MIS-001
-   :allocation: flight/PolarisFsw/OrbitEstimation
+   :allocation: flight/PolarisFsw/OrbitEstimator, lib/gnc
    :refs: montenbruck2000
 
    The FSW **shall** estimate its own orbit with an onboard MEKF from GNSS-sim
@@ -107,3 +107,28 @@ Source: design doc §8.3, §11. Fully populated in Phase 6; firm seeds below.
    term is measured rather than modelled. The filter's own velocity must not be
    substituted for a missing one: that would fold the filter's error into a
    measurement required to be independent of it.
+
+.. req:: Onboard position served across a receiver outage
+   :id: REQ-ODP-007
+   :status: reviewed
+   :level: L3
+   :tags: od, estimation, fdir
+   :method: Test
+   :derived_from: REQ-ODP-001
+   :allocation: flight/PolarisFsw/OrbitEstimator, flight/PolarisFsw/AttitudeEstimator
+   :value_required: valid through max_coast_s after the last accepted fix; dropped past it
+
+   The FSW **shall** publish the onboard orbit solution once per GNC cycle to
+   every consumer that needs the vehicle's position — the attitude estimator's
+   magnetic and sun references first — and that solution **shall** remain valid
+   through the configured coast horizon after the last accepted fix and be
+   declared invalid past it, so that a receiver outage shorter than the horizon
+   costs no attitude reference and one longer than it is reported rather than
+   coasted on. A consumer **shall** treat an absent or invalid solution as no
+   position, never reuse the last one.
+
+   Rationale: until this seam existed the attitude estimator read the receiver
+   directly and a GNSS outage cost the magnetic pair on the first missed fix.
+   Serving position from the filter moves that dependency onto a horizon sized
+   from the receiver's own outage modes (§8.3) and puts the plausibility gate on
+   the fix, in one place, ahead of every consumer.

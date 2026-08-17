@@ -68,10 +68,14 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! warns once and gyro-coasts rather than guessing a position.
   void testPositionLossBlocksTheMagneticPair();
 
-  //! A position that is non-finite or nowhere a spacecraft can be is excluded by
-  //! the §9.1 range gate, exactly as an invalid fix is — it must not reach the
-  //! field model or the sun reference.
-  void testImplausiblePositionIsRejected();
+  //! An orbit solution that is flagged valid but non-finite is refused exactly
+  //! as an invalid one is — it must not reach the field model or the sun
+  //! reference (§9.1: wire data is gated, whatever its flag says).
+  void testNonFinitePositionIsRejected();
+
+  //! The orbit solution is consumed once per cycle: a producer that stops
+  //! publishing leaves position unavailable, never a stale vector reused.
+  void testOrbitSolutionIsConsumedOnce();
 
   //! RESET_ESTIMATOR drops the solution and re-arms *every* edge-gated alert, so
   //! a still-faulted vehicle reports each fault again rather than staying quiet.
@@ -556,18 +560,22 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! Source grade the stubbed queries report; tests move it to check the alert.
   TableGrade::T stub_grade_{TableGrade::PRECISE};
 
-  //! Whether the GNSS fix fed by feedMeasurements() is valid.
-  bool gnss_valid_{true};
+  //! Whether the orbit solution fed by feedMeasurements() is flagged valid, and
+  //! whether one is fed at all (a producer that did not run this cycle).
+  bool orbit_valid_{true};
+  bool orbit_published_{true};
 
-  //! Where the vehicle is [m, ECEF]: what the GNSS fix reports *and* what both
-  //! inertial references are built at, so the two cannot disagree. Fixed by
+  //! Where the vehicle is [m, ECEF]: what the fed orbit solution states (in ECI,
+  //! rotated with the stubbed EOP) *and* what both inertial references are
+  //! built at, so the two cannot disagree. Fixed by
   //! default (the geometry only has to be a real place); runTumbleCycles walks it
   //! along a polar orbit, which the calibration needs — see that function.
   Eigen::Vector3d position_ecef_{7.0e6, 0.0, 0.0};
 
-  //! Position fed on the GNSS port *instead of* position_ecef_, for the
-  //! range-gate test: the references stay where they were, so the test sees the
-  //! gate reject the fix rather than the field model quietly following it.
+  //! Position fed on the orbit port *instead of* position_ecef_ (stated in ECI
+  //! as-is), for the non-finite gate test: the references stay where they were,
+  //! so the test sees the gate reject the solution rather than the field model
+  //! quietly following it.
   std::optional<Eigen::Vector3d> position_override_{};
 
   //! Time tag offset applied to the fed measurements [ns] — negative values age
