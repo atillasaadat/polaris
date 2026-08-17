@@ -1165,6 +1165,31 @@ spacecraft:
     # before: it is an analysis limit, and the vehicle must be told when it leaves
     # the regime its own margin evidence covers.
     flight.attitudeController.MomentumEnvelopeNms: 7.2e-3
+    # One wheel's momentum capacity, the catalog's max_momentum_nms (configc
+    # cross-checks it). The §9 per-wheel monitor alarms at 90 % of it on the
+    # largest single wheel — the alarm the envelope above cannot raise, since
+    # four wheels can hold null-space momentum that sums to nothing in body axes.
+    flight.attitudeController.WheelCapacityNms: 0.030
+    # --- Wheel-speed bias (§8.5, Push 69) --------------------------------------
+    # Keep every wheel off zero speed, where the 8e-6 N·m drive LSB, the Coulomb
+    # sign flip (a 1.6e-5 N·m step on the body per crossing) and stiction (the
+    # catalog's 1.6e-5 N·m breakaway) make it a poor actuator. The pattern is
+    # the pyramid's null vector [+,-,+,-] at 10 % of one wheel's capacity —
+    # 600 rpm of 6000 — so it stores NO body momentum (nothing for the envelope,
+    # nothing to desaturate) and lives 30x above the 5 rpm stiction band. All
+    # zero switches the bias off. The gain is a slow trim (tau = 50 s) capped at
+    # 5 % of a wheel's torque, so it never competes with pointing.
+    flight.attitudeController.WheelBiasNms: [
+      3.0e-3,   # 0: rw_1  +
+      -3.0e-3,  # 1: rw_2  -
+      3.0e-3,   # 2: rw_3  +
+      -3.0e-3,  # 3: rw_4  -   (the pyramid's null vector, 10 % of capacity)
+      0.0,      # 4: not installed
+      0.0,      # 5: not installed
+      0.0,      # 6: not installed
+      0.0]      # 7: not installed
+    flight.attitudeController.WheelBiasGainPerS: 0.02
+    flight.attitudeController.WheelBiasMaxTorqueNm: 1.0e-4
     flight.attitudeController.MomentumDesatEnterNms: 3.6e-3
     flight.attitudeController.MomentumDesatExitNms: 1.08e-3
     flight.attitudeController.MomentumDesatConfirmCycles: 50

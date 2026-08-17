@@ -76,6 +76,21 @@ TEST(AttitudeController, WheelFrictionFeedforward) {
   tester.testWheelFrictionFeedforward();
 }
 
+TEST(AttitudeController, WheelCapacityMonitorSeesNullSpaceMomentum) {
+  flight::AttitudeControllerTester tester;
+  tester.testWheelCapacityMonitorSeesNullSpaceMomentum();
+}
+
+TEST(AttitudeController, WheelBiasServoAddsNullSpaceTorqueOnly) {
+  flight::AttitudeControllerTester tester;
+  tester.testWheelBiasServoAddsNullSpaceTorqueOnly();
+}
+
+TEST(AttitudeController, WheelBiasPastCapacityIsRefused) {
+  flight::AttitudeControllerTester tester;
+  tester.testWheelBiasPastCapacityIsRefused();
+}
+
 TEST(AttitudeController, MomentumEnvelopeAndWheelDropout) {
   RecordProperty("verifies", "REQ-ACTL-009");
   flight::AttitudeControllerTester tester;

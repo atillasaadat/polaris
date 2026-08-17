@@ -31,6 +31,7 @@
 #include "gnc/disturbance.hpp"
 #include "gnc/momentum.hpp"
 #include "gnc/rw_allocation.hpp"
+#include "gnc/rw_bias.hpp"
 #include "gnc/rw_friction.hpp"
 #include "math/frames.hpp"
 #include "math/quaternion.hpp"
@@ -97,6 +98,13 @@ class AttitudeController final : public AttitudeControllerComponentBase {
   //!        feedforward. The observer itself runs either way — it is also the §9
   //!        anomaly monitor.
   void setFeedforwardAtStartup(bool model, bool observer);
+
+  //! SITL/bench only: force the wheel-speed bias (§8.5) on or off regardless
+  //! of `WheelBiasNms`, so the same vehicle can be flown both ways and the
+  //! zero-crossing cost measured. Off zeroes the pattern; on flies it as
+  //! configured. Applied after the parameters are validated, like the
+  //! feedforward override, so a bias-off run still refuses a bad tuning.
+  void setWheelBiasAtStartup(bool enable);
 
  private:
   // ----------------------------------------------------------------------
@@ -250,6 +258,7 @@ class AttitudeController final : public AttitudeControllerComponentBase {
   polaris::gnc::AttitudePid pid_{};
   polaris::gnc::RwAllocator allocator_{};
   polaris::gnc::RwFrictionCompensator friction_{};
+  polaris::gnc::RwBiasServo bias_{polaris::gnc::RwBiasConfig{}};
   polaris::gnc::RateHysteresis rate_hysteresis_{};
   polaris::gnc::MomentumManager momentum_{};
   polaris::gnc::DisturbanceObserver observer_{};
@@ -328,12 +337,15 @@ class AttitudeController final : public AttitudeControllerComponentBase {
   Eigen::Vector3d inertia_diag_kgm2_{Eigen::Vector3d::Zero()};
   Eigen::Vector3d residual_dipole_am2_{Eigen::Vector3d::Zero()};
   F64 momentum_envelope_nms_{0.0};
+  F64 wheel_capacity_nms_{0.0};  //!< one wheel's momentum capacity (WheelCapacityNms)
   F64 disturbance_budget_nm_{0.0};
   bool feedforward_model_{false};
   bool feedforward_observer_{false};
   //! SITL/bench feedforward override (@ref setFeedforwardAtStartup). Held rather
   //! than written into the parameter cache so a later `parameterUpdated` cannot
   //! silently revert the experiment mid-run.
+  bool wheel_bias_override_{false};
+  bool wheel_bias_override_enable_{true};
   bool feedforward_override_{false};
   bool feedforward_model_override_{false};
   bool feedforward_observer_override_{false};
@@ -398,6 +410,7 @@ class AttitudeController final : public AttitudeControllerComponentBase {
   DesatOverride::T desat_override_{DesatOverride::AUTO};
   bool desat_active_{false};
   bool envelope_alerted_{false};
+  bool wheel_capacity_alerted_{false};  //!< WheelNearCapacity edge latch
   bool anomaly_alerted_{false};
 
   //! Consecutive cycles the momentum accounting has refused — the

@@ -62,6 +62,7 @@ constexpr F64 kMomentumEnterNms = 1.0e-3;
 constexpr F64 kMomentumExitNms = 3.0e-4;
 constexpr U32 kMomentumConfirmCycles = 5;
 constexpr F64 kMomentumEnvelopeNms = 2.0e-3;
+constexpr F64 kWheelCapacityNms = 0.030;
 constexpr F64 kDesatGainPerSec = 0.2;
 constexpr F64 kObserverTauSec = 200.0;
 constexpr F64 kDisturbanceBudgetNm = 2.0e-5;
@@ -175,6 +176,13 @@ void AttitudeControllerTester ::setValidParameters(F64 dutyFactor, F64 settleSec
     friction_scale[i] = i < kWheelCount ? 1.0 : 0.0;
   }
   this->paramSet_WheelFrictionScale(friction_scale, friction_valid);
+  F64PerUnit bias_pattern;
+  for (U32 i = 0; i < F64PerUnit::SIZE; ++i) {
+    bias_pattern[i] = 0.0;  // off: the component tests measure the loop without a bias
+  }
+  this->paramSet_WheelBiasNms(bias_pattern, Fw::ParamValid::VALID);
+  this->paramSet_WheelBiasGainPerS(0.0, Fw::ParamValid::VALID);
+  this->paramSet_WheelBiasMaxTorqueNm(0.0, Fw::ParamValid::VALID);
 
   Vec3F64PerUnit rod_axes;
   for (U32 i = 0; i < Vec3F64PerUnit::SIZE; ++i) {
@@ -201,6 +209,7 @@ void AttitudeControllerTester ::setValidParameters(F64 dutyFactor, F64 settleSec
   this->paramSet_MomentumDesatExitNms(kMomentumExitNms, Fw::ParamValid::VALID);
   this->paramSet_MomentumDesatConfirmCycles(kMomentumConfirmCycles, Fw::ParamValid::VALID);
   this->paramSet_MomentumEnvelopeNms(kMomentumEnvelopeNms, Fw::ParamValid::VALID);
+  this->paramSet_WheelCapacityNms(kWheelCapacityNms, Fw::ParamValid::VALID);
   this->paramSet_DesatGainPerSec(kDesatGainPerSec, Fw::ParamValid::VALID);
   this->paramSet_FeedforwardModelEnable(1, Fw::ParamValid::VALID);
   this->paramSet_FeedforwardObserverEnable(1, Fw::ParamValid::VALID);
@@ -263,8 +272,8 @@ double AttitudeControllerTester ::speedForMomentum(double momentumNms) {
 }
 
 void AttitudeControllerTester ::setWheelSpeeds(double speedRadps, bool valid) {
-  this->wheel_speed_radps_ = speedRadps;
   for (U32 i = 0; i < kWheelCount; ++i) {
+    this->wheel_speed_radps_[i] = speedRadps;
     this->wheel_speed_valid_[i] = valid;
   }
 }
@@ -276,7 +285,7 @@ void AttitudeControllerTester ::runCycleAt(I64 taiNs) {
   this->invoke_to_estimateIn(0, this->estimate_);
   for (U32 i = 0; i < kWheelCount; ++i) {
     WheelSpeedMeas meas;
-    meas.set_speedRadps(this->wheel_speed_radps_);
+    meas.set_speedRadps(this->wheel_speed_radps_[i]);
     meas.set_timeTagNs(taiNs);
     meas.set_valid(this->wheel_speed_valid_[i]);
     this->invoke_to_wheelSpeedIn(static_cast<FwIndexType>(i), meas);
@@ -943,6 +952,128 @@ void AttitudeControllerTester ::testWheelFrictionFeedforward() {
   this->setEstimate(attitude, Eigen::Vector3d::Zero(), 1.0e-4, t);
   this->runCycleAt(t);
   ASSERT_EVENTS_ConfigInvalid_SIZE(1);
+}
+
+void AttitudeControllerTester ::testWheelCapacityMonitorSeesNullSpaceMomentum() {
+  this->setValidParameters();
+  // Wheels spinning against each other in the pyramid's null pattern
+  // [+,-,+,-]: the body momentum sums to zero, so the envelope monitor, the
+  // desaturation threshold and the observer are all quiet — while every wheel
+  // holds 95 % of its capacity. This is the case the per-wheel monitor exists for.
+  const double w = 0.95 * kWheelCapacityNms / kWheelInertiaKgm2;
+  const double pattern[4] = {w, -w, w, -w};
+  for (U32 i = 0; i < kWheelCount; ++i) {
+    this->wheel_speed_radps_[i] = pattern[i];
+    this->wheel_speed_valid_[i] = true;
+  }
+  I64 t = kStartTaiNs;
+  this->setEstimate(pm::Quaternion::Identity(), Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_MomentumEnvelopeExceeded_SIZE(0);
+  ASSERT_TLM_StoredMomentumNms_SIZE(1);
+  EXPECT_NEAR(this->tlmHistory_StoredMomentumNms->at(0).arg, 0.0, 1.0e-9);
+  ASSERT_TLM_MaxWheelMomentumNms_SIZE(1);
+  EXPECT_NEAR(this->tlmHistory_MaxWheelMomentumNms->at(0).arg, 0.95 * kWheelCapacityNms, 1.0e-9);
+  ASSERT_TLM_NullSpaceMomentumNms_SIZE(1);
+  EXPECT_NEAR(this->tlmHistory_NullSpaceMomentumNms->at(0).arg, 2.0 * 0.95 * kWheelCapacityNms,
+              1.0e-9);  // ||[+,-,+,-]|| * h_i
+  ASSERT_EVENTS_WheelNearCapacity_SIZE(1);
+  ASSERT_EVENTS_WheelCapacityRecovered_SIZE(0);
+
+  // Persisting: one event, however long.
+  for (int i = 0; i < 3; ++i) {
+    t += kPeriodNs;
+    this->setEstimate(pm::Quaternion::Identity(), Eigen::Vector3d::Zero(), 1.0e-4, t);
+    this->runCycleAt(t);
+  }
+  ASSERT_EVENTS_WheelNearCapacity_SIZE(1);
+
+  // Back under 90 %: the recovery edge, once.
+  this->clearHistory();
+  this->setWheelSpeeds(0.5 * kWheelCapacityNms / kWheelInertiaKgm2);
+  t += kPeriodNs;
+  this->setEstimate(pm::Quaternion::Identity(), Eigen::Vector3d::Zero(), 1.0e-4, t);
+  this->runCycleAt(t);
+  ASSERT_EVENTS_WheelCapacityRecovered_SIZE(1);
+  ASSERT_EVENTS_WheelNearCapacity_SIZE(0);
+}
+
+void AttitudeControllerTester ::testWheelBiasServoAddsNullSpaceTorqueOnly() {
+  this->setValidParameters();
+  // Bias on: [+b,-b,+b,-b] at 10 % of capacity, a slow trim.
+  const double b = 0.1 * kWheelCapacityNms;
+  F64PerUnit pattern;
+  for (U32 i = 0; i < F64PerUnit::SIZE; ++i) {
+    pattern[i] = i < kWheelCount ? ((i % 2 == 0) ? b : -b) : 0.0;
+  }
+  this->paramSet_WheelBiasNms(pattern, Fw::ParamValid::VALID);
+  this->paramSet_WheelBiasGainPerS(0.02, Fw::ParamValid::VALID);
+  this->paramSet_WheelBiasMaxTorqueNm(1.0e-3, Fw::ParamValid::VALID);
+  this->component.loadParameters();
+  this->setWheelSpeeds(0.0);  // wheels at rest: the whole pattern is the error
+
+  // Ten degrees off, POINT: pointing torque plus the bias trim.
+  const double angle = 10.0 * M_PI / 180.0;
+  const pm::Quaternion attitude =
+      pm::Quaternion::FromAxisAngle(Eigen::Vector3d::UnitX(), angle).canonical();
+  this->setEstimate(attitude, Eigen::Vector3d::Zero(), 1.0e-4, kStartTaiNs);
+  this->runCycleAt(kStartTaiNs);
+  this->sendCmd_CTRL_SET_TARGET_Q(0, 0, 1.0, 0.0, 0.0, 0.0);
+  this->sendCmd_CTRL_MODE_SET(0, 0, AttitudeController::CtrlMode::POINT);
+  this->clearHistory();
+  this->setEstimate(attitude, Eigen::Vector3d::Zero(), 1.0e-4, kStartTaiNs + kPeriodNs);
+  this->runCycleAt(kStartTaiNs + kPeriodNs);
+
+  ASSERT_EVENTS_WheelBiasEngaged_SIZE(0);  // engaged at configuration, before clearHistory
+  ASSERT_TLM_TorqueCmd_SIZE(1);
+  const Vec3F64 torque = this->tlmHistory_TorqueCmd->at(0).arg;
+  // The wheels deliver exactly the PID torque — the bias trim is invisible to
+  // the body — and every wheel carries the trim on top: gain * b in the pattern.
+  const double s = 1.0 / std::sqrt(3.0);
+  const double signs[4][3] = {{1, 1, 1}, {-1, 1, 1}, {-1, -1, 1}, {1, -1, 1}};
+  Eigen::Vector3d delivered = Eigen::Vector3d::Zero();
+  double null_content = 0.0;
+  for (U32 i = 0; i < kWheelCount; ++i) {
+    const Eigen::Vector3d axis(-signs[i][0] * s, -signs[i][1] * s, -signs[i][2] * s);
+    delivered += axis * this->last_wheels_[i];
+    null_content += this->last_wheels_[i] * ((i % 2 == 0) ? 0.5 : -0.5);
+  }
+  EXPECT_NEAR(delivered.x(), torque[0], 1.0e-12);
+  EXPECT_NEAR(delivered.y(), torque[1], 1.0e-12);
+  EXPECT_NEAR(delivered.z(), torque[2], 1.0e-12);
+  // Projection of the command onto the null vector [+,-,+,-]/2: gain*b*|pattern|
+  // = 0.02 * b * 2 (the min-norm allocation contributes nothing there).
+  EXPECT_NEAR(null_content, 0.02 * b * 2.0, 1.0e-12);
+  ASSERT_TLM_WheelBiasTorqueNm_SIZE(1);
+  EXPECT_NEAR(this->tlmHistory_WheelBiasTorqueNm->at(0).arg, 0.02 * b, 1.0e-12);
+
+  // Wheels already at the pattern: the trim rests and only pointing remains.
+  this->clearHistory();
+  for (U32 i = 0; i < kWheelCount; ++i) {
+    this->wheel_speed_radps_[i] = pattern[i] / kWheelInertiaKgm2;
+    this->wheel_speed_valid_[i] = true;
+  }
+  this->setEstimate(attitude, Eigen::Vector3d::Zero(), 1.0e-4, kStartTaiNs + 2 * kPeriodNs);
+  this->runCycleAt(kStartTaiNs + 2 * kPeriodNs);
+  ASSERT_TLM_WheelBiasTorqueNm_SIZE(1);
+  EXPECT_NEAR(this->tlmHistory_WheelBiasTorqueNm->at(0).arg, 0.0, 1.0e-12);
+}
+
+void AttitudeControllerTester ::testWheelBiasPastCapacityIsRefused() {
+  this->setValidParameters();
+  F64PerUnit pattern;
+  for (U32 i = 0; i < F64PerUnit::SIZE; ++i) {
+    pattern[i] = 0.0;
+  }
+  pattern[0] = kWheelCapacityNms;  // a "bias" that is the whole wheel
+  this->paramSet_WheelBiasNms(pattern, Fw::ParamValid::VALID);
+  this->paramSet_WheelBiasGainPerS(0.02, Fw::ParamValid::VALID);
+  this->paramSet_WheelBiasMaxTorqueNm(1.0e-3, Fw::ParamValid::VALID);
+  this->component.loadParameters();
+  this->setEstimate(pm::Quaternion::Identity(), Eigen::Vector3d::Zero(), 1.0e-4, kStartTaiNs);
+  this->runCycleAt(kStartTaiNs);
+  ASSERT_EVENTS_ConfigInvalid_SIZE(1);
+  ASSERT_EVENTS_WheelBiasEngaged_SIZE(0);
 }
 
 void AttitudeControllerTester ::testMomentumEnvelopeAndWheelDropout() {

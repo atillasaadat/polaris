@@ -110,6 +110,9 @@ struct TopologyState {
   I32 ffObserver = -1;                //!< SITL/bench only: the tier-2 twin of ffModel, same
                                       //!< default for the same reason. The observer still runs
                                       //!< when this is 0; it is also the §9 anomaly monitor.
+  I32 wheelBias = -1;                 //!< SITL/bench only: force the §8.5 wheel-speed bias on
+                                      //!< (1) or off (0); negative leaves the ParameterDb
+                                      //!< pattern. The zero-crossing A/B row's switch.
   U32 burnStartCycle = 0;             //!< SITL/bench only: GNC cycle on which to command
                                       //!< BURN_START (0 = never); with the two below, the
                                       //!< §17 burn rows' way to fire a burn with no ground link.

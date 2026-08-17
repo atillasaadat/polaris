@@ -680,3 +680,59 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
 
    **Owed:** tier 3 — fitting the residual dipole and the drag/SRP scale factors
    from long-arc data — needs the §8.3 orbit filter and is not implemented.
+
+.. req:: Reaction-wheel speed bias and per-wheel capacity monitoring
+   :id: REQ-ACTL-012
+   :status: reviewed
+   :level: L2
+   :tags: adcs, control, momentum, fdir
+   :method: Test
+   :derived_from: REQ-ACTL-002, REQ-ACTL-009
+   :allocation: lib/gnc, flight/PolarisFsw/AttitudeController, sim/actuators
+   :value_required: no wheel zero crossing after the bias servo has converged; every wheel < WheelCapacityNms
+   :refs: markley2014, karnopp1985
+
+   The FSW **shall** be able to hold every reaction wheel at a configured
+   non-zero speed while pointing, so that the wheels operate away from zero
+   speed — where the drive's torque resolution, the Coulomb friction sign
+   reversal and stiction degrade the delivered torque — and it **shall** do so
+   without storing body momentum on a redundant array: the bias **shall** live
+   in the null space of the wheel torque map, its command **shall** produce
+   zero body torque for any configured pattern (only the null-space projection
+   of the pattern being pursued), and it **shall** be a slow trim bounded by a
+   configured torque cap applied as one scale on the whole command. The bias
+   **shall** be switchable off by configuration (an all-zero pattern) and
+   **shall** be inert on an array with no null space. On such an array the
+   bus-level momentum target of REQ-ACTL-009 is the alternative.
+
+   The FSW **shall** monitor the largest single-wheel momentum against the
+   wheel's capacity and raise an edge-gated event above a configured fraction
+   of it, because a redundant array can hold null-space momentum that no
+   body-momentum threshold sees; the null-space content **shall** be
+   telemetered.
+
+   The truth simulator **shall** model the physics the bias exists for: the
+   torque box and speed ceiling with the delivered torque backed out of the
+   clamped motion, drive quantisation, the Coulomb sign reversal through zero,
+   and Karnopp stiction holding a rotor inside a configured band against a
+   sub-breakaway command.
+
+   Rationale: on the reference vehicle a zero-momentum hold under a small
+   secular load crossed wheel zero speed 21 times in 250 s and pointed to
+   0.0144°; with the null-space bias at 10 % of capacity there were no
+   crossings, the slowest wheel stayed out of the stiction band, and the hold
+   pointed to 0.0119° (Push 69). Sizing rule, enforced by the config compiler:
+   the bias must be under the wheel's capacity and at least 0.75× the
+   desaturation entry threshold (the worst single-wheel share of it on the
+   pyramid), or a loaded wheel reaches zero before desaturation engages.
+
+   Verified by ``tests/integration/sitl_attitude_control_test.cpp``
+   (``WheelSpeedBiasKeepsTheWheelsOffZero``, the same loaded hold flown with
+   and without the bias), the ``AttitudeController`` component tests
+   (``WheelBiasServoAddsNullSpaceTorqueOnly``, ``WheelBiasPastCapacityIsRefused``,
+   ``WheelCapacityMonitorSeesNullSpaceMomentum``), ``lib/gnc`` unit tests
+   (``RwBias.*``: zero body torque over random patterns and momenta with the cap
+   engaged, convergence to the pattern, the projection of a mis-set pattern,
+   inertness on three wheels), the sim wheel's stiction tests
+   (``ReactionWheel.Stiction*``), and the config compiler's bias rules
+   (``tests/tools/test_config_compiler.py``).

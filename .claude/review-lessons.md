@@ -657,6 +657,33 @@ fixture was found in the innovation sequence, not in review.
   demotion and saturation counts were on the log the whole time; they are
   now bounded on the row, so the storm fails a test the day it returns.
 
+## The wheels audited: what three independent lanes found (P69, control)
+
+- **A body-momentum threshold is not a wheel-momentum threshold.** A
+  redundant array can hold every wheel at capacity in its null pattern with
+  zero body momentum; envelope, desaturation and observer are all blind to
+  it. Any monitor on a *projected* quantity needs a companion on the
+  *per-actuator* quantity — and the L-∞ allocation injects null space every
+  cycle, so this is drift by design, not by accident.
+- **An optimum computed on the wrong norm is still an optimum.** The L-∞
+  search minimised the unweighted max wheel torque while the config carried
+  per-wheel limits; equal limits hid it. When a config admits heterogeneity
+  the algorithm must be tested with it, even if the flight vehicle is
+  homogeneous.
+- **Edge-gated events hide sustained conditions from tests that grep.**
+  ~80 saturation events per row were in the log for two pushes; nothing
+  counted them. Every SITL row that exercises a mechanism now records and
+  bounds the mechanism's counters (saturation, envelope, demotions, refused,
+  peak-over-limit), not only its outcome.
+- **A bias must be sized against the threshold that will erode it.** 10 % of
+  wheel capacity sounds ample; the desaturation entry loads the worst wheel
+  by 0.75× its threshold, which is 90 % of that bias. Write the sizing rule
+  in configc, not in a comment.
+- **Report the cost, not only the benefit.** The bias points *worse* on an
+  unloaded hold because spinning wheels pay the under-trimmed friction. The
+  row says so, and the design doc says why the stiction-held number is not
+  one to fly.
+
 ## A paper is a checklist, not a design (P70, OD)
 
 - **Read the numbers, not the abstract.** The paper's headline is a robust

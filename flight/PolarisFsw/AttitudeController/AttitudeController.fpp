@@ -372,6 +372,30 @@ module flight {
     @ case an operator needs to see. Zero disables compensation on that wheel.
     param WheelFrictionScale: F64PerUnit
 
+    # --- Wheel-speed bias (§8.5; REQ-ACTL-012; lib/gnc/rw_bias.hpp) ---------
+
+    @ Target per-wheel momentum pattern [N*m*s], vehicle build order — the
+    @ wheel-speed bias that keeps every wheel off zero, where the drive LSB,
+    @ the Coulomb sign flip and stiction make it a poor actuator. Only the
+    @ pattern's projection onto the array's **null space** is pursued (on the
+    @ reference pyramid [+b,-b,+b,-b]), so it stores no body momentum, costs no
+    @ pointing and no desaturation, and a mis-set pattern degrades to a smaller
+    @ bias, never a disturbance. **All zero = off** (the toggle). Sized as a
+    @ fraction of WheelCapacityNms — 10 % on the reference vehicle. Inert on a
+    @ three-wheel array (no null space); the bus-level alternative there is
+    @ MomentumTargetBody.
+    param WheelBiasNms: F64PerUnit
+
+    @ Bias servo gain [1/s]: wheel torque per unit null-space momentum error. A
+    @ slow trim (time constant tens to hundreds of seconds), not a loop that
+    @ races pointing. Zero = off.
+    param WheelBiasGainPerS: F64
+
+    @ Cap on the bias servo's per-wheel torque [N*m], applied as one scale on
+    @ the whole vector so the command stays in the null space. Keeps the servo
+    @ a trim against the wheel torque box.
+    param WheelBiasMaxTorqueNm: F64
+
     # --- MTQ/MAG duty-cycle interlock (§7) ---------------------------------
 
     @ Number of installed magnetorquer rods. This push drives an orthogonal triad
@@ -457,6 +481,14 @@ module flight {
     @ smaller number and the one worth alarming on. Must be at or above
     @ MomentumDesatEnterNms.
     param MomentumEnvelopeNms: F64
+
+    @ One wheel's momentum capacity [N*m*s] (the catalog's max_momentum_nms; the
+    @ config compiler cross-checks it). The §9 per-wheel monitor watches the
+    @ largest single-wheel momentum against it — a number the body-momentum
+    @ envelope cannot see, because a four-wheel array can carry momentum in its
+    @ null space (wheels spinning against each other) that sums to nothing in
+    @ body axes while one wheel walks to its stop.
+    param WheelCapacityNms: F64
 
     @ Cross-product desaturation gain k_d [1/s] in m = k_d (dh x B)/||B||^2. The
     @ perpendicular momentum error decays with time constant 1/k_d while the rods
@@ -544,6 +576,10 @@ module flight {
     @ clipped: same direction, less of it.
     telemetry AllocScale: F64
 
+    @ Largest per-wheel torque the wheel-speed bias servo commanded this cycle
+    @ [N*m] (0 when the bias is off, converged, or the array has no null space).
+    telemetry WheelBiasTorqueNm: F64
+
     @ Estimated body-rate magnitude [rad/s] this cycle.
     telemetry RateNorm: F64
 
@@ -574,6 +610,16 @@ module flight {
 
     @ ||h|| [N*m*s], the quantity MomentumEnvelopeNms gates.
     telemetry StoredMomentumNms: F64
+
+    @ Largest single-wheel momentum max_i |I_w w_i| [N*m*s], the quantity the
+    @ WheelCapacityNms monitor gates. Not bounded by StoredMomentumNms.
+    telemetry MaxWheelMomentumNms: F64
+
+    @ Norm of the wheel-momentum vector's null-space component [N*m*s]: momentum
+    @ the wheels hold against each other that produces no body momentum. Zero on
+    @ a three-wheel array; growth here is a wheel drifting toward its stop where
+    @ no body-momentum threshold will see it.
+    telemetry NullSpaceMomentumNms: F64
 
     @ The wheel-momentum accounting produced a usable state this cycle. False
     @ means desaturation and the §9 envelope and momentum-anomaly monitors are
@@ -632,6 +678,13 @@ module flight {
 
     @ The commanded body torque hit PidMaxTorqueNm, or the wheel array saturated.
     @ Bounded cadence.
+    @ The wheel-speed bias servo is engaged (a non-zero pattern in a non-empty
+    @ null space): reports the pattern actually pursued on wheel 0 and the null
+    @ dimension. Once, at configuration.
+    event WheelBiasEngaged(effectiveWheel0Nms: F64, nullDimension: U8) \
+      severity activity high \
+      format "Wheel-speed bias engaged: {} N*m*s on wheel 0, null-space dimension {}"
+
     event TorqueSaturated(demandNm: F64, limitNm: F64, allocScale: F64) \
       severity warning low \
       format "Torque saturated: demand {} N*m against limit {} N*m, allocation scale {}"
@@ -716,6 +769,18 @@ module flight {
     event MomentumEnvelopeRecovered(momentumNms: F64) \
       severity activity high \
       format "Stored momentum back inside the envelope at {} N*m*s"
+
+    @ A wheel is above 90 % of WheelCapacityNms (§9). Edge-gated on the crossing.
+    @ This is the per-wheel alarm the envelope is not: it fires whether the
+    @ momentum is body momentum or null-space momentum the body cannot see.
+    event WheelNearCapacity(maxWheelNms: F64, capacityNms: F64, nullSpaceNms: F64) \
+      severity warning high \
+      format "A wheel holds {} N*m*s of its {} N*m*s capacity ({} N*m*s of it in the null space)"
+
+    @ Every wheel is back under 90 % of its capacity. The recovery edge.
+    event WheelCapacityRecovered(maxWheelNms: F64) \
+      severity activity high \
+      format "Largest wheel momentum back to {} N*m*s"
 
     @ The observed unmodelled secular torque has been outside the modelled
     @ disturbance budget for DisturbanceAnomalyCycles consecutive updates (§9).

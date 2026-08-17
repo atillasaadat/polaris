@@ -488,6 +488,18 @@ _CATALOG_PAIRS: tuple[tuple[str, str, str, Any, str, float, str], ...] = (
         "never saturated.",
     ),
     (
+        "flight.attitudeController.WheelCapacityNms",
+        "reaction_wheel",
+        "max_momentum_nms",
+        _catalog("max_momentum_nms"),
+        _Reduce.BOUND,
+        1.0e-9,
+        "The per-wheel capacity monitor alarms at a fraction of this on the "
+        "largest single wheel — the only alarm that sees null-space momentum — so "
+        "a value above the hardware's rating lets a wheel walk to its stop with "
+        "the monitor still quiet, and every body-momentum threshold quiet with it.",
+    ),
+    (
         "flight.attitudeController.WheelInertiaKgm2",
         "reaction_wheel",
         "max_momentum_nms / (max_speed_rpm * 2*pi/60)",
@@ -574,7 +586,10 @@ _VEHICLE_PAIRS: tuple[tuple[str, str, Any, str, str], ...] = (
 _CROSS_CHECKED_PARAMS = frozenset(
     [pair[0] for pair in _CATALOG_PAIRS]
     + [pair[0] for pair in _VEHICLE_PAIRS]
-    + ["flight.orbitEstimator.DragBallisticCoeffM2PerKg"]
+    + [
+        "flight.orbitEstimator.DragBallisticCoeffM2PerKg",
+        "flight.attitudeController.WheelBiasNms",
+    ]
 )
 
 
@@ -772,6 +787,42 @@ def _check_control_parameters(body: dict[str, Any]) -> None:
                 f"The count bounds the flight control loops over this suite, so a "
                 f"mismatch silently drops a unit or reads an axis nothing filled."
             )
+
+    # The wheel-speed bias (§8.5, REQ-ACTL-012) is a per-wheel momentum the servo
+    # holds on top of the pointing load. It must leave room under one wheel's
+    # capacity, and — the rule the SITL bias row measured the thin end of — it
+    # should exceed the worst single-wheel share of the desaturation threshold
+    # (0.75 x DesatEnter along a spin axis on the pyramid), or a wheel reaches
+    # zero before desaturation engages, which is the operating point the bias
+    # exists to avoid. The first is refused; the second is a declared divergence.
+    bias = fsw.get("flight.attitudeController.WheelBiasNms")
+    capacity = fsw.get("flight.attitudeController.WheelCapacityNms")
+    desat_enter = fsw.get("flight.attitudeController.MomentumDesatEnterNms")
+    if bias is not None and capacity is not None:
+        magnitudes = [abs(float(b)) for b in list(bias)[: len(wheels)]]
+        if any(m >= float(capacity) for m in magnitudes):
+            raise ConfigError(
+                f"flight.attitudeController.WheelBiasNms holds a wheel at or past its "
+                f"capacity ({max(magnitudes):g} >= {float(capacity):g} N*m*s): a bias is a "
+                f"trim, not the whole wheel."
+            )
+        engaged = [m for m in magnitudes if m > 0.0]
+        if engaged and desat_enter is not None:
+            floor = 0.75 * float(desat_enter)
+            if min(engaged) < floor and not _divergence_declared(
+                sc.get("fsw_parameter_divergence", {}),
+                "flight.attitudeController.WheelBiasNms",
+                (floor,),
+                "0.75 * MomentumDesatEnterNms",
+                1.0e-6,
+            ):
+                raise ConfigError(
+                    f"flight.attitudeController.WheelBiasNms = {min(engaged):g} N*m*s is "
+                    f"under the worst single-wheel share of the desaturation threshold "
+                    f"(0.75 x MomentumDesatEnterNms = {floor:g} N*m*s): a loaded wheel "
+                    f"reaches zero speed before desaturation engages, which is what the "
+                    f"bias exists to prevent. Raise the bias, or declare the divergence."
+                )
 
 
 _MAX_FIX_LATENCY_PARAM = "flight.orbitEstimator.MaxFixLatencyS"

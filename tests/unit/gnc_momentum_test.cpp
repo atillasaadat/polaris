@@ -236,6 +236,127 @@ TEST(MomentumManager, EnvelopeIsOnTheStoredMomentumAndIsIndependentOfTheLatch) {
   EXPECT_FALSE(state.envelope_exceeded);
 }
 
+/// **The body-momentum thresholds are blind to the null space, and the state
+/// now says so.** Four wheels spinning against each other in the array's null
+/// pattern store nothing in body axes: `stored_norm` is zero, the desat
+/// predicate and the envelope stay clear — while every wheel sits at its rated
+/// 0.030 N·m·s. `max_wheel_nms` and `null_space_nms` are the two numbers that
+/// see it, and this is the row that pins that they do. (Item 6 of the audit,
+/// too: opposite-pair speeds cancel in the body sum by the same geometry.)
+TEST(MomentumManager, NullSpaceMomentumIsInvisibleToTheThresholdsButReported) {
+  RecordProperty("verifies", "REQ-ACTL-009");
+  const gnc::MomentumConfig cfg = pyramidMomentum();
+  gnc::MomentumManager manager(cfg);
+  constexpr double kCapacityNms = 0.030;  // RW-X rated momentum
+  const double s = kCapacityNms / cfg.rotor_inertia_kgm2;
+  // [+,-,+,-] is the pyramid's null vector: sum_i n_i a_i = 0.
+  const double null_pattern[4] = {s, -s, s, -s};
+  const gnc::MomentumState state = fold(manager, null_pattern);
+  ASSERT_TRUE(state.valid);
+  EXPECT_NEAR(state.stored_norm_nms, 0.0, 1e-15);
+  EXPECT_FALSE(state.desat_required);
+  EXPECT_FALSE(state.envelope_exceeded);
+  EXPECT_NEAR(state.max_wheel_nms, kCapacityNms, 1e-15);
+  EXPECT_NEAR(state.null_space_nms, 2.0 * kCapacityNms, 1e-12);  // |(1,-1,1,-1)| * capacity
+
+  // A pure body momentum has no null-space content: the four wheels at one
+  // speed are exactly the min-norm realisation of h along +Z.
+  const double body = speedFor(1.5e-3);
+  const double along_z[4] = {body, body, body, body};
+  const gnc::MomentumState pure = fold(manager, along_z);
+  EXPECT_NEAR(pure.null_space_nms, 0.0, 1e-15);
+  EXPECT_NEAR(pure.max_wheel_nms, cfg.rotor_inertia_kgm2 * body, 1e-15);
+}
+
+/// **How much of the envelope can land on one wheel.** The min-norm realisation
+/// of a body momentum `h` puts `(3/4)|h| (a_i . h_hat)` on wheel i of the
+/// pyramid, so the worst direction is a spin axis and the worst wheel carries
+/// three quarters of |h|. At the flight envelope (7.2e-3 N·m·s) that is
+/// 5.4e-3 against a 0.030 N·m·s wheel: a 5.5x margin, provided the null space
+/// stays empty (the previous test). Searched over directions rather than
+/// asserted from the formula, so a change of geometry changes the number here.
+TEST(MomentumManager, MinNormWheelLoadingPeaksAtThreeQuartersAlongASpinAxis) {
+  const gnc::MomentumConfig cfg = pyramidMomentum();
+  gnc::MomentumManager manager(cfg);
+  constexpr double kEnvelopeNms = 7.2e-3;
+  constexpr double kCapacityNms = 0.030;
+  Eigen::Matrix<double, 3, 4> w = cfg.spin_axes.leftCols<4>();
+  const Eigen::Matrix<double, 4, 3> pinv = w.transpose() * (w * w.transpose()).inverse();
+  double worst = 0.0;
+  Eigen::Vector3d worst_dir = Eigen::Vector3d::Zero();
+  for (int a = 0; a < 90; ++a) {
+    for (int b = 0; b < 180; ++b) {
+      const double th = M_PI * a / 90.0;
+      const double ph = 2.0 * M_PI * b / 180.0;
+      const Eigen::Vector3d dir(std::sin(th) * std::cos(ph), std::sin(th) * std::sin(ph),
+                                std::cos(th));
+      const Eigen::Vector4d wheels = pinv * (kEnvelopeNms * dir);
+      // The manager, fed those wheel speeds, must report exactly this loading.
+      double speeds[4];
+      for (int i = 0; i < 4; ++i) {
+        speeds[i] = wheels(i) / cfg.rotor_inertia_kgm2;
+      }
+      const gnc::MomentumState st = fold(manager, speeds);
+      ASSERT_NEAR(st.max_wheel_nms, wheels.cwiseAbs().maxCoeff(), 1e-15);
+      ASSERT_NEAR(st.null_space_nms, 0.0, 1e-12);
+      if (st.max_wheel_nms > worst) {
+        worst = st.max_wheel_nms;
+        worst_dir = dir;
+      }
+    }
+  }
+  EXPECT_NEAR(worst, 0.75 * kEnvelopeNms, 1e-3 * kEnvelopeNms);  // 2 deg grid
+  // The worst direction is (within the grid) a spin axis.
+  double best_align = 0.0;
+  for (int i = 0; i < 4; ++i) {
+    best_align = std::max(best_align, std::abs(worst_dir.dot(cfg.spin_axes.col(i))));
+  }
+  EXPECT_GT(best_align, 0.999);
+  // And the flight margin, stated as a number: 5.5x.
+  EXPECT_GT(kCapacityNms / worst, 5.0);
+}
+
+/// **A dead tachometer holds the latch and its confirmation count.** Engaged,
+/// then one refused cycle, then the exit-side stream: the desaturation neither
+/// ends on the refusal nor counts it toward confirmation.
+TEST(MomentumManager, AnInvalidWheelRefusesTheCycleAndHoldsTheLatch) {
+  gnc::MomentumManager manager(pyramidMomentum());
+  double s = speedFor(1.5e-3);
+  const double above[4] = {s, s, s, s};
+  ASSERT_TRUE(fold(manager, above).desat_required);
+
+  s = speedFor(1.0e-4);
+  const double under[4] = {s, s, s, s};
+  const bool one_dead[4] = {true, true, false, true};
+  gnc::MomentumState refused;
+  EXPECT_FALSE(manager.update(under, one_dead, refused));
+  EXPECT_EQ(refused.refusal, gnc::MomentumRefusal::kWheelInvalid);
+  EXPECT_EQ(refused.refused_wheel, 2);
+  EXPECT_FALSE(refused.valid);
+  EXPECT_FALSE(refused.desat_required);  // a refused state carries no verdict
+
+  // Four confirmation cycles under exit: still engaged (confirm = 5), so the
+  // refused cycle did not count as one; the fifth clears it.
+  for (int i = 0; i < 4; ++i) {
+    EXPECT_TRUE(fold(manager, under).desat_required) << "cycle " << i;
+  }
+  EXPECT_FALSE(fold(manager, under).desat_required);
+}
+
+/// **Coplanar spin axes are refused as a configuration**, not discovered as a
+/// singular solve: an array that cannot load one body axis has no min-norm
+/// decomposition and no meaningful envelope on that axis.
+TEST(MomentumManager, CoplanarAxesAreRefused) {
+  gnc::MomentumConfig cfg = pyramidMomentum();
+  cfg.wheel_count = 3;
+  cfg.spin_axes.col(0) = Eigen::Vector3d::UnitX();
+  cfg.spin_axes.col(1) = Eigen::Vector3d::UnitY();
+  cfg.spin_axes.col(2) = Eigen::Vector3d(1.0, 1.0, 0.0).normalized();
+  EXPECT_FALSE(cfg.isValid());
+  cfg.spin_axes.col(2) = Eigen::Vector3d::UnitZ();
+  EXPECT_TRUE(cfg.isValid());
+}
+
 // ======================================================================
 // The cross-product desaturation law
 // ======================================================================

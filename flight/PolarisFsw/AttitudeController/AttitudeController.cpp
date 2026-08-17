@@ -80,6 +80,12 @@ void AttitudeController ::commandModeAtStartup(U32 mode, const F64 q[4]) {
   this->pending_mode_ = mode;
 }
 
+void AttitudeController ::setWheelBiasAtStartup(bool enable) {
+  this->wheel_bias_override_ = true;
+  this->wheel_bias_override_enable_ = enable;
+  (void)this->applyParameters();
+}
+
 void AttitudeController ::setFeedforwardAtStartup(bool model, bool observer) {
   this->feedforward_override_ = true;
   this->feedforward_model_override_ = model;
@@ -329,6 +335,10 @@ bool AttitudeController ::applyParameters() {
   POLARIS_GET(momentum.desat_enter_nms, paramGet_MomentumDesatEnterNms, "MomentumDesatEnterNms");
   POLARIS_GET(momentum.desat_exit_nms, paramGet_MomentumDesatExitNms, "MomentumDesatExitNms");
   POLARIS_GET(momentum.envelope_nms, paramGet_MomentumEnvelopeNms, "MomentumEnvelopeNms");
+  POLARIS_GET(this->wheel_capacity_nms_, paramGet_WheelCapacityNms, "WheelCapacityNms");
+  if (!(this->wheel_capacity_nms_ > 0.0)) {
+    return fail("WheelCapacityNms must be positive");
+  }
   POLARIS_GET(desat.gain_per_s, paramGet_DesatGainPerSec, "DesatGainPerSec");
   POLARIS_GET(observer.tau_s, paramGet_ObserverTauSec, "ObserverTauSec");
   POLARIS_GET(this->disturbance_budget_nm_, paramGet_DisturbanceBudgetNm, "DisturbanceBudgetNm");
@@ -397,6 +407,37 @@ bool AttitudeController ::applyParameters() {
   observer.anomaly_torque_nm = this->disturbance_budget_nm_;
   this->momentum_envelope_nms_ = momentum.envelope_nms;
 
+  // --- Wheel-speed bias servo (§8.5; REQ-ACTL-012) ---------------------------
+  polaris::gnc::RwBiasConfig bias;
+  bias.wheel_count = alloc.wheel_count;
+  bias.axes = alloc.axes;
+  POLARIS_GET(bias.gain_per_s, paramGet_WheelBiasGainPerS, "WheelBiasGainPerS");
+  POLARIS_GET(bias.max_torque_nm, paramGet_WheelBiasMaxTorqueNm, "WheelBiasMaxTorqueNm");
+  {
+    Fw::ParamValid v = Fw::ParamValid::INVALID;
+    const F64PerUnit pattern = this->paramGet_WheelBiasNms(v);
+    if (v != Fw::ParamValid::VALID) {
+      return fail("WheelBiasNms");
+    }
+    for (U32 i = 0; i < this->wheel_count_; ++i) {
+      bias.bias_nms[i] = pattern[i];
+      // A bias past the wheel's own capacity is a mis-set pattern, not a trim.
+      if (std::abs(pattern[i]) >= this->wheel_capacity_nms_) {
+        return fail("WheelBiasNms exceeds WheelCapacityNms");
+      }
+    }
+    // The SITL/bench override (setWheelBiasAtStartup) is applied after the
+    // validation, so a bias-off experiment still flies a validated vehicle.
+    if (this->wheel_bias_override_ && !this->wheel_bias_override_enable_) {
+      for (U32 i = 0; i < this->wheel_count_; ++i) {
+        bias.bias_nms[i] = 0.0;
+      }
+    }
+  }
+  if (!bias.isValid()) {
+    return fail("WheelBias servo config");
+  }
+
 #undef POLARIS_GET
 
   // Range gates that span parameters, and therefore belong here rather than in
@@ -450,6 +491,20 @@ bool AttitudeController ::applyParameters() {
   this->pid_ = polaris::gnc::AttitudePid(pid);
   this->allocator_ = polaris::gnc::RwAllocator(alloc);
   this->friction_ = polaris::gnc::RwFrictionCompensator(friction);
+
+  this->bias_ = polaris::gnc::RwBiasServo(bias);
+  {
+    bool engaged = this->bias_.nullDimension() > 0 && bias.gain_per_s > 0.0;
+    double effective0 = this->bias_.effectiveBiasNms(0);
+    bool any = false;
+    for (U32 i = 0; i < this->wheel_count_; ++i) {
+      any = any || this->bias_.effectiveBiasNms(static_cast<int>(i)) != 0.0;
+    }
+    if (engaged && any) {
+      this->log_ACTIVITY_HI_WheelBiasEngaged(effective0,
+                                             static_cast<U8>(this->bias_.nullDimension()));
+    }
+  }
   this->rate_hysteresis_ = polaris::gnc::RateHysteresis(hysteresis);
   this->momentum_ = polaris::gnc::MomentumManager(momentum);
   this->observer_ = polaris::gnc::DisturbanceObserver(observer);
@@ -756,6 +811,28 @@ bool AttitudeController ::runPoint(double dtSec, double* wheelTorque, CtrlRefusa
   }
   for (U32 i = 0; i < this->wheel_count_; ++i) {
     wheelTorque[i] = alloc.torque_nm[i];
+  }
+
+  // Wheel-speed bias servo (§8.5; REQ-ACTL-012): a null-space torque added on
+  // top of the allocation, so it changes wheel speeds and no body torque. It
+  // needs this cycle's tachometers; a stale wheel skips the trim rather than
+  // steering on a guessed momentum.
+  {
+    double bias_peak = 0.0;
+    bool fresh = true;
+    double h_w[polaris::gnc::kMaxWheels] = {};
+    for (U32 i = 0; i < this->wheel_count_; ++i) {
+      fresh = fresh && this->wheel_speed_fresh_[i];
+      h_w[i] = this->wheel_inertia_kgm2_ * this->wheel_speed_radps_[i];
+    }
+    polaris::gnc::RwBiasResult bias;
+    if (fresh && this->bias_.update(h_w, bias) && bias.active) {
+      for (U32 i = 0; i < this->wheel_count_; ++i) {
+        wheelTorque[i] += bias.torque_nm[i];
+        bias_peak = std::max(bias_peak, std::abs(bias.torque_nm[i]));
+      }
+    }
+    this->tlmWrite_WheelBiasTorqueNm(bias_peak);
   }
 
   // Drive friction feedforward (§8.5; REQ-ACTL-010), applied **after** the

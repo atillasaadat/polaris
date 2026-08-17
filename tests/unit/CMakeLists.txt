@@ -54,6 +54,7 @@ add_executable(polaris_unit_tests
   st_alignment_test.cpp
   gnc_control_test.cpp
   gnc_momentum_test.cpp
+  gnc_rw_bias_test.cpp
   dipole_estimation_test.cpp
   attitude_accuracy_mc_test.cpp
   sim_vehicle_test.cpp)

@@ -120,7 +120,7 @@ inline pid_t spawnFsw(const std::string& bin, std::uint16_t port, const std::str
                       unsigned stAlignPairs = 0, unsigned stAlignUnit = 1, unsigned ctrlMode = 0,
                       const double* ctrlTargetQ = nullptr, int feedforward = -1,
                       unsigned odResetCycle = 0, const char* burnSpec = nullptr,
-                      int odAccelInput = -1) {
+                      int odAccelInput = -1, int wheelBias = -1) {
   const pid_t pid = ::fork();
   if (pid == 0) {
     // A child whose log cannot be opened must not fly and report nothing: the
@@ -147,6 +147,7 @@ inline pid_t spawnFsw(const std::string& bin, std::uint16_t port, const std::str
         feedforward < 0 ? std::string("")
                         : std::to_string(feedforward) + "," + std::to_string(feedforward);
     const std::string reset_str = std::to_string(odResetCycle);
+    const std::string bias_str = std::to_string(wheelBias);
     // Optional overrides are passed only when asked for, so a row that does not
     // set one flies the ParameterDb value rather than a default of ours.
     const char* argv_[32] = {
@@ -167,6 +168,10 @@ inline pid_t spawnFsw(const std::string& bin, std::uint16_t port, const std::str
     if (odAccelInput >= 0) {
       argv_[argc_++] = "-N";
       argv_[argc_++] = accel_str.c_str();
+    }
+    if (wheelBias >= 0) {
+      argv_[argc_++] = "-W";
+      argv_[argc_++] = bias_str.c_str();
     }
     argv_[argc_] = nullptr;
     // execv takes char* const*; the strings are not modified.
