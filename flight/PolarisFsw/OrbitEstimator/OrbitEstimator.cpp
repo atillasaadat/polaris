@@ -412,6 +412,22 @@ void OrbitEstimator ::publish(I64 nowNs) {
   this->tlmWrite_FixesRefused(this->fixes_refused_);
   this->tlmWrite_LastRefusal(OdRefusal(toFpp(this->last_refusal_)));
   this->tlmWrite_FixesForced(this->od_.forcedCount());
+  // TP §2.1 covariance metrics and the DMC states (Push 73).
+  if (valid) {
+    const Eigen::Vector3d r = this->od_.position().eigen();
+    const Eigen::Vector3d v = this->od_.velocity().eigen();
+    const pg::OrbitOd::Covariance p6 = this->od_.covariance();
+    this->tlmWrite_SmaSigmaM(pg::smaSigma(r, v, p6, pc::gravity::kGM));
+    this->tlmWrite_FpaSigmaRad(pg::flightPathAngleSigma(r, v, p6));
+    this->tlmWrite_DmcAccelRtnMps2(toVec3F64(this->od_.dmcAcceleration()));
+    this->tlmWrite_DmcSigmaMps2(std::sqrt(
+        this->od_.fullCovariance().block<3, 3>(pg::OrbitOd::kDmc, pg::OrbitOd::kDmc).trace()));
+  } else {
+    this->tlmWrite_SmaSigmaM(-1.0);
+    this->tlmWrite_FpaSigmaRad(-1.0);
+    this->tlmWrite_DmcAccelRtnMps2(toVec3F64(Eigen::Vector3d::Zero()));
+    this->tlmWrite_DmcSigmaMps2(0.0);
+  }
 }
 
 // ----------------------------------------------------------------------
@@ -465,6 +481,27 @@ bool OrbitEstimator ::applyParameters() {
   POLARIS_GET(cfg.drag_ref_altitude_m, paramGet_DragRefAltitudeM, "DragRefAltitudeM");
   POLARIS_GET(cfg.drag_scale_height_m, paramGet_DragScaleHeightM, "DragScaleHeightM");
   POLARIS_GET(cfg.accel_psd_m2_per_s3, paramGet_AccelPsdM2PerS3, "AccelPsdM2PerS3");
+  {
+    // TP §2.2.3.1 / §2.2.3.3 (Push 73): the RTN SNC and the DMC states.
+    Fw::ParamValid v1 = Fw::ParamValid::INVALID;
+    Fw::ParamValid v2 = Fw::ParamValid::INVALID;
+    Fw::ParamValid v3 = Fw::ParamValid::INVALID;
+    const Vec3F64 rtn = this->paramGet_AccelPsdRtnM2PerS3(v1);
+    const F64 tau = this->paramGet_DmcTauS(v2);
+    const Vec3F64 dmc = this->paramGet_DmcPsdRtnM2PerS5(v3);
+    if (v1 != Fw::ParamValid::VALID) {
+      return fail("AccelPsdRtnM2PerS3");
+    }
+    if (v2 != Fw::ParamValid::VALID) {
+      return fail("DmcTauS");
+    }
+    if (v3 != Fw::ParamValid::VALID) {
+      return fail("DmcPsdRtnM2PerS5");
+    }
+    cfg.accel_psd_rtn_m2_per_s3 = Eigen::Vector3d(rtn[0], rtn[1], rtn[2]);
+    cfg.dmc_tau_s = tau;
+    cfg.dmc_psd_rtn_m2_per_s5 = Eigen::Vector3d(dmc[0], dmc[1], dmc[2]);
+  }
   POLARIS_GET(cfg.position_nis_gate, paramGet_PositionNisGate, "PositionNisGate");
   POLARIS_GET(cfg.velocity_nis_gate, paramGet_VelocityNisGate, "VelocityNisGate");
   POLARIS_GET(cfg.max_coast_s, paramGet_MaxCoastS, "MaxCoastS");

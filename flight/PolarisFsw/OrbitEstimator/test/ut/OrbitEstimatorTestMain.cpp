@@ -68,6 +68,12 @@ TEST(OrbitEstimator, BackupEphemerisRestart) {
   tester.testBackupEphemerisRestart();
 }
 
+TEST(OrbitEstimator, CovarianceMetricsAndDmcParameters) {
+  RecordProperty("verifies", "REQ-ODP-011");
+  flight::OrbitEstimatorTester tester;
+  tester.testCovarianceMetricsAndDmcParameters();
+}
+
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

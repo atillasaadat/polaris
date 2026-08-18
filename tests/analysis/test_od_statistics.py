@@ -418,3 +418,45 @@ def test_the_campaign_statistics_carry_the_ensemble(tmp_path: Path) -> None:
 
     assert len(stats.ensemble) == 3
     assert all(a.ratio == 1.0 for a in stats.ensemble)
+
+
+# --------------------------------------------------------------------------
+# NASA/TP-2018-219822 §2.1 / §2.2.4.2 — SMA metric and Eq. 2.88 (Push 73)
+# --------------------------------------------------------------------------
+
+
+def test_sma_error_and_its_sigma_ratio_are_summarised_when_recorded(
+    tmp_path: Path,
+) -> None:
+    """The semi-major-axis error is the TP's OD figure of merit; the ratio to the
+    filter's own SMA sigma judges the covariance on the metric that predicts."""
+    rows = [od_sample(i, sma_err_m=-3.0, sma_sigma_m=6.0) for i in range(4)]
+    rows += [od_sample(i, sma_err_m=12.0, sma_sigma_m=6.0) for i in range(4, 6)]
+    stats = summarise(campaign_of(tmp_path, [(0, "nominal", rows)]))
+    summary = stats.of("nominal").regimes["nominal"]
+    assert summary.sma.samples == 6
+    assert summary.sma.worst == pytest.approx(12.0)
+    assert summary.sma.median == pytest.approx(3.0)
+    assert summary.sma_sigma_ratio.worst == pytest.approx(2.0)
+
+
+def test_shards_without_sma_records_summarise_to_empty_not_zero(tmp_path: Path) -> None:
+    """A shard written before Push 73 carries no SMA columns: NaN, excluded —
+    never three fake zeros dragging the median down."""
+    rows = [od_sample(i) for i in range(5)]
+    for r in rows:
+        r.pop("sma_err_m", None)
+        r.pop("sma_sigma_m", None)
+    stats = summarise(campaign_of(tmp_path, [(0, "nominal", rows)]))
+    summary = stats.of("nominal").regimes["nominal"]
+    assert summary.sma.samples == 0
+    assert np.isnan(summary.sma.median)
+
+
+def test_along_track_psd_from_one_orbit_error_is_tp_eq_2_88() -> None:
+    from analysis.od.statistics import along_track_psd_from_one_orbit_error
+
+    q_t = along_track_psd_from_one_orbit_error(100.0, 5554.0)
+    assert q_t == pytest.approx(100.0**2 / (3.0 * 5554.0**3))
+    assert along_track_psd_from_one_orbit_error(100.0, 0.0) == 0.0
+    assert along_track_psd_from_one_orbit_error(float("nan"), 5554.0) == 0.0

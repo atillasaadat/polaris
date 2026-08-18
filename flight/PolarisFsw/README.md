@@ -880,6 +880,21 @@ seam:
   UDU filter the TP recommends gets this for free from `D`; this is that check
   done explicitly on a full covariance.
 
+## Orbit filter: process-noise structure, DMC states, covariance metrics (§8.3; Push 73)
+
+`OrbitEstimator` carries NASA/TP-2018-219822 Ch. 2's items (REQ-ODP-011):
+`AccelPsdRtnM2PerS3` (RTN state-noise compensation, TP §2.2.3.1, added to the
+isotropic `AccelPsdM2PerS3`; `q_T` is the along-track knob, TP Eq. 2.88 its
+seed), `DmcTauS` / `DmcPsdRtnM2PerS5` (three Gauss-Markov acceleration states
+in RTN, TP §2.2.3.3; 0 = off), and telemetry `SmaSigmaM` / `FpaSigmaRad` (TP
+§2.1, Eqs. 2.23/2.26 — the figures of merit the TP recommends) plus
+`DmcAccelRtnMps2` / `DmcSigmaMps2`. **The reference vehicle flies all three
+parameters at zero**: measured on the MC campaign, a DMC layer over the flown
+`q_a` worsens the coast on this truth, and the RTN restructuring that improves
+it awaits the 30-run gate (numbers in `config/spacecraft/leo_smallsat.yaml`
+and design doc §8.3). The MC harness takes `--q-rtn`, `--qa-scale`,
+`--dmc-tau-s`, `--dmc-psd` for that study.
+
 ## Fine-mode filter fidelity (§8.1; Push 72)
 
 The MEKF took NASA/TP-2018-219822's Ch. 3/5/8 items (REQ-ADET-015): every

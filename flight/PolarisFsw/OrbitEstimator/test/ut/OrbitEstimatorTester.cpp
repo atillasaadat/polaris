@@ -145,6 +145,15 @@ void OrbitEstimatorTester ::setValidParameters() {
   this->paramSet_DragRefAltitudeM(kDragRefAltitude, Fw::ParamValid::VALID);
   this->paramSet_DragScaleHeightM(kDragScaleHeight, Fw::ParamValid::VALID);
   this->paramSet_AccelPsdM2PerS3(kAccelPsd, Fw::ParamValid::VALID);
+  {
+    Vec3F64 zero;
+    zero[0] = 0.0;
+    zero[1] = 0.0;
+    zero[2] = 0.0;
+    this->paramSet_AccelPsdRtnM2PerS3(zero, Fw::ParamValid::VALID);
+    this->paramSet_DmcTauS(0.0, Fw::ParamValid::VALID);
+    this->paramSet_DmcPsdRtnM2PerS5(zero, Fw::ParamValid::VALID);
+  }
   this->paramSet_PositionNisGate(kNisGate, Fw::ParamValid::VALID);
   this->paramSet_VelocityNisGate(kNisGate, Fw::ParamValid::VALID);
   this->paramSet_MaxCoastS(kMaxCoastS, Fw::ParamValid::VALID);
@@ -755,6 +764,65 @@ void OrbitEstimatorTester ::testBackupEphemerisRestart() {
   ASSERT_EVENTS_OrbitSeeded_SIZE(1);
   ASSERT_EVENTS_FixRefused_SIZE(0);
   ASSERT_TLM_FixesAccepted(this->tlmHistory_FixesAccepted->size() - 1, 1u);
+}
+
+void OrbitEstimatorTester ::testCovarianceMetricsAndDmcParameters() {
+  this->setValidParameters();
+  // Turn the DMC states on before the first cycle applies the set.
+  Vec3F64 q_dmc;
+  q_dmc[0] = 3.0e-12;
+  q_dmc[1] = 3.0e-12;
+  q_dmc[2] = 3.0e-12;
+  this->paramSet_DmcTauS(600.0, Fw::ParamValid::VALID);
+  this->paramSet_DmcPsdRtnM2PerS5(q_dmc, Fw::ParamValid::VALID);
+  this->component.loadParameters();
+
+  this->startTruthAt(kStartTaiNs);
+  I64 t = kStartTaiNs;
+  for (int s = 0; s <= 10; ++s) {
+    t = kStartTaiNs + s * kNsPerSecond;
+    this->sendFixAt(t);
+    this->runCycleAt(t);
+  }
+  ASSERT_TRUE(this->last_estimate_.get_valid());
+  ASSERT_EVENTS_OrbitTuningInvalid_SIZE(0);
+  const std::size_t last = this->tlmHistory_SmaSigmaM->size() - 1;
+  const F64 sma_sigma = this->tlmHistory_SmaSigmaM->at(last).arg;
+  const F64 fpa_sigma = this->tlmHistory_FpaSigmaRad->at(last).arg;
+  // TP Eq. 2.20 on the settled covariance: sigma_a ≈ 2 sqrt(sigma_r² + (T/2π)² sigma_v²)
+  // — metres, since a 1 m position and 0.03 m/s velocity are ~10 m of SMA
+  // (the velocity term dominates: T/2π ≈ 880 s).
+  EXPECT_GT(sma_sigma, 0.0);
+  EXPECT_LT(sma_sigma, 200.0);
+  EXPECT_GT(fpa_sigma, 0.0);
+  EXPECT_LT(fpa_sigma, 1.0e-3);
+  // The DMC block is alive: its sigma is the stationary sqrt(3 q tau/2) at seed
+  // and no larger after; its estimate is near zero on a truth with no
+  // unmodelled acceleration.
+  const F64 dmc_sigma =
+      this->tlmHistory_DmcSigmaMps2->at(this->tlmHistory_DmcSigmaMps2->size() - 1).arg;
+  EXPECT_GT(dmc_sigma, 0.0);
+  EXPECT_LE(dmc_sigma, std::sqrt(3.0 * 3.0e-12 * 600.0 * 0.5) * 1.001);
+  const Vec3F64 a =
+      this->tlmHistory_DmcAccelRtnMps2->at(this->tlmHistory_DmcAccelRtnMps2->size() - 1).arg;
+  EXPECT_LT(std::abs(a[1]), 1.0e-5);
+
+  // A correlation time under ten sub-steps is refused as tuning; the running
+  // filter keeps its last valid set (TB 20-03 item g).
+  this->paramSet_DmcTauS(0.5, Fw::ParamValid::VALID);
+  this->paramSend_DmcTauS(0, 0);
+  ASSERT_EVENTS_OrbitTuningInvalid_SIZE(1);
+  t += kNsPerSecond;
+  this->sendFixAt(t);
+  this->runCycleAt(t);
+  ASSERT_TRUE(this->last_estimate_.get_valid());
+
+  // No solution: the metrics read -1.
+  this->sendCmd_OD_RESET(0, 0);
+  t += kNsPerSecond;
+  this->runCycleAt(t);
+  ASSERT_TLM_SmaSigmaM(this->tlmHistory_SmaSigmaM->size() - 1, -1.0);
+  ASSERT_TLM_FpaSigmaRad(this->tlmHistory_FpaSigmaRad->size() - 1, -1.0);
 }
 
 }  // namespace flight

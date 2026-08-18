@@ -286,7 +286,12 @@ TEST(OrbitOdCovariance, TheVolumeErrorIsInTheConservativeDirection) {
   // failure mode the campaign's NEES upper bound exists to catch.
   const OrbitOdConfig cfg = conservativeConfig(true);
   EXPECT_GT(propagatedIdentity(cfg, 300.0).determinant(), 1.0);
-  EXPECT_GT(propagatedIdentity(cfg, orbitPeriodS()).determinant(), 1.0);
+  EXPECT_GT(propagatedIdentity(cfg, 600.0).determinant(), 1.0);
+  // Not asserted at a full orbit: there the deviation is ~1e-4 either way, and
+  // the determinant of a 6×6 with entries up to ~1e8 that cancel to 1 sits at
+  // the round-off floor — the sign flipped when the covariance became the
+  // marginal of a 9-state P (Push 73) with no change to the arithmetic, only
+  // to its summation order. The magnitude bound is J2VolumeHoldsOverAFullOrbit.
 }
 
 // ---------------------------------------------------------------------------

@@ -126,6 +126,11 @@ class ScenarioRun:
     vel_sigma_mps: np.ndarray
     err_ric_m: np.ndarray
     sigma_ric_m: np.ndarray
+    #: Semi-major-axis error (estimate − truth) [m] and the filter's SMA 1σ [m]
+    #: (NASA/TP-2018-219822 §2.1.2, Eq. 2.23); NaN on shards written before
+    #: Push 73 recorded them.
+    sma_err_m: np.ndarray
+    sma_sigma_m: np.ndarray
     nees: np.ndarray
     nis: np.ndarray
     solution_valid: np.ndarray
@@ -234,6 +239,8 @@ class _Accumulator:
             vel_sigma_mps=col("vel_sigma_mps"),
             err_ric_m=triple("err_ric_m"),
             sigma_ric_m=triple("sigma_ric_m"),
+            sma_err_m=col("sma_err_m", np.nan),
+            sma_sigma_m=col("sma_sigma_m", np.nan),
             nees=col("nees"),
             nis=nis,
             solution_valid=flag("solution_valid"),

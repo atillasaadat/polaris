@@ -739,3 +739,21 @@ fixture was found in the innovation sequence, not in review.
   an open batch is the reference, not the running estimate; the residual
   monitors and the publish had to sit after `endBatch()`, and a re-seed
   inside a batch closes it. Say so in the accessor's doc.
+
+## A best practice is a hypothesis until the campaign says otherwise (P73, OD)
+
+- **Build the machinery, then measure before flying it.** The DMC states did
+  exactly what the TP describes in the library (an unmodelled acceleration
+  estimated, the coast closed) and *worsened* the coast on the vehicle's own
+  truth. The flown yaml records both numbers and stays as it was.
+- **Give the campaign the knobs on the command line.** `--dmc-tau-s`,
+  `--dmc-psd`, `--q-rtn`, `--qa-scale` on the MC harness meant every candidate
+  ran on the same shards in minutes; without them the study would have been
+  a yaml edit and a rebuild per candidate — or would not have happened.
+- **Zsh does not word-split an unquoted variable.** Three "different" MC runs
+  produced byte-identical shards because `$extra` reached the binary as one
+  argument; `${=extra}` fixes it. Check `md5sum` before believing a null result.
+- **Closed forms that cancel are not "exact".** TP Eqs. 2.56–2.61 are correct
+  and unusable at `h/τ ~ 1e-3`; a fixed Gauss–Legendre rule on the kernel is
+  bounded, exact for the quartic, and was pinned against 20 000-node Simpson —
+  Simpson at 16 nodes was 1e-5 off on the quartic, also measured.
