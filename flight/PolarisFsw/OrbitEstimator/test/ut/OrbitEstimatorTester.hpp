@@ -75,6 +75,12 @@ class OrbitEstimatorTester : public OrbitEstimatorGTestBase {
   //! dropped solution back from it without an uplink.
   void testBackupEphemerisRestart();
 
+  //! TP §2.1 / §2.2.3 (Push 73): the SMA and flight-path-angle sigmas are
+  //! telemetered from the solution's covariance; the DMC states engage from
+  //! parameters and report their estimate and sigma; a correlation time under
+  //! ten sub-steps is refused as tuning.
+  void testCovarianceMetricsAndDmcParameters();
+
   // ----------------------------------------------------------------------
   // Port handlers
   // ----------------------------------------------------------------------

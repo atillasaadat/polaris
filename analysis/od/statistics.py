@@ -62,7 +62,7 @@ Design doc §8.3 (onboard OD), §9.2 (GNSS FDIR), §13, §23.2.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from scipy import stats
@@ -214,6 +214,14 @@ class RegimeSummary:
         Distribution of ``pos_err_m / pos_sigma_m`` — how many of its own claimed
         sigmas the filter is actually away from truth. Dimensionless, and the one
         number that reads the same whatever the regime.
+    sma : ErrorSummary
+        Distribution of ``|sma_err_m|`` [m] — the semi-major-axis error, the OD
+        figure of merit NASA/TP-2018-219822 §2.1 recommends (SMA error is period
+        error is secular along-track drift). Empty on shards written before the
+        MC harness recorded it (Push 73).
+    sma_sigma_ratio : ErrorSummary
+        ``|sma_err_m| / sma_sigma_m`` — the covariance judged on the metric that
+        predicts, not only on the one that fits (TP §2.1.4).
     fixes, accepted, refusals : int, int, dict
         Fixes delivered, fixes folded in, and a count per refusal name. The
         refusal breakdown is the point: *which* layer refused is what
@@ -228,6 +236,10 @@ class RegimeSummary:
     fixes: int
     accepted: int
     refusals: dict[str, int]
+    sma: ErrorSummary = field(default_factory=lambda: ErrorSummary.of(np.array([])))
+    sma_sigma_ratio: ErrorSummary = field(
+        default_factory=lambda: ErrorSummary.of(np.array([]))
+    )
 
     @property
     def rejection_rate(self) -> float:
@@ -329,6 +341,8 @@ def _regime_summary(regime: str, runs: tuple[ScenarioRun, ...]) -> RegimeSummary
     position: list[np.ndarray] = []
     velocity: list[np.ndarray] = []
     ratio: list[np.ndarray] = []
+    sma: list[np.ndarray] = []
+    sma_ratio: list[np.ndarray] = []
     fixes = 0
     accepted = 0
     refusals: dict[str, int] = {}
@@ -346,6 +360,10 @@ def _regime_summary(regime: str, runs: tuple[ScenarioRun, ...]) -> RegimeSummary
         sigma = run.pos_sigma_m[live]
         with np.errstate(divide="ignore", invalid="ignore"):
             ratio.append(np.where(sigma > 0.0, run.pos_err_m[live] / sigma, np.nan))
+            sma_err = np.abs(run.sma_err_m[live])
+            sma_sig = run.sma_sigma_m[live]
+            sma.append(sma_err)
+            sma_ratio.append(np.where(sma_sig > 0.0, sma_err / sma_sig, np.nan))
         fixes += int(np.count_nonzero(run.fix_valid[armed]))
         accepted += int(np.count_nonzero(run.fix_accepted[armed]))
         for index in np.flatnonzero(armed):
@@ -362,7 +380,26 @@ def _regime_summary(regime: str, runs: tuple[ScenarioRun, ...]) -> RegimeSummary
         fixes=fixes,
         accepted=accepted,
         refusals=refusals,
+        sma=ErrorSummary.of(join(sma)),
+        sma_sigma_ratio=ErrorSummary.of(join(sma_ratio)),
     )
+
+
+def along_track_psd_from_one_orbit_error(
+    sigma_along_track_m: float, period_s: float
+) -> float:
+    """NASA/TP-2018-219822 Eq. 2.88: the along-track SNC intensity from a one-orbit error.
+
+    ``q_T = sigma_ds^2 / (3 T_p^3)`` [m^2/s^3] — the starting point the TP gives
+    for tuning the along-track process noise (§2.2.4.2): take the period-folded
+    ensemble along-track error one period out (``err_ric_m[:, 1]`` at
+    ``t = T_p``), and this is the intensity whose secular term reproduces it.
+    The flight side is ``OrbitEstimator.AccelPsdRtnM2PerS3[1]``. Returns 0 for
+    a non-positive period.
+    """
+    if not (period_s > 0.0) or not np.isfinite(sigma_along_track_m):
+        return 0.0
+    return float(sigma_along_track_m) ** 2 / (3.0 * float(period_s) ** 3)
 
 
 def _longest_gap_s(run: ScenarioRun) -> float:

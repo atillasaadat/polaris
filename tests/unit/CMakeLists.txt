@@ -46,6 +46,7 @@ add_executable(polaris_unit_tests
   mekf_test.cpp
   orbit_od_test.cpp
   orbit_od_covariance_test.cpp
+  orbit_od_dmc_test.cpp
   geopotential_test.cpp
   mag_calibration_test.cpp
   albedo_correction_test.cpp

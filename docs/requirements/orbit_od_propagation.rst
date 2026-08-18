@@ -271,3 +271,66 @@ Source: design doc §8.3, §11. Fully populated in Phase 6; firm seeds below.
    (``OrbitOdTimeScales.AStaleLeapSecondTableIsRefusedByATrackingFilterAndOnlyRotatesASeed``),
    which measures both the refusal (innovation 300–700 m, solution within 5 m of
    truth) and the seed-path rotation.
+
+.. req:: Process-noise structure, DMC acceleration states and covariance metrics
+   :id: REQ-ODP-011
+   :status: reviewed
+   :level: L3
+   :tags: od, estimation, tuning
+   :method: Test
+   :derived_from: REQ-ODP-001, REQ-ODP-005
+   :allocation: lib/gnc, flight/PolarisFsw/OrbitEstimator, tests/mc, analysis/od
+   :refs: carpenter2018
+
+   The onboard orbit filter **shall** carry the process-noise structure and the
+   covariance metrics of NASA/TP-2018-219822 Ch. 2:
+
+   * **State-noise compensation in orbit-fixed axes** (TP §2.2.3.1): a
+     per-axis RTN acceleration PSD ``(q_R, q_T, q_N)``, rotated into the
+     inertial frame at each sub-step and added to the isotropic PSD, so the
+     along-track intensity is a separate tuning knob for secular along-track
+     growth (TP §2.2.4.2); TP Eq. 2.88 **shall** be available as the starting
+     point for it (``alongTrackPsdFromOneOrbitError``, and the same in
+     ``analysis/od``);
+   * **Dynamic model compensation** (TP §2.2.3.3): three exponentially
+     correlated (first-order Gauss-Markov) acceleration states in RTN with a
+     configurable correlation time and PSD, added to the force model, their
+     transition and discrete process noise per TP Eqs. 2.54–2.55, disabled at
+     ``τ = 0``; the position/velocity marginal **shall** remain the product
+     every consumer reads;
+   * **Covariance metrics** (TP §2.1): the semi-major-axis 1σ (Eq. 2.23) and
+     the flight-path-angle 1σ (Eq. 2.26) **shall** be computed from the
+     solution's covariance and telemetered, and the Monte Carlo campaign
+     **shall** record the SMA error and SMA sigma per sample so the covariance
+     is judged on the metric that predicts (§2.1.4).
+
+   Rationale: SMA error is period error is secular along-track drift, and the
+   TP names it the OD figure of merit; the RTN form is how the along-track
+   growth is tuned; the DMC states are the TP's answer to the systematic
+   truncation error this filter otherwise absorbs as white noise (REQ-ODP-005).
+
+   **What is flown, and why (measured, 2026-08-18).** The reference vehicle
+   ships with the RTN intensities at zero and the DMC states off — the Push 65
+   isotropic ``q_a`` unchanged. On the ``outage_horizon`` scenario (3 runs,
+   20 000 s) a DMC layer at τ = 600 s / σ_a = 3e-5 m/s² **worsened** the coast
+   error (outage worst 2.35 → 3.6 m; τ = 100 s: 3.8 m) with the campaign NEES
+   still consistent — the 8×8 truncation on this truth is not well described
+   by a 600 s Gauss-Markov acceleration at 1 Hz fixes, and the states carry
+   noise into the coast; reducing ``q_a`` alone by 10× drove the NEES to 24
+   against a 10.5 upper bound (optimistic, as Push 65 measured). An RTN
+   restructuring (``q_iso`` halved, ``q_T`` = the old ``q_a``) **improved** the
+   coast (outage worst 2.35 → 2.05 m, 95th 2.11 → 1.87 m) at NEES 6.75 inside
+   [2.74, 10.5] — a candidate the 30-run campaign gate, not a 3-run sample,
+   has to sign off. The MC harness takes ``--q-rtn``, ``--qa-scale``,
+   ``--dmc-tau-s``, ``--dmc-psd`` so that study runs on the same shards.
+
+   Verified by ``tests/unit/orbit_od_dmc_test.cpp``
+   (``NoiseKernelMatchesHighOrderQuadratureAndItsSmallStepLimit``,
+   ``RtnBasisIsOrthonormalAndOriented``,
+   ``RtnProcessNoiseGrowsTheVelocityAlongTheAxisItNames``,
+   ``UnmodelledAccelerationIsEstimatedAndClosesTheCoast`` — a 2e-5 m/s²
+   along-track acceleration estimated to within 50 % and a 300 s coast closed
+   to under half the blind error,
+   ``SmaAndFlightPathAngleSigmasMatchTheClosedFormsOnACircularOrbit``), the
+   ``OrbitEstimator`` component test ``CovarianceMetricsAndDmcParameters``, and
+   ``tests/analysis/test_od_statistics.py`` (SMA summaries, Eq. 2.88).

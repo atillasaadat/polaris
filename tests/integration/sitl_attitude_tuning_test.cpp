@@ -101,8 +101,8 @@ TEST(SitlAttitudeTuning, CompiledParametersLetTheEstimatorAcquireAttitude) {
   EXPECT_NE(log.find("PrmFileLoadComplete"), std::string::npos)
       << "prmDb never loaded the compiled parameter file:\n"
       << log;
-  EXPECT_NE(log.find("Records: 144"), std::string::npos)
-      << "prmDb loaded a record count other than the 144 declared parameters "
+  EXPECT_NE(log.find("Records: 147"), std::string::npos)
+      << "prmDb loaded a record count other than the 147 declared parameters "
          "(Push 69 added the four wheel-speed-bias parameters; Push 72 MekfBiasTauSec; Push 71 "
          "added the six NESC TB 20-03 "
          "item (d) editing-policy and "

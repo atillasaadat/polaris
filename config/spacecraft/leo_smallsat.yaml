@@ -266,6 +266,28 @@ spacecraft:
     # this force model against a 32x32 truth over the 300 s coast horizon.
     flight.orbitEstimator.AccelPsdM2PerS3: 1.8e-7               # [m^2/s^3]
     # NIS gates: chi-square with 3 dof at 99.9%.
+    # --- Process-noise structure and the DMC acceleration states (Push 73;
+    # NASA/TP-2018-219822 §2.2.3; REQ-ODP-011). All three ship at zero, so the
+    # flown filter is the Push 65 isotropic q_a above, unchanged. MEASURED on
+    # outage_horizon (3 runs, 20000 s; polaris_orbit_od_mc --dmc-tau-s/--dmc-psd
+    # /--q-rtn/--qa-scale):
+    #   DmcTauS 600 + DmcPsd 3e-12 (sigma_a 3e-5, the truncation scale) WORSENED
+    #     the coast: outage worst 2.35 -> 3.6 m (tau 100 s: 3.8 m), NEES still
+    #     consistent — the 8x8 truncation is not a Gauss-Markov acceleration at
+    #     1 Hz fixes and the states carry noise into the coast (TP §2.2.3.3's
+    #     "persistently excite it" caveat, measured).
+    #   AccelPsdM2PerS3 / 10 alone: NEES 24 vs a 10.5 upper bound (optimistic).
+    #   AccelPsdRtnM2PerS3 [0, 1.8e-7, 0] with AccelPsdM2PerS3 halved: outage
+    #     worst 2.35 -> 2.05 m, 95th 2.11 -> 1.87 m, NEES 6.75 in [2.74, 10.5]
+    #     — the candidate; it needs the 30-run §23.2 gate, not a 3-run sample,
+    #     before it is flown. TP Eq. 2.88 (q_T = sigma_ds^2/(3 T_p^3) off the
+    #     period-folded one-orbit along-track error) is the principled seed.
+    # The library is exercised with the states on
+    # (tests/unit/orbit_od_dmc_test.cpp: an unmodelled 2e-5 m/s^2 is estimated
+    # and a coast after it closed to under half the blind error).
+    flight.orbitEstimator.AccelPsdRtnM2PerS3: [0.0, 0.0, 0.0]  # [m^2/s^3] R, T, N
+    flight.orbitEstimator.DmcTauS: 0.0                          # [s] 0 = off
+    flight.orbitEstimator.DmcPsdRtnM2PerS5: [0.0, 0.0, 0.0]    # [m^2/s^5] R, T, N
     flight.orbitEstimator.PositionNisGate: 16.27                # [-]
     flight.orbitEstimator.VelocityNisGate: 16.27                # [-]
     # Fine coast horizon (§8.3): ~9x the receiver's 34 s cold start; past it the

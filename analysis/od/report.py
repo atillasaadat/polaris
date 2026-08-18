@@ -342,6 +342,15 @@ def od_report(
         provenance["Steady-state error, in units of the reported sigma"] = (
             f"median {steady.sigma_ratio.median:.3g}, 95th {steady.sigma_ratio.p95:.3g}"
         )
+        if steady.sma.samples > 0:
+            # NASA/TP-2018-219822 §2.1: the SMA error is the OD figure of merit
+            # that predicts (period error -> secular along-track drift), and its
+            # ratio to the filter's own SMA sigma judges the covariance on it.
+            provenance["Steady-state semi-major-axis error (TP-2018-219822 §2.1)"] = (
+                f"median {steady.sma.median:.4g} m, 95th {steady.sma.p95:.4g} m; "
+                f"in units of the reported SMA sigma: median "
+                f"{steady.sma_sigma_ratio.median:.3g}, 95th {steady.sma_sigma_ratio.p95:.3g}"
+            )
 
     return AnalysisReport(
         title="Orbit determination Monte Carlo — reference LEO smallsat",

@@ -32,6 +32,7 @@ from analysis.od.statistics import (
     ErrorSummary,
     RegimeSummary,
     ScenarioStatistics,
+    along_track_psd_from_one_orbit_error,
     consistency_interval,
     summarise,
 )
@@ -45,6 +46,7 @@ __all__ = [
     "RegimeSummary",
     "ScenarioRun",
     "ScenarioStatistics",
+    "along_track_psd_from_one_orbit_error",
     "consistency_interval",
     "ensemble_covariance",
     "load_campaign",

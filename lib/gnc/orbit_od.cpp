@@ -35,7 +35,8 @@ constexpr double kJacMinVelStepMps = 1.0e-6;
 /// Force exact symmetry. The algebra is symmetric but the products that build it
 /// are not bitwise symmetric, and an asymmetric covariance breaks the Cholesky
 /// factorisations downstream consumers do.
-void symmetrise(OrbitOd::Covariance& p) {
+template <typename M>
+void symmetrise(M& p) {
   p = 0.5 * (p + p.transpose().eval());
 }
 
@@ -70,9 +71,11 @@ bool OrbitOdConfig::isValid() const {
       std::isfinite(mu_m3_per_s2) && std::isfinite(zonal_j2) && std::isfinite(reference_radius_m) &&
       std::isfinite(drag_ballistic_coeff_m2_per_kg) && std::isfinite(drag_ref_density_kg_m3) &&
       std::isfinite(drag_ref_altitude_m) && std::isfinite(drag_scale_height_m) &&
-      std::isfinite(accel_psd_m2_per_s3) && std::isfinite(position_nis_gate) &&
-      std::isfinite(velocity_nis_gate) && std::isfinite(max_coast_s) && std::isfinite(max_dt_s) &&
-      std::isfinite(max_step_s) && std::isfinite(min_radius_m) && std::isfinite(max_radius_m);
+      std::isfinite(accel_psd_m2_per_s3) && accel_psd_rtn_m2_per_s3.allFinite() &&
+      std::isfinite(dmc_tau_s) && dmc_psd_rtn_m2_per_s5.allFinite() &&
+      std::isfinite(position_nis_gate) && std::isfinite(velocity_nis_gate) &&
+      std::isfinite(max_coast_s) && std::isfinite(max_dt_s) && std::isfinite(max_step_s) &&
+      std::isfinite(min_radius_m) && std::isfinite(max_radius_m);
   if (!finite) {
     return false;
   }
@@ -133,7 +136,21 @@ bool OrbitOdConfig::isValid() const {
       (!(drag_ref_density_kg_m3 > 0.0) || !(drag_scale_height_m > 0.0))) {
     return false;
   }
-  if (!(accel_psd_m2_per_s3 > 0.0) || !(position_nis_gate > 0.0) || !(velocity_nis_gate > 0.0)) {
+  // Some white acceleration noise must drive the filter — isotropic, RTN, or
+  // both (TP §2.2.3.1); a filter with none stops opening its covariance through
+  // a coast. The DMC states are optional (τ = 0 off), never negative.
+  const bool snc_present = accel_psd_m2_per_s3 > 0.0 || accel_psd_rtn_m2_per_s3.maxCoeff() > 0.0;
+  if (accel_psd_m2_per_s3 < 0.0 || accel_psd_rtn_m2_per_s3.minCoeff() < 0.0 || !snc_present ||
+      dmc_tau_s < 0.0 || dmc_psd_rtn_m2_per_s5.minCoeff() < 0.0) {
+    return false;
+  }
+  // The DMC kernel is evaluated per sub-step by a fixed-node quadrature that is
+  // exact for h ≪ τ; a correlation time under ten sub-steps is refused rather
+  // than integrated coarsely (and would be a strange model anyway).
+  if (dmc_tau_s > 0.0 && dmc_tau_s < 10.0 * max_step_s) {
+    return false;
+  }
+  if (!(position_nis_gate > 0.0) || !(velocity_nis_gate > 0.0)) {
     return false;
   }
   if (!(max_coast_s > 0.0) || !(max_dt_s > 0.0) || !(max_step_s > 0.0)) {
@@ -242,7 +259,8 @@ bool earthOrientationAt(const time::Tai& t, const frames::EopValue& eop, EarthOr
 namespace {
 
 /// Derivative of the 6-state `[r; v]` under the onboard force model, plus a
-/// known non-gravitational acceleration @p a_ng (zero when none).
+/// known non-gravitational acceleration @p a_ng (zero when none) — which the
+/// caller has already folded the DMC estimate into, in ECI.
 Vec6 stateDerivative(const OrbitOdConfig& cfg, const Vec6& x, const EarthOrientation& earth,
                      const Eigen::Vector3d& a_ng = Eigen::Vector3d::Zero()) {
   Vec6 dx;
@@ -292,6 +310,7 @@ OrbitOd::OrbitOd(const OrbitOdConfig& config) : cfg_(config), configured_(config
 void OrbitOd::dropSolution() {
   position_.setZero();
   velocity_.setZero();
+  dmc_.setZero();
   p_.setZero();
   last_epoch_ = time::Tai{};
   age_s_ = 0.0;
@@ -339,6 +358,11 @@ OrbitOdRefusal OrbitOd::reinitializeCovariance(double sigma_pos_m, double sigma_
   p_.block<3, 3>(kPosition, kPosition) = sigma_pos_m * sigma_pos_m * Eigen::Matrix3d::Identity();
   p_.block<3, 3>(kVelocity, kVelocity) =
       sigma_vel_m_s * sigma_vel_m_s * Eigen::Matrix3d::Identity();
+  // The DMC states re-open to their stationary variance too, keeping their
+  // estimate: the operator re-opened the covariance, not the state.
+  const Eigen::Vector3d dmc_kept = dmc_;
+  seedDmcBlock();
+  dmc_ = dmc_kept;
   return OrbitOdRefusal::kNone;
 }
 
@@ -351,7 +375,7 @@ bool OrbitOd::covarianceHealthy() const {
   if (!p_.allFinite()) {
     return false;
   }
-  const Eigen::LDLT<Covariance> ldlt(p_);
+  const Eigen::LDLT<FullCovariance> ldlt(p_);
   return ldlt.info() == Eigen::Success && ldlt.isPositive();
 }
 
@@ -379,12 +403,28 @@ OrbitOdRefusal OrbitOd::initialize(const time::Tai& epoch,
 
   position_ = position.eigen();
   velocity_ = velocity.eigen();
-  p_ = cov;
+  p_.setZero();
+  p_.topLeftCorner<kPosVelDim, kPosVelDim>() = cov;
+  seedDmcBlock();
   symmetrise(p_);
   last_epoch_ = epoch;
   age_s_ = 0.0;
   initialised_ = true;
   return OrbitOdRefusal::kNone;
+}
+
+void OrbitOd::seedDmcBlock() {
+  // The DMC states start at zero with their steady-state variance qτ/2 (TP
+  // §5.2.4): a fresh seed knows nothing about the unmodelled acceleration, and
+  // that is what the FOGM's stationary distribution says. Off (τ = 0), the
+  // block is zero and the states are inert.
+  dmc_.setZero();
+  p_.block<3, 3>(kDmc, kDmc).setZero();
+  p_.block<3, kPosVelDim>(kDmc, 0).setZero();
+  p_.block<kPosVelDim, 3>(0, kDmc).setZero();
+  if (cfg_.dmc_tau_s > 0.0) {
+    p_.block<3, 3>(kDmc, kDmc) = (0.5 * cfg_.dmc_tau_s * cfg_.dmc_psd_rtn_m2_per_s5).asDiagonal();
+  }
 }
 
 OrbitOdRefusal OrbitOd::seed(const time::Tai& epoch, const math::Vec3<math::frames::ECI>& position,
@@ -446,7 +486,7 @@ OrbitOdRefusal OrbitOd::propagate(const time::Tai& epoch, const frames::EopValue
   Vec6 x;
   x.head<3>() = position_;
   x.tail<3>() = velocity_;
-  Covariance p = p_;
+  FullCovariance p = p_;
 
   // --- Discrete process noise, CWNA (see the file header) ------------------
   // Built once: it depends only on the sub-step length, which is constant across
@@ -456,13 +496,13 @@ OrbitOdRefusal OrbitOd::propagate(const time::Tai& epoch, const frames::EopValue
   // step: σ_a² [m²/s⁴] acting for h seconds is a PSD of σ_a²·h [m²/s³] over the
   // sub-step, which puts it in the same discretisation as q_a.
   const Eigen::Matrix3d id = Eigen::Matrix3d::Identity();
-  const double q_a = cfg_.accel_psd_m2_per_s3 + q_ng * h;
-  Covariance q_d = Covariance::Zero();
-  q_d.block<3, 3>(kPosition, kPosition) = (q_a * h * h * h / 3.0) * id;
-  const Eigen::Matrix3d q_cross = (q_a * h * h / 2.0) * id;
-  q_d.block<3, 3>(kPosition, kVelocity) = q_cross;
-  q_d.block<3, 3>(kVelocity, kPosition) = q_cross;
-  q_d.block<3, 3>(kVelocity, kVelocity) = (q_a * h) * id;
+  const double q_iso = cfg_.accel_psd_m2_per_s3 + q_ng * h;
+  // The RTN part is rotated at each sub-step (the basis turns with the orbit);
+  // only the isotropic part and the DMC kernel are step-invariant.
+  const bool dmc = cfg_.dmc_tau_s > 0.0;
+  const Eigen::Matrix3d psi = dmc ? dmcNoiseKernel(h, cfg_.dmc_tau_s) : Eigen::Matrix3d::Zero();
+  const double phi_dmc = dmc ? std::exp(-h / cfg_.dmc_tau_s) : 1.0;
+  Eigen::Vector3d dmc_state = dmc_;
 
   for (int step = 0; step < substeps; ++step) {
     // The Earth orientation is resolved **per sub-step**, not once per call. A
@@ -479,30 +519,79 @@ OrbitOdRefusal OrbitOd::propagate(const time::Tai& epoch, const frames::EopValue
       return OrbitOdRefusal::kFrameConversion;
     }
 
+    // The orbit-fixed basis at the sub-step start, held across it (TP §2.2.3.1's
+    // "approximately constant over the interval"). Both the RTN noise and the
+    // DMC acceleration are expressed in it.
+    const Eigen::Matrix3d m_rtn = rtnBasis(x.head<3>(), x.tail<3>());
+    const Eigen::Matrix3d q_rtn_eci =
+        q_iso * id + m_rtn * cfg_.accel_psd_rtn_m2_per_s3.asDiagonal() * m_rtn.transpose();
+    // --- Discrete process noise ------------------------------------------
+    // SNC (TP Eq. 2.49): the CWNA blocks on Q̃ = q_iso I + M Q_rtn Mᵀ. The
+    // off-diagonal blocks are the point — the position and velocity error from
+    // one unmodelled acceleration are the same error seen twice. The thrust-
+    // knowledge term is in q_iso as a second white acceleration over the step:
+    // σ_a² [m²/s⁴] acting for h seconds is a PSD of σ_a²·h [m²/s³].
+    FullCovariance q_d = FullCovariance::Zero();
+    q_d.block<3, 3>(kPosition, kPosition) = (h * h * h / 3.0) * q_rtn_eci;
+    q_d.block<3, 3>(kPosition, kVelocity) = (h * h / 2.0) * q_rtn_eci;
+    q_d.block<3, 3>(kVelocity, kPosition) = (h * h / 2.0) * q_rtn_eci;
+    q_d.block<3, 3>(kVelocity, kVelocity) = h * q_rtn_eci;
+    if (dmc) {
+      // DMC (TP Eq. 2.55): Q = kron(Ψ, Q̃_dmc), Q̃_dmc = M diag(q_dmc) Mᵀ — the
+      // position/velocity blocks in ECI, the acceleration block in RTN.
+      const Eigen::Matrix3d q_dmc_eci =
+          m_rtn * cfg_.dmc_psd_rtn_m2_per_s5.asDiagonal() * m_rtn.transpose();
+      const Eigen::Matrix3d q_dmc_rtn = cfg_.dmc_psd_rtn_m2_per_s5.asDiagonal();
+      q_d.block<3, 3>(kPosition, kPosition) += psi(0, 0) * q_dmc_eci;
+      q_d.block<3, 3>(kPosition, kVelocity) += psi(0, 1) * q_dmc_eci;
+      q_d.block<3, 3>(kVelocity, kPosition) += psi(1, 0) * q_dmc_eci;
+      q_d.block<3, 3>(kVelocity, kVelocity) += psi(1, 1) * q_dmc_eci;
+      // Cross terms between an ECI position/velocity error and an RTN
+      // acceleration error: (M diag(q))·ψ.
+      const Eigen::Matrix3d mq = m_rtn * q_dmc_rtn;
+      q_d.block<3, 3>(kPosition, kDmc) = psi(0, 2) * mq;
+      q_d.block<3, 3>(kDmc, kPosition) = psi(2, 0) * mq.transpose();
+      q_d.block<3, 3>(kVelocity, kDmc) = psi(1, 2) * mq;
+      q_d.block<3, 3>(kDmc, kVelocity) = psi(2, 1) * mq.transpose();
+      q_d.block<3, 3>(kDmc, kDmc) = psi(2, 2) * q_dmc_rtn;
+    }
+
     // Φ from the Jacobian at the sub-step start. The covariance does not need
     // the state's integration order: over h ≤ max_step_s the Jacobian's own
     // variation is O(nh) of a term that is already a small correction to I.
-    const Eigen::Matrix<double, 6, 6> f = dynamicsJacobian(cfg_, x, earth);
-    const Covariance phi = Covariance::Identity() + f * h + 0.5 * (f * f) * (h * h);
+    // With the DMC states: ∂v̇/∂a = M and ∂ȧ/∂a = −I/τ (TP Eq. 2.54); ∂(Ma)/∂r
+    // is dropped, as the TP does.
+    Eigen::Matrix<double, kDim, kDim> f = Eigen::Matrix<double, kDim, kDim>::Zero();
+    f.topLeftCorner<6, 6>() = dynamicsJacobian(cfg_, x, earth);
+    if (dmc) {
+      f.block<3, 3>(kVelocity, kDmc) = m_rtn;
+      f.block<3, 3>(kDmc, kDmc) = -(1.0 / cfg_.dmc_tau_s) * id;
+    }
+    const FullCovariance phi = FullCovariance::Identity() + f * h + 0.5 * (f * f) * (h * h);
 
-    // Classical RK4 on the state.
-    const Vec6 k1 = stateDerivative(cfg_, x, earth, a_ng);
-    const Vec6 k2 = stateDerivative(cfg_, Vec6(x + 0.5 * h * k1), earth, a_ng);
-    const Vec6 k3 = stateDerivative(cfg_, Vec6(x + 0.5 * h * k2), earth, a_ng);
-    const Vec6 k4 = stateDerivative(cfg_, Vec6(x + h * k3), earth, a_ng);
+    // Classical RK4 on the state, the DMC acceleration (constant over the
+    // sub-step, in ECI) riding with the known non-gravitational one.
+    const Eigen::Vector3d a_known =
+        a_ng + (dmc ? Eigen::Vector3d(m_rtn * dmc_state) : Eigen::Vector3d::Zero());
+    const Vec6 k1 = stateDerivative(cfg_, x, earth, a_known);
+    const Vec6 k2 = stateDerivative(cfg_, Vec6(x + 0.5 * h * k1), earth, a_known);
+    const Vec6 k3 = stateDerivative(cfg_, Vec6(x + 0.5 * h * k2), earth, a_known);
+    const Vec6 k4 = stateDerivative(cfg_, Vec6(x + h * k3), earth, a_known);
     x += (h / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
+    dmc_state *= phi_dmc;  // the FOGM mean decays (TP §5.2.4)
 
     p = phi * p * phi.transpose() + q_d;
   }
   symmetrise(p);
 
-  if (!x.allFinite() || !p.allFinite()) {
+  if (!x.allFinite() || !p.allFinite() || !dmc_state.allFinite()) {
     dropSolution();  // a NaN can never recover on its own; drop back to cold start
     return OrbitOdRefusal::kFilterFault;
   }
 
   position_ = x.head<3>();
   velocity_ = x.tail<3>();
+  dmc_ = dmc_state;
   p_ = p;
   last_epoch_ = epoch;
   age_s_ += dt_s;
@@ -592,7 +681,7 @@ bool OrbitOd::applyUpdate(int offset, const Eigen::Vector3d& measured, const Eig
   Eigen::Matrix<double, kDim, 3> h_t = Eigen::Matrix<double, kDim, 3>::Zero();
   h_t.block<3, 3>(offset, 0) = Eigen::Matrix3d::Identity();
   const Eigen::Matrix<double, kDim, 3> k_gain = p_ * h_t * s_inv;
-  const Vec6 dx = k_gain * y;
+  const Eigen::Matrix<double, kDim, 1> dx = k_gain * y;
   if (!k_gain.allFinite() || !dx.allFinite()) {
     out.numeric_fault = true;
     return false;
@@ -601,13 +690,15 @@ bool OrbitOd::applyUpdate(int offset, const Eigen::Vector3d& measured, const Eig
   // Joseph form rather than (I−KH)P: it stays symmetric positive-definite under
   // round-off and under a gain that is not exactly optimal, which is the case
   // whenever R is inflated for a systematic budget.
-  const Covariance ikh = Covariance::Identity() - k_gain * h_t.transpose();
-  Covariance p_new = ikh * p_ * ikh.transpose() + k_gain * r_cov * k_gain.transpose();
+  const FullCovariance ikh = FullCovariance::Identity() - k_gain * h_t.transpose();
+  FullCovariance p_new = ikh * p_ * ikh.transpose() + k_gain * r_cov * k_gain.transpose();
   symmetrise(p_new);
 
-  const Eigen::Vector3d new_position = position_ + dx.head<3>();
-  const Eigen::Vector3d new_velocity = velocity_ + dx.tail<3>();
-  if (!new_position.allFinite() || !new_velocity.allFinite() || !p_new.allFinite()) {
+  const Eigen::Vector3d new_position = position_ + dx.segment<3>(kPosition);
+  const Eigen::Vector3d new_velocity = velocity_ + dx.segment<3>(kVelocity);
+  const Eigen::Vector3d new_dmc = dmc_ + dx.segment<3>(kDmc);
+  if (!new_position.allFinite() || !new_velocity.allFinite() || !new_dmc.allFinite() ||
+      !p_new.allFinite()) {
     dropSolution();
     out = OrbitOdUpdate{};
     out.numeric_fault = true;
@@ -615,6 +706,7 @@ bool OrbitOd::applyUpdate(int offset, const Eigen::Vector3d& measured, const Eig
   }
   position_ = new_position;
   velocity_ = new_velocity;
+  dmc_ = new_dmc;  // zero-variance when off, so a gain of exactly zero reaches it
   p_ = p_new;
   out.accepted = true;
   return true;
@@ -864,7 +956,8 @@ bool OrbitOd::nees(const math::Vec3<math::frames::ECI>& position_true,
   // conditioned than an explicit inverse for the same quadratic form, and it is
   // the SPD discipline the rest of the file already uses (llt() gates, Joseph
   // form).
-  const Eigen::LDLT<Covariance> ldlt = p_.ldlt();
+  const Covariance p6 = covariance();
+  const Eigen::LDLT<Covariance> ldlt = p6.ldlt();
   if (ldlt.info() != Eigen::Success || !e.allFinite()) {
     return false;
   }
@@ -889,7 +982,7 @@ void writeToEstimatedState(const OrbitOd& filter, const time::Tai& epoch,
   state.valid.position = valid;
   state.valid.velocity = valid;
   if (valid) {
-    const OrbitOd::Covariance& p = filter.covariance();
+    const OrbitOd::Covariance p = filter.covariance();
     state.covariance.block<3, 3>(state::ErrorState::kPosition, state::ErrorState::kPosition) =
         p.block<3, 3>(OrbitOd::kPosition, OrbitOd::kPosition);
     state.covariance.block<3, 3>(state::ErrorState::kVelocity, state::ErrorState::kVelocity) =
@@ -900,6 +993,109 @@ void writeToEstimatedState(const OrbitOd& filter, const time::Tai& epoch,
         p.block<3, 3>(OrbitOd::kVelocity, OrbitOd::kPosition);
     state.valid.covariance = true;
   }
+}
+
+Eigen::Matrix3d rtnBasis(const Eigen::Vector3d& r, const Eigen::Vector3d& v) {
+  const double r_norm = r.norm();
+  const Eigen::Vector3d h = r.cross(v);
+  const double h_norm = h.norm();
+  if (!(r_norm > 0.0) || !(h_norm > 0.0) || !r.allFinite() || !v.allFinite()) {
+    return Eigen::Matrix3d::Identity();
+  }
+  const Eigen::Vector3d r_hat = r / r_norm;
+  const Eigen::Vector3d n_hat = h / h_norm;
+  const Eigen::Vector3d t_hat = n_hat.cross(r_hat);
+  Eigen::Matrix3d m;
+  m.col(0) = r_hat;
+  m.col(1) = t_hat;
+  m.col(2) = n_hat;
+  return m;
+}
+
+double smaSigma(const Eigen::Vector3d& r_m, const Eigen::Vector3d& v_m_s,
+                const OrbitOd::Covariance& p, double mu_m3_per_s2) {
+  if (!r_m.allFinite() || !v_m_s.allFinite() || !p.allFinite() || !(mu_m3_per_s2 > 0.0)) {
+    return -1.0;
+  }
+  const double r = r_m.norm();
+  if (!(r > 0.0)) {
+    return -1.0;
+  }
+  // Vis-viva: 1/a = 2/r − v²/μ; TP Eq. 2.21–2.23.
+  const double inv_a = 2.0 / r - v_m_s.squaredNorm() / mu_m3_per_s2;
+  if (!(inv_a > 0.0)) {
+    return -1.0;  // unbound: no semi-major axis to have an error in
+  }
+  const double a = 1.0 / inv_a;
+  Eigen::Matrix<double, 1, 6> f;
+  f.head<3>() = (2.0 * a * a / (r * r * r)) * r_m.transpose();
+  f.tail<3>() = (2.0 * a * a / mu_m3_per_s2) * v_m_s.transpose();
+  const double var = (f * p * f.transpose())(0, 0);
+  return var >= 0.0 && std::isfinite(var) ? std::sqrt(var) : -1.0;
+}
+
+double flightPathAngleSigma(const Eigen::Vector3d& r_m, const Eigen::Vector3d& v_m_s,
+                            const OrbitOd::Covariance& p) {
+  if (!r_m.allFinite() || !v_m_s.allFinite() || !p.allFinite()) {
+    return -1.0;
+  }
+  const double r = r_m.norm();
+  const double v = v_m_s.norm();
+  if (!(r > 0.0) || !(v > 0.0)) {
+    return -1.0;
+  }
+  const Eigen::Vector3d u_r = r_m / r;
+  const Eigen::Vector3d u_v = v_m_s / v;
+  const double sin_g = u_r.dot(u_v);
+  const double cos2 = 1.0 - sin_g * sin_g;
+  if (!(cos2 > 1e-12)) {
+    return -1.0;  // radial motion: the flight-path angle is ±90° and undefined in derivative
+  }
+  // TP Eq. 2.25.
+  Eigen::Matrix<double, 1, 6> f;
+  f.head<3>() = ((u_v - sin_g * u_r) / r).transpose();
+  f.tail<3>() = ((u_r - sin_g * u_v) / v).transpose();
+  f /= std::sqrt(cos2);
+  const double var = (f * p * f.transpose())(0, 0);
+  return var >= 0.0 && std::isfinite(var) ? std::sqrt(var) : -1.0;
+}
+
+double alongTrackPsdFromOneOrbitError(double sigma_along_track_m, double period_s) {
+  if (!(period_s > 0.0) || !std::isfinite(sigma_along_track_m)) {
+    return 0.0;
+  }
+  return sigma_along_track_m * sigma_along_track_m / (3.0 * period_s * period_s * period_s);
+}
+
+Eigen::Matrix3d dmcNoiseKernel(double h_s, double tau_s) {
+  Eigen::Matrix3d psi = Eigen::Matrix3d::Zero();
+  if (!(h_s > 0.0) || !(tau_s > 0.0)) {
+    return psi;
+  }
+  // Composite 5-point Gauss–Legendre on 4 panels: exact for polynomials to
+  // degree 9 per panel, which covers Γ_r Γ_rᵀ ~ s⁴ exactly and leaves the
+  // exponentials' residual at ~1e-12 relative for h ≤ τ/10 (the config bound).
+  // Simpson at a fixed node count is *not* exact for the quartic and was 1e-5
+  // relative off in the position block — measured, and why this is here.
+  // Bounded: 20 evaluations.
+  constexpr int kPanels = 4;
+  constexpr double kNodes[5] = {-0.906179845938664, -0.538469310105683, 0.0, 0.538469310105683,
+                                0.906179845938664};
+  constexpr double kWeights[5] = {0.236926885056189, 0.478628670499366, 0.568888888888889,
+                                  0.478628670499366, 0.236926885056189};
+  const double panel = h_s / kPanels;
+  for (int p = 0; p < kPanels; ++p) {
+    const double s0 = panel * (static_cast<double>(p) + 0.5);
+    for (int i = 0; i < 5; ++i) {
+      const double s = s0 + 0.5 * panel * kNodes[i];
+      const double e = std::exp(-s / tau_s);
+      const double one_minus_e = -std::expm1(-s / tau_s);
+      Eigen::Vector3d g;
+      g << tau_s * (s - tau_s * one_minus_e), tau_s * one_minus_e, e;
+      psi += (0.5 * panel * kWeights[i]) * (g * g.transpose());
+    }
+  }
+  return psi;
 }
 
 }  // namespace polaris::gnc

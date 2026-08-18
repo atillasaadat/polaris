@@ -179,6 +179,53 @@
 /// solution is declared invalid at `T` rather than left to coast on a covariance
 /// that has stopped covering its own error.
 ///
+/// ## Process-noise structure and the acceleration states (Push 73)
+///
+/// NASA/TP-2018-219822 §2.2.3 [carpenter2018] describes the two process-noise
+/// models that have proven useful onboard, and both are here:
+///
+///  - **State Noise Compensation** (TP §2.2.3.1): white acceleration noise with a
+///    *fixed intensity in orbit-fixed (RTN) coordinates*, `Q_rtn = diag(q_R, q_T,
+///    q_N)`, rotated into ECI at the sub-step (`Q̃ = M Q_rtn Mᵀ`, TP Eq. 2.49)
+///    and discretised with the CWNA blocks. `OrbitOdConfig::accel_psd_rtn_m2_per_s3`
+///    carries it; the isotropic `accel_psd_m2_per_s3` above adds to it, so a
+///    vehicle with no per-axis knowledge flies exactly as before. The point of
+///    the RTN form is that the along-track intensity `q_T` is the knob that sets
+///    the secular along-track error growth (TP §2.2.4.2) — an impulse along the
+///    velocity changes the period — and TP Eq. 2.88 gives it a starting point
+///    from a measured one-period along-track error: `q_T = σ̂²_Δs / (3 T_p³)`
+///    (`alongTrackPsdFromOneOrbitError`).
+///  - **Dynamic Model Compensation** (TP §2.2.3.3): three exponentially-correlated
+///    (first-order Gauss-Markov) acceleration states in RTN, `ȧ = −a/τ + w`, added
+///    to the force model, so the *systematic* part of what the truncated field and
+///    the drag model get wrong — which the header above admits grows as `t²`, not
+///    as white noise — is **estimated** while fixes are available and carried
+///    into a coast, with a variance bounded at `q τ/2` (TP §5.2.4) where a random
+///    walk's would grow without limit. `dmc_tau_s = 0` disables the states (they
+///    exist in the covariance at zero variance and do nothing). The DMC discrete
+///    process noise is TP Eq. 2.55: `Q = kron(Ψ(h, τ), Q̃)` with `Ψ` the 3×3
+///    kernel `∫₀^h Γ(s)Γ(s)ᵀ ds`, `Γ(s) = [τ(s − τ(1−e^{−s/τ})); τ(1−e^{−s/τ});
+///    e^{−s/τ}]` — evaluated by a fixed composite Gauss–Legendre rule rather
+///    than the closed forms of TP Eqs. 2.56–2.61, which cancel catastrophically at
+///    `h/τ ~ 1e-3` (`dmcNoiseKernel`; the test pins it against quadrature at
+///    high order). The state transition carries `∂v̇/∂a = M` and `∂ȧ/∂a = −I/τ`
+///    (TP Eq. 2.54); `∂(M a)/∂r` is dropped, as the TP does.
+///
+/// **What is flown.** The reference vehicle ships with the RTN intensities at
+/// zero and `dmc_tau_s = 0` — the Push 65 isotropic `q_a` sized from a
+/// measurement, so nothing above changes the flown filter until a campaign
+/// re-derives the tuning (see design doc §8.3). The machinery is tested with
+/// the states on: an unmodelled constant acceleration is estimated to its
+/// value, and a coast after tracking it is closed by it.
+///
+/// **Covariance metrics** (TP §2.1): the trace of `P` mixes metres and metres
+/// per second and hides what matters for prediction, which is period error.
+/// @ref smaSigma is the semi-major-axis standard deviation of TP Eq. 2.23,
+/// `σ_a = √(F_a P F_aᵀ)`, `F_a = 2a² [ r̂ᵀ/r², vᵀ/μ ]`, and @ref
+/// flightPathAngleSigma the flight-path-angle standard deviation of Eq. 2.26 —
+/// the two figures of merit the TP recommends for OD covariances (§2.1.4).
+/// Both are telemetered by the component.
+///
 /// ## Measurements
 ///
 /// A GNSS receiver reports a complete PVT solution in **ECEF and GPS time**, so
@@ -464,10 +511,28 @@ struct OrbitOdConfig {
   /// @name Filter
   /// @{
 
-  /// Process-noise acceleration PSD `q_a` [m²/s³]. Sized from the measured
-  /// force-model truncation over the coast horizon, `q_a = 3·δr(T)²/T³` — see
-  /// the file header. Must be positive.
+  /// Isotropic process-noise acceleration PSD `q_a` [m²/s³]. Sized from the
+  /// measured force-model truncation over the coast horizon, `q_a = 3·δr(T)²/T³`
+  /// — see the file header. Must be finite and non-negative, and positive
+  /// unless @ref accel_psd_rtn_m2_per_s3 carries the noise instead.
   double accel_psd_m2_per_s3{0.0};
+  /// State-noise-compensation PSD in orbit-fixed **RTN** axes [m²/s³] (TP
+  /// §2.2.3.1, Push 73): `(q_R, q_T, q_N)`, added to the isotropic term above.
+  /// The along-track `q_T` is the tuning knob for secular along-track growth
+  /// (TP §2.2.4.2, Eq. 2.88). Zero — the flown value — leaves the isotropic
+  /// term as the whole SNC. Must be finite and non-negative.
+  Eigen::Vector3d accel_psd_rtn_m2_per_s3{Eigen::Vector3d::Zero()};
+  /// Correlation time τ [s] of the three DMC acceleration states (TP §2.2.3.3,
+  /// Push 73). **Zero disables them** (the flown value); positive estimates a
+  /// first-order Gauss-Markov acceleration in RTN with steady-state σ² = qτ/2.
+  /// Must be finite and non-negative, and when positive at least ten
+  /// `max_step_s` (the discrete-noise kernel's quadrature limit).
+  double dmc_tau_s{0.0};
+  /// DMC acceleration process-noise PSD in RTN [m²/s⁵] (TP footnote 2 to Eq.
+  /// 2.55: "acceleration intensities, with units of meters per second^5/2"),
+  /// one per axis. Ignored when @ref dmc_tau_s is zero. Must be finite and
+  /// non-negative.
+  Eigen::Vector3d dmc_psd_rtn_m2_per_s5{Eigen::Vector3d::Zero()};
   /// NIS rejection threshold for the 3-row **position** update [-]. A GNSS
   /// position innovation has no degenerate direction, so this is χ²₃ (99.9% ≈
   /// 16.27), unlike the attitude filter's transverse-by-construction vector
@@ -733,20 +798,30 @@ math::Vec3<math::frames::ECI> onboardAcceleration(const OrbitOdConfig& cfg,
 /// Plain value with fixed-size storage; allocates nothing.
 class OrbitOd {
  public:
-  /// Error-state dimension.
-  static constexpr int kDim = 6;
+  /// Full error-state dimension: `[δr; δv; δa_dmc]` (Push 73). The three DMC
+  /// acceleration states are always carried in the covariance; with
+  /// `dmc_tau_s = 0` they sit at zero variance and change nothing.
+  static constexpr int kDim = 9;
+  /// Dimension of the position/velocity marginal every consumer reads.
+  static constexpr int kPosVelDim = 6;
   /// Row/column of the position error `δr` within @ref Covariance.
   static constexpr int kPosition = 0;
   /// Row/column of the velocity error `δv` within @ref Covariance.
   static constexpr int kVelocity = 3;
+  /// Row/column of the DMC acceleration error (RTN) within @ref FullCovariance.
+  static constexpr int kDmc = 6;
   /// Hard bound on the RK4 sub-step loop, so it is bounded at compile time
   /// (§3.6) rather than by a config value. `OrbitOdConfig::isValid` requires
   /// `max_dt_s ≤ kMaxSubsteps · max_step_s`, so this bound can never be the
   /// thing that silently truncates a legitimate propagation.
   static constexpr int kMaxSubsteps = 64;
-  /// Error-state covariance, blocked `[δr; δv]` — the same order and meaning as
-  /// the corresponding blocks of `state::Covariance`.
-  using Covariance = Eigen::Matrix<double, kDim, kDim>;
+  /// Position/velocity error covariance, blocked `[δr; δv]` — the same order and
+  /// meaning as the corresponding blocks of `state::Covariance`. This is the
+  /// marginal of @ref FullCovariance that every consumer, seed and metric works
+  /// with; the DMC states are internal to the filter.
+  using Covariance = Eigen::Matrix<double, kPosVelDim, kPosVelDim>;
+  /// The full `[δr; δv; δa_dmc]` covariance (Push 73).
+  using FullCovariance = Eigen::Matrix<double, kDim, kDim>;
 
   /// Construct with @p config. If the config is invalid the filter is inert:
   /// every entry point refuses with `kUnconfigured` forever.
@@ -888,8 +963,16 @@ class OrbitOd {
     return math::Vec3<math::frames::ECI>(velocity_);
   }
 
-  /// 6×6 error-state covariance `[δr; δv]`, symmetric.
-  const Covariance& covariance() const { return p_; }
+  /// 6×6 position/velocity error covariance `[δr; δv]`, symmetric — the marginal
+  /// of the full state, which is what the pre-Push-73 filter carried whole.
+  Covariance covariance() const { return p_.topLeftCorner<kPosVelDim, kPosVelDim>(); }
+
+  /// The full 9×9 covariance including the DMC acceleration states (Push 73).
+  const FullCovariance& fullCovariance() const { return p_; }
+
+  /// Estimated DMC acceleration [m/s²] in **RTN** (radial, along-track,
+  /// cross-track); zero when `dmc_tau_s = 0` (Push 73).
+  const Eigen::Vector3d& dmcAcceleration() const { return dmc_; }
 
   /// TAI epoch the state is valid at.
   const time::Tai& epoch() const { return last_epoch_; }
@@ -933,6 +1016,9 @@ class OrbitOd {
   /// Drop the solution while leaving the rejection count standing — the coast-
   /// expiry and internal-fault paths, for the reason @ref reset documents.
   void dropSolution();
+  /// Zero the DMC estimate and set its block of `P` to the stationary
+  /// variance qτ/2 (zero when off).
+  void seedDmcBlock();
 
   /// One 3-row update against a measurement of `H = [I 0]` (position, @p offset
   /// = kPosition) or `H = [0 I]` (velocity, @p offset = kVelocity).
@@ -948,7 +1034,8 @@ class OrbitOd {
   OrbitOdConfig cfg_{};
   Eigen::Vector3d position_{Eigen::Vector3d::Zero()};  ///< ECI position estimate [m]
   Eigen::Vector3d velocity_{Eigen::Vector3d::Zero()};  ///< ECI velocity estimate [m/s]
-  Covariance p_{Covariance::Zero()};                   ///< error-state covariance
+  Eigen::Vector3d dmc_{Eigen::Vector3d::Zero()};       ///< DMC acceleration estimate, RTN [m/s²]
+  FullCovariance p_{FullCovariance::Zero()};           ///< full error-state covariance
   time::Tai last_epoch_{};                             ///< epoch of the state
   time::Tai last_fix_epoch_{};                         ///< epoch of the last ingested fix
   double age_s_{0.0};                                  ///< since the last accepted fix [s]
@@ -979,6 +1066,41 @@ class OrbitOd {
 /// @param state  canonical state to update in place
 void writeToEstimatedState(const OrbitOd& filter, const time::Tai& epoch,
                            state::EstimatedState& state);
+
+/// The RTN (radial, along-track, cross-track) basis at @p r, @p v as columns of
+/// the ECI←RTN rotation: `R̂ = r/|r|`, `N̂ = (r×v)/|r×v|`, `T̂ = N̂ × R̂` (TP §2.1.3's
+/// `M_rtn`). Identity when the state is degenerate (|r×v| = 0).
+Eigen::Matrix3d rtnBasis(const Eigen::Vector3d& r, const Eigen::Vector3d& v);
+
+/// Semi-major-axis standard deviation [m] of a Cartesian state's covariance
+/// (NASA/TP-2018-219822 §2.1.2, Eq. 2.23): `σ_a = √(F_a P F_aᵀ)` with
+/// `F_a = 2a² [ r̂ᵀ/r², vᵀ/μ ]` — the OD figure of merit the TP recommends,
+/// because SMA error is period error and period error is secular along-track
+/// drift. Returns a negative value for a non-finite input, an unbound (a ≤ 0)
+/// or degenerate state.
+double smaSigma(const Eigen::Vector3d& r_m, const Eigen::Vector3d& v_m_s,
+                const OrbitOd::Covariance& p, double mu_m3_per_s2);
+
+/// Flight-path-angle standard deviation [rad] (TP §2.1.3, Eq. 2.26):
+/// `F_γ = 1/√(1−sin²γ) [ (û_v − sinγ û_r)ᵀ/r, (û_r − sinγ û_v)ᵀ/v ]`. The TP's
+/// secondary metric (primary for entry). Negative for a non-finite or
+/// degenerate input.
+double flightPathAngleSigma(const Eigen::Vector3d& r_m, const Eigen::Vector3d& v_m_s,
+                            const OrbitOd::Covariance& p);
+
+/// TP Eq. 2.88: the along-track SNC intensity that reproduces a measured
+/// one-period along-track error, `q_T = σ̂²_Δs / (3 T_p³)` [m²/s³] — the
+/// starting point for tuning `accel_psd_rtn_m2_per_s3[1]` from a period-folded
+/// ensemble (TP §2.2.4.2). Returns 0 for a non-positive period.
+double alongTrackPsdFromOneOrbitError(double sigma_along_track_m, double period_s);
+
+/// The DMC discrete process-noise kernel `Ψ(h, τ) = ∫₀^h Γ(s)Γ(s)ᵀ ds` (3×3,
+/// blocked position/velocity/acceleration for one axis) with
+/// `Γ(s) = [τ(s − τ(1−e^{−s/τ})); τ(1−e^{−s/τ}); e^{−s/τ}]` — TP Eq. 2.55's
+/// coefficients, by a fixed composite Gauss–Legendre rule (Push 73). Exposed
+/// for the test that pins it against high-order quadrature and its small-h
+/// limit `[h⁵/20, h⁴/8, h³/6; h⁴/8, h³/3, h²/2; h³/6, h²/2, h]`.
+Eigen::Matrix3d dmcNoiseKernel(double h_s, double tau_s);
 
 }  // namespace polaris::gnc
 

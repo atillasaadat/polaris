@@ -180,6 +180,19 @@ psen::GnssSpec receiverSpec(double fix_latency_s) {
   });
 }
 
+/// Optional overrides from the command line (Push 73): the DMC states and the
+/// RTN state-noise intensities, so the campaign can measure a candidate tuning
+/// against the flown one on the same runs before anything changes in the yaml.
+/// Zero = the flown configuration.
+struct TuningOverride {
+  double dmc_tau_s{0.0};
+  double dmc_psd_m2_per_s5{0.0};    ///< isotropic in RTN, all three axes
+  double accel_psd_iso_scale{1.0};  ///< multiplies the flown isotropic q_a
+  Eigen::Vector3d accel_psd_rtn{Eigen::Vector3d::Zero()};
+};
+
+TuningOverride g_override;
+
 pg::OrbitOdConfig filterConfig() {
   pg::OrbitOdConfig cfg;
   cfg.mu_m3_per_s2 = pc::gravity::kGM;
@@ -190,7 +203,10 @@ pg::OrbitOdConfig filterConfig() {
   cfg.drag_ref_density_kg_m3 = 3.725e-12;  // Vallado Table 8-4, 400 km band
   cfg.drag_ref_altitude_m = 400.0e3;
   cfg.drag_scale_height_m = 58'515.0;
-  cfg.accel_psd_m2_per_s3 = kAccelPsd;
+  cfg.accel_psd_m2_per_s3 = kAccelPsd * g_override.accel_psd_iso_scale;
+  cfg.accel_psd_rtn_m2_per_s3 = g_override.accel_psd_rtn;
+  cfg.dmc_tau_s = g_override.dmc_tau_s;
+  cfg.dmc_psd_rtn_m2_per_s5 = Eigen::Vector3d::Constant(g_override.dmc_psd_m2_per_s5);
   cfg.position_nis_gate = kChi2_3_999;
   cfg.velocity_nis_gate = kChi2_3_999;
   cfg.max_coast_s = kCoastHorizonS;
@@ -312,6 +328,13 @@ struct Record {
   /// and the wrong split between these three is wrong in the way that matters,
   /// and a scalar cannot see it.
   double sigma_ric_m[3]{0.0, 0.0, 0.0};
+  /// Semi-major-axis error [m] (estimate − truth) and the filter's own SMA 1σ
+  /// (NASA/TP-2018-219822 §2.1.2, Eq. 2.23; Push 73) — the OD figure of merit
+  /// the TP recommends, since SMA error is period error is secular along-track
+  /// drift. Recorded per sample so the campaign can judge the covariance on
+  /// the metric that predicts, not only on the metric that fits.
+  double sma_err_m{0.0};
+  double sma_sigma_m{0.0};
   double nees{0.0};
   double nis{0.0};
   bool nis_valid{false};
@@ -374,6 +397,7 @@ void writeRecord(std::ostream& out, int run, const std::string& scenario, const 
       << "]"
       << ",\"sigma_ric_m\":[" << r.sigma_ric_m[0] << "," << r.sigma_ric_m[1] << ","
       << r.sigma_ric_m[2] << "]"
+      << ",\"sma_err_m\":" << r.sma_err_m << ",\"sma_sigma_m\":" << r.sma_sigma_m
       << ",\"nees\":" << r.nees;
   if (r.nis_valid) {
     out << ",\"nis\":" << r.nis;
@@ -660,7 +684,7 @@ RunResult flyOne(int run, const mco::Scenario& scenario, double duration_s,
     if (filter.isInitialised()) {
       rec.pos_err_m = (filter.position().eigen() - r_true).norm();
       rec.vel_err_mps = (filter.velocity().eigen() - v_true).norm();
-      const pg::OrbitOd::Covariance& p = filter.covariance();
+      const pg::OrbitOd::Covariance p = filter.covariance();
       rec.pos_sigma_m = std::sqrt(p.block<3, 3>(0, 0).trace());
       rec.vel_sigma_mps = std::sqrt(p.block<3, 3>(3, 3).trace());
 
@@ -678,6 +702,14 @@ RunResult flyOne(int run, const mco::Scenario& scenario, double duration_s,
       if (filter.nees(pm::Vec3<pmf::ECI>(r_true), pm::Vec3<pmf::ECI>(v_true), nees)) {
         rec.nees = nees;
       }
+      // TP §2.1.2: SMA from vis-viva on both states, and σ_a from the covariance.
+      const double mu = pc::gravity::kGM;
+      auto sma = [mu](const Eigen::Vector3d& rr, const Eigen::Vector3d& vv) {
+        return 1.0 / (2.0 / rr.norm() - vv.squaredNorm() / mu);
+      };
+      rec.sma_err_m =
+          sma(filter.position().eigen(), filter.velocity().eigen()) - sma(r_true, v_true);
+      rec.sma_sigma_m = pg::smaSigma(filter.position().eigen(), filter.velocity().eigen(), p, mu);
       if (rec.solution_valid) {
         result.worst_pos_err_m = std::max(result.worst_pos_err_m, rec.pos_err_m);
       }
@@ -720,10 +752,22 @@ int main(int argc, char** argv) {
       out_path = argv[++i];
     } else if (a == "--scenario" && i + 1 < argc) {
       only_scenario = argv[++i];
+    } else if (a == "--dmc-tau-s") {
+      g_override.dmc_tau_s = next(0.0);
+    } else if (a == "--dmc-psd") {
+      g_override.dmc_psd_m2_per_s5 = next(0.0);
+    } else if (a == "--qa-scale") {
+      g_override.accel_psd_iso_scale = next(1.0);
+    } else if (a == "--q-rtn" && i + 3 < argc) {
+      g_override.accel_psd_rtn =
+          Eigen::Vector3d(std::atof(argv[i + 1]), std::atof(argv[i + 2]), std::atof(argv[i + 3]));
+      i += 3;
     } else if (a == "--help") {
       std::printf(
           "usage: polaris_orbit_od_mc [--first-run N] [--runs N] [--duration-s S]\n"
-          "                           [--scenario NAME] [--out PATH]\n");
+          "                           [--scenario NAME] [--out PATH]\n"
+          "                           [--dmc-tau-s S --dmc-psd Q] [--qa-scale K]\n"
+          "                           [--q-rtn qR qT qN]   (Push 73 tuning candidates)\n");
       return 0;
     }
   }

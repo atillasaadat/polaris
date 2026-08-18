@@ -247,6 +247,24 @@ module flight {
     @ Editing policy for the velocity measurement; same encoding.
     param VelocityMeasMode: U8
 
+    @ State-noise-compensation PSD in orbit-fixed RTN axes [m^2/s^3]
+    @ (NASA/TP-2018-219822 §2.2.3.1; Push 73): (q_R, q_T, q_N), added to
+    @ AccelPsdM2PerS3. q_T is the along-track knob for secular along-track
+    @ error growth (TP §2.2.4.2, Eq. 2.88). Zero — the flown value — keeps
+    @ the isotropic term as the whole SNC. Each >= 0; at least one of the four
+    @ PSDs must be positive.
+    param AccelPsdRtnM2PerS3: Vec3F64
+
+    @ Correlation time of the three DMC acceleration states [s] (TP §2.2.3.3;
+    @ Push 73). 0 = off (the flown value); positive estimates a first-order
+    @ Gauss-Markov acceleration in RTN with steady-state sigma^2 = q tau/2,
+    @ carried into a coast. Must be 0 or >= 10 x MaxStepS.
+    param DmcTauS: F64
+
+    @ DMC acceleration process-noise PSD in RTN [m^2/s^5] (TP Eq. 2.55
+    @ footnote), one per axis; ignored when DmcTauS = 0. Each >= 0.
+    param DmcPsdRtnM2PerS5: Vec3F64
+
     @ Interval at which the backup ephemeris is re-seeded from the FINE
     @ solution [s] (TP §9.2: "re-seed the backup with a current filter state at
     @ periodic intervals"). 0 disables the backup. Must be below
@@ -317,6 +335,21 @@ module flight {
 
     @ The covariance factorised positive semi-definite this cycle (TP Ch. 7).
     telemetry CovarianceHealthy: bool
+
+    @ Semi-major-axis 1-sigma [m] from the covariance (NASA/TP-2018-219822
+    @ §2.1.2, Eq. 2.23) — the OD figure of merit the TP recommends: SMA error
+    @ is period error is secular along-track drift. -1 with no solution.
+    telemetry SmaSigmaM: F64
+
+    @ Flight-path-angle 1-sigma [rad] (TP §2.1.3, Eq. 2.26), the secondary
+    @ metric. -1 with no solution.
+    telemetry FpaSigmaRad: F64
+
+    @ Estimated DMC acceleration [m/s^2] in RTN (TP §2.2.3.3); zero when off.
+    telemetry DmcAccelRtnMps2: Vec3F64
+
+    @ sqrt(trace) of the DMC acceleration covariance [m/s^2]; 0 when off.
+    telemetry DmcSigmaMps2: F64
 
     # ----------------------------------------------------------------------
     # Events
