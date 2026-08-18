@@ -389,8 +389,16 @@ bool AttitudeEstimator ::refreshFineConfig() {
     return false;
   }
 
+  Fw::ParamValid tau_valid = Fw::ParamValid::INVALID;
+  const F64 bias_tau_s = this->paramGet_MekfBiasTauSec(tau_valid);
+  if (tau_valid != Fw::ParamValid::VALID || !std::isfinite(bias_tau_s) || bias_tau_s < 0.0) {
+    this->failFineConfig("MekfBiasTauSec missing, not finite or negative in ParameterDb");
+    return false;
+  }
+
   polaris::gnc::MekfConfig cfg;
   cfg.arw_rad_per_sqrt_s = arw;
+  cfg.bias_tau_s = bias_tau_s;  // TP §5.2.4; 0 = random walk
   cfg.rrw_rad_per_s_per_sqrt_s = values[0];
   cfg.nis_gate = values[1];
   cfg.attitude_nis_gate = values[5];
@@ -823,6 +831,11 @@ double AttitudeEstimator ::stepFineMode(const polaris::time::Tai& epoch,
                                         const polaris::gnc::CoarseAttitudeOutput& coarse,
                                         const StarTrackerSample* stars, int starCount) {
   bool refused = !this->mekf_.propagate(epoch, in.gyro, in.gyro_valid);
+  // TP §3.2 / Algorithm 3.1 (Push 72): every measurement of this epoch is
+  // linearised at the same reference and the reset happens once, below — so
+  // the result does not depend on the order the trackers and the pairs are
+  // processed in.
+  this->mekf_.beginBatch();
   bool nis_rejected = false;
   // The **largest** NIS of the cycle, not the last: a rejected outlier followed
   // by a good update would otherwise be telemetered as if the cycle were
@@ -917,6 +930,10 @@ double AttitudeEstimator ::stepFineMode(const polaris::time::Tai& epoch,
       worst_nis = diagnostics.nis;
     }
   }
+
+  // One reset for the epoch (TP Algorithm 3.1); a non-finite result drops the
+  // filter, which the FILTER_FAULT branch below then reports.
+  (void)this->mekf_.endBatch();
 
   this->refusal_streak_ = refused ? (this->refusal_streak_ + 1) : 0;
   // **A rejection on one tracker while another was accepted is a *unit* fault,

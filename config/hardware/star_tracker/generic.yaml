@@ -28,6 +28,7 @@ params:
   tracking_accel_deg_s2: 1.0
   lost_in_space_s: 10.0              # time to first fix
   update_rate_hz: 1.0
+  latency_s: 0.5                     # modelling choice: half a solution period (Push 72)
   fov_deg: 20.0
   sun_exclusion_deg: 50.0
   earth_exclusion_deg: 30.0

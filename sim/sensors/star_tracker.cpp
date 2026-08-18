@@ -72,6 +72,7 @@ StarTrackerSpec StarTrackerSpec::fromParams(const std::map<std::string, double>&
   s.lost_in_space_s = get(p, "lost_in_space_s");
 
   s.update_rate_hz = get(p, "update_rate_hz");
+  s.latency_s = get(p, "latency_s");
   s.fov_rad = get(p, "fov_deg") * kDeg2Rad;
 
   // Sun and Earth exclusion are quoted as absolute boresight-to-limb angles. The
@@ -126,6 +127,56 @@ Eigen::Vector3d StarTracker::stepSpatial(const StarTrackerAxisSigma& sigma, doub
 
 StarTrackerMeasurement StarTracker::sample(const time::Tai& epoch, double dt,
                                            const StarTrackerInput& input) {
+  const StarTrackerMeasurement now = solve(epoch, dt, input);
+  if (!(spec_.latency_s > 0.0)) {
+    return now;
+  }
+  // --- Solution latency (TP §3.1): what is delivered is not what was just
+  // solved. `now` describes the frame exposed at `epoch` and enters the delay
+  // line; what leaves it is the newest solution that has been in there at
+  // least `latency_s`, still tagged at *its* exposure epoch — which is what
+  // makes the latency correctable downstream instead of merely wrong. Same
+  // discipline as the receiver's fix latency (`gnss.cpp`).
+  if (pending_count_ == kMaxPending) {
+    for (std::size_t i = 1; i < kMaxPending; ++i) {
+      pending_[i - 1] = pending_[i];
+      pending_due_ns_[i - 1] = pending_due_ns_[i];
+    }
+    pending_count_ -= 1;
+    pending_dropped_ += 1;
+  }
+  const std::int64_t now_ns = epoch.nanosecondsSinceEpoch();
+  pending_[pending_count_] = now;
+  pending_due_ns_[pending_count_] =
+      now_ns + static_cast<std::int64_t>(std::llround(spec_.latency_s * 1.0e9));
+  pending_count_ += 1;
+
+  std::size_t ready = 0;
+  while (ready < pending_count_ && pending_due_ns_[ready] <= now_ns) {
+    ready += 1;
+  }
+  if (ready == 0) {
+    // Nothing has left the unit yet: no solution, in the same shape a unit
+    // that has not acquired reports — mode and countdown are the live ones.
+    StarTrackerMeasurement none;
+    none.time_tag = epoch;
+    none.valid = false;
+    none.mode = mode_;
+    none.acquisition_elapsed_s = acquisition_elapsed_s_;
+    return none;
+  }
+  const StarTrackerMeasurement delivered = pending_[ready - 1];
+  const std::size_t remaining = pending_count_ - ready;
+  for (std::size_t i = 0; i < remaining; ++i) {
+    pending_[i] = pending_[ready + i];
+    pending_due_ns_[i] = pending_due_ns_[ready + i];
+  }
+  pending_count_ = remaining;
+  return delivered;
+}
+
+StarTrackerMeasurement StarTracker::solve(const time::Tai& epoch, double dt,
+                                          const StarTrackerInput& input) {
   StarTrackerMeasurement m;
   m.time_tag = epoch;
   m.attitude = input.attitude;

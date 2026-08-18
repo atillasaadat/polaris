@@ -614,3 +614,52 @@ TEST(StarTracker, DropoutAndAttitudeBiasFaults) {
   EXPECT_TRUE(m.valid) << "a bias is a wrong answer, not a lost one";
   EXPECT_NEAR(attitudeError(m.attitude, in.attitude), bias, 1.0e-12);
 }
+
+// --- Solution latency (Push 72; NASA/TP-2018-219822 §3.1) ---------------------
+
+/// The delay line: with `latency_s` set, `sample()` returns the newest solution
+/// that has been in the unit at least that long, tagged at *its* exposure epoch
+/// and describing the attitude *then* — so a spinning vehicle's tracker reads
+/// ω·τ behind, and the onboard filter has the tag to correct it.
+TEST(StarTracker, LatencyDeliversTheEarlierSolutionTaggedAtItsOwnEpoch) {
+  sensors::StarTrackerSpec spec;  // perfect, so the attitude is exactly the input's
+  spec.latency_s = 0.5;
+  sensors::StarTracker st(spec, Eigen::Matrix3d::Identity(), 1, 1);
+  auto in = restingInput();
+  const double rate = 0.01;  // rad/s about Z
+  const double dt = 0.1;
+  int invalid_first = 0;
+  for (int i = 1; i <= 20; ++i) {
+    const double t = i * dt;
+    const pt::Tai epoch = kEpoch + pt::Duration::fromSecondsF(t);
+    in.attitude = QuatBI(pm::Quaternion::FromAxisAngle(Eigen::Vector3d::UnitZ(), rate * t));
+    const auto m = st.sample(epoch, dt, in);
+    if (!m.valid) {
+      ++invalid_first;
+      EXPECT_LT(i, 6) << "no solution should be missing once the line has filled";
+      continue;
+    }
+    // Delivered solution: exposed at t − 0.5 s (to the poll grid), tagged then,
+    // and its attitude is the one at *that* time — not the current one.
+    const double t_meas = static_cast<double>((m.time_tag - kEpoch).seconds());
+    EXPECT_NEAR(t_meas, t - 0.5, 1e-9) << "poll " << i;
+    const QuatBI expected(pm::Quaternion::FromAxisAngle(Eigen::Vector3d::UnitZ(), rate * t_meas));
+    EXPECT_LT(attitudeError(m.attitude, expected), 1e-12) << "poll " << i;
+    EXPECT_NEAR(attitudeError(m.attitude, in.attitude), rate * 0.5, 1e-9)
+        << "the uncompensated error is ω·τ";
+  }
+  EXPECT_EQ(invalid_first, 5) << "the first 0.5 s has nothing that has cleared the unit";
+  EXPECT_EQ(st.pendingDropped(), 0u);
+
+  // Zero latency delivers each solution as computed, tagged now.
+  sensors::StarTracker immediate(sensors::StarTrackerSpec{}, Eigen::Matrix3d::Identity(), 1, 1);
+  const auto m0 = immediate.sample(kEpoch, dt, in);
+  EXPECT_TRUE(m0.valid);
+  EXPECT_EQ(m0.time_tag.nanosecondsSinceEpoch(), kEpoch.nanosecondsSinceEpoch());
+}
+
+TEST(StarTrackerSpec, LatencyIsReadFromTheCatalogEntry) {
+  auto p = std::map<std::string, double>{{"latency_s", 0.1}};
+  EXPECT_DOUBLE_EQ(sensors::StarTrackerSpec::fromParams(p).latency_s, 0.1);
+  EXPECT_DOUBLE_EQ(aurigaSpec().latency_s, 0.0) << "absent means immediate";
+}

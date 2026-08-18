@@ -24,6 +24,7 @@
 // share is serialised on the component mutex.
 // ======================================================================
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <Eigen/Cholesky>
@@ -313,6 +314,7 @@ int AttitudeEstimator ::collectStarTrackers(I64 nowTaiNs, StarTrackerSample* out
           (this->sigma_st_xy_rad_ * this->sigma_st_xy_rad_) * (Eigen::Matrix3d::Identity() - bbt) +
           (this->sigma_st_z_rad_ * this->sigma_st_z_rad_) * bbt;
       out[count].index = i;
+      out[count].timeTagNs = m.get_timeTagNs();
       ++count;
     }
   }
@@ -334,8 +336,14 @@ double AttitudeEstimator ::fuseStarTrackers(const StarTrackerSample* samples, in
     polaris::gnc::MekfUpdate diagnostics;
     const bool force =
         this->st_meas_mode_ == static_cast<U8>(polaris::gnc::MeasurementMode::kForce);
+    // TP §3.1 (Push 72): the solution is valid at its own time tag, one tracker
+    // frame behind the cycle; the filter advances it on its rate. A tag ahead
+    // of the cycle (a clock skew) is treated as current rather than refused —
+    // freshness already bounded it.
+    const double latency_s =
+        std::max(0.0, static_cast<double>(this->last_epoch_tai_ns_ - samples[i].timeTagNs) / 1.0e9);
     const bool applied = this->mekf_.updateAttitude(samples[i].attitude, samples[i].noise_cov,
-                                                    diagnostics, force);  // TP §9.1
+                                                    diagnostics, force, latency_s);  // TP §9.1
     // Same three-way distinction the vector path makes, and for the same reason:
     // a gate rejection and a malformed measurement both return false and mean
     // opposite things — one is the divergence guard working, the other is the

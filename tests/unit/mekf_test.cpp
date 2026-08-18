@@ -1113,3 +1113,228 @@ TEST(Mekf, ForceOverridesTheGateAndIsCountedApart) {
   filter.reset();
   EXPECT_EQ(filter.forcedCount(), 0u);
 }
+
+// ===========================================================================
+// NASA/TP-2018-219822 Ch. 3, Ch. 5, Ch. 8 fidelity items — Push 72
+// ===========================================================================
+
+/// TP §3.2 / Algorithm 3.1: inside a batch the result does not depend on the
+/// order the same-epoch measurements are processed in; with a reset between
+/// them (the pre-Push-72 behaviour) it does.
+TEST(Mekf, SameEpochBatchIsInvariantToMeasurementOrder) {
+  RecordProperty("verifies", "REQ-ADET-015");
+  // 5 deg off with a wide covariance against a 0.5 deg pair: a large a-priori
+  // error against precise measurements is exactly the case the TP names as
+  // order-sensitive. (Larger and the isotropic-R vector update's along-vector
+  // second-order term (1 − cos θ) trips the gate on its own — a different, known
+  // limit of the vector model, see mekf.hpp.)
+  const pm::Quaternion q_true =
+      pm::Quaternion::FromAxisAngle(Eigen::Vector3d(0.3, -0.5, 0.8).normalized(), 5.0 * kDeg);
+  const double sigma = 0.5 * kDeg;
+  auto seeded = [&]() {
+    gnc::Mekf f(defaultConfig());
+    EXPECT_TRUE(seedAt(f, pm::Quaternion::Identity(), 10.0 * kDeg));
+    EXPECT_TRUE(f.propagate(epochAt(kDt), pm::Vec3<frames::Body>(Eigen::Vector3d::Zero()), true));
+    return f;
+  };
+  const Eigen::Vector3d sun_b = q_true.rotate(kSunEci);
+  const Eigen::Vector3d mag_b = q_true.rotate(kMagEci);
+  gnc::MekfUpdate up{};
+
+  gnc::Mekf a = seeded();
+  a.beginBatch();
+  ASSERT_TRUE(a.update(pm::Vec3<frames::Body>(sun_b), pm::Vec3<frames::ECI>(kSunEci), sigma, up));
+  ASSERT_TRUE(a.update(pm::Vec3<frames::Body>(mag_b), pm::Vec3<frames::ECI>(kMagEci), sigma, up));
+  EXPECT_TRUE(a.batchOpen());
+  EXPECT_EQ(errorDeg(a.attitude().core(), pm::Quaternion::Identity()), 0.0)
+      << "the reference does not move until the batch closes";
+  ASSERT_TRUE(a.endBatch());
+  EXPECT_FALSE(a.batchOpen());
+
+  gnc::Mekf b = seeded();
+  b.beginBatch();
+  ASSERT_TRUE(b.update(pm::Vec3<frames::Body>(mag_b), pm::Vec3<frames::ECI>(kMagEci), sigma, up));
+  ASSERT_TRUE(b.update(pm::Vec3<frames::Body>(sun_b), pm::Vec3<frames::ECI>(kSunEci), sigma, up));
+  ASSERT_TRUE(b.endBatch());
+
+  // Both converge onto the truth, and onto each other to round-off.
+  EXPECT_LT(errorDeg(a.attitude().core(), q_true), 0.5);
+  EXPECT_LT(errorDeg(a.attitude().core(), b.attitude().core()), 1e-9);
+  EXPECT_LT((a.covariance() - b.covariance()).norm(), 1e-12);
+
+  // Sequential resets: the second measurement is linearised about a reference
+  // the first one moved by ~25 deg, and the two orders disagree by a visible
+  // amount — the effect the batch removes.
+  gnc::Mekf c = seeded();
+  ASSERT_TRUE(c.update(pm::Vec3<frames::Body>(sun_b), pm::Vec3<frames::ECI>(kSunEci), sigma, up));
+  ASSERT_TRUE(c.update(pm::Vec3<frames::Body>(mag_b), pm::Vec3<frames::ECI>(kMagEci), sigma, up));
+  gnc::Mekf d = seeded();
+  ASSERT_TRUE(d.update(pm::Vec3<frames::Body>(mag_b), pm::Vec3<frames::ECI>(kMagEci), sigma, up));
+  ASSERT_TRUE(d.update(pm::Vec3<frames::Body>(sun_b), pm::Vec3<frames::ECI>(kSunEci), sigma, up));
+  EXPECT_GT(errorDeg(c.attitude().core(), d.attitude().core()), 0.005);
+
+  // A propagate closes an open batch on its own (TP §8.9.2), and endBatch with
+  // none open is a harmless no-op.
+  gnc::Mekf e = seeded();
+  e.beginBatch();
+  ASSERT_TRUE(e.update(pm::Vec3<frames::Body>(sun_b), pm::Vec3<frames::ECI>(kSunEci), sigma, up));
+  ASSERT_TRUE(e.propagate(epochAt(2 * kDt), pm::Vec3<frames::Body>(Eigen::Vector3d::Zero()), true));
+  EXPECT_FALSE(e.batchOpen());
+  EXPECT_GT(errorDeg(e.attitude().core(), pm::Quaternion::Identity()), 1.0)
+      << "the pending correction was applied before the propagation";
+  EXPECT_TRUE(e.endBatch());
+}
+
+/// TP Eq. 8.76 (Reynolds): the multiplicative reset rotates the attitude
+/// covariance by δθ̂/2. On by default; off reproduces the pre-Push-72 P.
+TEST(Mekf, ReynoldsCovarianceResetRotatesPByHalfTheCorrection) {
+  RecordProperty("verifies", "REQ-ADET-015");
+  const pm::Quaternion q_true =
+      pm::Quaternion::FromAxisAngle(Eigen::Vector3d::UnitZ(), 20.0 * kDeg);
+  const Eigen::Matrix3d r = (0.01 * kDeg) * (0.01 * kDeg) * Eigen::Matrix3d::Identity();
+  gnc::MekfConfig with = defaultConfig();
+  gnc::MekfConfig without = defaultConfig();
+  without.reynolds_reset = false;
+  gnc::Mekf f_with(with);
+  gnc::Mekf f_without(without);
+  // An anisotropic seed covariance, so a rotation of it is visible.
+  // Wide about the corrected axis (Z) so the gate takes the 20 deg, and unequal
+  // about X and Y so a rotation of P about Z is visible.
+  const Eigen::Matrix3d att_cov = Eigen::Vector3d(1.0e-2, 1.0e-4, 1.0e-1).asDiagonal();
+  const Eigen::Matrix3d bias_cov = 1.0e-8 * Eigen::Matrix3d::Identity();
+  for (gnc::Mekf* f : {&f_with, &f_without}) {
+    ASSERT_TRUE(f->initialize(epochAt(0.0),
+                              pm::Quat<frames::Body, frames::ECI>(pm::Quaternion::Identity()),
+                              att_cov, pm::Vec3<frames::Body>(Eigen::Vector3d::Zero()), bias_cov));
+  }
+  gnc::MekfUpdate up{};
+  ASSERT_TRUE(f_with.updateAttitude(pm::Quat<frames::Body, frames::ECI>(q_true), r, up));
+  const Eigen::Vector3d dtheta = up.innovation;  // K ≈ I against a wide P
+  ASSERT_TRUE(f_without.updateAttitude(pm::Quat<frames::Body, frames::ECI>(q_true), r, up));
+  EXPECT_LT(errorDeg(f_with.attitude().core(), f_without.attitude().core()), 1e-9)
+      << "the reset changes the covariance frame, not the state";
+
+  // P_with = G P_without Gᵀ with G = I − [δθ̂×]/2 on the attitude block, where δθ̂
+  // is the applied correction (K z, ≈ z here).
+  const Eigen::Vector3d applied = dtheta;
+  Eigen::Matrix<double, 6, 6> g = Eigen::Matrix<double, 6, 6>::Identity();
+  Eigen::Matrix3d sk;
+  sk << 0, -applied.z(), applied.y(), applied.z(), 0, -applied.x(), -applied.y(), applied.x(), 0;
+  g.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity() - 0.5 * sk;
+  const Eigen::Matrix<double, 6, 6> expected = g * f_without.covariance() * g.transpose();
+  // The applied correction is K z, not z; against σ = 0.01 deg and a 5.7 deg
+  // prior the gain is 1 to 1e-6, so the comparison is tight but not exact.
+  EXPECT_LT((f_with.covariance() - expected).norm(), 1e-6 * expected.norm() + 1e-14);
+  EXPECT_GT((f_with.covariance() - f_without.covariance()).norm(), 1e-9)
+      << "and the reset did something";
+}
+
+/// TP §5.2.4: the first-order Gauss-Markov bias has bounded variance (σ_u² τ/2)
+/// where the random walk grows without limit, mimics the random walk at short
+/// times, and decays the estimate toward zero at e^{−Δt/τ}.
+TEST(Mekf, GaussMarkovBiasIsBoundedAndDecaysAtTheCorrelationTime) {
+  RecordProperty("verifies", "REQ-ADET-015");
+  gnc::MekfConfig rw = defaultConfig();
+  gnc::MekfConfig gm = defaultConfig();
+  gm.bias_tau_s = 100.0;
+  gnc::MekfConfig bad = gm;
+  bad.bias_tau_s = -1.0;
+  EXPECT_FALSE(bad.isValid());
+  gnc::Mekf f_rw(rw);
+  gnc::Mekf f_gm(gm);
+  const Eigen::Vector3d b0(1.0e-3, -5.0e-4, 8.0e-4);
+  const Eigen::Matrix3d bias_cov = 1.0e-10 * Eigen::Matrix3d::Identity();
+  for (gnc::Mekf* f : {&f_rw, &f_gm}) {
+    ASSERT_TRUE(
+        f->initialize(epochAt(0.0), pm::Quat<frames::Body, frames::ECI>(pm::Quaternion::Identity()),
+                      1.0e-4 * Eigen::Matrix3d::Identity(), pm::Vec3<frames::Body>(b0), bias_cov));
+  }
+  // One short step: identical bias process noise to first order.
+  ASSERT_TRUE(f_rw.propagate(epochAt(kDt), pm::Vec3<frames::Body>(b0), true));
+  ASSERT_TRUE(f_gm.propagate(epochAt(kDt), pm::Vec3<frames::Body>(b0), true));
+  const double sigma_u_sq0 = gm.rrw_rad_per_s_per_sqrt_s * gm.rrw_rad_per_s_per_sqrt_s;
+  const double phi = std::exp(-kDt / 100.0);
+  EXPECT_NEAR(f_rw.covariance()(3, 3), bias_cov(0, 0) + sigma_u_sq0 * kDt, 1e-20);
+  EXPECT_NEAR(f_gm.covariance()(3, 3),
+              phi * phi * bias_cov(0, 0) + sigma_u_sq0 * 100.0 * 0.5 * (1.0 - phi * phi), 1e-20)
+      << "Φ₂₂ P Φ₂₂ᵀ + σ_u² τ/2 (1 − e^{−2Δt/τ})";
+  EXPECT_NEAR(sigma_u_sq0 * 100.0 * 0.5 * (1.0 - phi * phi), sigma_u_sq0 * kDt,
+              2.0e-3 * sigma_u_sq0 * kDt)
+      << "Δt/τ = 1e-3: the FOGM process noise is the random walk's to O(Δt/τ)";
+  EXPECT_NEAR(f_gm.gyroBias().eigen().x(), b0.x() * std::exp(-kDt / 100.0), 1e-15);
+
+  // A long unmeasured propagation (no updates): RW variance grows linearly,
+  // FOGM saturates at σ_u² τ/2 and the estimate has decayed to e^{-3}.
+  const double sigma_u_sq = gm.rrw_rad_per_s_per_sqrt_s * gm.rrw_rad_per_s_per_sqrt_s;
+  for (int i = 2; i <= 3000; ++i) {  // 300 s at 10 Hz
+    ASSERT_TRUE(f_rw.propagate(epochAt(i * kDt), pm::Vec3<frames::Body>(b0), true));
+    ASSERT_TRUE(f_gm.propagate(epochAt(i * kDt), pm::Vec3<frames::Body>(b0), true));
+  }
+  EXPECT_NEAR(f_rw.covariance()(3, 3), bias_cov(0, 0) + sigma_u_sq * 300.0,
+              1e-3 * sigma_u_sq * 300.0);
+  const double bounded = sigma_u_sq * 100.0 * 0.5;
+  EXPECT_LT(f_gm.covariance()(3, 3), bounded * 1.01);
+  EXPECT_GT(f_gm.covariance()(3, 3), bounded * 0.9);
+  EXPECT_NEAR(f_gm.gyroBias().eigen().x(), b0.x() * std::exp(-3.0), 1e-9);
+  EXPECT_NEAR(f_rw.gyroBias().eigen().x(), b0.x(), 1e-15);
+}
+
+/// TP §3.1: a star-tracker solution tagged τ behind the filter epoch is advanced
+/// on the filter's own rate before it is compared, so a slewing vehicle does not
+/// read a latent tracker as ω·τ of attitude error.
+TEST(Mekf, LatentAttitudeMeasurementIsAdvancedOnTheFilterRate) {
+  RecordProperty("verifies", "REQ-ADET-015");
+  const Eigen::Vector3d rate(0.0, 0.0, 0.5 * kDeg);  // the 0.5 deg/s slew limit
+  const double latency = 0.1;                        // one 10 Hz tracker frame
+  const Eigen::Matrix3d r = (0.005 * kDeg) * (0.005 * kDeg) * Eigen::Matrix3d::Identity();
+  gnc::Mekf filter(defaultConfig());
+  ASSERT_TRUE(seedAt(filter, pm::Quaternion::Identity(), 0.01 * kDeg));
+  // Track a perfect spin for a while so the covariance is tight and the rate
+  // is the filter's own.
+  pm::Quaternion truth = pm::Quaternion::Identity();
+  gnc::MekfUpdate up{};
+  for (int i = 1; i <= 50; ++i) {
+    truth = truthAttitude(rate, i * kDt, pm::Quaternion::Identity());
+    ASSERT_TRUE(filter.propagate(epochAt(i * kDt), pm::Vec3<frames::Body>(rate), true));
+    ASSERT_TRUE(filter.updateAttitude(pm::Quat<frames::Body, frames::ECI>(truth), r, up));
+  }
+  const double t_now = 51 * kDt;
+  ASSERT_TRUE(filter.propagate(epochAt(t_now), pm::Vec3<frames::Body>(rate), true));
+  // The tracker's frame was exposed one period ago: it reports the attitude at
+  // t_now − τ.
+  const pm::Quaternion latent = truthAttitude(rate, t_now - latency, pm::Quaternion::Identity());
+  const pm::Quaternion current = truthAttitude(rate, t_now, pm::Quaternion::Identity());
+
+  // Uncompensated: the innovation is ω·τ = 0.05 deg = 0.87 mrad against a
+  // 0.087 mrad σ — ten sigma, gated.
+  gnc::MekfUpdate raw{};
+  EXPECT_FALSE(filter.updateAttitude(pm::Quat<frames::Body, frames::ECI>(latent), r, raw));
+  EXPECT_NEAR(raw.innovation.norm(), rate.norm() * latency, 1e-6);
+  EXPECT_GT(raw.nis, defaultConfig().attitude_nis_gate);
+  const std::uint32_t rejected = filter.rejectedCount();
+
+  // Compensated: the same solution advanced by ω̂·τ is the current attitude to
+  // round-off, accepted, with R inflated by the rate error over τ.
+  gnc::MekfUpdate comp{};
+  EXPECT_TRUE(filter.updateAttitude(pm::Quat<frames::Body, frames::ECI>(latent), r, comp,
+                                    /*force=*/false, latency));
+  EXPECT_LT(comp.innovation.norm(), 1e-6);
+  EXPECT_LT(errorDeg(filter.attitude().core(), current), 1e-4);
+  EXPECT_EQ(filter.rejectedCount(), rejected);
+  EXPECT_GT(comp.innovation_cov(0, 0), r(0, 0) + filter.covariance()(0, 0) * 0.0)
+      << "S carries the latency inflation";
+
+  // Refusals: a negative or non-finite latency, and a latency with no usable
+  // rate to advance on.
+  EXPECT_FALSE(
+      filter.updateAttitude(pm::Quat<frames::Body, frames::ECI>(latent), r, comp, false, -0.1));
+  EXPECT_FALSE(filter.updateAttitude(pm::Quat<frames::Body, frames::ECI>(latent), r, comp, false,
+                                     std::numeric_limits<double>::quiet_NaN()));
+  ASSERT_TRUE(filter.propagate(epochAt(t_now + kDt), pm::Vec3<frames::Body>(rate), false));
+  EXPECT_FALSE(filter.rateValid());
+  EXPECT_FALSE(
+      filter.updateAttitude(pm::Quat<frames::Body, frames::ECI>(current), r, comp, false, latency));
+  EXPECT_TRUE(
+      filter.updateAttitude(pm::Quat<frames::Body, frames::ECI>(current), r, comp, false, 0.0))
+      << "zero latency needs no rate";
+}

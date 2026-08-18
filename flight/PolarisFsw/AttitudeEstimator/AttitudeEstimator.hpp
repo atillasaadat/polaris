@@ -383,6 +383,9 @@ class AttitudeEstimator final : public AttitudeEstimatorComponentBase {
     Eigen::Matrix3d noise_cov{Eigen::Matrix3d::Identity()};
     //! Source port index, for telemetry and the alignment tap.
     FwIndexType index{0};
+    //! The sample's own time tag [TAI ns] — the epoch the solution is valid
+    //! at, which under the tracker's latency is behind the cycle (TP §3.1).
+    I64 timeTagNs{0};
   };
 
   //! Gather this cycle's usable star-tracker solutions: valid, fresh, with a

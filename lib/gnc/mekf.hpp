@@ -164,7 +164,11 @@
 ///    accept/inhibit/force editing flag), §9.2 (covariance re-initialisation
 ///    without a state change), §9.3 (uplinkable tuning); and Dennehy &
 ///    Carpenter, NESC Technical Bulletin 20-03, 2020, items (d), (f), (g).
-///    [carpenter2018, dennehy2020]
+///    [carpenter2018, dennehy2020]; and, from the same TP, §3.1 (measurement
+///    latency), §3.2 / Algorithm 3.1 (order-invariant same-epoch update), §5.2.4
+///    (first-order Gauss-Markov bias), Ch. 8 Eq. 8.76 (Reynolds covariance
+///    reset). Reynolds, "Asymptotically Optimal Attitude Filtering with
+///    Guaranteed Convergence", JGCD 31(1), 2008. [reynolds2008]
 
 #include <cstdint>
 #include <Eigen/Core>
@@ -216,6 +220,35 @@ struct MekfConfig {
   /// dropout — covariance inflated, attitude held — rather than extrapolated on
   /// a stale rate.
   double max_dt_s{0.0};
+
+  /// Gyro-bias correlation time τ [s] (NASA/TP-2018-219822 §5.2.4, Push 72).
+  /// **Zero keeps the random-walk bias model** (`ḃ = n_u`), the flown default.
+  /// Positive makes the bias a **first-order Gauss-Markov** process,
+  /// `ḃ = −b/τ + n_u`: `Φ₂₂ = e^{−Δt/τ} I`, `Q₂₂ = σ_u² τ/2 (1 − e^{−2Δt/τ}) I`
+  /// (which is `σ_u² Δt` for Δt ≪ τ, so the early-time evolution mimics the
+  /// random walk exactly as the TP prescribes), and the bias *estimate* decays
+  /// toward zero between measurements at the same rate. The TP recommends the
+  /// FOGM "for applications in which there are measurements continually
+  /// available to persistently excite it", because its variance is bounded —
+  /// `σ_u² τ/2` — where the random walk's grows without limit through a coast;
+  /// its §5.2.7 caveat is the other edge: a data outage long against τ decays
+  /// a bias the vehicle still has. The reference vehicle's IMU model carries a
+  /// **constant** turn-on bias under a τ = 100 s in-run drift, so the flown
+  /// value stays 0 (see `config/spacecraft/leo_smallsat.yaml`); the option is
+  /// here for a vehicle whose bias is the in-run drift alone. Must be finite
+  /// and ≥ 0.
+  double bias_tau_s{0.0};
+
+  /// Apply the **Reynolds covariance reset** on every multiplicative reset
+  /// (TP Eq. 8.76 [carpenter2018]; Reynolds 2008 [reynolds2008]):
+  /// `P ← (I − [δθ̂×]/2) P (I − [δθ̂×]/2)ᵀ` on the attitude rows and columns.
+  /// The reset changes the frame the attitude covariance is expressed in, and
+  /// to first order that is a rotation by δθ̂/2; most applications omit it, but
+  /// Reynolds found it speeds convergence and adds robustness on large updates
+  /// — exactly the re-acquisition-after-coast case here — and that omitting it
+  /// can lead to divergence. On by default; a plain flag because it is an
+  /// algorithm choice, not a tuning.
+  bool reynolds_reset{true};
 
   /// True when every field is finite and in range. Checked once at construction.
   bool isValid() const;
@@ -382,8 +415,52 @@ class Mekf {
   ///         diagnostics populated and @ref rejectedCount incremented; malformed
   ///         inputs return `false` with @p out default-constructed, so the caller
   ///         can tell a divergence guard from a refusal on the count alone.
+  /// @param latency_s how far behind the filter epoch the measurement was
+  ///                  taken [s] (TP §3.1, Push 72). The measured attitude is
+  ///                  advanced to the filter epoch on the filter's own
+  ///                  bias-corrected rate, `q_now = exp([ω̂×] τ) ⊗ q_meas` (the
+  ///                  same increment @ref propagate applies), and `R` is
+  ///                  inflated by the rate error integrated over it,
+  ///                  `σ_v² τ I + τ² P_bb`. Zero — the default — applies the
+  ///                  measurement at the filter epoch as before. A star tracker's
+  ///                  frame is exposed and processed before it is reported, ~one
+  ///                  update period; at the 0.5 °/s slew limit 100 ms is
+  ///                  0.9 mrad, above the tracker's own σ. Must be finite and
+  ///                  ≥ 0; refused otherwise. Requires a usable rate (a
+  ///                  propagate with a gyro this epoch); without one a non-zero
+  ///                  latency is refused rather than applied on nothing.
   bool updateAttitude(const math::Quat<math::frames::Body, math::frames::ECI>& measured,
-                      const Eigen::Matrix3d& noise_cov, MekfUpdate& out, bool force = false);
+                      const Eigen::Matrix3d& noise_cov, MekfUpdate& out, bool force = false,
+                      double latency_s = 0.0);
+
+  /// Open a **same-epoch measurement batch** (NASA/TP-2018-219822 §3.2,
+  /// Algorithm 3.1 — "Measurement Update Invariant to Order of Processing",
+  /// Push 72). Until @ref endBatch, every accepted @ref update /
+  /// @ref updateAttitude accumulates its correction in the error state instead
+  /// of resetting the reference: each measurement's partials are evaluated at
+  /// the **same** reference, its innovation is `y_j − H_j x̂_{j−1}` against the
+  /// deviation accumulated so far, and the covariance is updated per
+  /// measurement as usual. The result no longer depends on whether the sun or
+  /// the magnetic field is processed first — with a reset between them, a
+  /// powerful first measurement moves the linearisation point the second one
+  /// is evaluated at, and the TP records that as a known source of divergence
+  /// when a large prior error meets a precise measurement. Idempotent.
+  void beginBatch();
+
+  /// Close the batch: one multiplicative reset with the accumulated correction
+  /// (exact axis-angle for the attitude, additive for the bias), the Reynolds
+  /// covariance reset if configured, and the error state back to zero. A
+  /// no-op when no batch is open. @ref propagate closes an open batch itself
+  /// first — the TP: "it is imperative to perform a reset before beginning the
+  /// time propagation".
+  /// @return false only if the reset produced a non-finite result, in which
+  ///         case the solution is dropped.
+  bool endBatch();
+
+  /// True while a batch is open (between @ref beginBatch and @ref endBatch);
+  /// @ref attitude and @ref gyroBias then report the batch's reference, not the
+  /// corrections accumulated so far.
+  bool batchOpen() const { return batch_open_; }
 
   /// Swap the tuning under a running solution (NESC TB 20-03 item g;
   /// NASA/TP-2018-219822 §9.3): attitude, bias, covariance, epoch, age and
@@ -460,6 +537,13 @@ class Mekf {
   /// been dropped for divergence is exactly when FDIR needs to see how many
   /// measurements it had been rejecting on the way there.
   void dropSolution();
+  /// Fold one accepted correction in: accumulate while a batch is open, else
+  /// apply the multiplicative reset now. False (solution dropped) on a
+  /// non-finite result.
+  bool applyCorrection(const Eigen::Matrix<double, kDim, 1>& dx);
+  /// The multiplicative reset with @p dx: exact axis-angle on the reference,
+  /// additive on the bias, the Reynolds covariance reset if configured.
+  bool applyReset(const Eigen::Matrix<double, kDim, 1>& dx);
 
   MekfConfig cfg_{};
   math::Quaternion attitude_{};                    ///< reference attitude, Body ← ECI
@@ -470,6 +554,9 @@ class Mekf {
   double age_s_{0.0};                              ///< since the last accepted update [s]
   std::uint32_t rejected_{0};                      ///< NIS-gate rejections
   std::uint32_t forced_{0};                        ///< updates applied past the gate
+  Eigen::Matrix<double, kDim, 1> dx_acc_{
+      Eigen::Matrix<double, kDim, 1>::Zero()};  ///< batch error state
+  bool batch_open_{false};
   bool configured_{false};
   bool initialised_{false};
   bool rate_valid_{false};

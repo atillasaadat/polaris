@@ -1155,4 +1155,79 @@ TEST(SitlAttitudeControl, WheelSpeedBiasKeepsTheWheelsOffZero) {
   expectMechanismHealthy(on, "bias_on", /*maxSaturationEvents=*/0, /*maxDemotions=*/0);
 }
 
+// ======================================================================
+// Row 11 — a slew at the rate limit with a latent star tracker (Push 72)
+// ======================================================================
+
+/// **The tracker stays fused through a slew at the 0.5 deg/s limit, on the
+/// delayed AURIGA** (REQ-ADET-015; NASA/TP-2018-219822 §3.1).
+///
+/// The AURIGA catalog entry carries `latency_s: 0.1` — one solution period — and
+/// the truth model delivers each solution a frame late, tagged at its exposure
+/// epoch. Uncompensated, a vehicle slewing at `PidMaxSlewRateRadps` (0.5 deg/s)
+/// reads every tracker sample 0.87 mrad behind: ten times the AURIGA's
+/// cross-boresight sigma, so the chi-square gate refuses the tracker every cycle,
+/// the per-unit NIS policy latches it out, and the fine mode falls to the
+/// sun/magnetic rung — the accuracy requirement unreachable while manoeuvring.
+/// The filter advances the sample on its own bias-corrected rate over the tag's
+/// age; this row is the whole chain doing that on the topology.
+///
+/// A 30 deg slew about body Z (nadir on the fault-matrix geometry, so the
+/// trackers' Earth keep-outs are untouched) is ~60 s at the rate limit, then a
+/// hold: the tracker must not be excluded, the source must never fall to
+/// SUN_MAG, no demotion, at most the one re-seed on first fusion — and the slew
+/// must actually have happened.
+TEST(SitlAttitudeControl, LatentStarTrackerStaysFusedThroughASlewAtTheRateLimit) {
+  RecordProperty("verifies", "REQ-ADET-015");
+  std::string why;
+  if (toolchainMissing(why)) {
+    GTEST_SKIP() << why;
+  }
+  const pm::Quat<pm::frames::Body, pm::frames::ECI> target = faultMatrixAttitude();
+  const pm::Quaternion offset =
+      pm::Quaternion::FromAxisAngle(Eigen::Vector3d::UnitZ(), 30.0 * M_PI / 180.0);
+  scenario::SimConfig orbit = faultMatrixOrbit(200.0, "sitl-latent-tracker-slew");
+  orbit.initial_state.attitude =
+      pm::Quat<pm::frames::Body, pm::frames::ECI>((offset * target.core()).canonical());
+  const pm::Quaternion tq = target.core();
+  const double target_q[4] = {tq.w(), tq.x(), tq.y(), tq.z()};
+  const RunResult run = fly("latent-slew", orbit, /*ctrlMode=*/2, target_q, noFaults);
+  ASSERT_TRUE(run.sim_healthy);
+  ASSERT_GT(run.trace.size(), 2000u);
+
+  // The slew happened, at the limit, and closed.
+  auto errorAt = [&](std::size_t i) {
+    return run.trace[i].state.attitude.core().angularDistance(tq);
+  };
+  EXPECT_NEAR(errorAt(0), 30.0 * M_PI / 180.0, 1e-6);
+  double worst_settled = 0.0;
+  for (std::size_t i = run.trace.size() - 500; i < run.trace.size(); ++i) {
+    worst_settled = std::max(worst_settled, errorAt(i));
+  }
+  RecordProperty("measured_settled_pointing_error_deg",
+                 std::to_string(worst_settled * 180.0 / M_PI));
+  EXPECT_LT(worst_settled, 1.0 * M_PI / 180.0);
+  // Peak truth rate near the limit: 30 deg in under 90 s means the vehicle
+  // really was at ~0.5 deg/s, which is what makes the latency worth ten sigma.
+  std::size_t first_under_5deg = run.trace.size();
+  for (std::size_t i = 0; i < run.trace.size(); ++i) {
+    if (errorAt(i) < 5.0 * M_PI / 180.0) {
+      first_under_5deg = i;
+      break;
+    }
+  }
+  EXPECT_LT(first_under_5deg, 900u) << "the slew never reached the rate limit";
+  EXPECT_GT(first_under_5deg, 300u) << "the slew was faster than the rate limit allows";
+
+  // The tracker was fused throughout: reached STAR_TRACKER once, never left it,
+  // never excluded, never demoted, re-seeded at most once (first fusion).
+  EXPECT_GE(countOf(run.log, "-> STAR_TRACKER"), 1u) << run.log;
+  EXPECT_EQ(countOf(run.log, "STAR_TRACKER (2) -> SUN_MAG"), 0u) << run.log;
+  EXPECT_EQ(countOf(run.log, "excluded from the fusion"), 0u) << run.log;
+  EXPECT_EQ(countOf(run.log, "Fine mode demoted"), 0u) << run.log;
+  EXPECT_LE(countOf(run.log, "re-seeded from star tracker"), 1u) << run.log;
+  EXPECT_EQ(countOf(run.log, "not adopted"), 0u) << run.log;
+  expectMechanismHealthy(run, "latent-slew", /*maxSaturationEvents=*/2, /*maxDemotions=*/0);
+}
+
 }  // namespace

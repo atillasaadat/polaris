@@ -467,6 +467,14 @@ spacecraft:
     # 10 deg/hr = 10 * (pi/180) / 3600 = 4.848e-5 rad/s. The seed bias itself is
     # zero, so this is the whole of what the filter is told at cold start.
     flight.attitudeEstimator.MekfBiasSigmaInit: 4.848e-5  # [rad/s]
+    # Gyro-bias correlation time (NASA/TP-2018-219822 §5.2.4; Push 72). 0 keeps
+    # the random-walk bias model. The STIM300 model in this catalog is a
+    # CONSTANT turn-on bias plus a 100 s Gauss-Markov in-run drift
+    # (imu/stim300.yaml gyro_bias_correlation_s); a filter FOGM at 100 s would
+    # decay the turn-on part between updates and, through a coast, lose it
+    # (TP §5.2.7) — so the random walk stays. Set it to the IMU's
+    # gyro_bias_correlation_s on a vehicle whose bias is the in-run drift alone.
+    flight.attitudeEstimator.MekfBiasTauSec: 0.0            # [s]
     # Demotion streaks at the 10 Hz GNC rate. Five refused cycles (0.5 s) is a
     # filter that cannot take input at all — not something to wait out. Twenty
     # consecutive NIS rejections (2 s) is a measurement stream the filter has

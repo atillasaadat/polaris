@@ -826,6 +826,7 @@ def _check_control_parameters(body: dict[str, Any]) -> None:
 
 
 _MAX_FIX_LATENCY_PARAM = "flight.orbitEstimator.MaxFixLatencyS"
+_MAX_MEAS_AGE_PARAM = "flight.attitudeEstimator.MaxMeasAgeSec"
 _BALLISTIC_PARAM = "flight.orbitEstimator.DragBallisticCoeffM2PerKg"
 _WHY_BALLISTIC = (
     "The onboard filter's drag term integrates on this coefficient while the sim "
@@ -953,6 +954,44 @@ def _check_orbit_parameters(body: dict[str, Any]) -> None:
         )
 
 
+def _check_star_tracker_latency(body: dict[str, Any]) -> None:
+    """Refuse a staleness window the installed star trackers cannot meet (§8.2, §9.1).
+
+    `MaxMeasAgeSec` is the flight side of a flight/sim pair (Push 72): a tracker's
+    catalog entry carries `latency_s`, the sim realises it as a delay line (the
+    solution leaves the unit that long after the frame it describes), and the
+    estimator refuses any sample tagged older than the window as stale. A window
+    at or below the tracker's own latency therefore refuses every solution a
+    healthy tracker delivers. Strict inequality: equality is a sample refused on
+    the boundary of every poll. The FSW compensates the latency it accepts
+    (`Mekf::updateAttitude(..., latency_s)`, NASA/TP-2018-219822 §3.1).
+    """
+    sc = body["spacecraft"]
+    fsw = sc.get("fsw_parameters", {})
+    if _MAX_MEAS_AGE_PARAM not in fsw:
+        return
+    trackers = [u for u in sc.get("sensors", []) if u.get("kind") == "star_tracker"]
+    latencies = {
+        u["name"]: float(u.get("params", {})["latency_s"])
+        for u in trackers
+        if u.get("params", {}).get("latency_s") is not None
+    }
+    if not latencies:
+        return
+    window = float(fsw[_MAX_MEAS_AGE_PARAM])
+    worst = max(latencies.values())
+    if window <= worst:
+        raise ConfigError(
+            f"{_MAX_MEAS_AGE_PARAM} = {window} s does not exceed the installed star "
+            f"tracker's own solution latency "
+            f"({', '.join(f'{n} = {v} s' for n, v in latencies.items())}).\n"
+            f"The attitude estimator refuses any sample tagged older than this "
+            f"window as stale, so a window at or under the tracker's catalogued "
+            f"latency refuses every solution a healthy tracker delivers. Raise the "
+            f"window to cover latency_s with margin (the reference vehicle flies 10x)."
+        )
+
+
 def _config_hash(resolved_body: dict[str, Any]) -> str:
     """SHA-256 over the canonical resolved config — everything that determines output."""
     canonical = json.dumps(resolved_body, sort_keys=True, separators=(",", ":"))
@@ -990,6 +1029,7 @@ def resolve(
     _check_star_tracker_parameters(body)
     _check_control_parameters(body)
     _check_orbit_parameters(body)
+    _check_star_tracker_latency(body)
     _check_burn_parameters(body)
     _check_catalog_pairs(body["spacecraft"])
     _check_vehicle_pairs(body["spacecraft"])

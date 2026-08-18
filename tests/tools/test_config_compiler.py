@@ -1175,6 +1175,31 @@ def test_fix_latency_bound_below_the_receiver_is_refused(tmp_path):
     assert "0.05" in message
 
 
+def test_staleness_window_under_the_tracker_latency_is_refused(tmp_path):
+    # Push 72 / TP §3.1: the tracker's catalogued latency_s is realised as a
+    # delay line, and a MaxMeasAgeSec at or under it refuses every solution a
+    # healthy tracker delivers (the flight/sim pair, P57 class again).
+    def mutate(config):
+        config["spacecraft"]["fsw_parameters"][
+            "flight.attitudeEstimator.MaxMeasAgeSec"
+        ] = 0.1
+
+    with pytest.raises(ConfigError) as exc:
+        _resolve_variant(tmp_path, "meas_age_under_latency", mutate)
+    message = str(exc.value)
+    assert "MaxMeasAgeSec" in message
+    assert "0.1" in message
+
+
+def test_staleness_window_above_the_tracker_latency_is_accepted(tmp_path):
+    def mutate(config):
+        config["spacecraft"]["fsw_parameters"][
+            "flight.attitudeEstimator.MaxMeasAgeSec"
+        ] = 0.2
+
+    _resolve_variant(tmp_path, "meas_age_over_latency", mutate)  # must not raise
+
+
 def test_fix_latency_bound_at_the_receiver_is_accepted(tmp_path):
     # An inequality, not a transcription: equal to the receiver's figure passes
     # (zero margin, but not wrong).

@@ -56,6 +56,13 @@ params:
 
   # --- Interfaces and geometry -----------------------------------------------
   update_rate_hz: 10.0               # 8 or 10 Hz; 5 Hz possible to relax CPU load
+  # Solution latency (exposure + centroiding + identification) is NOT quoted in
+  # the brochure. One update period is the representative figure for this
+  # optical class and is a modelling choice, recorded as such (Push 72;
+  # NASA/TP-2018-219822 §3.1). The FSW compensates it on the sample's own time
+  # tag; at the 0.5 deg/s slew limit it is 0.9 mrad of attitude, above the
+  # tracker's noise, which is why it is modelled rather than ignored.
+  latency_s: 0.1
   # NOT in this brochure: Sodern does not publish the Auriga field of view here.
   # 20 deg is a representative value for this optical class and is used only for
   # the FOV-coverage fraction; the Earth constraint below dominates it, so the
