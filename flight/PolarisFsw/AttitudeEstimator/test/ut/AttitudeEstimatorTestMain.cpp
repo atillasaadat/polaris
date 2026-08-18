@@ -123,6 +123,12 @@ TEST(AttitudeEstimator, GaussMarkovBiasOptionIsAcceptedAndBounded) {
   tester.testGaussMarkovBiasOptionIsAcceptedAndBounded();
 }
 
+TEST(AttitudeEstimator, SameEpochBatchIsClosedBeforeThePublish) {
+  RecordProperty("verifies", "REQ-ADET-015");
+  flight::AttitudeEstimatorTester tester;
+  tester.testSameEpochBatchIsClosedBeforeThePublish();
+}
+
 TEST(AttitudeEstimator, MagCalCollectsFitsAndAppliesTheCorrection) {
   RecordProperty("verifies", "REQ-ADET-005");
   flight::AttitudeEstimatorTester tester;

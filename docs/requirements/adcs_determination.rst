@@ -1038,9 +1038,14 @@ The estimation mode ladder
    ``tests/unit/sim_sensors_star_tracker_test.cpp``
    (``LatencyDeliversTheEarlierSolutionTaggedAtItsOwnEpoch``), the
    ``AttitudeEstimator`` component tests
-   ``StarTrackerLatencyIsCompensatedOnTheFilterRate`` and
-   ``GaussMarkovBiasOptionIsAcceptedAndBounded``, the configc pair test
-   ``test_staleness_window_under_the_tracker_latency_is_refused``, and — with
-   the AURIGA entry now carrying ``latency_s: 0.1`` — every star-tracker SITL
-   row of ``tests/integration/sitl_fault_matrix_test.cpp``, which flies the
-   delayed tracker end to end.
+   ``StarTrackerLatencyIsCompensatedOnTheFilterRate``,
+   ``GaussMarkovBiasOptionIsAcceptedAndBounded`` and
+   ``SameEpochBatchIsClosedBeforeThePublish`` (a 2° truth step is closed by the
+   same cycle's pair before the product is published), the configc pair test
+   ``test_staleness_window_under_the_tracker_latency_is_refused``, the SITL row
+   ``SitlAttitudeControl.LatentStarTrackerStaysFusedThroughASlewAtTheRateLimit``
+   (a 30° slew at the 0.5 °/s limit on the delayed AURIGA: tracker never
+   excluded, source never falls to SUN_MAG, no demotion, at most one re-seed),
+   and — with the AURIGA entry now carrying ``latency_s: 0.1`` — every
+   star-tracker row of ``tests/integration/sitl_fault_matrix_test.cpp``, which
+   flies the delayed tracker end to end.

@@ -138,6 +138,11 @@ class AttitudeEstimatorTester : public AttitudeEstimatorGTestBase {
   //! the fine mode still converges; a negative value is refused as fine config.
   void testGaussMarkovBiasOptionIsAcceptedAndBounded();
 
+  //! TP §3.2 (Push 72): the cycle's sun and magnetic updates are one batch whose
+  //! reset lands before the product is published — a step in the truth is
+  //! closed by the same cycle's pair, not published as the pre-update reference.
+  void testSameEpochBatchIsClosedBeforeThePublish();
+
   //! The whole commanded flow on a magnetometer carrying a known hard/soft iron:
   //! MAG_CAL_START, a tumbling collection window, an accepted fit, and — the
   //! assertion that matters — the *estimator's* attitude error collapses, which

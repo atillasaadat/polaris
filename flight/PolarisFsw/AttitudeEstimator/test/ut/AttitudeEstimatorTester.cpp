@@ -1359,6 +1359,44 @@ void AttitudeEstimatorTester ::testGaussMarkovBiasOptionIsAcceptedAndBounded() {
   ASSERT_EQ(this->last_estimate_.get_mode(), EstimationMode::FINE);
 }
 
+void AttitudeEstimatorTester ::testSameEpochBatchIsClosedBeforeThePublish() {
+  this->loadIgrf();
+  this->setValidParameters(true);
+  const QuatBI q0(polaris::math::Quaternion::Identity());
+  I64 t = kStartTaiNs;
+  for (int i = 0; i < 50; ++i) {
+    this->feedMeasurements(t, q0, Eigen::Vector3d::Zero(), true);
+    this->runCycleAt(t);
+    t += kNsPerSecond / 10;
+    this->clearHistory();
+  }
+  this->feedMeasurements(t, q0, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_EQ(this->last_estimate_.get_mode(), EstimationMode::FINE);
+  // Open the covariance so one cycle's pair carries near-unit gain (the settled
+  // P would take the step in over many cycles either way, which is not what is
+  // under test).
+  this->sendCmd_ATT_REINIT_COV(0, 0, 0.1, 1.0e-4);
+  this->clearHistory();
+
+  // The truth steps 2 deg with a silent gyro: the filter is 2 deg wrong at the
+  // start of the next cycle, and its sun and magnetic updates — one batch, one
+  // reset — must close it *within* that cycle, before the product is published.
+  // If the batch were closed after the publish (or never), the published
+  // attitude would be the reference: still 2 deg off.
+  const QuatBI q1(
+      polaris::math::Quaternion::FromAxisAngle(Eigen::Vector3d::UnitX(), 2.0 * M_PI / 180.0));
+  t += kNsPerSecond / 10;
+  this->feedMeasurements(t, q1, Eigen::Vector3d::Zero(), true);
+  this->runCycleAt(t);
+  ASSERT_EQ(this->last_estimate_.get_mode(), EstimationMode::FINE);
+  ASSERT_TLM_MekfRejected(0, 0u);
+  const double err = this->publishedErrorRad(q1);
+  EXPECT_LT(err, 0.5 * M_PI / 180.0)
+      << "the same cycle's pair closed the step: published error " << err * 180.0 / M_PI << " deg";
+  ASSERT_TRUE(std::isfinite(this->tlmHistory_MekfNis->at(0).arg));
+}
+
 // ----------------------------------------------------------------------
 // Commanded magnetometer calibration (§8.1)
 // ----------------------------------------------------------------------
