@@ -342,6 +342,11 @@ struct Record {
   bool fix_valid{false};
   bool fix_accepted{false};
   double age_s{0.0};
+  /// The filter's own coast verdict at this sample. A fix refused while the
+  /// solution is already DEGRADED is not a gate false alarm — the filter is
+  /// telling the campaign it is coasting — so the clean-fix rejection rate is
+  /// measured over FINE samples only (analysis/od; REQ-ODP-001).
+  pg::OrbitOdQuality quality{pg::OrbitOdQuality::kNone};
   std::uint32_t rejected_total{0};
   pg::OrbitOdRefusal refusal{pg::OrbitOdRefusal::kNone};
   const char* regime{"nominal"};
@@ -385,7 +390,8 @@ void writeMeta(std::ostream& out, int run, const mco::Scenario& scenario, double
   out << "{\"kind\":\"meta\",\"run\":" << run << ",\"scenario\":\"" << jsonEscaped(scenario.name)
       << "\",\"intent\":\"" << jsonEscaped(scenario.intent) << "\",\"cycle_period_s\":" << cycle_s
       << ",\"fix_latency_s\":" << scenario.fix_latency_s << ",\"duration_s\":" << duration_s
-      << "}\n";
+      << ",\"coast_horizon_s\":" << kCoastHorizonS
+      << ",\"degraded_horizon_s\":" << kDegradedHorizonS << "}\n";
 }
 
 void writeRecord(std::ostream& out, int run, const std::string& scenario, const Record& r) {
@@ -405,6 +411,7 @@ void writeRecord(std::ostream& out, int run, const std::string& scenario, const 
   out << ",\"solution_valid\":" << (r.solution_valid ? 1 : 0)
       << ",\"fix_valid\":" << (r.fix_valid ? 1 : 0)
       << ",\"fix_accepted\":" << (r.fix_accepted ? 1 : 0) << ",\"age_s\":" << r.age_s
+      << ",\"quality\":\"" << pg::qualityName(r.quality) << "\""
       << ",\"rejected_total\":" << r.rejected_total;
   // The refusal is written as its own name rather than as the enum's integer.
   // An integer would oblige the analysis to carry a copy of the enum, which is
@@ -679,6 +686,7 @@ RunResult flyOne(int run, const mco::Scenario& scenario, double duration_s,
 
     rec.solution_valid = filter.solutionValid();
     rec.age_s = filter.ageSeconds();
+    rec.quality = filter.quality();
     rec.rejected_total = filter.rejectedCount();
 
     if (filter.isInitialised()) {

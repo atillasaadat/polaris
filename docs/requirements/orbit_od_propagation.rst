@@ -334,3 +334,44 @@ Source: design doc §8.3, §11. Fully populated in Phase 6; firm seeds below.
    ``SmaAndFlightPathAngleSigmasMatchTheClosedFormsOnACircularOrbit``), the
    ``OrbitEstimator`` component test ``CovarianceMetricsAndDmcParameters``, and
    ``tests/analysis/test_od_statistics.py`` (SMA summaries, Eq. 2.88).
+
+.. req:: Bounded re-acquisition after an unmodelled event
+   :id: REQ-ODP-012
+   :status: reviewed
+   :level: L3
+   :tags: od, estimation, fdir
+   :method: Test
+   :derived_from: REQ-ODP-001, REQ-ODP-009
+   :allocation: lib/gnc, tests/mc, analysis/od
+   :refs: carpenter2018
+
+   After an event the filter was given no knowledge of — a burn it was not fed,
+   a spoof it rode, a bad fix it accepted — the estimate is offset by more than
+   its covariance admits and the innovation gate refuses honest fixes until the
+   solution is let go and the next fix re-seeds whole. That recovery **shall**
+   be bounded by the configured degraded coast horizon: the longest unbroken
+   stretch of delivered, un-faulted fixes the gate refuses **shall not** exceed
+   ``max_degraded_coast_s`` plus one GNC cycle.
+
+   The bound is the filter's own policy, not a figure chosen for the campaign.
+   Nothing re-seeds sooner by construction: an "N rejections → reseed" rule is
+   refused deliberately so a persistent spoof cannot win the seed early
+   (design doc §9.2), which makes the horizon both the guarantee and the price.
+
+   The campaign measures the stretch rather than a rate. A rate averages a
+   lockout over the whole arc, so a filter that refuses every honest fix for
+   half an hour and one that scatters the same refusals across a day read
+   alike, and only the first is a filter that cannot get back. The clean-fix
+   rejection rate of REQ-ODP-001 is therefore scoped to the samples where the
+   filter still reports its solution *fine*: a fix refused during a degraded
+   coast is refused correctly — the measurement is good and the state is not —
+   and counting it as a gate false alarm measured this requirement's latency
+   under that requirement's name.
+
+   Verified by the campaign criterion *Clean-fix lockout after an unmodelled
+   event* (``analysis/od/report.py``), which is reported per scenario and reads
+   its bound from the driver's own meta record, and by
+   ``tests/analysis/test_od_statistics.py``
+   (``test_the_clean_fix_lockout_measures_the_longest_unbroken_refusal``,
+   ``test_a_refusal_the_fault_earned_is_not_a_lockout``,
+   ``test_a_fix_refused_while_the_solution_is_degraded_is_not_a_false_alarm``).

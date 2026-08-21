@@ -54,6 +54,7 @@ def od_sample(index: int, **overrides) -> dict:
         "fix_valid": 1,
         "fix_accepted": 1,
         "age_s": 0.0,
+        "quality": "fine",
         "rejected_total": 0,
     }
     row.update(overrides)
@@ -88,6 +89,8 @@ def write_od_shard(
             "cycle_period_s": 10.0,
             "fix_latency_s": 0.0,
             "duration_s": 10.0 * len(rows),
+            "coast_horizon_s": 300.0,
+            "degraded_horizon_s": 1800.0,
         }
         lines.append(json.dumps(meta))
         for row in rows:

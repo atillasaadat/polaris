@@ -460,3 +460,72 @@ def test_along_track_psd_from_one_orbit_error_is_tp_eq_2_88() -> None:
     assert q_t == pytest.approx(100.0**2 / (3.0 * 5554.0**3))
     assert along_track_psd_from_one_orbit_error(100.0, 0.0) == 0.0
     assert along_track_psd_from_one_orbit_error(float("nan"), 5554.0) == 0.0
+
+
+def test_a_fix_refused_while_the_solution_is_degraded_is_not_a_false_alarm(
+    tmp_path: Path,
+) -> None:
+    """The clean-fix rejection rate is a gate metric, so it is scoped to the
+    stretches where the filter still calls its own solution fine.
+
+    The campaign's blind-burn scenario is the case that forced the distinction:
+    an unmodelled 3.6 m/s burn leaves the state kilometres out, and the honest
+    fixes the gate then refuses are refused *correctly* — the measurement is
+    fine, the state is not. Counting them as false alarms measured recovery
+    latency and called it gate health.
+    """
+    rows = [od_sample(i) for i in range(8)]
+    rows += [
+        od_sample(i, quality="degraded", fix_accepted=0, refusal="measurement_rejected")
+        for i in range(8, 20)
+    ]
+    stats = summarise(campaign_of(tmp_path, [(0, "nominal", rows)]))
+
+    summary = stats.of("nominal").regimes["nominal"]
+    # Raw, over the whole un-faulted stretch: twelve of twenty refused.
+    assert summary.rejection_rate == pytest.approx(0.6)
+    # Scoped to the fine samples, where the gate is the only thing being judged.
+    assert (summary.fine_fixes, summary.fine_accepted) == (8, 8)
+    assert summary.fine_rejection_rate == pytest.approx(0.0)
+
+
+def test_a_shard_without_the_quality_verdict_still_scores(tmp_path: Path) -> None:
+    """Pre-Push-74 shards carry no quality column; the rate falls back to the
+    raw one rather than reporting NaN and quietly dropping a criterion."""
+    rows = [od_sample(i) for i in range(8)]
+    rows += [od_sample(i, fix_accepted=0) for i in range(8, 10)]
+    for r in rows:
+        r.pop("quality", None)
+    stats = summarise(campaign_of(tmp_path, [(0, "nominal", rows)]))
+
+    summary = stats.of("nominal").regimes["nominal"]
+    assert summary.fine_fixes == 0
+    assert summary.fine_rejection_rate == pytest.approx(summary.rejection_rate)
+
+
+def test_the_clean_fix_lockout_measures_the_longest_unbroken_refusal(
+    tmp_path: Path,
+) -> None:
+    """A rate averages a lockout away; the recovery bound needs its length.
+
+    Two scattered refusals and one unbroken stretch give the same rate, and only
+    the stretch says the filter could not get back.
+    """
+    rows = [od_sample(i) for i in range(5)]
+    rows += [od_sample(i, fix_accepted=0) for i in range(5, 11)]  # 6 cycles = 60 s
+    rows += [od_sample(i) for i in range(11, 14)]
+    rows += [od_sample(i, fix_accepted=0) for i in range(14, 16)]
+    stats = summarise(campaign_of(tmp_path, [(0, "nominal", rows)]))
+
+    entry = stats.of("nominal")
+    assert entry.clean_lockout_s == pytest.approx(60.0)
+    assert entry.degraded_horizon_s == pytest.approx(1800.0)
+
+
+def test_a_refusal_the_fault_earned_is_not_a_lockout(tmp_path: Path) -> None:
+    """Refusing a spoofed fix is the gate working, so it never counts toward the
+    recovery bound: the lockout is measured over the un-faulted regime alone."""
+    rows = [od_sample(i, regime="spoof", fix_accepted=0) for i in range(20)]
+    stats = summarise(campaign_of(tmp_path, [(0, "spoof_step", rows)]))
+
+    assert stats.of("spoof_step").clean_lockout_s == pytest.approx(0.0)

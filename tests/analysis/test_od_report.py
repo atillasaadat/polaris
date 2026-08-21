@@ -255,7 +255,13 @@ def test_the_spoof_drift_is_a_warning_and_never_a_criterion(tmp_path: Path) -> N
     report = report_of(tmp_path, groups)
 
     assert any("1873" in w for w in report.warnings)
-    assert not any("spoof" in c.name.lower() for c in report.criteria)
+    # The drift itself is bounded by nothing: no criterion measures it, and none
+    # carries a threshold this test would have had to invent. The criteria a
+    # spoof scenario does carry — the gate's false-alarm rate and the recovery
+    # lockout (Push 74) — are bounded by the gate's own configuration and by the
+    # filter's own coast horizon, neither of them chosen here.
+    assert not any(abs(c.measured - 1873.0) < 1e-6 for c in report.criteria)
+    assert not any("drift" in c.name.lower() for c in report.criteria)
 
 
 def test_a_still_flying_campaign_says_so(tmp_path: Path) -> None:

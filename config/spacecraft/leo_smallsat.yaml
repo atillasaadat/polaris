@@ -279,9 +279,21 @@ spacecraft:
     #   AccelPsdM2PerS3 / 10 alone: NEES 24 vs a 10.5 upper bound (optimistic).
     #   AccelPsdRtnM2PerS3 [0, 1.8e-7, 0] with AccelPsdM2PerS3 halved: outage
     #     worst 2.35 -> 2.05 m, 95th 2.11 -> 1.87 m, NEES 6.75 in [2.74, 10.5]
-    #     — the candidate; it needs the 30-run §23.2 gate, not a 3-run sample,
-    #     before it is flown. TP Eq. 2.88 (q_T = sigma_ds^2/(3 T_p^3) off the
-    #     period-folded one-orbit along-track error) is the principled seed.
+    #     — the candidate, on 3 runs. TP Eq. 2.88 (q_T = sigma_ds^2/(3 T_p^3)
+    #     off the period-folded one-orbit along-track error) is the principled
+    #     seed for it.
+    # REFUSED at gate size (Push 74; §23.2 campaign, 10 and 20 runs against the
+    # flown 30): the improvement was a 3-run sample. outage_horizon coast 95th
+    # 4.32 m against the flown 4.08 m and worst 6.69 m against 6.46 m, with the
+    # campaign NEES up from 5.29 to 7.17 in [4.05, 8.33] — no accuracy bought,
+    # covariance honesty spent. Reduced-q_a variants are refused by the NEES
+    # outright: qa/4 with q_T at 1.8e-7 reaches 11.6, qa/10 under DMC (tau 600,
+    # sigma_a 3e-5) 8.6, both optimistic against an 8.33 upper bound. The
+    # isotropic term is what covers the 8x8 truncation; every way of shrinking
+    # it makes the filter claim an accuracy it does not have. The three
+    # parameters stay in the filter, at zero on this vehicle, for a vehicle
+    # whose dominant unmodelled acceleration IS along-track and exponentially
+    # correlated.
     # The library is exercised with the states on
     # (tests/unit/orbit_od_dmc_test.cpp: an unmodelled 2e-5 m/s^2 is estimated
     # and a coast after it closed to under half the blind error).

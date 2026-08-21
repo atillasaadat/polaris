@@ -167,9 +167,9 @@ Phase 2 — Sensor & actuator models
    filters carry the NESC Ch. 9 usability practices (Push 71) and the attitude
    filter the TP's Ch. 3/5/8 items (Push 72); Push 73 built the OD's Ch. 2 items
    (RTN SNC, DMC states, σ_SMA metrics) and measured that only the RTN
-   restructuring helps on this vehicle. Owed on it: the **RTN re-tuning through
-   the 30-run campaign gate** (`q_iso`/2, `q_T` = old `q_a` is the candidate),
-   the §8.5 tier-3 drag/SRP scale factors that read its along-track residuals
+   restructuring helps on this vehicle — until Push 74 put it through the 30-run
+   gate, where the improvement turned out to be a three-run sample and the flown
+   tuning stayed. Owed on it: the §8.5 tier-3 drag/SRP scale factors that read its along-track residuals
    and a thrust scale factor through a burn (TP §2.2.3.4); a **correlated**
    GNSS error component in the sensor model with the matching `R` treatment; the
    raw pseudorange/Doppler path and the receiver-clock states it makes

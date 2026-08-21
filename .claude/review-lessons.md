@@ -757,3 +757,31 @@ fixture was found in the innovation sequence, not in review.
   and unusable at `h/τ ~ 1e-3`; a fixed Gauss–Legendre rule on the kernel is
   bounded, exact for the quartic, and was pinned against 20 000-node Simpson —
   Simpson at 16 nodes was 1e-5 off on the quartic, also measured.
+
+## A criterion measures what its samples contain, not what its name says (P74, OD/analysis)
+
+- **Three runs is a hypothesis; the gate is the answer.** The RTN restructuring
+  that improved the coast by 13 % on three runs was inside the noise on ten and
+  on twenty, with the NEES risen from 5.3 to 7.2. Nothing was flown on the
+  three-run number, and the yaml never changed — but a whole push's headline had
+  been written from it. Re-measure a candidate at gate size before believing it.
+- **A failing baseline is the campaign talking about itself.** The *flown*
+  tuning failed a criterion at 30 runs. The tempting reading is "the tuning
+  regressed"; the true one was that `burn_outage_blind` deliberately denies the
+  filter a 3.6 m/s burn, and the gate then refuses honest fixes because the
+  *state* is wrong. Refusals that a fault earned are not gate false alarms.
+- **Scope a metric by what the estimator says about itself, not by the fault
+  tag.** The regime tag falls the instant a fault window closes, while the
+  estimate is still contaminated — `summarise` already documented that trap for
+  NEES/NIS, and the rejection rate had inherited it anyway. The fix was to scope
+  the rate to the samples where the filter still calls its own solution *fine*;
+  the filter's verdict is the honest boundary, and it costs one recorded field.
+- **A rate cannot express a lockout.** 2.2 % over a day was one unbroken 898 s
+  stretch per burn. A filter that refuses every honest fix for a quarter of an
+  hour and one that scatters the same refusals across a day give the same rate,
+  and only one of them cannot get back. Measure the stretch.
+- **Carry the threshold out of the thing being judged.** The re-acquisition
+  bound is the filter's own `max_degraded_coast_s`, emitted in the driver's meta
+  record rather than copied into the analysis — the flight/sim parameter-pair
+  rule applied to a criterion. A threshold the analysis owns is a threshold that
+  drifts from the policy it claims to check.

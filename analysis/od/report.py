@@ -128,22 +128,72 @@ def _consistency_criterion(
 
 
 def _nominal_rejection(entry: ScenarioStatistics) -> Criterion | None:
-    """The gate's rejection rate over a scenario's un-faulted stretches."""
+    """The gate's false-alarm rate over a scenario's un-faulted, fine stretches.
+
+    Measured over the samples where the filter called its own solution *fine*,
+    which is what makes it a gate metric rather than a recovery one. The regime
+    tag falls the instant a fault window closes, but a filter that was denied
+    knowledge of the event — the blind burn is the campaign's own example — is
+    still kilometres from truth for as long as its coast policy takes to let go,
+    and the fixes it refuses in that stretch are refused *correctly*: they
+    disagree with the state, and the state is what is wrong. Counting them as
+    false alarms measured re-acquisition latency and called it gate health.
+    :func:`_reacquisition` is where that latency is judged, on its own bound.
+    The same reasoning already governs the campaign NEES/NIS population; see
+    :func:`analysis.od.statistics.summarise`.
+    """
     summary = entry.regimes.get("nominal")
     if summary is None or summary.fixes == 0:
         return None
+    refused = summary.fine_fixes - summary.fine_accepted
     return Criterion(
         name=f"Clean-fix rejection rate, {entry.scenario}",
         requirement="REQ-ODP-001",
         threshold=NOMINAL_REJECTION_CEILING,
-        measured=summary.rejection_rate,
+        measured=summary.fine_rejection_rate,
         units="-",
         sense="max",
         note=(
-            f"{summary.fixes - summary.accepted} of {summary.fixes} clean fixes refused. "
-            f"The gate is configured at the 99.9% point of chi-square(3), so about 0.1% "
-            f"is expected; the ceiling is an order above that, since the rate is measured "
-            f"over a finite sample against a truth the filter does not carry."
+            f"{refused} of {summary.fine_fixes} clean fixes refused while the solution "
+            f"was fine ({summary.fixes - summary.accepted} of {summary.fixes} over the "
+            f"whole un-faulted stretch, degraded coasts included). The gate is configured "
+            f"at the 99.9% point of chi-square(3), so about 0.1% is expected; the ceiling "
+            f"is an order above that, since the rate is measured over a finite sample "
+            f"against a truth the filter does not carry."
+        ),
+    )
+
+
+def _reacquisition(entry: ScenarioStatistics) -> Criterion | None:
+    """How long the filter went on refusing honest fixes, against its own bound.
+
+    The other half of the rejection story, and the half that matters after an
+    unmodelled event: a filter whose state has been moved by something it was
+    never told about (a burn it could not see, a spoof it rode) refuses every
+    honest fix until its coast policy lets go of the solution and the next fix
+    re-seeds whole. That is deliberate — ``gnc/orbit_od.hpp`` refuses an
+    "N rejections → reseed" rule precisely so a persistent spoof cannot win the
+    seed early (§9.2) — so the bound is the degraded horizon itself, plus the one
+    cycle the re-seed lands on. Longer than that and the filter is not recovering
+    on the schedule its own policy promises, which is a defect; shorter is the
+    policy working.
+    """
+    if entry.degraded_horizon_s <= 0.0:
+        return None
+    return Criterion(
+        name=f"Clean-fix lockout after an unmodelled event, {entry.scenario}",
+        requirement="REQ-ODP-001",
+        threshold=entry.degraded_horizon_s + entry.cycle_period_s,
+        measured=entry.clean_lockout_s,
+        units="s",
+        sense="max",
+        note=(
+            f"Longest unbroken stretch of delivered, un-faulted fixes the gate refused: "
+            f"{entry.clean_lockout_s:.0f} s against a degraded horizon of "
+            f"{entry.degraded_horizon_s:.0f} s. Nothing re-seeds sooner by design, so the "
+            f"horizon is the bound; the coast clock runs from the last accepted fix, which "
+            f"is why a lockout that starts inside an outage is shorter than the horizon by "
+            f"the outage it followed."
         ),
     )
 
@@ -311,6 +361,9 @@ def od_report(
         rejection = _nominal_rejection(entry)
         if rejection is not None:
             criteria.append(rejection)
+        lockout = _reacquisition(entry)
+        if lockout is not None:
+            criteria.append(lockout)
     band = _band_refusals(stats)
     if band is not None:
         criteria.append(band)
