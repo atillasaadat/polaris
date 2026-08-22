@@ -44,6 +44,14 @@ uv run --frozen --group analysis pytest tests/freeflyer   # the V&V suite
 (Every command wants `PYTHONPATH=tools` from the repo root, or `uv run` which
 inherits it from `pytest.ini` for the test lane.)
 
+> **`No module named freeflyer.__main__; 'freeflyer' is a package and cannot be
+> directly executed`** means exactly one thing: `PYTHONPATH=tools` was missing.
+> Without it, `freeflyer` resolves to the gitignored **vendor** directory at the
+> repository root — the installer, the RPM and the license — which is a
+> namespace package with no `__main__.py`. It shadows `tools/freeflyer` only
+> when nothing else puts the real package on the path first. The same shadowing
+> bit the Windows child, which is why `winhost.py` runs it from `tools/`.
+
 ### Producing a stream to look at
 
 Any closed-loop run writes one. The SITL integration rows are the ready-made
