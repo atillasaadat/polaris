@@ -52,12 +52,24 @@ inherits it from `pytest.ini` for the test lane.)
 > when nothing else puts the real package on the path first. The same shadowing
 > bit the Windows child, which is why `winhost.py` runs it from `tools/`.
 
-### Producing a stream to look at
-
-Any closed-loop run writes one. The SITL integration rows are the ready-made
-scenarios — set `POLARIS_SIM_STREAM` and pick a row with `--gtest_filter`:
+### Run a scenario and watch it, in one command
 
 ```bash
+PYTHONPATH=tools python -m freeflyer run \
+  --scenario SitlAttitudeControl.DetumblesThenAcquiresSunPointing
+```
+
+`run` starts the SITL row with `POLARIS_SIM_STREAM` pointed at a fresh stream,
+follows it live in the windows, and cleans the simulation up on the way out
+(including on Ctrl-C — a SITL binary left running holds ports and a PrmDb). The
+sim stays in WSL and the rendering hosts on Windows, the same split `viz` uses;
+this subcommand just owns both ends. The sim's own output goes to a log beside
+the stream, and a scenario that fails prints its tail.
+
+The two halves separately, when you want the stream kept or replayed:
+
+```bash
+mkdir -p /tmp/polaris                    # the sim opens the path, it does not build the tree
 STREAM=/tmp/polaris/detumble.jsonl
 POLARIS_SIM_STREAM=$STREAM \
   ./build-fprime-automatic-native-ut/bin/Linux/polaris_integration_tests \
@@ -69,8 +81,8 @@ PYTHONPATH=tools python -m freeflyer viz --stream $STREAM --pace 20
 
 | scenario | `--gtest_filter` | what you see |
 |---|---|---|
-| Detumble | `SitlAttitudeControl.DetumblesFromFiveDegreesPerSecond` | 5 °/s tumble bled off by the rods |
-| Detumble → sun point | `SitlAttitudeControl.DetumblesThenAcquiresSunPointing` | the safe-mode sequence end to end |
+| Detumble | `SitlAttitudeControl.DetumblesFromFiveDegreesPerSecond` | 5 °/s tumble bled off by the rods — the **fast phase only**, 5.0 → 2.9 °/s over 450 s (see below) |
+| Detumble → sun point | `SitlAttitudeControl.DetumblesThenAcquiresSunPointing` | the safe-mode sequence end to end: 5.0 → 0.0 °/s, then sun pointing held — **the row to watch if you want to see something finish** |
 | Slew at the rate limit | `SitlAttitudeControl.LatentStarTrackerStaysFusedThroughASlewAtTheRateLimit` | a 30° eigenaxis slew, tracker stays fused |
 | Momentum dump | `SitlAttitudeControl.DesaturationDumpsMomentumWhilePointingHolds` | pointing held while the wheels unload |
 | Stuck rod | `SitlAttitudeControl.StuckOnRodIsCaughtAndTheEstimatorSurvivesIt` | the FDIR case, attitude survives |
@@ -80,6 +92,18 @@ PYTHONPATH=tools python -m freeflyer viz --stream $STREAM --pace 20
 | GNSS outage | `SitlOdFault.GnssOutagePastTheFineHorizonIsDegradedNotDropped` | the orbit filter coasting |
 | Burn in an outage | `SitlOdBurn.BurnInsideAnOutageIsCoastedOnTheCommandedThrust` | a finite burn flown blind on thrust |
 | One orbit | `SitlOdFault.OneOrbitPeriodHoldsOneSolution` | a full period, one solution |
+
+> **A detumble row does not end at zero rate, and that is the physics.** B-dot
+> damps the body rate *perpendicular* to the field; the component along the
+> field line produces no `dB/dt` in body axes and is invisible to the law. What
+> breaks it up is the field direction turning over the orbit — a ~1e-3 rad/s
+> process against a ~5e-2 rad/s spin — so the vehicle settles into a slow spin
+> about the local field line and unwinds it over **orbits, not minutes**
+> (measured: 3.14 °/s at 200 s, then order 1 % per 500 s). REQ-ACTL-001 is
+> written on the fast phase for that reason, and
+> `DetumblesFromFiveDegreesPerSecond` asserts it. To watch a sequence that
+> *does* reach zero, use `DetumblesThenAcquiresSunPointing`, whose second phase
+> points at the sun from the handover state.
 
 Live instead of replayed: start the run in one shell and, in another,
 `python -m freeflyer viz --stream $STREAM --follow` — it waits for the file

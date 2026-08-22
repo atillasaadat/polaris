@@ -16,6 +16,13 @@ Subcommands
     sim, the stream file and this command line all stay where they were; only
     the renderer crosses (``winhost.py``). Windowed output on Linux is refused
     rather than silently software-rendered.
+``run --scenario <gtest filter> [--stream <file>]``
+    Run a SITL scenario **and** watch it, in one command and one shell: starts
+    the integration binary with ``POLARIS_SIM_STREAM`` pointed at a fresh
+    stream, then follows that stream in the windows. The sim runs in WSL and
+    the rendering hosts on Windows, the same split ``viz`` uses — this
+    subcommand just owns both ends of it and cleans the sim up on the way out.
+
 ``panel --stream <file> [--port N] [--host H]``
     Same replay, but seekable: serves a browser transport control
     (play/pause, seek slider, jump-to-start/timestamp, pace) on
@@ -35,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -133,6 +141,109 @@ def _cmd_panel(args: argparse.Namespace) -> int:
     return 0
 
 
+#: Where the SITL rows live, relative to the repository root.
+_SITL_BINARY = Path(
+    "build-fprime-automatic-native-ut/bin/Linux/polaris_integration_tests"
+)
+
+
+def _repo_root() -> Path:
+    """The checkout root — this file is ``<root>/tools/freeflyer/__main__.py``."""
+    return Path(__file__).resolve().parents[2]
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    """Start a SITL scenario and follow it in one shell.
+
+    The two halves run where they must: the simulation is a Linux binary and
+    stays in WSL, the rendering hosts on Windows (``winhost``). This command is
+    the only place that knows both, which is why it is not itself relaunched —
+    a Windows child could not start the Linux binary.
+    """
+    binary = Path(args.binary) if args.binary else _repo_root() / _SITL_BINARY
+    if not binary.exists():
+        print(
+            f"{binary} not found — build the integration tests first:\n"
+            "  uv run cmake --build build-fprime-automatic-native-ut "
+            "--target polaris_integration_tests -j4",
+            file=sys.stderr,
+        )
+        return 1
+
+    stream = (
+        Path(args.stream)
+        if args.stream
+        else Path(f"/tmp/polaris-viz-{os.getpid()}.jsonl")
+    )
+    # The sim opens this path, it does not build the tree; a missing directory
+    # is otherwise a viewer that waits forever on a file nobody can write.
+    stream.parent.mkdir(parents=True, exist_ok=True)
+    stream.unlink(missing_ok=True)  # never follow a previous run's states
+
+    log = stream.with_suffix(".log")
+    env = dict(os.environ, POLARIS_SIM_STREAM=str(stream))
+    print(
+        f"[run] {args.scenario}\n[run] stream {stream}\n[run] sim log {log}", flush=True
+    )
+    with log.open("w") as sink:
+        sim = subprocess.Popen(
+            [str(binary), f"--gtest_filter={args.scenario}"],
+            env=env,
+            stdout=sink,
+            stderr=subprocess.STDOUT,
+        )
+        try:
+            viz_argv = [
+                "viz",
+                "--stream",
+                str(stream),
+                "--follow",
+                "--fps",
+                str(args.fps),
+                "--view",
+                args.view,
+            ]
+            if winhost.should_relaunch():
+                code = winhost.relaunch(viz_argv)
+            else:
+                install = locate.find_runnable_licensed()
+                if install is None:
+                    print("no runnable licensed FreeFlyer found", file=sys.stderr)
+                    return 1
+                code = (
+                    0
+                    if viz.run_viz(
+                        install,
+                        viz.follow(stream, max_fps=args.fps),
+                        pace=None,
+                        max_fps=args.fps,
+                        view=args.view,
+                    )
+                    else 1
+                )
+        except KeyboardInterrupt:
+            code = 130
+        finally:
+            # The viewer returns when the stream goes quiet, which is usually
+            # the run having finished — but a Ctrl-C or a dead engine gets here
+            # too, and a SITL binary left running holds ports and a PrmDb.
+            if sim.poll() is None:
+                sim.terminate()
+                try:
+                    sim.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    sim.kill()
+    if sim.returncode not in (0, -15, 143):
+        print(
+            f"[run] the scenario exited {sim.returncode}; tail of {log}:",
+            file=sys.stderr,
+        )
+        for line in log.read_text(errors="replace").splitlines()[-15:]:
+            print("   ", line, file=sys.stderr)
+        return sim.returncode or 1
+    return code
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="python -m freeflyer", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -196,10 +307,36 @@ def main() -> int:
         help="which window(s) to render (both cost the same on the GPU host)",
     )
 
-    args = parser.parse_args()
-    return {"status": _cmd_status, "viz": _cmd_viz, "panel": _cmd_panel}[args.command](
-        args
+    p_run = sub.add_parser("run", help="run a SITL scenario and watch it, in one shell")
+    p_run.add_argument(
+        "--scenario",
+        required=True,
+        help="gtest filter, e.g. SitlAttitudeControl.DetumblesThenAcquiresSunPointing "
+        "(--gtest_list_tests on the integration binary lists them all)",
     )
+    p_run.add_argument(
+        "--stream", help="where the run writes its states (default: a fresh /tmp file)"
+    )
+    p_run.add_argument(
+        "--binary", help="integration-test binary (default: the build tree's)"
+    )
+    p_run.add_argument(
+        "--fps", type=float, default=12.0, help="render-rate ceiling (default 12)"
+    )
+    p_run.add_argument(
+        "--view",
+        choices=("orbit", "close", "both"),
+        default="both",
+        help="which window(s)",
+    )
+
+    args = parser.parse_args()
+    return {
+        "status": _cmd_status,
+        "viz": _cmd_viz,
+        "panel": _cmd_panel,
+        "run": _cmd_run,
+    }[args.command](args)
 
 
 if __name__ == "__main__":

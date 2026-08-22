@@ -102,3 +102,22 @@ def test_a_plain_linux_host_does_not_relaunch(monkeypatch):
     monkeypatch.delenv("POLARIS_FF_WINHOST", raising=False)
     monkeypatch.setattr(winhost, "running_under_wsl", lambda: False)
     assert not winhost.should_relaunch()
+
+
+def test_run_without_a_built_binary_says_how_to_build_it(tmp_path, capsys):
+    """`run` is the one subcommand that needs the SITL binary; a missing build
+    tree is the ordinary first-use case and must name the build command rather
+    than fail on a bare FileNotFoundError."""
+    import argparse
+
+    from freeflyer.__main__ import _cmd_run
+
+    args = argparse.Namespace(
+        scenario="SitlAttitudeControl.DetumblesThenAcquiresSunPointing",
+        stream=str(tmp_path / "s.jsonl"),
+        binary=str(tmp_path / "nope"),
+        fps=12.0,
+        view="both",
+    )
+    assert _cmd_run(args) == 1
+    assert "polaris_integration_tests" in capsys.readouterr().err
