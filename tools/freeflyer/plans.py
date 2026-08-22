@@ -20,7 +20,7 @@ import re
 import tempfile
 from pathlib import Path
 
-from .locate import FreeFlyerInstall
+from .locate import FreeFlyerInstall, client_source_for
 
 _TEMPLATE_RELPATH = (
     Path("Runtime API") / "examples_common" / "PropagateState.MissionPlan"
@@ -36,7 +36,8 @@ def write_mission_plan(
     Parameters
     ----------
     install : FreeFlyerInstall
-        The installation whose project-file scaffold to reuse.
+        The installation being driven; its scaffold, or a same-build sibling's
+        when this one shipped without the Runtime API component.
     script : str
         FreeFlyer-script body. Must not contain ``]]>``.
     title : str
@@ -47,7 +48,10 @@ def write_mission_plan(
     """
     if "]]>" in script:
         raise ValueError("FreeFlyer script must not contain a CDATA terminator")
-    template_path = install.install_dir / _TEMPLATE_RELPATH
+    # The scaffold lives in the Runtime API tree, which may belong to a
+    # same-build sibling install when this engine shipped without the SDK
+    # component (the Windows case).
+    template_path = client_source_for(install).install_dir / _TEMPLATE_RELPATH
     template = template_path.read_text(encoding="utf-8")
     # The scaffold carries the script twice (FreeForm block + ProjectScript);
     # both must agree or the loader runs the stale one.

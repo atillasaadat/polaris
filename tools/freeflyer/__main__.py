@@ -9,12 +9,23 @@ Subcommands
     interactive FreeFlyer windows — live with ``--follow`` while a sim runs,
     or as a replay of a finished run. ``--pace 10`` replays 10× faster than
     real time; ``--pace 0`` renders as fast as the display draws.
+
+    **Run it from WSL as always**: when a licensed Windows install is present
+    the command re-enters itself under Windows Python so the engine renders on
+    the GPU, translating the stream path to its ``\\wsl.localhost`` form. The
+    sim, the stream file and this command line all stay where they were; only
+    the renderer crosses (``winhost.py``). Windowed output on Linux is refused
+    rather than silently software-rendered.
 ``panel --stream <file> [--port N] [--host H]``
     Same replay, but seekable: serves a browser transport control
     (play/pause, seek slider, jump-to-start/timestamp, pace) on
     ``http://127.0.0.1:8765`` and drives the FreeFlyer windows from it.
     The page is a single self-contained document, so a Grafana dashboard
     can embed it in an iframe panel. Runs until Ctrl-C.
+
+    Hosted on Windows like ``viz``, which is also where the panel listens:
+    open the printed URL in a **Windows** browser. WSL has its own network
+    namespace, so that URL from inside WSL will not reach it.
 
 Run with ``PYTHONPATH=tools`` from the repository root (the pytest config
 does the same), or via ``uv run python -m freeflyer …``.
@@ -23,10 +34,11 @@ does the same), or via ``uv run python -m freeflyer …``.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
-from . import locate, panel, viz
+from . import locate, panel, viz, winhost
 
 
 def _cmd_status(_args: argparse.Namespace) -> int:
@@ -34,16 +46,34 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     if not installs:
         print("no FreeFlyer installation found (POLARIS_FF_DIR to point at one)")
         return 1
+    host = locate.find_render_host()
     for inst in installs:
         state = inst.license_info.get("license", "UNLICENSED")
         expiry = inst.license_info.get("expires", "")
         run = "runnable" if inst.runnable else "not runnable from this Python"
+        roles = []
+        if inst.runnable and inst.licensed:
+            roles.append("V&V")
+        if host is not None and inst.install_dir == host.install_dir:
+            roles.append("renders viz")
+        if inst.sdk_dir is None:
+            roles.append("no Runtime API SDK")
         print(f"[{inst.platform}] {inst.install_dir}")
         print(f"    license: {state} {expiry}   ({run})")
+        if roles:
+            print(f"    role: {', '.join(roles)}")
+    if host is not None and host.platform == "windows":
+        interpreter = winhost.find_windows_python()
+        print(
+            f"\nvisualization hosts on Windows via "
+            f"{interpreter or 'NO WINDOWS PYTHON FOUND (set POLARIS_WIN_PYTHON)'}"
+        )
     return 0
 
 
 def _cmd_viz(args: argparse.Namespace) -> int:
+    if not args.headless and winhost.should_relaunch():
+        return winhost.relaunch(sys.argv[1:])
     install = locate.find_runnable_licensed()
     if install is None:
         print("no runnable licensed FreeFlyer found", file=sys.stderr)
@@ -68,6 +98,8 @@ def _cmd_viz(args: argparse.Namespace) -> int:
 
 
 def _cmd_panel(args: argparse.Namespace) -> int:
+    if not args.headless and winhost.should_relaunch():
+        return winhost.relaunch(sys.argv[1:])
     install = locate.find_runnable_licensed()
     if install is None:
         print("no runnable licensed FreeFlyer found", file=sys.stderr)
@@ -79,8 +111,10 @@ def _cmd_panel(args: argparse.Namespace) -> int:
         return 1
     playback = panel.Playback(panel.stream_times(states), pace=args.pace)
     server = panel.serve(playback, host=args.host, port=args.port)
+    where = " (open in a Windows browser)" if os.name == "nt" else ""
     print(
-        f"control panel: http://{args.host}:{server.server_address[1]}/  (Ctrl-C to quit)"
+        f"control panel: http://{args.host}:{server.server_address[1]}/"
+        f"{where}  (Ctrl-C to quit)"
     )
     try:
         viz.run_viz_panel(
@@ -123,15 +157,15 @@ def main() -> int:
     p_viz.add_argument(
         "--fps",
         type=float,
-        default=2.0,
-        help="render-rate ceiling (default 2; the WSLg software renderer "
-        "sustains little more — 0 disables)",
+        default=12.0,
+        help="render-rate ceiling (default 12; the Windows GPU host sustains "
+        "~17 fps on this scene — 0 disables)",
     )
     p_viz.add_argument(
         "--view",
         choices=("orbit", "close", "both"),
         default="both",
-        help="which window(s) to render — one window halves the frame cost",
+        help="which window(s) to render (both cost the same on the GPU host)",
     )
 
     p_panel = sub.add_parser(
@@ -153,13 +187,13 @@ def main() -> int:
         "--headless", action="store_true", help="no windows (smoke testing)"
     )
     p_panel.add_argument(
-        "--fps", type=float, default=2.0, help="render-rate ceiling (default 2)"
+        "--fps", type=float, default=12.0, help="render-rate ceiling (default 12)"
     )
     p_panel.add_argument(
         "--view",
         choices=("orbit", "close", "both"),
         default="both",
-        help="which window(s) to render — one window halves the frame cost",
+        help="which window(s) to render (both cost the same on the GPU host)",
     )
 
     args = parser.parse_args()

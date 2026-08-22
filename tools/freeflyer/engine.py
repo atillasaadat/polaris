@@ -14,7 +14,18 @@ Two host quirks this module owns so nothing else has to:
   library loads. The spawned ``ff`` child *does* honour a fresh environment,
   so the same directories are also exported for it.
 * **sys.path injection.** The client is put on ``sys.path`` exactly once, from
-  the located install.
+  whichever install actually carries the SDK — which is not always the one
+  being driven, since the Windows installer makes the Runtime API component
+  optional while always shipping ``ffrtapi.dll``
+  (:func:`tools.freeflyer.locate.client_source_for`).
+
+Rendering is **Windows-hosted**. FreeFlyer draws through EGL, and Mesa's EGL
+path under WSLg offers only the CPU rasteriser, so a window opened by the Linux
+engine is software-rendered by construction — measured as ``Renderer: Software``
+against the Windows engine's ``Renderer: NVIDIA``. Windowed output is therefore
+refused on Linux and :mod:`tools.freeflyer.winhost` re-enters the same command
+under Windows Python. The Linux engine keeps the headless work it is good at:
+the V&V cross-check, which never opens a window.
 """
 
 from __future__ import annotations
@@ -25,7 +36,7 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 
-from .locate import FreeFlyerInstall
+from .locate import FreeFlyerInstall, client_source_for
 
 #: Sonames the el9 engine needs that Ubuntu-family hosts do not ship, in
 #: dependency order — each entry may be a dependency of the ones after it
@@ -51,7 +62,7 @@ def _prepare(install: FreeFlyerInstall) -> None:
             f"FreeFlyer at {install.install_dir} is not runnable from this "
             "process (Windows install under a Linux Python?)"
         )
-    if install.deps_dir is not None:
+    if install.platform == "linux" and install.deps_dir is not None:
         for soname in _PRELOAD_SONAMES:
             lib = install.deps_dir / soname
             if lib.exists():
@@ -63,7 +74,7 @@ def _prepare(install: FreeFlyerInstall) -> None:
         if prior:
             parts.append(prior)
         os.environ["LD_LIBRARY_PATH"] = ":".join(parts)
-    client = str(install.python_client_dir)
+    client = str(client_source_for(install).python_client_dir)
     if client not in sys.path:
         sys.path.insert(0, client)
     _prepared.add(install.install_dir)
@@ -99,13 +110,14 @@ def open_engine(install: FreeFlyerInstall, windowed: bool = False):
     from aisolutions.freeflyer.runtimeapi.WindowedOutputMode import WindowedOutputMode
 
     if windowed and install.platform == "linux":
-        # WSLg's accelerated GL path fails FreeFlyer's renderer probe (zink
-        # finds no Vulkan device, dri2 screen creation fails → "Renderer:
-        # Unknown"); Mesa's software rasteriser renders the windows fine and
-        # the viz scene is light. Measured on the dev machine: `ff -rr`
-        # reports "Software" with this set and "Unknown" without. setdefault,
-        # so a machine with working GPU GL can override with =0.
-        os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
+        raise RuntimeError(
+            "windowed FreeFlyer output is not supported on Linux/WSL: the "
+            "renderer falls back to Mesa's CPU rasteriser (measured "
+            '"Renderer: Software" against the Windows engine\'s '
+            '"Renderer: NVIDIA"). Run the visualization through '
+            "`python -m freeflyer viz`, which hosts it on Windows "
+            "automatically, or pass --headless for a smoke run."
+        )
     mode = WindowedOutputMode.GenerateOutputWindows if windowed else None
     engine = RuntimeApiEngine(
         str(install.install_dir),

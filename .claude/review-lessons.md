@@ -785,3 +785,29 @@ fixture was found in the innovation sequence, not in review.
   record rather than copied into the analysis — the flight/sim parameter-pair
   rule applied to a criterion. A threshold the analysis owns is a threshold that
   drifts from the policy it claims to check.
+
+## The obvious explanation for "it's slow" is worth one measurement (P75, freeflyer)
+
+- **Measure the boundary you suspect before optimising it.** The WSL→Windows
+  stream file looked like the obvious cost; it reads 4501 states in 36 ms
+  (8 µs each). Preloading, caching or copying it would have bought nothing.
+  The cost was four synchronous engine round-trips per frame — async queueing
+  with one drain at the render took 188 ms/frame to 59 ms, 3.2x, and changed
+  nothing about what is drawn.
+- **Performance advice ages with the platform.** "Prefer one window, it halves
+  the frame cost" was true on the CPU rasteriser and false the moment the GPU
+  rendered (56.4 vs 58.6 ms). So was the `--fps 2` default. When a platform
+  assumption changes, grep the docs and comments for the advice it justified.
+- **A gitignored vendor directory can shadow the package that drives it.**
+  Repo-root `freeflyer/` (installer, license) shadowed `tools/freeflyer` on the
+  Windows child's `sys.path`, which imported a folder of RPMs. Regular packages
+  beat namespace packages *within* one path entry, but `sys.path[0]` order wins
+  first — run the child from the directory that owns the package.
+- **Environment does not cross the WSL/Windows boundary.** Only `WSLENV`-listed
+  variables reach a Windows process, so `PYTHONPATH` silently did not arrive.
+  Pass what must cross explicitly, and prefer cwd/argv to env where you can.
+- **An optional vendor component is a compatibility question, not a blocker.**
+  The Windows FreeFlyer installer omits the Runtime API SDK but ships
+  `ffrtapi.dll`; borrowing the client from the other install works and is safe
+  *only* on an exact build match, because the client is generated against one
+  engine ABI. Encode the check, name both builds when refusing.
