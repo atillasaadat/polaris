@@ -172,8 +172,19 @@ def follow(
     to the newest complete line keeps the window showing *now*, at a frame
     rate the renderer actually sustains.
     """
-    while not stream_path.exists():
-        time.sleep(max(poll_s, 0.5))
+    if not stream_path.exists():
+        # Say so, once. The wait is unbounded by design, and a silent one is
+        # indistinguishable from a hung viewer — especially since FreeFlyer
+        # opens its view windows on the *first* Update, so a viewer waiting
+        # here shows a running engine and no visualization at all. That is the
+        # shape of "the sim never wrote this path", which is the usual cause.
+        print(
+            f"[viz] waiting for {stream_path} to appear "
+            "(the windows open on the first state; Ctrl-C to abandon)",
+            flush=True,
+        )
+        while not stream_path.exists():
+            time.sleep(max(poll_s, 0.5))
     deadline = time.monotonic() + idle_stop_s
     min_interval = 1.0 / max_fps if max_fps > 0 else 0.0
     last_yield = 0.0

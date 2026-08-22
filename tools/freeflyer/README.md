@@ -82,8 +82,12 @@ PYTHONPATH=tools python -m freeflyer viz --stream $STREAM --pace 20
 | One orbit | `SitlOdFault.OneOrbitPeriodHoldsOneSolution` | a full period, one solution |
 
 Live instead of replayed: start the run in one shell and, in another,
-`python -m freeflyer viz --stream $STREAM --follow` — it waits for the file,
-then tails it. The seekable version of any of them is `panel` in place of
+`python -m freeflyer viz --stream $STREAM --follow` — it waits for the file
+(saying so), then tails it. **Create the directory first** (`mkdir -p` the
+parent of `$STREAM`): the sim opens the path, it does not build the tree, and
+a stream that never appears looks exactly like a broken viewer — a FreeFlyer
+engine running with no window, because FreeFlyer opens its view windows on the
+*first* frame and no state has arrived to draw. The seekable version of any of them is `panel` in place of
 `viz`; open the URL it prints in a **Windows** browser (WSL has its own
 network namespace, so that URL from inside WSL will not reach it).
 
