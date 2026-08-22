@@ -2174,3 +2174,14 @@ TEST(OrbitOdTimeScales, AStaleLeapSecondTableIsRefusedByATrackingFilterAndOnlyRo
   EXPECT_GT(rotated_m, 300.0);
   EXPECT_LT(rotated_m, 700.0);
 }
+
+// The quality verdict travels to logs and campaign records as its own name, so
+// the campaign never carries a copy of the enum (the same reason `refusalName`
+// exists). A value added without a case here is what "unknown" is for; this
+// pins the three that exist, so the omission surfaces as a failing name rather
+// than as a column of "unknown" nobody reads.
+TEST(OrbitOdQualityNames, EveryVerdictHasItsOwnName) {
+  EXPECT_STREQ(qualityName(OrbitOdQuality::kNone), "none");
+  EXPECT_STREQ(qualityName(OrbitOdQuality::kDegraded), "degraded");
+  EXPECT_STREQ(qualityName(OrbitOdQuality::kFine), "fine");
+}

@@ -227,6 +227,13 @@ class RegimeSummary:
         refusal breakdown is the point: *which* layer refused is what
         distinguishes a fault caught at the trust boundary from the same fault
         caught one layer in.
+    fine_fixes, fine_accepted : int
+        The same two counts over the samples where the filter called its own
+        solution ``"fine"``. The gate's false-alarm rate is only meaningful
+        there: once the solution is degraded the filter has been coasting past
+        ``max_coast_s`` and is refusing fixes because its *state* is stale, not
+        because the gate misjudged them (Push 74; REQ-ODP-001). Zero on shards
+        written before the driver recorded the quality verdict.
     """
 
     regime: str
@@ -236,6 +243,8 @@ class RegimeSummary:
     fixes: int
     accepted: int
     refusals: dict[str, int]
+    fine_fixes: int = 0
+    fine_accepted: int = 0
     sma: ErrorSummary = field(default_factory=lambda: ErrorSummary.of(np.array([])))
     sma_sigma_ratio: ErrorSummary = field(
         default_factory=lambda: ErrorSummary.of(np.array([]))
@@ -247,6 +256,18 @@ class RegimeSummary:
         if self.fixes == 0:
             return float("nan")
         return 1.0 - self.accepted / self.fixes
+
+    @property
+    def fine_rejection_rate(self) -> float:
+        """:attr:`rejection_rate` over the fine-quality samples alone.
+
+        The gate false-alarm rate, and the one a ceiling belongs on. Falls back
+        to :attr:`rejection_rate` on a shard that predates the quality verdict,
+        so an old campaign still scores rather than silently reporting NaN.
+        """
+        if self.fine_fixes == 0:
+            return self.rejection_rate
+        return 1.0 - self.fine_accepted / self.fine_fixes
 
 
 @dataclass(frozen=True)
@@ -276,6 +297,15 @@ class ScenarioStatistics:
     solution_gap_s : float
         Longest continuous stretch with no valid solution [s]. Zero means the
         filter published throughout.
+    clean_lockout_s : float
+        Longest unbroken stretch of delivered, un-faulted fixes the gate refused
+        [s] — how long the filter went on refusing honest fixes, which a rate
+        cannot show. Bounded by the degraded horizon: nothing re-seeds sooner
+        (§9.2, and the "no N rejections → reseed" rule in ``gnc/orbit_od.hpp``).
+    degraded_horizon_s : float
+        The degraded coast horizon these runs flew [s], carried from the driver
+        so :attr:`clean_lockout_s` is judged against the filter's own bound
+        rather than a number copied into the analysis.
     """
 
     scenario: str
@@ -290,6 +320,8 @@ class ScenarioStatistics:
     nis: ConsistencyInterval
     worst_pos_err_m: float
     solution_gap_s: float
+    clean_lockout_s: float = 0.0
+    degraded_horizon_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -345,6 +377,8 @@ def _regime_summary(regime: str, runs: tuple[ScenarioRun, ...]) -> RegimeSummary
     sma_ratio: list[np.ndarray] = []
     fixes = 0
     accepted = 0
+    fine_fixes = 0
+    fine_accepted = 0
     refusals: dict[str, int] = {}
 
     for run in runs:
@@ -366,6 +400,9 @@ def _regime_summary(regime: str, runs: tuple[ScenarioRun, ...]) -> RegimeSummary
             sma_ratio.append(np.where(sma_sig > 0.0, sma_err / sma_sig, np.nan))
         fixes += int(np.count_nonzero(run.fix_valid[armed]))
         accepted += int(np.count_nonzero(run.fix_accepted[armed]))
+        fine = armed & np.array([q == "fine" for q in run.quality], dtype=bool)
+        fine_fixes += int(np.count_nonzero(run.fix_valid[fine]))
+        fine_accepted += int(np.count_nonzero(run.fix_accepted[fine]))
         for index in np.flatnonzero(armed):
             name = run.refusal[index]
             if name:
@@ -380,6 +417,8 @@ def _regime_summary(regime: str, runs: tuple[ScenarioRun, ...]) -> RegimeSummary
         fixes=fixes,
         accepted=accepted,
         refusals=refusals,
+        fine_fixes=fine_fixes,
+        fine_accepted=fine_accepted,
         sma=ErrorSummary.of(join(sma)),
         sma_sigma_ratio=ErrorSummary.of(join(sma_ratio)),
     )
@@ -414,6 +453,27 @@ def _longest_gap_s(run: ScenarioRun) -> float:
         return 0.0
     longest = current = 0
     for flag in invalid:
+        current = current + 1 if flag else 0
+        longest = max(longest, current)
+    return float(longest) * run.cycle_period_s
+
+
+def _longest_clean_lockout_s(run: ScenarioRun) -> float:
+    """Longest unbroken stretch of delivered, un-faulted fixes the gate refused [s].
+
+    The recovery number the per-scenario rejection *rate* cannot express. A rate
+    averages a lockout over the whole arc, so a filter that refuses every honest
+    fix for half an hour and one that scatters the same refusals across a day
+    read alike; only the first is a filter that cannot get back. Counted over
+    the nominal regime, so a spoof or a jam being correctly refused is not a
+    lockout, and in cycles for the reason :func:`_longest_gap_s` gives.
+    """
+    armed = run.mask("nominal")
+    refused = armed & run.fix_valid & ~run.fix_accepted
+    if not refused.any():
+        return 0.0
+    longest = current = 0
+    for flag in refused:
         current = current + 1 if flag else 0
         longest = max(longest, current)
     return float(longest) * run.cycle_period_s
@@ -478,6 +538,10 @@ def summarise(campaign: Campaign) -> CampaignStatistics:
                 nis=consistency_interval(nis_means, MEASUREMENT_DIM),
                 worst_pos_err_m=worst,
                 solution_gap_s=max((_longest_gap_s(r) for r in runs), default=0.0),
+                clean_lockout_s=max(
+                    (_longest_clean_lockout_s(r) for r in runs), default=0.0
+                ),
+                degraded_horizon_s=first.degraded_horizon_s,
             )
         )
 

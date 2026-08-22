@@ -677,6 +677,22 @@ enum class OrbitOdRefusal : std::uint8_t {
   return "unknown";
 }
 
+/// The quality verdict's own name, for logs and analysis records. Beside the
+/// enum and compiler-checked exhaustive, for the same reason
+/// @ref refusalName is: an integer would oblige a reader to carry a copy of the
+/// enum, which is the same list written twice.
+[[nodiscard]] constexpr const char* qualityName(OrbitOdQuality quality) {
+  switch (quality) {
+    case OrbitOdQuality::kNone:
+      return "none";
+    case OrbitOdQuality::kDegraded:
+      return "degraded";
+    case OrbitOdQuality::kFine:
+      return "fine";
+  }
+  return "unknown";
+}
+
 /// Diagnostics from one 3-row measurement update. Populated whether or not the
 /// measurement was accepted, so the NIS of a *rejected* fix reaches telemetry
 /// and FDIR.

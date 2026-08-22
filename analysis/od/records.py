@@ -77,6 +77,10 @@ class ScenarioRun:
         cadence cannot resolve the datasheet's 50 ms; see the driver's header.
     duration_s : float
         Arc length requested [s].
+    coast_horizon_s, degraded_horizon_s : float
+        The filter's two coast horizons as the driver flew them [s], carried in
+        the meta record so this module never keeps its own copy of a number the
+        filter owns. Zero on shards written before Push 74 recorded them.
     t_s : numpy.ndarray
         Sample times from epoch [s].
     pos_err_m, vel_err_mps : numpy.ndarray
@@ -103,6 +107,12 @@ class ScenarioRun:
         fix, and whether that fix was folded in.
     age_s : numpy.ndarray
         Seconds since the last accepted fix — the coast clock [s].
+    quality : list of str
+        The filter's own coast verdict per sample: ``"fine"``, ``"degraded"`` or
+        ``"none"``, from ``gnc::qualityName``. A fix refused while the solution
+        is already degraded is the filter saying it is coasting, not the gate
+        raising a false alarm, which is why the clean-fix rejection rate is
+        measured over fine samples only. Empty string on pre-Push-74 shards.
     rejected_total : numpy.ndarray
         Cumulative count of rejected fixes.
     refusal : list of str
@@ -119,6 +129,8 @@ class ScenarioRun:
     cycle_period_s: float
     fix_latency_s: float
     duration_s: float
+    coast_horizon_s: float
+    degraded_horizon_s: float
     t_s: np.ndarray
     pos_err_m: np.ndarray
     vel_err_mps: np.ndarray
@@ -137,6 +149,7 @@ class ScenarioRun:
     fix_valid: np.ndarray
     fix_accepted: np.ndarray
     age_s: np.ndarray
+    quality: list[str]
     rejected_total: np.ndarray
     refusal: list[str]
     regime: list[str]
@@ -196,6 +209,8 @@ class _Accumulator:
     cycle_period_s: float = 0.0
     fix_latency_s: float = 0.0
     duration_s: float = 0.0
+    coast_horizon_s: float = 0.0
+    degraded_horizon_s: float = 0.0
     rows: list[dict] = field(default_factory=list)
 
     def freeze(self) -> ScenarioRun:
@@ -232,6 +247,8 @@ class _Accumulator:
             cycle_period_s=self.cycle_period_s,
             fix_latency_s=self.fix_latency_s,
             duration_s=self.duration_s,
+            coast_horizon_s=self.coast_horizon_s,
+            degraded_horizon_s=self.degraded_horizon_s,
             t_s=col("t_s"),
             pos_err_m=col("pos_err_m"),
             vel_err_mps=col("vel_err_mps"),
@@ -247,6 +264,7 @@ class _Accumulator:
             fix_valid=flag("fix_valid"),
             fix_accepted=flag("fix_accepted"),
             age_s=col("age_s"),
+            quality=[str(r.get("quality", "")) for r in rows],
             rejected_total=col("rejected_total"),
             refusal=[str(r.get("refusal", "")) for r in rows],
             regime=[str(r.get("regime", "nominal")) for r in rows],
@@ -319,6 +337,8 @@ def load_campaign(paths: str | Path | list[str | Path]) -> Campaign:
                     group.cycle_period_s = float(row.get("cycle_period_s", 0.0))
                     group.fix_latency_s = float(row.get("fix_latency_s", 0.0))
                     group.duration_s = float(row.get("duration_s", 0.0))
+                    group.coast_horizon_s = float(row.get("coast_horizon_s", 0.0))
+                    group.degraded_horizon_s = float(row.get("degraded_horizon_s", 0.0))
                     accumulators.append(group)
                     index[key] = group
                     continue

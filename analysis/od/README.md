@@ -167,7 +167,22 @@ did not choose:
 - the ensemble/reported σ ratio, with a band wide enough (0.5–2.0) not to fail
   a healthy filter on sampling noise and narrow enough to catch a covariance
   wrong by a factor;
-- the NIS gate's own configured rejection rate under nominal conditions;
+- the NIS gate's own configured rejection rate under nominal conditions —
+  measured over the samples where the filter still calls its own solution
+  *fine*, because that is the only stretch where the gate is the thing being
+  judged. Once the solution is degraded the filter is coasting past
+  `max_coast_s`, and a fix it refuses there is refused correctly: the
+  measurement is good and the state is not. Scoring those refusals as false
+  alarms measured recovery latency under the gate's name, which is what the
+  blind-burn scenario's 2.2 % (against a 1 % ceiling, every other scenario at
+  0.1 %) turned out to be — one 898 s stretch per burn, and nothing else;
+- the **re-acquisition bound** (REQ-ODP-012): the longest unbroken stretch of
+  delivered, un-faulted fixes the gate refuses, against the configured degraded
+  coast horizon. That threshold is the filter's own policy — nothing re-seeds
+  sooner by construction, so a persistent spoof cannot win the seed early — and
+  the stretch is measured rather than a rate because a rate averages a lockout
+  over the arc, reading a filter that cannot get back for half an hour the same
+  as one scattering refusals across a day;
 - the fault policy — coast inside the horizon, drop past it, and an implausible
   fix refused **on the plausibility band** rather than one layer in. That last
   is a criterion and not a nicety: the band is the only check on the seed path,
@@ -185,6 +200,10 @@ One JSON object per line, two kinds. `kind: "meta"` opens each (run, scenario)
 and carries the scenario's intent, cadence, latency and arc; `kind: "sample"` is
 one GNC cycle, emitted whether or not a fix arrived — the interesting rows are
 the ones where none did. Fields are documented on
-`analysis.od.records.ScenarioRun`. The refusal arrives as its **name**
+`analysis.od.records.ScenarioRun`. The meta record also carries the two coast
+horizons the driver flew, so the re-acquisition bound is read from the filter's
+configuration rather than from a copy of the number kept here. Each sample
+carries the filter's own quality verdict by name (`gnc::qualityName`), which is
+what scopes the rejection rate. The refusal arrives as its **name**
 (`"fix_implausible"`), from `gnc::refusalName` beside the enum, so this package
 never carries a copy of the enum that drifts the first time a value is inserted.
