@@ -16,10 +16,14 @@ Subcommands
     sim, the stream file and this command line all stay where they were; only
     the renderer crosses (``winhost.py``). Windowed output on Linux is refused
     rather than silently software-rendered.
-``run --scenario <gtest filter> [--stream <file>]``
+``run --scenario <gtest filter> [--replay] [--stream <file>]``
     Run a SITL scenario **and** watch it, in one command and one shell: starts
     the integration binary with ``POLARIS_SIM_STREAM`` pointed at a fresh
-    stream, then follows that stream in the windows. The sim runs in WSL and
+    stream, then follows that stream in the windows. ``--replay`` simulates
+    first and replays the finished run at ``--pace``, which is what anything
+    faster than real time wants — a full-orbit row simulates 94 minutes in 12
+    seconds, and following that live coalesces the orbit into a couple of dozen
+    frames. The sim runs in WSL and
     the rendering hosts on Windows, the same split ``viz`` uses — this
     subcommand just owns both ends of it and cleans the sim up on the way out.
 
@@ -193,16 +197,41 @@ def _cmd_run(args: argparse.Namespace) -> int:
             stderr=subprocess.STDOUT,
         )
         try:
-            viz_argv = [
-                "viz",
-                "--stream",
-                str(stream),
-                "--follow",
-                "--fps",
-                str(args.fps),
-                "--view",
-                args.view,
-            ]
+            if args.replay:
+                # Watch it afterwards, at a pace you choose. This is the right
+                # mode for anything that outruns the renderer, which is most
+                # short scenarios: a full-orbit row simulates 94 minutes in 12
+                # seconds of wall clock (460x real time), and *following* that
+                # live coalesces the whole orbit into a couple of dozen frames,
+                # because the follower always skips to the newest state rather
+                # than fall behind. Replay draws the whole arc instead.
+                print(
+                    "[run] simulating (the windows open when it finishes)...",
+                    flush=True,
+                )
+                sim.wait()
+                viz_argv = [
+                    "viz",
+                    "--stream",
+                    str(stream),
+                    "--pace",
+                    str(args.pace),
+                    "--fps",
+                    str(args.fps),
+                    "--view",
+                    args.view,
+                ]
+            else:
+                viz_argv = [
+                    "viz",
+                    "--stream",
+                    str(stream),
+                    "--follow",
+                    "--fps",
+                    str(args.fps),
+                    "--view",
+                    args.view,
+                ]
             if winhost.should_relaunch():
                 code = winhost.relaunch(viz_argv)
             else:
@@ -210,12 +239,17 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 if install is None:
                     print("no runnable licensed FreeFlyer found", file=sys.stderr)
                     return 1
+                states = (
+                    viz.replay(stream)
+                    if args.replay
+                    else viz.follow(stream, max_fps=args.fps)
+                )
                 code = (
                     0
                     if viz.run_viz(
                         install,
-                        viz.follow(stream, max_fps=args.fps),
-                        pace=None,
+                        states,
+                        pace=(args.pace if args.replay else None),
                         max_fps=args.fps,
                         view=args.view,
                     )
@@ -319,6 +353,19 @@ def main() -> int:
     )
     p_run.add_argument(
         "--binary", help="integration-test binary (default: the build tree's)"
+    )
+    p_run.add_argument(
+        "--replay",
+        action="store_true",
+        help="simulate first, then replay the whole run — right for anything "
+        "that outruns the renderer (a full-orbit row simulates 94 min in 12 s, "
+        "which following live coalesces to a few dozen frames)",
+    )
+    p_run.add_argument(
+        "--pace",
+        type=float,
+        default=100.0,
+        help="replay rate with --replay (default 100x real time; 0 = as fast as it draws)",
     )
     p_run.add_argument(
         "--fps", type=float, default=12.0, help="render-rate ceiling (default 12)"

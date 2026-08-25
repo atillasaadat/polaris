@@ -66,6 +66,20 @@ sim stays in WSL and the rendering hosts on Windows, the same split `viz` uses;
 this subcommand just owns both ends. The sim's own output goes to a log beside
 the stream, and a scenario that fails prints its tail.
 
+**Anything faster than real time wants `--replay`**, which simulates first and
+then draws the finished run:
+
+```bash
+PYTHONPATH=tools python -m freeflyer run --replay --pace 150 \
+  --scenario ClosedLoopOrbit.SensorsAgreeWithIndependentlyRecomputedGeometry
+```
+
+A full-orbit row simulates 94 minutes of flight in 12 seconds of wall clock —
+460x real time — and *following* that live coalesces the whole orbit into a
+couple of dozen frames, because the follower always skips to the newest state
+rather than fall behind. Measured on that row: 29 frames followed, 767
+replayed. Follow live for the long attitude rows, replay for the fast ones.
+
 The two halves separately, when you want the stream kept or replayed:
 
 ```bash
@@ -92,6 +106,7 @@ PYTHONPATH=tools python -m freeflyer viz --stream $STREAM --pace 20
 | GNSS outage | `SitlOdFault.GnssOutagePastTheFineHorizonIsDegradedNotDropped` | the orbit filter coasting |
 | Burn in an outage | `SitlOdBurn.BurnInsideAnOutageIsCoastedOnTheCommandedThrust` | a finite burn flown blind on thrust |
 | One orbit | `SitlOdFault.OneOrbitPeriodHoldsOneSolution` | a full period, one solution |
+| **Full orbit + eclipse** | `ClosedLoopOrbit.SensorsAgreeWithIndependentlyRecomputedGeometry` | a complete 94-min orbit through eclipse and back into sunlight — use `--replay` |
 
 > **A detumble row does not end at zero rate, and that is the physics.** B-dot
 > damps the body rate *perpendicular* to the field; the component along the
