@@ -102,9 +102,11 @@ closeView.AddObject(velVec);
 def _build_script(view: str) -> str:
     """Assemble the viz script for ``view`` ("orbit", "close", or "both").
 
-    One window is a real performance lever, not a preference: every Update is
-    a full software-rasterised redraw, so two windows are twice the frame
-    cost on exactly the machine that is struggling.
+    Window count stopped being a performance lever when rendering moved to the
+    Windows GPU: measured at 56.4 ms per frame for one window against 58.6 ms
+    for two, because what a frame costs is the engine round-trip, not the
+    rasterising. It was a real lever under WSLg's CPU rasteriser, and the
+    choice survives as what it always should have been — which view you want.
     """
     parts = [_VIZ_HEADER]
     updates = []
@@ -170,8 +172,19 @@ def follow(
     to the newest complete line keeps the window showing *now*, at a frame
     rate the renderer actually sustains.
     """
-    while not stream_path.exists():
-        time.sleep(max(poll_s, 0.5))
+    if not stream_path.exists():
+        # Say so, once. The wait is unbounded by design, and a silent one is
+        # indistinguishable from a hung viewer — especially since FreeFlyer
+        # opens its view windows on the *first* Update, so a viewer waiting
+        # here shows a running engine and no visualization at all. That is the
+        # shape of "the sim never wrote this path", which is the usual cause.
+        print(
+            f"[viz] waiting for {stream_path} to appear "
+            "(the windows open on the first state; Ctrl-C to abandon)",
+            flush=True,
+        )
+        while not stream_path.exists():
+            time.sleep(max(poll_s, 0.5))
     deadline = time.monotonic() + idle_stop_s
     min_interval = 1.0 / max_fps if max_fps > 0 else 0.0
     last_yield = 0.0
@@ -204,7 +217,23 @@ def follow(
 
 
 def _push_state(engine, state: dict) -> None:
-    """Write one stream record into the FreeFlyer spacecraft (units per module docstring)."""
+    """Queue one stream record into the FreeFlyer spacecraft (units per module docstring).
+
+    The four writes are **asynchronous**, and that is the difference between a
+    watchable replay and a slideshow. Each synchronous ``setExpression*`` is a
+    blocking round-trip to the engine process, and the round-trip — not the
+    drawing — is what a frame costs: measured on the Windows/NVIDIA host,
+    four sequential writes plus the render came to 188 ms per frame (5.3 fps),
+    while queueing the same four and letting the single post-``execute``
+    ``synchronize`` drain them came to 59 ms (17.1 fps). Ordering is what makes
+    it safe: the engine consumes queued commands in submission order, so the
+    render that :func:`_execute_frame` queues next necessarily sees all four
+    writes, and its synchronize is the one wait that covers everything.
+
+    Nothing here is dropped or approximated by going async — the same values
+    arrive in the same order; only the number of times Python stops to wait for
+    an acknowledgement changes.
+    """
     from aisolutions.freeflyer.runtimeapi.RuntimeApiEngine import (  # noqa: PLC0415 — vendor import after path injection
         FFTimeSpan,
     )
@@ -212,18 +241,20 @@ def _push_state(engine, state: dict) -> None:
     ff_epoch_s = state["tai_ns"] / 1.0e9 - _FF_EPOCH_BASE_UNIX_TAI_S
     whole = int(ff_epoch_s)
     frac_ns = int(round((ff_epoch_s - whole) * 1.0e9))
-    engine.setExpressionTimeSpan(
+    engine.setExpressionTimeSpanAsync(
         "Polaris.Epoch",
         FFTimeSpan.fromWholeSecondsAndNanoseconds(whole, frac_ns),
     )
-    engine.setExpressionArray(
+    engine.setExpressionArrayAsync(
         "Polaris.Position", [x / 1000.0 for x in state["r_eci_m"]]
     )
-    engine.setExpressionArray(
+    engine.setExpressionArrayAsync(
         "Polaris.Velocity", [v / 1000.0 for v in state["v_eci_m_s"]]
     )
     q0, q1, q2, q3 = state["q_body_eci"]  # JPL scalar-first
-    engine.setExpressionArray("Polaris.Quaternion", [q1, q2, q3, q0])  # FF scalar-last
+    engine.setExpressionArrayAsync(
+        "Polaris.Quaternion", [q1, q2, q3, q0]
+    )  # FF scalar-last
 
 
 def _execute_frame(engine, frame_no: int, budget_s: float = 300.0) -> None:
@@ -243,9 +274,8 @@ def _execute_frame(engine, frame_no: int, budget_s: float = 300.0) -> None:
         raise RuntimeError(
             f"FreeFlyer stopped responding while rendering frame {frame_no} "
             f"(waited {budget_s:.0f} s); the engine was killed. "
-            "(The Linux build is officially headless — interactive "
-            "windows over WSLg are best-effort. Lower --fps or use "
-            "--view orbit, or replay when the run is done.)"
+            "(A window left mid-drag parks the single render thread; "
+            "otherwise lower --fps, or replay once the run has finished.)"
         )
     cost = time.monotonic() - started
     if cost > 3.0:
@@ -276,9 +306,11 @@ def run_viz(
         False renders headless (used by the smoke test; nothing to look at).
     max_fps : float
         Ceiling on engine render calls. Sim time still advances at *pace* —
-        states between render slots are simply not drawn. The software
-        renderer sustains a couple of frames per second; pushing it faster is
-        how the window ends up frozen. 0 disables the ceiling.
+        states between render slots are simply not drawn. The Windows-hosted
+        engine sustains ~17 fps on this scene (measured), so the ceiling is
+        there to keep a fast ``--pace`` from queueing frames faster than the
+        engine retires them, not to protect a struggling rasteriser as it was
+        under WSLg. 0 disables it.
     """
     plan = write_mission_plan(install, _build_script(view), "polaris_viz")
     frames = 0
