@@ -52,6 +52,21 @@ inherits it from `pytest.ini` for the test lane.)
 > when nothing else puts the real package on the path first. The same shadowing
 > bit the Windows child, which is why `winhost.py` runs it from `tools/`.
 
+## The visualization is part of a feature, not a demo after it
+
+A capability that changes what the vehicle *does* — a pointing or guidance
+mode, a maneuver type, a mode transition, an FDIR response with an attitude or
+orbit signature — ships its scenario row in the **same push that builds it**,
+and the row goes in the table below with one line on what the viewer should
+see. That is a project rule (`CLAUDE.md`), not a nicety, for a reason the
+architecture makes cheap: FreeFlyer never propagates here, it draws the Polaris
+truth state, so the window cannot flatter the sim. If the behaviour is wrong it
+looks wrong — which catches the two things a passing assertion does not, a bound
+met for the wrong reason and a transient nobody wrote a percentile against.
+
+Purely internal work — a solver, a parser, a numerical method with no attitude
+or orbit signature — is exempt. Say so rather than inventing a row for it.
+
 ### Run a scenario and watch it, in one command
 
 ```bash
