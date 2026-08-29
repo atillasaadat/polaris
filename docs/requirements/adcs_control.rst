@@ -678,8 +678,15 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    torque, the latch and its clearing, and the negative on the modelled
    gravity-gradient signature).
 
-   **Owed:** tier 3 — fitting the residual dipole and the drag/SRP scale factors
-   from long-arc data — needs the §8.3 orbit filter and is not implemented.
+   **Tier 3 status.** Both halves are now implemented and both measured that
+   they cannot resolve their parameter on *this* vehicle, which is the honest
+   result rather than a gap: the residual-dipole fit (``gnc::DipoleEstimator``,
+   Push 59) sits ~40x under the tier-2 observer's noise floor, and the **drag
+   scale factor** (``gnc::OrbitOd``, Push 76, REQ-ODP-013) ~39x under the
+   process noise that covers the 8x8 geopotential truncation. Each ships tested,
+   parameterised and disabled, publishing the sigma that makes its own limit
+   legible. Still owed: an **SRP** scale factor, which needs an onboard SRP term
+   before it can have a coefficient to scale.
 
 .. req:: Reaction-wheel speed bias and per-wheel capacity monitoring
    :id: REQ-ACTL-012

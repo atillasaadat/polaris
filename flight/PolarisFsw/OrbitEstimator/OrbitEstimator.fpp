@@ -265,6 +265,34 @@ module flight {
     @ footnote), one per axis; ignored when DmcTauS = 0. Each >= 0.
     param DmcPsdRtnM2PerS5: Vec3F64
 
+    @ Correlation time of the drag scale factor [s] (design doc §8.5 tier 3,
+    @ orbit half; TP §2.2.3.4; Push 76). The scale is a dimensionless
+    @ multiplier on the onboard exponential-atmosphere drag term, estimated as
+    @ a first-order Gauss-Markov process about its nominal 1. Must be 0 or
+    @ >= 10 x MaxStepS. Ignored when DragScalePsdPerS = 0.
+    param DragScaleTauS: F64
+
+    @ Process-noise PSD of the drag scale factor [1/s]. 0 = off, which is the
+    @ flown value: on this vehicle the whole drag-scale signal is 39x under the
+    @ 8x8 geopotential truncation that AccelPsdM2PerS3 already budgets for, so
+    @ the state resolves nothing (measured 1.023 of a true 1.6 after six
+    @ orbits; lib/gnc/orbit_od.hpp). Enable it on a vehicle or an onboard field
+    @ where DragScaleSigma says it resolves something. Must be >= 0.
+    param DragScalePsdPerS: F64
+
+    @ Cold-start 1-sigma of the drag scale factor [-]. The prior on how wrong a
+    @ static exponential atmosphere can be against the real one, so a fraction
+    @ of 1 rather than of a percent. Must be > 0 when the state is enabled.
+    param DragScaleSeedSigma: F64
+
+    @ Bound on how far the estimated scale may travel from 1 [-]. An estimate
+    @ outside it is refused rather than clamped (the same rule the tier-3
+    @ dipole estimator's cleanliness bound flies): a scale that far out was
+    @ driven by something that is not drag. Must be in (0, 1) when the state is
+    @ enabled — a bound of 1 or more would admit a negative scale, i.e. drag
+    @ pushing the vehicle along its own velocity.
+    param DragScaleMaxDeviation: F64
+
     @ Interval at which the backup ephemeris is re-seeded from the FINE
     @ solution [s] (TP §9.2: "re-seed the backup with a current filter state at
     @ periodic intervals"). 0 disables the backup. Must be below
@@ -350,6 +378,23 @@ module flight {
 
     @ sqrt(trace) of the DMC acceleration covariance [m/s^2]; 0 when off.
     telemetry DmcSigmaMps2: F64
+
+    @ Estimated drag scale factor [-] (§8.5 tier 3, orbit half; Push 76).
+    @ Exactly 1 when the state is off or drag is disabled.
+    telemetry DragScale: F64
+
+    @ 1-sigma of the drag scale factor [-]; 0 when off. Read this before
+    @ believing DragScale: drag is observable only through its secular
+    @ along-track signature, so on a short arc — or on a vehicle where drag is
+    @ small against the rest of the force-model error — this sits at its seed
+    @ prior and the estimate is that prior, not a measurement.
+    telemetry DragScaleSigma: F64
+
+    @ Drag-scale updates refused for leaving DragScaleMaxDeviation, since boot
+    @ or the last OD_RESET. A count that climbs says the along-track signal
+    @ being fitted is not drag; a diagnosis channel, not a fault — the position
+    @ and velocity those fixes carried were applied normally.
+    telemetry DragScaleRefused: U32
 
     # ----------------------------------------------------------------------
     # Events

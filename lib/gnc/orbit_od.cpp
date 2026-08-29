@@ -73,6 +73,8 @@ bool OrbitOdConfig::isValid() const {
       std::isfinite(drag_ref_altitude_m) && std::isfinite(drag_scale_height_m) &&
       std::isfinite(accel_psd_m2_per_s3) && accel_psd_rtn_m2_per_s3.allFinite() &&
       std::isfinite(dmc_tau_s) && dmc_psd_rtn_m2_per_s5.allFinite() &&
+      std::isfinite(drag_scale_tau_s) && std::isfinite(drag_scale_psd_per_s) &&
+      std::isfinite(drag_scale_seed_sigma) && std::isfinite(drag_scale_max_deviation) &&
       std::isfinite(position_nis_gate) && std::isfinite(velocity_nis_gate) &&
       std::isfinite(max_coast_s) && std::isfinite(max_dt_s) && std::isfinite(max_step_s) &&
       std::isfinite(min_radius_m) && std::isfinite(max_radius_m);
@@ -150,6 +152,26 @@ bool OrbitOdConfig::isValid() const {
   if (dmc_tau_s > 0.0 && dmc_tau_s < 10.0 * max_step_s) {
     return false;
   }
+  // The drag scale factor (Push 76). Zero PSD is off; positive demands the rest
+  // of its tuning be present and sane, so a half-configured scale factor is a
+  // construction-time refusal rather than a state with a nonsense prior. Its
+  // kernel is the DMC's, hence the same ten-sub-step quadrature limit.
+  if (drag_scale_psd_per_s < 0.0 || drag_scale_tau_s < 0.0) {
+    return false;
+  }
+  if (drag_scale_psd_per_s > 0.0) {
+    if (!(drag_scale_tau_s >= 10.0 * max_step_s) || !(drag_scale_seed_sigma > 0.0) ||
+        !(drag_scale_max_deviation > 0.0)) {
+      return false;
+    }
+    // A band wider than 1 admits a *negative* scale — drag pushing the vehicle
+    // along its own velocity — which is not a large error, it is a different
+    // sign of physics, and no measurement should be able to talk the filter
+    // into it.
+    if (!(drag_scale_max_deviation < 1.0)) {
+      return false;
+    }
+  }
   if (!(position_nis_gate > 0.0) || !(velocity_nis_gate > 0.0)) {
     return false;
   }
@@ -168,10 +190,54 @@ bool OrbitOdConfig::isValid() const {
   return min_radius_m > 0.0 && max_radius_m > min_radius_m;
 }
 
+math::Vec3<math::frames::ECI> dragAcceleration(const OrbitOdConfig& cfg,
+                                               const math::Vec3<math::frames::ECI>& position,
+                                               const math::Vec3<math::frames::ECI>& velocity,
+                                               const EarthOrientation& earth) {
+  if (!(cfg.drag_ballistic_coeff_m2_per_kg > 0.0)) {
+    return math::Vec3<math::frames::ECI>::Zero();
+  }
+  const Eigen::Vector3d r = position.eigen();
+  const Eigen::Vector3d v = velocity.eigen();
+  const Eigen::Vector3d pole = earth.pole();
+  if (!r.allFinite() || !v.allFinite() || !earth.eci_from_ecef.allFinite()) {
+    return math::Vec3<math::frames::ECI>::Zero();
+  }
+  const double r_mag = r.norm();
+  if (!(r_mag > kMinRadiusM)) {
+    return math::Vec3<math::frames::ECI>::Zero();
+  }
+
+  const double altitude = r_mag - cfg.reference_radius_m;
+  const double x = (altitude - cfg.drag_ref_altitude_m) / cfg.drag_scale_height_m;
+  // Guard the exponential rather than the altitude: a fix below the reference
+  // altitude is physically a re-entry, and letting exp() overflow to inf would
+  // put a NaN into the state where a large-but-finite density puts a large-
+  // but-finite drag the finiteness guard can still reason about.
+  const double density = (x > -700.0) ? cfg.drag_ref_density_kg_m3 * std::exp(-x) : 0.0;
+  if (!std::isfinite(density) || !(density > 0.0)) {
+    return math::Vec3<math::frames::ECI>::Zero();
+  }
+  // The atmosphere co-rotates with the Earth, so the aerodynamically relevant
+  // velocity is v - ω⊕ × r; at LEO the transport term is ~465 m/s against a
+  // 7.7 km/s orbital velocity, i.e. a ~12% error in the drag magnitude and a
+  // real cross-track component if it is dropped. ω⊕ is about the *true* pole,
+  // the same axis the zonal field is referenced to.
+  const Eigen::Vector3d omega = constants::wgs84::kEarthRate * pole;
+  const Eigen::Vector3d v_rel = v - omega.cross(r);
+  const Eigen::Vector3d a =
+      (-0.5 * cfg.drag_ballistic_coeff_m2_per_kg * density * v_rel.norm()) * v_rel;
+  if (!a.allFinite()) {
+    return math::Vec3<math::frames::ECI>::Zero();
+  }
+  return math::Vec3<math::frames::ECI>(a);
+}
+
 math::Vec3<math::frames::ECI> onboardAcceleration(const OrbitOdConfig& cfg,
                                                   const math::Vec3<math::frames::ECI>& position,
                                                   const math::Vec3<math::frames::ECI>& velocity,
-                                                  const EarthOrientation& earth) {
+                                                  const EarthOrientation& earth,
+                                                  double drag_scale) {
   const Eigen::Vector3d r = position.eigen();
   const Eigen::Vector3d v = velocity.eigen();
   const Eigen::Vector3d pole = earth.pole();
@@ -215,27 +281,10 @@ math::Vec3<math::frames::ECI> onboardAcceleration(const OrbitOdConfig& cfg,
     }
   }
 
-  // --- Exponential-density drag --------------------------------------------
-  // The atmosphere co-rotates with the Earth, so the aerodynamically relevant
-  // velocity is v - ω⊕ × r; at LEO the transport term is ~465 m/s against a
-  // 7.7 km/s orbital velocity, i.e. a ~12% error in the drag magnitude and a
-  // real cross-track component if it is dropped. ω⊕ is about the *true* pole,
-  // the same axis the zonal field is referenced to.
-  if (cfg.drag_ballistic_coeff_m2_per_kg > 0.0) {
-    const double altitude = r_mag - cfg.reference_radius_m;
-    const double x = (altitude - cfg.drag_ref_altitude_m) / cfg.drag_scale_height_m;
-    // Guard the exponential rather than the altitude: a fix below the reference
-    // altitude is physically a re-entry, and letting exp() overflow to inf would
-    // put a NaN into the state where a large-but-finite density puts a large-
-    // but-finite drag the finiteness guard can still reason about.
-    const double density = (x > -700.0) ? cfg.drag_ref_density_kg_m3 * std::exp(-x) : 0.0;
-    if (std::isfinite(density) && density > 0.0) {
-      const Eigen::Vector3d omega = constants::wgs84::kEarthRate * pole;
-      const Eigen::Vector3d v_rel = v - omega.cross(r);
-      const double v_rel_mag = v_rel.norm();
-      a += (-0.5 * cfg.drag_ballistic_coeff_m2_per_kg * density * v_rel_mag) * v_rel;
-    }
-  }
+  // --- Exponential-density drag, scaled ------------------------------------
+  // Linear in the scale factor by construction, which is what makes the drag
+  // scale factor's Jacobian column exact (see dragAcceleration).
+  a += drag_scale * dragAcceleration(cfg, position, velocity, earth).eigen();
 
   if (!a.allFinite()) {
     return math::Vec3<math::frames::ECI>::Zero();
@@ -262,11 +311,12 @@ namespace {
 /// known non-gravitational acceleration @p a_ng (zero when none) — which the
 /// caller has already folded the DMC estimate into, in ECI.
 Vec6 stateDerivative(const OrbitOdConfig& cfg, const Vec6& x, const EarthOrientation& earth,
-                     const Eigen::Vector3d& a_ng = Eigen::Vector3d::Zero()) {
+                     const Eigen::Vector3d& a_ng = Eigen::Vector3d::Zero(),
+                     double drag_scale = 1.0) {
   Vec6 dx;
   dx.head<3>() = x.tail<3>();
   dx.tail<3>() = onboardAcceleration(cfg, math::Vec3<math::frames::ECI>(x.head<3>()),
-                                     math::Vec3<math::frames::ECI>(x.tail<3>()), earth)
+                                     math::Vec3<math::frames::ECI>(x.tail<3>()), earth, drag_scale)
                      .eigen() +
                  a_ng;
   return dx;
@@ -276,28 +326,30 @@ Vec6 stateDerivative(const OrbitOdConfig& cfg, const Vec6& x, const EarthOrienta
 /// two are central differences of the acceleration (see the file header for why
 /// the analytic form was not written by hand).
 Eigen::Matrix<double, 6, 6> dynamicsJacobian(const OrbitOdConfig& cfg, const Vec6& x,
-                                             const EarthOrientation& earth) {
+                                             const EarthOrientation& earth,
+                                             double drag_scale = 1.0) {
   Eigen::Matrix<double, 6, 6> f = Eigen::Matrix<double, 6, 6>::Zero();
   f.block<3, 3>(0, 3) = Eigen::Matrix3d::Identity();
 
   const double r_step = std::max(kJacMinPosStepM, kJacRelStep * x.head<3>().norm());
   const double v_step = std::max(kJacMinVelStepMps, kJacRelStep * x.tail<3>().norm());
+  const Eigen::Vector3d zero = Eigen::Vector3d::Zero();
 
   for (int i = 0; i < 3; ++i) {
     Vec6 plus = x;
     Vec6 minus = x;
     plus(i) += r_step;
     minus(i) -= r_step;
-    f.block<3, 1>(3, i) = (stateDerivative(cfg, plus, earth).tail<3>() -
-                           stateDerivative(cfg, minus, earth).tail<3>()) /
+    f.block<3, 1>(3, i) = (stateDerivative(cfg, plus, earth, zero, drag_scale).tail<3>() -
+                           stateDerivative(cfg, minus, earth, zero, drag_scale).tail<3>()) /
                           (2.0 * r_step);
 
     plus = x;
     minus = x;
     plus(3 + i) += v_step;
     minus(3 + i) -= v_step;
-    f.block<3, 1>(3, 3 + i) = (stateDerivative(cfg, plus, earth).tail<3>() -
-                               stateDerivative(cfg, minus, earth).tail<3>()) /
+    f.block<3, 1>(3, 3 + i) = (stateDerivative(cfg, plus, earth, zero, drag_scale).tail<3>() -
+                               stateDerivative(cfg, minus, earth, zero, drag_scale).tail<3>()) /
                               (2.0 * v_step);
   }
   return f;
@@ -311,6 +363,10 @@ void OrbitOd::dropSolution() {
   position_.setZero();
   velocity_.setZero();
   dmc_.setZero();
+  // Back to the nominal 1, not to zero: a dropped solution knows nothing about
+  // the atmosphere, and "nothing" for a multiplier is unity. The scale the old
+  // arc had learned belonged to that arc.
+  drag_scale_ = 1.0;
   p_.setZero();
   last_epoch_ = time::Tai{};
   age_s_ = 0.0;
@@ -326,6 +382,7 @@ void OrbitOd::reset() {
   // that a fault could clear would let a replayed fix back in.
   rejected_ = 0;
   forced_ = 0;
+  drag_scale_refused_ = 0;
   have_fix_ = false;
   last_fix_epoch_ = time::Tai{};
 }
@@ -337,8 +394,19 @@ OrbitOdRefusal OrbitOd::retune(const OrbitOdConfig& config) {
   if (!config.isValid()) {
     return OrbitOdRefusal::kUnconfigured;
   }
+  const bool was_on = dragScaleEnabled();
   cfg_ = config;
   configured_ = true;
+  // One exception to "the tuning changes, the navigation data does not": a drag
+  // scale factor that was **off** and is now **on** has no covariance to carry
+  // forward — its block is identically zero, which is a state the Kalman gain
+  // can never reach and the process noise would take months of random walk to
+  // open. So the newly-live state takes its configured seed prior, exactly as a
+  // cold start would give it. Everything else, the pos/vel solution included, is
+  // untouched, and turning the state *off* needs nothing: it stops being read.
+  if (initialised_ && !was_on && dragScaleEnabled()) {
+    seedDragScaleBlock();
+  }
   return OrbitOdRefusal::kNone;
 }
 
@@ -363,6 +431,10 @@ OrbitOdRefusal OrbitOd::reinitializeCovariance(double sigma_pos_m, double sigma_
   const Eigen::Vector3d dmc_kept = dmc_;
   seedDmcBlock();
   dmc_ = dmc_kept;
+  // Same for the drag scale factor, and for the same reason.
+  const double drag_scale_kept = drag_scale_;
+  seedDragScaleBlock();
+  drag_scale_ = drag_scale_kept;
   return OrbitOdRefusal::kNone;
 }
 
@@ -406,6 +478,7 @@ OrbitOdRefusal OrbitOd::initialize(const time::Tai& epoch,
   p_.setZero();
   p_.topLeftCorner<kPosVelDim, kPosVelDim>() = cov;
   seedDmcBlock();
+  seedDragScaleBlock();
   symmetrise(p_);
   last_epoch_ = epoch;
   age_s_ = 0.0;
@@ -424,6 +497,28 @@ void OrbitOd::seedDmcBlock() {
   p_.block<kPosVelDim, 3>(0, kDmc).setZero();
   if (cfg_.dmc_tau_s > 0.0) {
     p_.block<3, 3>(kDmc, kDmc) = (0.5 * cfg_.dmc_tau_s * cfg_.dmc_psd_rtn_m2_per_s5).asDiagonal();
+  }
+}
+
+bool OrbitOd::dragScaleEnabled() const {
+  // Both halves are required. A PSD with drag switched off would carry a state
+  // with no path to the measurement at all: its variance would grow every step
+  // and never be reduced, which is a covariance that only ever gets worse.
+  return cfg_.drag_scale_psd_per_s > 0.0 && cfg_.drag_ballistic_coeff_m2_per_kg > 0.0;
+}
+
+void OrbitOd::seedDragScaleBlock() {
+  // A fresh seed's prior on the scale is the configured seed sigma about the
+  // nominal 1 — deliberately *not* the FOGM stationary variance q·τ/2 the DMC
+  // states use. The two answer different questions: the DMC's stationary spread
+  // is the process's own, while "how wrong can a static exponential atmosphere
+  // be against the real one" is a fact about the model, established on the
+  // ground, and much larger than what the slow random walk would imply.
+  drag_scale_ = 1.0;
+  p_.row(kDragScale).setZero();
+  p_.col(kDragScale).setZero();
+  if (dragScaleEnabled()) {
+    p_(kDragScale, kDragScale) = cfg_.drag_scale_seed_sigma * cfg_.drag_scale_seed_sigma;
   }
 }
 
@@ -503,6 +598,16 @@ OrbitOdRefusal OrbitOd::propagate(const time::Tai& epoch, const frames::EopValue
   const Eigen::Matrix3d psi = dmc ? dmcNoiseKernel(h, cfg_.dmc_tau_s) : Eigen::Matrix3d::Zero();
   const double phi_dmc = dmc ? std::exp(-h / cfg_.dmc_tau_s) : 1.0;
   Eigen::Vector3d dmc_state = dmc_;
+  // The drag scale factor (Push 76) is the same first-order Gauss-Markov shape
+  // as the DMC states, so it reuses their discrete-noise kernel — one scalar
+  // channel instead of three, with the state-dependent map ∂a/∂s = a_drag in
+  // place of the DMC's constant M_rtn. That map is held across the sub-step
+  // exactly as the Jacobian and the RTN basis already are.
+  const bool drag_scale_on = dragScaleEnabled();
+  const Eigen::Matrix3d psi_s =
+      drag_scale_on ? dmcNoiseKernel(h, cfg_.drag_scale_tau_s) : Eigen::Matrix3d::Zero();
+  const double phi_s = drag_scale_on ? std::exp(-h / cfg_.drag_scale_tau_s) : 1.0;
+  double drag_scale_state = drag_scale_;
 
   for (int step = 0; step < substeps; ++step) {
     // The Earth orientation is resolved **per sub-step**, not once per call. A
@@ -555,6 +660,29 @@ OrbitOdRefusal OrbitOd::propagate(const time::Tai& epoch, const frames::EopValue
       q_d.block<3, 3>(kDmc, kVelocity) = psi(2, 1) * mq.transpose();
       q_d.block<3, 3>(kDmc, kDmc) = psi(2, 2) * q_dmc_rtn;
     }
+    // The drag scale factor's own noise, mapped into position/velocity through
+    // b = ∂a/∂s = a_drag at unit scale. Same kron(Ψ, Q̃) structure as the DMC
+    // block above with the 3x1 map b in place of M: Q̃ = q_s b bᵀ on the
+    // position/velocity blocks, q_s b on the cross terms, q_s on the state
+    // itself. With drag off b is zero and only the (harmless) state block
+    // survives — which is why dragScaleEnabled() also requires drag.
+    if (drag_scale_on) {
+      const Eigen::Vector3d b = dragAcceleration(cfg_, math::Vec3<math::frames::ECI>(x.head<3>()),
+                                                 math::Vec3<math::frames::ECI>(x.tail<3>()), earth)
+                                    .eigen();
+      const double q_s = cfg_.drag_scale_psd_per_s;
+      const Eigen::Matrix3d bbt = q_s * b * b.transpose();
+      q_d.block<3, 3>(kPosition, kPosition) += psi_s(0, 0) * bbt;
+      q_d.block<3, 3>(kPosition, kVelocity) += psi_s(0, 1) * bbt;
+      q_d.block<3, 3>(kVelocity, kPosition) += psi_s(1, 0) * bbt;
+      q_d.block<3, 3>(kVelocity, kVelocity) += psi_s(1, 1) * bbt;
+      const Eigen::Vector3d qb = q_s * b;
+      q_d.block<3, 1>(kPosition, kDragScale) = psi_s(0, 2) * qb;
+      q_d.block<1, 3>(kDragScale, kPosition) = psi_s(2, 0) * qb.transpose();
+      q_d.block<3, 1>(kVelocity, kDragScale) = psi_s(1, 2) * qb;
+      q_d.block<1, 3>(kDragScale, kVelocity) = psi_s(2, 1) * qb.transpose();
+      q_d(kDragScale, kDragScale) = psi_s(2, 2) * q_s;
+    }
 
     // Φ from the Jacobian at the sub-step start. The covariance does not need
     // the state's integration order: over h ≤ max_step_s the Jacobian's own
@@ -562,10 +690,19 @@ OrbitOdRefusal OrbitOd::propagate(const time::Tai& epoch, const frames::EopValue
     // With the DMC states: ∂v̇/∂a = M and ∂ȧ/∂a = −I/τ (TP Eq. 2.54); ∂(Ma)/∂r
     // is dropped, as the TP does.
     Eigen::Matrix<double, kDim, kDim> f = Eigen::Matrix<double, kDim, kDim>::Zero();
-    f.topLeftCorner<6, 6>() = dynamicsJacobian(cfg_, x, earth);
+    f.topLeftCorner<6, 6>() = dynamicsJacobian(cfg_, x, earth, drag_scale_state);
     if (dmc) {
       f.block<3, 3>(kVelocity, kDmc) = m_rtn;
       f.block<3, 3>(kDmc, kDmc) = -(1.0 / cfg_.dmc_tau_s) * id;
+    }
+    if (drag_scale_on) {
+      // ∂v̇/∂s is the drag acceleration itself — exact, not a difference, because
+      // the drag term is linear in s. ∂ṡ/∂s = −1/τ_s is the FOGM decay.
+      f.block<3, 1>(kVelocity, kDragScale) =
+          dragAcceleration(cfg_, math::Vec3<math::frames::ECI>(x.head<3>()),
+                           math::Vec3<math::frames::ECI>(x.tail<3>()), earth)
+              .eigen();
+      f(kDragScale, kDragScale) = -(1.0 / cfg_.drag_scale_tau_s);
     }
     const FullCovariance phi = FullCovariance::Identity() + f * h + 0.5 * (f * f) * (h * h);
 
@@ -573,18 +710,22 @@ OrbitOdRefusal OrbitOd::propagate(const time::Tai& epoch, const frames::EopValue
     // sub-step, in ECI) riding with the known non-gravitational one.
     const Eigen::Vector3d a_known =
         a_ng + (dmc ? Eigen::Vector3d(m_rtn * dmc_state) : Eigen::Vector3d::Zero());
-    const Vec6 k1 = stateDerivative(cfg_, x, earth, a_known);
-    const Vec6 k2 = stateDerivative(cfg_, Vec6(x + 0.5 * h * k1), earth, a_known);
-    const Vec6 k3 = stateDerivative(cfg_, Vec6(x + 0.5 * h * k2), earth, a_known);
-    const Vec6 k4 = stateDerivative(cfg_, Vec6(x + h * k3), earth, a_known);
+    const Vec6 k1 = stateDerivative(cfg_, x, earth, a_known, drag_scale_state);
+    const Vec6 k2 = stateDerivative(cfg_, Vec6(x + 0.5 * h * k1), earth, a_known, drag_scale_state);
+    const Vec6 k3 = stateDerivative(cfg_, Vec6(x + 0.5 * h * k2), earth, a_known, drag_scale_state);
+    const Vec6 k4 = stateDerivative(cfg_, Vec6(x + h * k3), earth, a_known, drag_scale_state);
     x += (h / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
     dmc_state *= phi_dmc;  // the FOGM mean decays (TP §5.2.4)
+    // The scale decays toward its nominal 1, not toward zero: it is a
+    // multiplier on a term that exists, so "no information" means 1.
+    drag_scale_state = 1.0 + (drag_scale_state - 1.0) * phi_s;
 
     p = phi * p * phi.transpose() + q_d;
   }
   symmetrise(p);
 
-  if (!x.allFinite() || !p.allFinite() || !dmc_state.allFinite()) {
+  if (!x.allFinite() || !p.allFinite() || !dmc_state.allFinite() ||
+      !std::isfinite(drag_scale_state)) {
     dropSolution();  // a NaN can never recover on its own; drop back to cold start
     return OrbitOdRefusal::kFilterFault;
   }
@@ -592,6 +733,7 @@ OrbitOdRefusal OrbitOd::propagate(const time::Tai& epoch, const frames::EopValue
   position_ = x.head<3>();
   velocity_ = x.tail<3>();
   dmc_ = dmc_state;
+  drag_scale_ = drag_scale_state;
   p_ = p;
   last_epoch_ = epoch;
   age_s_ += dt_s;
@@ -697,8 +839,9 @@ bool OrbitOd::applyUpdate(int offset, const Eigen::Vector3d& measured, const Eig
   const Eigen::Vector3d new_position = position_ + dx.segment<3>(kPosition);
   const Eigen::Vector3d new_velocity = velocity_ + dx.segment<3>(kVelocity);
   const Eigen::Vector3d new_dmc = dmc_ + dx.segment<3>(kDmc);
+  const double new_drag_scale = drag_scale_ + dx(kDragScale);
   if (!new_position.allFinite() || !new_velocity.allFinite() || !new_dmc.allFinite() ||
-      !p_new.allFinite()) {
+      !std::isfinite(new_drag_scale) || !p_new.allFinite()) {
     dropSolution();
     out = OrbitOdUpdate{};
     out.numeric_fault = true;
@@ -707,6 +850,19 @@ bool OrbitOd::applyUpdate(int offset, const Eigen::Vector3d& measured, const Eig
   position_ = new_position;
   velocity_ = new_velocity;
   dmc_ = new_dmc;  // zero-variance when off, so a gain of exactly zero reaches it
+  // The drag scale factor is **refused rather than clamped** outside its
+  // configured band (§8.5, and the same rule the tier-3 dipole estimator flies):
+  // an exponential atmosphere is not wrong by the factor an out-of-band estimate
+  // claims, so such an estimate has been driven by something that is not drag,
+  // and clamping it would fly a magnitude the policy chose rather than one the
+  // data supported. The refusal holds the last accepted scale; the position and
+  // velocity update — which is what the vehicle actually navigates on — stands.
+  // With the state off the gain into it is exactly zero, so this never fires.
+  if (!dragScaleEnabled() || std::abs(new_drag_scale - 1.0) <= cfg_.drag_scale_max_deviation) {
+    drag_scale_ = new_drag_scale;
+  } else {
+    ++drag_scale_refused_;
+  }
   p_ = p_new;
   out.accepted = true;
   return true;

@@ -80,6 +80,7 @@ class OrbitEstimatorTester : public OrbitEstimatorGTestBase {
   //! parameters and report their estimate and sigma; a correlation time under
   //! ten sub-steps is refused as tuning.
   void testCovarianceMetricsAndDmcParameters();
+  void testDragScaleParametersAndTelemetry();
 
   // ----------------------------------------------------------------------
   // Port handlers

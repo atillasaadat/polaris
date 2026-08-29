@@ -6,8 +6,9 @@
 /// §8.5, §9; REQ-ACTL-011).
 ///
 /// The §8.5 disturbance-estimation ladder, cheapest first. Tier 3's orbit-side
-/// half (drag/SRP parameter estimation from long-arc data) waits on the §8.3
-/// orbit filter; its attitude-side half, residual-dipole estimation, needs only
+/// half is the **drag scale factor**, which shipped with Push 76 inside the §8.3
+/// orbit filter (an SRP scale factor still waits on an onboard SRP term to
+/// scale); its attitude-side half, residual-dipole estimation, needs only
 /// the tier-2 observer and lives in `dipole_estimation.hpp`.
 ///
 /// **Tier 1 — model-based, free.** The two secular torques the vehicle can
