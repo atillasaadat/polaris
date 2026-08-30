@@ -858,3 +858,49 @@ fixture was found in the innovation sequence, not in review.
   force model carries no SRP term, so the SRP half meant building a term an
   order below the drag beside it. Deferring it with its magnitude is a decision;
   deferring it silently is a gap.
+
+## Sweep the tuning knob, not the whole gate (P77, analysis/od)
+
+- **A tuning trial and an acceptance run are different runs.** NEES is measured
+  on the `nominal` scenario alone, so a consistency tuning needs one scenario and
+  a short arc — ~1 minute a point — while the full campaign is twelve scenarios
+  of 24 h. Iterating on the gate is how tuning became an overnight loop; the fast
+  sweep plus one gate run at the end is the same confidence for a fraction of the
+  wall clock.
+- **But keep the run count honest even when sweeping.** The chi-square interval
+  widens as 1/sqrt(N); a three-run sweep ranks candidates and cannot accept one.
+  Push 74 already paid for this lesson once, when a three-run improvement
+  evaporated at gate size.
+- **Put the knob in the driver, not in a scratch patch.** The three
+  `--gnss-corr-*` flags cost a few lines and turned an ad-hoc printf scan into a
+  reproducible sweep anyone can rerun from the README.
+
+## An error's colour defeats a filter its magnitude does not (P77, gnss/orbit_od)
+
+- **Model the spectrum, not just the RMS.** A datasheet quotes a magnitude and
+  says nothing about correlation. Splitting that RMS into white and Gauss-Markov
+  parts — as a *fraction of the variance*, so the total is preserved — changes
+  only the colour, and the filter fails the consistency gate on colour alone
+  (NEES 23.6 against a bound of 8.11). Adding correlated error *on top* of the
+  datasheet would have confounded "bigger" with "correlated" and proved nothing.
+- **Give the model the generous reading of what the sensor knows.** The receiver
+  reports the full total, not the white part — a formal covariance can size an
+  error but not say how much survives to the next sample. Defeating the filter
+  under the generous assumption is a stronger result than defeating it under a
+  pessimistic one.
+- **The textbook remedy was half a remedy, and the measurement said so.**
+  Inflating `R` by the correlated variance is what unmodelled-measurement-error
+  guidance suggests and it closed half the gap (23.6 -> 8.07, passing by 0.6 %).
+  A Kalman filter assumes white measurement noise, so per-update inflation cannot
+  reproduce time correlation — it must be sized for the error's **persistence**
+  across the samples being averaged, which measured 4x.
+- **Do not enshrine a law you have only seen in one regime.** `k` looked like
+  `0.58*sqrt(tau/dt)` across a cadence sweep, and saturated near 3.2 across a
+  tau sweep, because the filter's own process noise reopens the covariance first.
+  Two sweeps, two different laws — so ship an explicit tunable with the table,
+  not a formula that is right on one axis and wrong on the other.
+- **A tuned pair needs a bound, not an equality, in configc.** The flight
+  inflation is a tuned multiple of the sim's correlated sigma, so equality is the
+  wrong check; "never below the receiver's own sigma" catches the real defect —
+  declaring a correlated receiver and leaving the filter's inflation at zero,
+  which fails nothing loudly and just makes the filter overconfident.

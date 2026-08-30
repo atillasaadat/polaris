@@ -76,6 +76,57 @@ struct GnssSpec {
   /// Receiver-clock / time-tag error, 1σ [s].
   double time_sigma_s = 0.0;
 
+  /// @name Correlated (common-mode) position error — Push 77
+  /// @{
+  ///
+  /// Real single-point GNSS position error is **not** white. The dominant terms
+  /// — residual ionospheric delay, broadcast-ephemeris and satellite-clock error
+  /// — are shared across the satellites in view and decorrelate over *minutes*,
+  /// not over one fix (Misra & Enge §5 [misra2011]; Montenbruck & Gill §7.2
+  /// [montenbruck2000]). A filter that averages successive fixes therefore
+  /// improves far more slowly than white noise predicts, which is exactly the
+  /// regime an orbit filter runs in.
+  ///
+  /// Modelled as a first-order Gauss-Markov process on the position error in the
+  /// **local geodetic frame**, added to the white term: the common-mode error is
+  /// approximately fixed in the receiver's own sky geometry rather than in ECEF,
+  /// so it is carried as east/north/up components and the basis is re-resolved at
+  /// each fix.
+  ///
+  /// **The receiver does not report it.** `position_sigma_h_m` and
+  /// `position_sigma_v_m` continue to describe the white part alone, because a
+  /// receiver's formal solution covariance is computed from its own measurement
+  /// residuals and geometry and cannot see an error common to every satellite it
+  /// is tracking. That asymmetry is the point of the model, not an oversight —
+  /// it is what makes the onboard `R` optimistic, and what
+  /// `OrbitOdConfig::gnss_corr_sigma_h_m` exists to repair.
+  ///
+  /// A zero σ disables the term completely and reproduces the pre-Push-77 model
+  /// exactly.
+
+  /// Per-axis horizontal 1σ of the correlated component [m].
+  double position_corr_sigma_h_m = 0.0;
+  /// Vertical 1σ of the correlated component [m]. Defaults, in `fromParams`, to
+  /// 1.5x the horizontal one for the same VDOP/HDOP reason the white term does.
+  double position_corr_sigma_v_m = 0.0;
+  /// Correlation time τ [s]. Must be positive when either σ is.
+  double position_corr_tau_s = 0.0;
+
+  /// The sigmas the receiver **reports** [m] — the datasheet total, i.e. the
+  /// white and correlated parts recombined. Equal to the white sigmas when the
+  /// correlated term is off, which is why every pre-Push-77 fixture is
+  /// unaffected.
+  ///
+  /// A receiver's formal accuracy is derived from its own range residuals and
+  /// geometry, so it can neither exclude a common-mode error nor identify which
+  /// part of its error is one. Reporting the total is therefore the *generous*
+  /// reading of what a receiver knows — and the onboard filter is still
+  /// unprepared for it, because what defeats the filter is the error's colour
+  /// and not its magnitude (`tests/unit/orbit_od_correlated_gnss_test.cpp`).
+  double position_reported_sigma_h_m = 0.0;
+  double position_reported_sigma_v_m = 0.0;
+  /// @}
+
   /// Minimum interval between genuinely new fixes [s] — the reciprocal of the
   /// maximum position rate. Reading faster repeats the last fix (`fresh=false`).
   double sample_period_s = 0.0;
@@ -289,6 +340,10 @@ class Gnss {
   void setJammingRegions(const JammingRegions* regions) { jamming_ = regions; }
 
  private:
+  /// Advance the correlated position-error state to @p gps_ns and return it in
+  /// local east/north/up components [m]. Zero when the term is disabled.
+  Eigen::Vector3d advanceCorrelatedError(std::int64_t gps_ns);
+
   GnssSpec spec_;
   random::SplitMix64 rng_;
 
@@ -313,6 +368,18 @@ class Gnss {
   /// or post-outage reacquisition). Set on the first sample and on each outage
   /// falling edge.
   std::int64_t valid_from_gps_ns_ = 0;
+
+  /// Correlated position-error state, in **local geodetic east/north/up
+  /// components** (Push 77). Held in ENU rather than ECEF because the
+  /// common-mode error belongs to the receiver's sky geometry; the basis is
+  /// re-resolved at each fix. Seeded from the process's *stationary*
+  /// distribution on the first fix, so there is no warm-up transient that a
+  /// short scenario would sample and a long one would not.
+  Eigen::Vector3d corr_enu_ = Eigen::Vector3d::Zero();
+  /// GPS ns of the fix `corr_enu_` was last advanced to; only meaningful once
+  /// @ref corr_seeded_.
+  std::int64_t corr_last_gps_ns_ = 0;
+  bool corr_seeded_ = false;
 
   Eigen::Vector3d fault_pos_offset_ = Eigen::Vector3d::Zero();
   double fault_clock_jump_s_ = 0.0;

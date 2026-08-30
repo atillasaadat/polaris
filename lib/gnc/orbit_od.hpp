@@ -596,6 +596,42 @@ struct OrbitOdConfig {
   /// one per axis. Ignored when @ref dmc_tau_s is zero. Must be finite and
   /// non-negative.
   Eigen::Vector3d dmc_psd_rtn_m2_per_s5{Eigen::Vector3d::Zero()};
+  /// @name Correlated GNSS position error — the `R` repair (Push 77)
+  /// @{
+  ///
+  /// Per-axis 1σ [m] of the receiver's **common-mode** position error, added in
+  /// quadrature to the sigmas the fix reports when the measurement covariance is
+  /// built. Zero — the pre-Push-77 behaviour — trusts the reported sigmas whole.
+  ///
+  /// **Why this is needed at all.** A receiver's reported covariance comes from
+  /// its own measurement residuals and geometry, so it cannot see an error
+  /// common to every satellite it is tracking — residual ionosphere, broadcast
+  /// ephemeris and satellite clock. Those terms decorrelate over minutes, not
+  /// over one fix, so a filter that averages successive fixes drives its
+  /// covariance below the error it actually has, and then rejects honest fixes
+  /// on the NIS gate. Inflating `R` by the correlated variance is the standard
+  /// remedy (Tapley, Schutz & Born §4.15 [tapley2004] on unmodelled measurement
+  /// error; TP §2.2.2).
+  ///
+  /// **Why not a bias state instead** — the alternative §8.3 named. Under
+  /// position-only measurements a slowly-varying position bias is very nearly
+  /// **degenerate with the position state itself**: both enter the measurement
+  /// through the identity, and only the orbital dynamics — which the bias does
+  /// not obey — separate them at all. Carrying it would add three states whose
+  /// covariance the filter cannot honestly reduce, and whose estimate would
+  /// trade against position in whatever proportion `Q` happened to allow. What
+  /// actually separates them is the raw pseudorange path (§8.3, still owed),
+  /// where the common-mode terms have their own, differently-shaped signature
+  /// across the satellites in view. Until then, inflation is the honest model:
+  /// it widens the covariance to cover an error the filter cannot resolve,
+  /// rather than claiming to resolve it.
+  ///
+  /// Horizontal per-axis σ [m]; must be finite and non-negative.
+  double gnss_corr_sigma_h_m{0.0};
+  /// Vertical σ [m]; must be finite and non-negative.
+  double gnss_corr_sigma_v_m{0.0};
+  /// @}
+
   /// Correlation time τ_s [s] of the **drag scale factor** (§8.5 tier 3, orbit
   /// half; Push 76). The estimated state is the dimensionless multiplier `s` on
   /// the exponential-atmosphere drag term, first-order Gauss-Markov about its

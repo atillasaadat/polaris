@@ -165,20 +165,12 @@ constexpr double kInitialVelSigmaMps = 5.0;
 /// the datasheet value at the long arcs' 10 s cadence therefore models a 10 s
 /// latency — measured, a constant 76.7 km of along-track offset that the filter
 /// tracks perfectly, because it is consistent and simply not the trajectory the
-/// record compares against. So the long arcs pass zero and `latency_fast` polls
-/// at 50 Hz with the real value. See `GnssSpec::fix_latency_s`.
-psen::GnssSpec receiverSpec(double fix_latency_s) {
-  return psen::GnssSpec::fromParams({
-      {"horizontal_position_rms_m", 1.2},
-      {"velocity_accuracy_m_s_rms", 0.03},
-      {"time_accuracy_ns_rms", 5.0},
-      {"max_rate_hz", 100.0},
-      {"fix_latency_s", fix_latency_s},
-      {"cold_start_s", 34.0},
-      {"hot_start_s", 20.0},
-      {"reacquisition_s", 0.5},
-  });
-}
+/// The reference vehicle's correlated-GNSS allocation and the filter tuning that
+/// matches it (Push 77). Kept beside the receiver fixture so the pair cannot
+/// drift apart in this file the way a flight/sim parameter pair can in config.
+constexpr double kFlownCorrFraction = 0.5;
+constexpr double kFlownCorrTauS = 600.0;
+constexpr double kFlownCorrInflate = 3.0;
 
 /// Optional overrides from the command line (Push 73): the DMC states and the
 /// RTN state-noise intensities, so the campaign can measure a candidate tuning
@@ -189,9 +181,36 @@ struct TuningOverride {
   double dmc_psd_m2_per_s5{0.0};    ///< isotropic in RTN, all three axes
   double accel_psd_iso_scale{1.0};  ///< multiplies the flown isotropic q_a
   Eigen::Vector3d accel_psd_rtn{Eigen::Vector3d::Zero()};
+  /// Receiver correlated-error split and timescale (Push 77). The **flown**
+  /// values, not zero: unlike the knobs above, this one describes the hardware
+  /// rather than a filter tuning, so the campaign's default is the vehicle's.
+  double gnss_corr_fraction{kFlownCorrFraction};
+  double gnss_corr_tau_s{kFlownCorrTauS};
+  /// The filter's `R` inflation, as a **multiple of the receiver's correlated
+  /// per-axis sigma** — which is the form the tuning is actually done in, since
+  /// the measured answer is "about 3x" rather than an absolute metre figure
+  /// (`tests/unit/orbit_od_correlated_gnss_test.cpp`).
+  double gnss_corr_inflate{kFlownCorrInflate};
 };
 
 TuningOverride g_override;
+
+/// record compares against. So the long arcs pass zero and `latency_fast` polls
+/// at 50 Hz with the real value. See `GnssSpec::fix_latency_s`.
+psen::GnssSpec receiverSpec(double fix_latency_s) {
+  return psen::GnssSpec::fromParams({
+      {"correlated_position_fraction", g_override.gnss_corr_fraction},
+      {"correlated_position_tau_s", g_override.gnss_corr_tau_s},
+      {"horizontal_position_rms_m", 1.2},
+      {"velocity_accuracy_m_s_rms", 0.03},
+      {"time_accuracy_ns_rms", 5.0},
+      {"max_rate_hz", 100.0},
+      {"fix_latency_s", fix_latency_s},
+      {"cold_start_s", 34.0},
+      {"hot_start_s", 20.0},
+      {"reacquisition_s", 0.5},
+  });
+}
 
 pg::OrbitOdConfig filterConfig() {
   pg::OrbitOdConfig cfg;
@@ -207,6 +226,15 @@ pg::OrbitOdConfig filterConfig() {
   cfg.accel_psd_rtn_m2_per_s3 = g_override.accel_psd_rtn;
   cfg.dmc_tau_s = g_override.dmc_tau_s;
   cfg.dmc_psd_rtn_m2_per_s5 = Eigen::Vector3d::Constant(g_override.dmc_psd_m2_per_s5);
+  // The R inflation that matches the receiver's correlated split (Push 77).
+  // Derived from the *same* fixture the receiver is built from, so the flight
+  // and sim halves of this pair cannot be set inconsistently here — the
+  // configc cross-check is what enforces it in the flown config.
+  {
+    const psen::GnssSpec rx = receiverSpec(0.0);
+    cfg.gnss_corr_sigma_h_m = g_override.gnss_corr_inflate * rx.position_corr_sigma_h_m;
+    cfg.gnss_corr_sigma_v_m = g_override.gnss_corr_inflate * rx.position_corr_sigma_v_m;
+  }
   cfg.position_nis_gate = kChi2_3_999;
   cfg.velocity_nis_gate = kChi2_3_999;
   cfg.max_coast_s = kCoastHorizonS;
@@ -766,6 +794,12 @@ int main(int argc, char** argv) {
       g_override.dmc_psd_m2_per_s5 = next(0.0);
     } else if (a == "--qa-scale") {
       g_override.accel_psd_iso_scale = next(1.0);
+    } else if (a == "--gnss-corr-fraction") {
+      g_override.gnss_corr_fraction = next(kFlownCorrFraction);
+    } else if (a == "--gnss-corr-tau-s") {
+      g_override.gnss_corr_tau_s = next(kFlownCorrTauS);
+    } else if (a == "--gnss-corr-inflate") {
+      g_override.gnss_corr_inflate = next(kFlownCorrInflate);
     } else if (a == "--q-rtn" && i + 3 < argc) {
       g_override.accel_psd_rtn =
           Eigen::Vector3d(std::atof(argv[i + 1]), std::atof(argv[i + 2]), std::atof(argv[i + 3]));
@@ -775,7 +809,15 @@ int main(int argc, char** argv) {
           "usage: polaris_orbit_od_mc [--first-run N] [--runs N] [--duration-s S]\n"
           "                           [--scenario NAME] [--out PATH]\n"
           "                           [--dmc-tau-s S --dmc-psd Q] [--qa-scale K]\n"
-          "                           [--q-rtn qR qT qN]   (Push 73 tuning candidates)\n");
+          "                           [--q-rtn qR qT qN]   (Push 73 tuning candidates)\n"
+          "                           [--gnss-corr-fraction F --gnss-corr-tau-s S]\n"
+          "                           [--gnss-corr-inflate K]   (Push 77; K in units of\n"
+          "                             the receiver's correlated per-axis sigma)\n"
+          "\n"
+          "Fast tuning loop (Push 77): one scenario, a short arc, a few runs --\n"
+          "  --scenario nominal --runs 3 --duration-s 11000\n"
+          "runs in seconds rather than the full campaign's hours, and NEES is what\n"
+          "a consistency tuning is read off. Validate the winner on the full gate.\n");
       return 0;
     }
   }

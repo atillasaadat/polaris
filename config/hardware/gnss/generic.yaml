@@ -9,6 +9,11 @@ description: Generic single-point GNSS receiver (PVT)
 params:
   horizontal_position_rms_m: 2.0    # 2D horizontal RMS, unaided single point
   vertical_position_rms_m: 3.0      # vertical is poorer; quoted explicitly here
+  # Error spectrum (Push 77): an engineering allocation, not a datasheet figure —
+  # see novatel_oem7600.yaml for the reasoning. This generic entry is unaided and
+  # not necessarily multi-frequency, so it carries a larger correlated share.
+  correlated_position_fraction: 0.6
+  correlated_position_tau_s: 900.0
   velocity_accuracy_m_s_rms: 0.05
   time_accuracy_ns_rms: 20.0
   max_rate_hz: 10.0

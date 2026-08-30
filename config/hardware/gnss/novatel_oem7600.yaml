@@ -23,6 +23,29 @@ params:
   horizontal_position_rms_m: 1.2
   # vertical_position_rms_m:  # omitted -> model uses 1.5x horizontal per-axis
 
+  # --- Error spectrum: how much of that RMS is common-mode (Push 77) ------------
+  # The datasheet quotes a magnitude and says nothing about the spectrum, so this
+  # split is an ENGINEERING ALLOCATION in the same sense as the magnetic
+  # cleanliness allocation (design doc §8.5) — not a datasheet figure, and
+  # labelled as one so nobody mistakes it for measured.
+  #
+  # The basis: on an unaided single-point solution the residual error is
+  # dominated by broadcast ephemeris + satellite clock (the signal-in-space
+  # range error) and, on a single-frequency receiver, residual ionosphere. Those
+  # are common to the satellites in view and decorrelate over minutes to the
+  # ephemeris update interval, not per fix. This is a multi-frequency receiver,
+  # so the ionospheric part is largely removed and what remains is chiefly
+  # SISRE — hence half the variance, on a 10 minute timescale, rather than the
+  # larger fraction a single-frequency entry would carry.
+  #
+  # The split PRESERVES the datasheet total: sigma_white = sigma*sqrt(1-f) and
+  # sigma_corr = sigma*sqrt(f), and the receiver still reports the full 1.2 m.
+  # It changes the COLOUR of the error, not its size — which is precisely what
+  # the onboard filter is unprepared for, and what
+  # flight.orbitEstimator.GnssCorrSigma{H,V}M is tuned against.
+  correlated_position_fraction: 0.5   # allocation, not datasheet
+  correlated_position_tau_s: 600.0    # allocation: ~10 min, SISRE-dominated
+
   # --- Velocity and time (datasheet) --------------------------------------------
   velocity_accuracy_m_s_rms: 0.03   # "Velocity accuracy < 0.03 m/s RMS"
   time_accuracy_ns_rms: 5.0         # "Time accuracy < 5 ns RMS"

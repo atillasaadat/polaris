@@ -512,6 +512,11 @@ bool OrbitEstimator ::applyParameters() {
     cfg.dmc_tau_s = tau;
     cfg.dmc_psd_rtn_m2_per_s5 = Eigen::Vector3d(dmc[0], dmc[1], dmc[2]);
   }
+  // The correlated-GNSS R repair (Push 77). Fetched unconditionally: a filter
+  // flying a receiver with a correlated error and no inflation is exactly the
+  // overconfident case this exists to prevent, so the value is never defaulted.
+  POLARIS_GET(cfg.gnss_corr_sigma_h_m, paramGet_GnssCorrSigmaHM, "GnssCorrSigmaHM");
+  POLARIS_GET(cfg.gnss_corr_sigma_v_m, paramGet_GnssCorrSigmaVM, "GnssCorrSigmaVM");
   // §8.5 tier 3, orbit half (Push 76). Fetched unconditionally rather than
   // only when the PSD is positive: a half-uploaded tuning has to reach
   // OrbitOdConfig::isValid, which refuses it, instead of being silently

@@ -73,6 +73,7 @@ bool OrbitOdConfig::isValid() const {
       std::isfinite(drag_ref_altitude_m) && std::isfinite(drag_scale_height_m) &&
       std::isfinite(accel_psd_m2_per_s3) && accel_psd_rtn_m2_per_s3.allFinite() &&
       std::isfinite(dmc_tau_s) && dmc_psd_rtn_m2_per_s5.allFinite() &&
+      std::isfinite(gnss_corr_sigma_h_m) && std::isfinite(gnss_corr_sigma_v_m) &&
       std::isfinite(drag_scale_tau_s) && std::isfinite(drag_scale_psd_per_s) &&
       std::isfinite(drag_scale_seed_sigma) && std::isfinite(drag_scale_max_deviation) &&
       std::isfinite(position_nis_gate) && std::isfinite(velocity_nis_gate) &&
@@ -150,6 +151,11 @@ bool OrbitOdConfig::isValid() const {
   // exact for h ≪ τ; a correlation time under ten sub-steps is refused rather
   // than integrated coarsely (and would be a strange model anyway).
   if (dmc_tau_s > 0.0 && dmc_tau_s < 10.0 * max_step_s) {
+    return false;
+  }
+  // The correlated-GNSS R inflation (Push 77). Zero is off; negative is not a
+  // smaller error, it is a covariance being *shrunk* by configuration.
+  if (gnss_corr_sigma_h_m < 0.0 || gnss_corr_sigma_v_m < 0.0) {
     return false;
   }
   // The drag scale factor (Push 76). Zero PSD is off; positive demands the rest
@@ -927,9 +933,17 @@ bool OrbitOd::ingest(const GnssFix& fix, const frames::EopValue& eop, OrbitOdRes
   // (§6.2), so flattening it to a scalar would throw away accuracy the receiver
   // reported and mis-weight the vertical direction by the VDOP/HDOP ratio.
   const Eigen::Matrix3d enu = enuBasis(fix.position_m.eigen());
-  Eigen::Vector3d sig2(fix.position_sigma_h_m * fix.position_sigma_h_m,
-                       fix.position_sigma_h_m * fix.position_sigma_h_m,
-                       fix.position_sigma_v_m * fix.position_sigma_v_m);
+  // The reported sigmas describe the receiver's *white* error only — its formal
+  // covariance is blind to an error common to every satellite it tracks — so the
+  // configured correlated sigmas are added in quadrature here, in the same local
+  // basis the reported ones are split in (Push 77; see the config field docs for
+  // why this is inflation and not a bias state). Zero leaves R exactly as
+  // reported, which is the pre-Push-77 filter.
+  const double sig_h2 = fix.position_sigma_h_m * fix.position_sigma_h_m +
+                        cfg_.gnss_corr_sigma_h_m * cfg_.gnss_corr_sigma_h_m;
+  const double sig_v2 = fix.position_sigma_v_m * fix.position_sigma_v_m +
+                        cfg_.gnss_corr_sigma_v_m * cfg_.gnss_corr_sigma_v_m;
+  Eigen::Vector3d sig2(sig_h2, sig_h2, sig_v2);
   const Eigen::Matrix3d r_pos_ecef = enu * sig2.asDiagonal() * enu.transpose();
   const Eigen::Matrix3d a_eci_ecef = q_eci_ecef.core().toRotationMatrix();
   Eigen::Matrix3d r_pos_eci = a_eci_ecef * r_pos_ecef * a_eci_ecef.transpose();

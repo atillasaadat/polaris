@@ -826,6 +826,8 @@ def _check_control_parameters(body: dict[str, Any]) -> None:
 
 
 _MAX_FIX_LATENCY_PARAM = "flight.orbitEstimator.MaxFixLatencyS"
+_GNSS_CORR_H_PARAM = "flight.orbitEstimator.GnssCorrSigmaHM"
+_GNSS_CORR_V_PARAM = "flight.orbitEstimator.GnssCorrSigmaVM"
 _MAX_MEAS_AGE_PARAM = "flight.attitudeEstimator.MaxMeasAgeSec"
 _BALLISTIC_PARAM = "flight.orbitEstimator.DragBallisticCoeffM2PerKg"
 _WHY_BALLISTIC = (
@@ -954,6 +956,72 @@ def _check_orbit_parameters(body: dict[str, Any]) -> None:
         )
 
 
+def _check_gnss_correlated_inflation(body: dict[str, Any]) -> None:
+    """Refuse a filter blind to a receiver whose error the config says is correlated.
+
+    The flight/sim pair (§19.3; Push 77): the receiver entry's
+    ``correlated_position_fraction`` says how much of its datasheet variance is
+    common-mode, and ``GnssCorrSigmaHM``/``VM`` is what the orbit filter inflates
+    ``R`` by to survive it. Enabling the first and forgetting the second is the
+    defect this exists to catch, and it is a *silent* one: nothing fails, the
+    filter simply grows overconfident and starts rejecting honest fixes.
+
+    A **bound, not an equality**, unlike the other catalog pairs. The tuned
+    inflation is a multiple of the receiver's correlated sigma — measured at ~4x
+    on the reference vehicle — because per-update inflation cannot reproduce time
+    correlation and must be sized for the error's persistence across the fixes the
+    filter averages, not for its size. That multiple depends on the fix cadence
+    and on ``q_a``, so it is tuned against NEES per vehicle rather than derived
+    here. What *is* checkable is that the inflation at least covers the
+    magnitude: an inflation below the receiver's own correlated sigma cannot be
+    a considered tuning, only an oversight.
+    """
+    sc = body["spacecraft"]
+    fsw = sc.get("fsw_parameters", {})
+    if _GNSS_CORR_H_PARAM not in fsw:
+        return
+    receivers = [u for u in sc.get("sensors", []) if u.get("kind") == "gnss"]
+    worst_h = 0.0
+    worst_v = 0.0
+    named = {}
+    for u in receivers:
+        params = u.get("params", {})
+        frac = params.get("correlated_position_fraction")
+        rms_h = params.get("horizontal_position_rms_m")
+        if frac is None or rms_h is None or float(frac) <= 0.0:
+            continue
+        # The same split the sim applies: per-axis sigma = 2D RMS / sqrt(2), of
+        # which sqrt(fraction) is correlated. Vertical follows the model's
+        # default 1.5x when the entry does not quote one.
+        sigma_h = float(rms_h) / math.sqrt(2.0)
+        rms_v = params.get("vertical_position_rms_m")
+        sigma_v = float(rms_v) if rms_v is not None else sigma_h * 1.5
+        corr_h = sigma_h * math.sqrt(float(frac))
+        corr_v = sigma_v * math.sqrt(float(frac))
+        named[u["name"]] = (corr_h, corr_v)
+        worst_h = max(worst_h, corr_h)
+        worst_v = max(worst_v, corr_v)
+    if not named:
+        return
+    got_h = float(fsw[_GNSS_CORR_H_PARAM])
+    got_v = float(fsw.get(_GNSS_CORR_V_PARAM, 0.0))
+    if got_h + 1e-12 < worst_h or got_v + 1e-12 < worst_v:
+        detail = ", ".join(
+            f"{n} = {h:.4g} m horizontal / {v:.4g} m vertical"
+            for n, (h, v) in sorted(named.items())
+        )
+        raise ConfigError(
+            f"{_GNSS_CORR_H_PARAM} = {got_h} m and {_GNSS_CORR_V_PARAM} = {got_v} m are "
+            f"below the installed receiver's own correlated sigma ({detail}).\n"
+            f"The receiver entry declares part of its error common-mode, which the "
+            f"reported fix sigmas do not describe and the filter therefore cannot "
+            f"see. An inflation under that sigma does not even cover the error's "
+            f"magnitude, let alone its persistence — the reference vehicle flies "
+            f"~4x it, tuned against campaign NEES. Set it, or set "
+            f"correlated_position_fraction to 0 if the receiver really is white."
+        )
+
+
 def _check_star_tracker_latency(body: dict[str, Any]) -> None:
     """Refuse a staleness window the installed star trackers cannot meet (§8.2, §9.1).
 
@@ -1029,6 +1097,7 @@ def resolve(
     _check_star_tracker_parameters(body)
     _check_control_parameters(body)
     _check_orbit_parameters(body)
+    _check_gnss_correlated_inflation(body)
     _check_star_tracker_latency(body)
     _check_burn_parameters(body)
     _check_catalog_pairs(body["spacecraft"])

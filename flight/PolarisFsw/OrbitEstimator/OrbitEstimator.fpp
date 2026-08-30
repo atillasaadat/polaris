@@ -265,6 +265,28 @@ module flight {
     @ footnote), one per axis; ignored when DmcTauS = 0. Each >= 0.
     param DmcPsdRtnM2PerS5: Vec3F64
 
+    @ Per-axis 1-sigma [m] of the receiver's COMMON-MODE horizontal position
+    @ error, added in quadrature to the sigmas each fix reports when the
+    @ measurement covariance is built (design doc §8.3/§6.2; Push 77). A
+    @ receiver's formal accuracy is derived from its own residuals and geometry,
+    @ so it can say how big its error is but not how much of it will still be
+    @ there on the next fix; a filter that averages successive fixes therefore
+    @ drives its covariance below the error it has and rejects honest fixes.
+    @
+    @ NOT simply the receiver's correlated sigma: the tuned value is ~4x it,
+    @ because per-update inflation cannot reproduce time correlation and must be
+    @ sized for the error's PERSISTENCE across the fixes the filter averages, not
+    @ for its size. Measured on the reference vehicle (12-run nominal campaign,
+    @ chi-square interval [4.202, 8.113]): NEES 20.8 at 0x, 8.07 at 3x — passing
+    @ by 0.6 % — and 6.33 at 4x. Retune per vehicle against NEES; the fast loop
+    @ is polaris_orbit_od_mc --scenario nominal --runs 12 --duration-s 11000.
+    @ Zero trusts the reported sigmas whole, which is the pre-Push-77 filter.
+    @ Must be >= 0.
+    param GnssCorrSigmaHM: F64
+
+    @ Vertical counterpart of GnssCorrSigmaHM [m]. Must be >= 0.
+    param GnssCorrSigmaVM: F64
+
     @ Correlation time of the drag scale factor [s] (design doc §8.5 tier 3,
     @ orbit half; TP §2.2.3.4; Push 76). The scale is a dimensionless
     @ multiplier on the onboard exponential-atmosphere drag term, estimated as

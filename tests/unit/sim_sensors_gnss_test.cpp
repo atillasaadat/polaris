@@ -486,3 +486,225 @@ TEST(Gnss, DelayLineDoesNotOverrunAtTheConfiguredRateAndLatency) {
   // pinning the exact count would be pinning double-rounding.
   EXPECT_GT(valid_fixes, 1900) << "the receiver is delivering far fewer fixes than it solves";
 }
+
+// ===========================================================================
+// Correlated (common-mode) position error — Push 77
+// ===========================================================================
+
+namespace {
+
+/// The OEM7600 fixture plus a correlated component: 1.5 m horizontal 2D-RMS
+/// decorrelating over 300 s, which is the scale and timescale residual
+/// ionosphere / broadcast-ephemeris / satellite-clock error actually has on an
+/// unaided single-point receiver.
+sensors::GnssSpec correlatedSpec(double total_h_rms_m = 1.2, double tau_s = 300.0,
+                                 double fraction = 0.5) {
+  return sensors::GnssSpec::fromParams({
+      {"horizontal_position_rms_m", total_h_rms_m},
+      {"velocity_accuracy_m_s_rms", 0.03},
+      {"time_accuracy_ns_rms", 5.0},
+      {"max_rate_hz", 100.0},
+      {"cold_start_s", 0.0},
+      {"hot_start_s", 20.0},
+      {"reacquisition_s", 0.0},
+      {"correlated_position_fraction", fraction},
+      {"correlated_position_tau_s", tau_s},
+  });
+}
+
+/// Collect the per-axis position error of @p count fixes at @p cadence_s, on the
+/// +X-axis fixture where east/north/up land on Y/Z/X.
+std::vector<Eigen::Vector3d> collectErrors(sensors::Gnss& gnss, int count, double cadence_s) {
+  std::vector<Eigen::Vector3d> out;
+  out.reserve(static_cast<std::size_t>(count));
+  const Eigen::Vector3d truth = onXAxis().eigen();
+  for (int i = 0; i < count; ++i) {
+    const sensors::GnssMeasurement m = gnss.sample(epochPlus(i * cadence_s), inputOnXAxis());
+    if (m.valid && m.fresh) {
+      out.push_back(m.position_m.eigen() - truth);
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+/// The datasheet keys reach the spec, with the same conversions the white term
+/// uses — and an entry that omits them stays at zero rather than acquiring a
+/// correlated error by default.
+TEST(GnssSpec, SplitsTheDatasheetTotalAndDefaultsTheCorrelatedPartOff) {
+  const sensors::GnssSpec plain = oem7600Spec();
+  EXPECT_EQ(plain.position_corr_sigma_h_m, 0.0);
+  EXPECT_EQ(plain.position_corr_sigma_v_m, 0.0);
+  EXPECT_EQ(plain.position_corr_tau_s, 0.0);
+  // With the term off the reported sigma is the white one, exactly as before.
+  EXPECT_EQ(plain.position_reported_sigma_h_m, plain.position_sigma_h_m);
+  EXPECT_EQ(plain.position_reported_sigma_v_m, plain.position_sigma_v_m);
+
+  // A half-correlated receiver: same datasheet total, split evenly in variance.
+  const sensors::GnssSpec corr = correlatedSpec(1.2, 300.0, 0.5);
+  const double total_h = 1.2 / std::sqrt(2.0);
+  EXPECT_NEAR(corr.position_sigma_h_m, total_h * std::sqrt(0.5), 1e-12);
+  EXPECT_NEAR(corr.position_corr_sigma_h_m, total_h * std::sqrt(0.5), 1e-12);
+  // **The total is preserved** — the split changes the spectrum, not the size.
+  EXPECT_NEAR(corr.position_reported_sigma_h_m, total_h, 1e-12);
+  EXPECT_NEAR(corr.position_reported_sigma_v_m, total_h * 1.5, 1e-12);
+  EXPECT_EQ(corr.position_corr_tau_s, 300.0);
+
+  // A fully correlated receiver has no white part left.
+  const sensors::GnssSpec all = correlatedSpec(1.2, 300.0, 1.0);
+  EXPECT_NEAR(all.position_sigma_h_m, 0.0, 1e-12);
+  EXPECT_NEAR(all.position_corr_sigma_h_m, total_h, 1e-12);
+  EXPECT_NEAR(all.position_reported_sigma_h_m, total_h, 1e-12);
+}
+
+/// Variances add in quadrature, and the process is stationary from the first fix.
+///
+/// The second half matters as much as the first: seeding from the stationary
+/// distribution rather than from zero is what keeps a short scenario from
+/// sampling a warm-up transient that a long one has forgotten.
+TEST(Gnss, CorrelatedErrorAddsInQuadratureAndIsStationaryFromTheFirstFix) {
+  // Averaged over independent seeds, not over one long record. A tau = 300 s
+  // process sampled at 1 Hz carries only ~N*dt/tau independent samples, so a
+  // single 20000-fix run estimates its variance to ~9 % — measured 16 % high on
+  // the vertical axis, which is the estimator's sampling error and not the
+  // model's. Eight realisations buy the independence the arc cannot.
+  constexpr int kSeeds = 8;
+  constexpr int kFixes = 20000;
+  // The split preserves the datasheet total, so the *measured* per-axis error is
+  // the datasheet sigma however the fraction is set — which is the property
+  // being checked, and the reason this push does not quietly make the receiver
+  // worse than the part it models.
+  const double expect_h = 1.2 / std::sqrt(2.0);
+  const double expect_v = 1.5 * expect_h;
+
+  double sum_x = 0.0;
+  double sum_y = 0.0;
+  double sum_z = 0.0;
+  double head_y = 0.0;
+  std::size_t n = 0;
+  for (int s = 0; s < kSeeds; ++s) {
+    sensors::Gnss gnss(correlatedSpec(), kSeed + static_cast<std::uint64_t>(s), kStream);
+    const std::vector<Eigen::Vector3d> e = collectErrors(gnss, kFixes, 1.0);
+    ASSERT_GT(e.size(), 19000u);
+    // east=Y, north=Z, up=X on this fixture.
+    for (const Eigen::Vector3d& v : e) {
+      sum_x += v.x() * v.x();
+      sum_y += v.y() * v.y();
+      sum_z += v.z() * v.z();
+    }
+    n += e.size();
+    // Stationary from the start: the opening fixes of each realisation are not
+    // systematically quiet, which they would be if the state began at zero.
+    for (int i = 0; i < 100; ++i) {
+      head_y += e[static_cast<std::size_t>(i)].y() * e[static_cast<std::size_t>(i)].y();
+    }
+  }
+  const double dn = static_cast<double>(n);
+  EXPECT_NEAR(std::sqrt(sum_y / dn), expect_h, 0.08 * expect_h) << "east";
+  EXPECT_NEAR(std::sqrt(sum_z / dn), expect_h, 0.08 * expect_h) << "north";
+  EXPECT_NEAR(std::sqrt(sum_x / dn), expect_v, 0.08 * expect_v) << "up";
+
+  const double head = std::sqrt(head_y / (100.0 * kSeeds));
+  EXPECT_GT(head, 0.6 * expect_h) << "opening fixes are quiet (" << head
+                                  << ") — the state is warming up from zero";
+}
+
+/// The error decorrelates on its configured timescale, not per fix.
+///
+/// This is the whole reason the term exists: a filter averaging successive fixes
+/// improves on white noise and does not improve on this.
+TEST(Gnss, CorrelatedErrorDecorrelatesOnItsConfiguredTimescale) {
+  // White noise pushed far below the correlated term so the measured
+  // autocorrelation is the correlated process's own, not a diluted one.
+  const double tau = 300.0;
+  const double cadence = 30.0;
+  // Fully correlated (fraction 1), so the measured autocorrelation is the
+  // process's own rather than one diluted by a white part.
+  sensors::Gnss gnss(correlatedSpec(1.2, tau, /*fraction=*/1.0), kSeed, kStream);
+  const std::vector<Eigen::Vector3d> e = collectErrors(gnss, 8000, cadence);
+  ASSERT_GT(e.size(), 7000u);
+
+  std::vector<double> y;
+  for (const Eigen::Vector3d& v : e) {
+    y.push_back(v.y());
+  }
+  double num = 0.0;
+  double den = 0.0;
+  for (std::size_t i = 0; i + 1 < y.size(); ++i) {
+    num += y[i] * y[i + 1];
+    den += y[i] * y[i];
+  }
+  const double rho = num / den;
+  const double expect = std::exp(-cadence / tau);  // 0.9048
+  EXPECT_NEAR(rho, expect, 0.03) << "lag-1 autocorrelation " << rho << " against exp(-dt/tau) "
+                                 << expect;
+}
+
+/// The stationary variance does not depend on how often the fix is polled.
+///
+/// The exact Gauss-Markov discretisation is what buys this; an Euler step valid
+/// only for dt << tau would quietly change the error's size when a scenario
+/// changed its fix cadence, which is the kind of coupling that makes two
+/// campaigns incomparable for a reason nobody can find.
+TEST(Gnss, CorrelatedErrorVarianceIsInvariantToFixCadence) {
+  double rms[2] = {0.0, 0.0};
+  const double cadences[2] = {1.0, 60.0};
+  for (int k = 0; k < 2; ++k) {
+    sensors::Gnss gnss(correlatedSpec(1.2, 300.0, /*fraction=*/1.0), kSeed, kStream);
+    const std::vector<Eigen::Vector3d> e = collectErrors(gnss, 20000, cadences[k]);
+    double s = 0.0;
+    for (const Eigen::Vector3d& v : e) {
+      s += v.y() * v.y();
+    }
+    rms[k] = std::sqrt(s / static_cast<double>(e.size()));
+  }
+  const double sc = 1.2 / std::sqrt(2.0);
+  EXPECT_NEAR(rms[0], sc, 0.10 * sc) << "1 s cadence";
+  EXPECT_NEAR(rms[1], sc, 0.10 * sc) << "60 s cadence";
+}
+
+/// **The receiver reports the right size and says nothing about the colour**,
+/// and that asymmetry is the point.
+///
+/// The reported sigma is the datasheet total, so the filter's `R` is not wrong
+/// in magnitude — it is wrong in *spectrum*, because nothing in the fix says how
+/// much of that error will still be there on the next one. That is the generous
+/// reading of what a receiver knows, and the filter is defeated by it anyway
+/// (`tests/unit/orbit_od_correlated_gnss_test.cpp`), which is a stronger result
+/// than one obtained by also understating the magnitude.
+TEST(Gnss, ReportedSigmaIsTheTotalAndCarriesNoHintOfTheCorrelation) {
+  sensors::Gnss gnss(correlatedSpec(1.2, 300.0, 0.5), kSeed, kStream);
+  const sensors::GnssMeasurement m = gnss.sample(kEpoch, inputOnXAxis());
+  ASSERT_TRUE(m.valid);
+  const double total_h = 1.2 / std::sqrt(2.0);
+  EXPECT_NEAR(m.position_sigma_h_m, total_h, 1e-12);
+
+  // Identical to what a fully white receiver of the same datasheet reports —
+  // the fix cannot be told apart on its sigmas alone.
+  sensors::Gnss white(correlatedSpec(1.2, 300.0, /*fraction=*/0.0), kSeed, kStream);
+  const sensors::GnssMeasurement w = white.sample(kEpoch, inputOnXAxis());
+  // To round-off, not bit-exactly: the reported figure is recombined as
+  // hypot(sigma*sqrt(1-f), sigma*sqrt(f)), which returns the original to a few
+  // ULP rather than identically.
+  EXPECT_DOUBLE_EQ(m.position_sigma_h_m, w.position_sigma_h_m);
+  EXPECT_DOUBLE_EQ(m.position_sigma_v_m, w.position_sigma_v_m);
+}
+
+/// With the term off, every white draw is bit-identical to the old model.
+///
+/// The correlated samples are drawn *after* the white ones and skipped entirely
+/// when disabled, so enabling the term does not renumber the white stream. That
+/// is what lets one seed produce a with/without pair that differs only by the
+/// thing under study.
+TEST(Gnss, DisabledCorrelatedTermLeavesTheWhiteStreamBitIdentical) {
+  sensors::Gnss plain(oem7600Spec(/*cold_start_s=*/0.0, /*reacquisition_s=*/0.0), kSeed, kStream);
+  sensors::Gnss off(correlatedSpec(1.2, 300.0, /*fraction=*/0.0), kSeed, kStream);
+
+  for (int i = 0; i < 50; ++i) {
+    const sensors::GnssMeasurement a = plain.sample(epochPlus(i * 1.0), inputOnXAxis());
+    const sensors::GnssMeasurement b = off.sample(epochPlus(i * 1.0), inputOnXAxis());
+    ASSERT_EQ(a.position_m.eigen(), b.position_m.eigen()) << "fix " << i;
+    ASSERT_EQ(a.velocity_m_s.eigen(), b.velocity_m_s.eigen()) << "fix " << i;
+  }
+}

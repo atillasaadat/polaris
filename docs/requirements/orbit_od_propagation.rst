@@ -435,3 +435,82 @@ Source: design doc §8.3, §11. Fully populated in Phase 6; firm seeds below.
    ``flight/PolarisFsw/OrbitEstimator``'s
    ``DragScaleParametersAndTelemetry``, which covers the parameter path and the
    ``DragScale``/``DragScaleSigma``/``DragScaleRefused`` channels.
+
+.. req:: Correlated GNSS error and the measurement-covariance repair
+   :id: REQ-ODP-014
+   :status: reviewed
+   :level: L3
+   :tags: od, estimation, gnss, sensors
+   :method: Test
+   :derived_from: REQ-ODP-001
+   :allocation: sim/sensors, lib/gnc, flight/PolarisFsw/OrbitEstimator, tools/configc
+
+   Real single-point GNSS position error is **not white**: residual ionosphere,
+   broadcast ephemeris and satellite clock are common to the satellites in view
+   and decorrelate over minutes, not per fix. The receiver model **shall**
+   represent that as a first-order Gauss-Markov component of the position error,
+   and the orbit filter **shall** carry a measurement-covariance inflation that
+   keeps it consistent against one.
+
+   Three properties are required:
+
+   1. **The split preserves the datasheet.** The correlated part is expressed as
+      a fraction of the datasheet variance, so the receiver's total accuracy is
+      unchanged and only its spectrum differs. Adding a correlated term *on top*
+      of the datasheet would model a worse receiver than the one described, and
+      would confound "the error is bigger" with "the error is correlated" — only
+      the second is what the filter is unprepared for.
+   2. **The receiver reports the total and nothing about the colour.** A formal
+      solution covariance is derived from range residuals and geometry; it can
+      say how big the error is but not how much of it survives to the next fix.
+      A fix from a correlated receiver **shall** be indistinguishable, on its
+      reported sigmas alone, from one from a white receiver of the same
+      datasheet.
+   3. **Disabled means absent.** With the correlated fraction at zero the
+      receiver's white draws **shall** be bit-identical to the pre-Push-77
+      model, and with the inflation at zero the filter **shall** be unchanged.
+
+   **The repair is a tuning, not a formula, and it is sized for persistence
+   rather than for magnitude.** A Kalman filter assumes white measurement noise,
+   so over the fixes that share one realisation of the correlated error it drives
+   its covariance down as though averaging independent samples while the error
+   does not average away at all. Inflating ``R`` by the correlated variance
+   itself — the textbook remedy for unmodelled measurement error — closes only
+   half the gap. Measured on the reference vehicle's 12-run nominal campaign
+   against the gate's own chi-square interval [4.202, 8.113]:
+
+   .. list-table::
+      :header-rows: 1
+
+      * - Inflation
+        - Campaign NEES
+        - Verdict
+      * - none
+        - 23.597
+        - **FAIL** (-191 % margin)
+      * - 3x the receiver's correlated sigma
+        - 8.067
+        - PASS by 0.6 % — not a margin
+      * - **4x (flown)**
+        - **6.331**
+        - PASS, 22 % / 51 % margin
+
+   Position RMS pays 1.317 -> 1.400 m for it, which is the honest cost of a
+   covariance that is no longer a fiction. The multiple is **not** derivable:
+   sweeping fix cadence at fixed correlation time gives ``k ~ 0.58*sqrt(tau/dt)``,
+   but sweeping the correlation time at fixed cadence shows ``k`` saturating near
+   3.2 once ``tau`` exceeds the timescale on which ``q_a`` reopens the covariance
+   anyway. It is therefore **tuned per vehicle against NEES**, enforced as a
+   lower bound by ``configc`` (the inflation may not fall below the receiver's
+   own correlated sigma), and what removes the need for it altogether is the raw
+   pseudorange path (§8.3, still owed), where the common-mode terms have their
+   own signature across the satellites in view.
+
+   Verified by ``tests/unit/sim_sensors_gnss_test.cpp`` (the datasheet-preserving
+   split, the stationary variance and its cadence invariance, the measured
+   autocorrelation against ``exp(-dt/tau)``, the reported-sigma
+   indistinguishability, and the disabled bit-identity), by
+   ``tests/unit/orbit_od_correlated_gnss_test.cpp`` (the degradation, the
+   insufficiency of a 1x inflation, and the restored consistency at the tuned
+   value, bounded on both sides), by ``tests/analysis/`` for the reading of the
+   campaign, and by the campaign itself.

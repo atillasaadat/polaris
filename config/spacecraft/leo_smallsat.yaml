@@ -300,6 +300,33 @@ spacecraft:
     flight.orbitEstimator.AccelPsdRtnM2PerS3: [0.0, 0.0, 0.0]  # [m^2/s^3] R, T, N
     flight.orbitEstimator.DmcTauS: 0.0                          # [s] 0 = off
     flight.orbitEstimator.DmcPsdRtnM2PerS5: [0.0, 0.0, 0.0]    # [m^2/s^5] R, T, N
+    # --- Correlated-GNSS R inflation (§8.3/§6.2; Push 77) -------------------
+    # The receiver's datasheet RMS is split half white / half common-mode on a
+    # 600 s timescale (config/hardware/gnss/novatel_oem7600.yaml — an engineering
+    # allocation, labelled as one). The total accuracy is unchanged and the
+    # receiver still reports the full 1.2 m; what changes is the error's COLOUR,
+    # and that is what defeats a Kalman filter, which assumes white measurement
+    # noise and so averages a common error as if the samples were independent.
+    #
+    # NOT simply the receiver's correlated sigma. Per-axis that sigma is
+    # 1.2/sqrt(2)*sqrt(0.5) = 0.600 m horizontal, 0.900 m vertical; the values
+    # below are 4x it, because the inflation must be sized for the error's
+    # PERSISTENCE across the fixes the filter averages, not for its size.
+    #
+    # MEASURED on the 12-run nominal campaign (chi-square interval [4.202,
+    # 8.113] at 12 runs): NEES 20.8 with no inflation, 8.07 at 3x — which passes
+    # by 0.6 % and is not a margin — and 6.33 at 4x, comfortably centred (22 %
+    # and 51 % margin on the two sides). Position RMS pays 1.317 -> 1.400 m for
+    # it, which is the honest cost of a covariance that is no longer a fiction.
+    #
+    # The multiple is NOT a formula: sweeping fix cadence at fixed tau gives
+    # k ~ 0.58*sqrt(tau/dt), but sweeping tau at fixed cadence shows k saturating
+    # near 3.2 once tau exceeds the timescale on which q_a reopens the covariance
+    # anyway. Retune per vehicle against NEES. The fast loop is minutes, not
+    # hours: polaris_orbit_od_mc --scenario nominal --runs 12 --duration-s 11000
+    # --gnss-corr-inflate K, then the full gate to confirm.
+    flight.orbitEstimator.GnssCorrSigmaHM: 2.4                  # [m] 4x the 0.600 m correlated sigma
+    flight.orbitEstimator.GnssCorrSigmaVM: 3.6                  # [m] 4x the 0.900 m correlated sigma
     # --- Drag scale factor (§8.5 tier 3, orbit half; Push 76) ---------------
     # OFF on this vehicle, and the reason is measured rather than assumed. The
     # isotropic q_a above is sized from the 8x8 geopotential truncation: 1.28 m
