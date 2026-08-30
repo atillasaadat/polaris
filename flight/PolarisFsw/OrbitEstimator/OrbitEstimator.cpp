@@ -422,12 +422,22 @@ void OrbitEstimator ::publish(I64 nowNs) {
     this->tlmWrite_DmcAccelRtnMps2(toVec3F64(this->od_.dmcAcceleration()));
     this->tlmWrite_DmcSigmaMps2(std::sqrt(
         this->od_.fullCovariance().block<3, 3>(pg::OrbitOd::kDmc, pg::OrbitOd::kDmc).trace()));
+    this->tlmWrite_DragScale(this->od_.dragScale());
+    this->tlmWrite_DragScaleSigma(this->od_.dragScaleSigma());
   } else {
     this->tlmWrite_SmaSigmaM(-1.0);
     this->tlmWrite_FpaSigmaRad(-1.0);
     this->tlmWrite_DmcAccelRtnMps2(toVec3F64(Eigen::Vector3d::Zero()));
     this->tlmWrite_DmcSigmaMps2(0.0);
+    // The nominal, not a sentinel: with no solution the scale *is* 1, which is
+    // what dropSolution() leaves it at, and a -1 here would read as a physical
+    // sign flip rather than as "no data".
+    this->tlmWrite_DragScale(1.0);
+    this->tlmWrite_DragScaleSigma(0.0);
   }
+  // Outside the valid branch: a refusal count survives a dropped solution, and
+  // is exactly what the ground wants to see after one.
+  this->tlmWrite_DragScaleRefused(this->od_.dragScaleRefusedCount());
 }
 
 // ----------------------------------------------------------------------
@@ -502,6 +512,15 @@ bool OrbitEstimator ::applyParameters() {
     cfg.dmc_tau_s = tau;
     cfg.dmc_psd_rtn_m2_per_s5 = Eigen::Vector3d(dmc[0], dmc[1], dmc[2]);
   }
+  // §8.5 tier 3, orbit half (Push 76). Fetched unconditionally rather than
+  // only when the PSD is positive: a half-uploaded tuning has to reach
+  // OrbitOdConfig::isValid, which refuses it, instead of being silently
+  // completed from whatever the other three parameters happened to hold.
+  POLARIS_GET(cfg.drag_scale_tau_s, paramGet_DragScaleTauS, "DragScaleTauS");
+  POLARIS_GET(cfg.drag_scale_psd_per_s, paramGet_DragScalePsdPerS, "DragScalePsdPerS");
+  POLARIS_GET(cfg.drag_scale_seed_sigma, paramGet_DragScaleSeedSigma, "DragScaleSeedSigma");
+  POLARIS_GET(cfg.drag_scale_max_deviation, paramGet_DragScaleMaxDeviation,
+              "DragScaleMaxDeviation");
   POLARIS_GET(cfg.position_nis_gate, paramGet_PositionNisGate, "PositionNisGate");
   POLARIS_GET(cfg.velocity_nis_gate, paramGet_VelocityNisGate, "VelocityNisGate");
   POLARIS_GET(cfg.max_coast_s, paramGet_MaxCoastS, "MaxCoastS");

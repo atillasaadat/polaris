@@ -11,8 +11,11 @@
 /// a **magnetic-cleanliness allocation**, i.e. the largest moment the build is
 /// allowed to have, not a measurement of the moment it has. Tier 3 replaces that
 /// allocation with a fit against flight data. It is the attitude-side half of
-/// §8.5 tier 3; the drag/SRP scale factors are the orbit-side half and wait on
-/// the §8.3 orbit filter.
+/// §8.5 tier 3; the **drag scale factor** is the orbit-side half and shipped with
+/// Push 76 (@ref polaris::gnc::OrbitOd), where it reached the same verdict this
+/// one did — its signal buried under the noise the filter already budgets, so it
+/// ships tested and disabled with the sigma that says why. An SRP scale factor
+/// stays owed and needs an onboard SRP term before it can have a coefficient.
 ///
 /// **The estimation problem is linear.** The tier-2 observer
 /// (@ref DisturbanceObserver) publishes \f$\hat{\boldsymbol\tau}\f$, the

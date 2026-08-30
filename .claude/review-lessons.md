@@ -811,3 +811,50 @@ fixture was found in the innovation sequence, not in review.
   `ffrtapi.dll`; borrowing the client from the other install works and is safe
   *only* on an exact build match, because the client is generated against one
   engine ABI. Encode the check, name both builds when refusing.
+
+## An optional state is a state that has to be *turned on*, not just skipped (P76, orbit_od)
+
+- **A zero-variance block is a state the Kalman gain can never reach.** The drag
+  scale factor's covariance block is identically zero while it is off, so
+  enabling it by uplink on a running filter left a permanently frozen estimate —
+  correct arithmetic, no error anywhere, and a state that could only ever be
+  opened by months of random walk. Any conditionally-carried state needs seeding
+  on the **off→on transition**, not only at cold start. `retune` seeds that one
+  block and leaves the navigation solution untouched, which is the whole point
+  of re-tuning in place.
+- **The off→on path is the one no other test covers.** Every existing case ran
+  with the state off, so all of them would have passed against a seam that was
+  never connected. When a capability ships disabled, the test that turns it on is
+  the only test of its wiring — and it has to use the *uplink* mechanism
+  (`paramSend_`), because `paramSet_` + `loadParameters()` never re-applies once
+  the component is configured.
+- **Require both halves before carrying a state.** A drag scale factor with drag
+  disabled has no path to any measurement: its variance grows every step and is
+  never reduced. Refusing to carry it is cheaper than explaining a covariance
+  that only ever gets worse.
+
+## A tolerance on a differenced check belongs to the difference (P76, tests)
+
+- **Do not assert an analytic partial to a tighter bound than the numeric
+  reference can resolve.** Checking `∂a/∂s` against a central difference at
+  `ds = 1e-6` on a ~1e-6 m/s² term cancels twelve significant figures before
+  dividing, so ~1e-8 relative is its floor; the partial was exact and the test
+  failed at 1e-9. Size the band from the reference's own error, and put the
+  machine-exact assertion on a **structural** property instead — here, that the
+  term is linear in the scale, checked with no differencing at all.
+
+## Measure the thing before scoping the work around it (P76, orbit_od)
+
+- **A capability can be correct and still resolve nothing, and that is a
+  result.** The drag scale factor works; its entire signal is 39x under the
+  process noise already budgeted for the geopotential truncation. The scan that
+  found it (`q_a` x arc length, 12 points) took minutes and turned a guess about
+  arc length into a measured statement about `q_a` — and named what would
+  actually unblock it, a higher-degree onboard field. Prefer the cheap parameter
+  scan to the confident assertion, and assert the negative result as an **upper
+  bound** so the day it stops holding, the test says why.
+- **Scope the named item down where a piece of it is speculative, and say so
+  with a number.** "Drag/SRP scale factors" shipped as drag only: the onboard
+  force model carries no SRP term, so the SRP half meant building a term an
+  order below the drag beside it. Deferring it with its magnitude is a decision;
+  deferring it silently is a gap.

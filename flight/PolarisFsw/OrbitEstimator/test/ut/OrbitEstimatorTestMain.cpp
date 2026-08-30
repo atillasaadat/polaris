@@ -74,6 +74,12 @@ TEST(OrbitEstimator, CovarianceMetricsAndDmcParameters) {
   tester.testCovarianceMetricsAndDmcParameters();
 }
 
+TEST(OrbitEstimator, DragScaleParametersAndTelemetry) {
+  RecordProperty("verifies", "REQ-ODP-013");
+  flight::OrbitEstimatorTester tester;
+  tester.testDragScaleParametersAndTelemetry();
+}
+
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

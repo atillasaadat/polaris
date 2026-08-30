@@ -300,6 +300,29 @@ spacecraft:
     flight.orbitEstimator.AccelPsdRtnM2PerS3: [0.0, 0.0, 0.0]  # [m^2/s^3] R, T, N
     flight.orbitEstimator.DmcTauS: 0.0                          # [s] 0 = off
     flight.orbitEstimator.DmcPsdRtnM2PerS5: [0.0, 0.0, 0.0]    # [m^2/s^5] R, T, N
+    # --- Drag scale factor (§8.5 tier 3, orbit half; Push 76) ---------------
+    # OFF on this vehicle, and the reason is measured rather than assumed. The
+    # isotropic q_a above is sized from the 8x8 geopotential truncation: 1.28 m
+    # over the 300 s coast horizon, an equivalent 2.8e-5 m/s^2. The entire
+    # drag-scale signal is (s-1)*a_drag, and at 400 km a_drag is 1.2e-6 m/s^2,
+    # so even a 60 % density error is 7.2e-7 m/s^2 — 39x UNDER the budget the
+    # filter already carries. MEASURED against a truth atmosphere 60 % denser
+    # (tests/unit/orbit_od_drag_scale_test.cpp): after six orbits at this
+    # tuning the estimate is 1.023 of a true 1.6 — 4 % of the error — with
+    # sigma still 0.33 of its 0.5 prior. Arc length is not the lever (one orbit
+    # gives 1.006); q_a is: at q_a/1000 the same filter reaches 1.516 with
+    # sigma 0.158 in a single orbit.
+    #
+    # And q_a cannot simply be reduced — Push 74 measured every reduced-q_a
+    # variant failing the NEES consistency gate, precisely because q_a covers
+    # that truncation. The two are locked, so what unblocks the drag scale
+    # factor here is a HIGHER-DEGREE ONBOARD FIELD, not a longer pass. The
+    # tuning below is the enabled configuration, left as the numbers to uplink
+    # rather than as zeros to re-derive; only the PSD gates it.
+    flight.orbitEstimator.DragScaleTauS: 86400.0                # [s] slow model error, ~1 day
+    flight.orbitEstimator.DragScalePsdPerS: 0.0                 # [1/s] 0 = off (see above)
+    flight.orbitEstimator.DragScaleSeedSigma: 0.5               # [-] a static atmosphere can be 50% wrong
+    flight.orbitEstimator.DragScaleMaxDeviation: 0.9            # [-] refused, not clamped, outside this
     flight.orbitEstimator.PositionNisGate: 16.27                # [-]
     flight.orbitEstimator.VelocityNisGate: 16.27                # [-]
     # Fine coast horizon (§8.3): ~9x the receiver's 34 s cold start; past it the

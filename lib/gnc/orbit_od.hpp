@@ -86,7 +86,70 @@
 /// coast horizon is millimetres, three orders below the geopotential truncation
 /// it sits beside. The term is here for the *secular* along-track effect over
 /// long outages, not for accuracy between fixes, and it is the hook the §8.5
-/// tier-3 drag scale factor will eventually estimate.
+/// tier-3 drag scale factor estimates (Push 76, below).
+///
+/// **The drag scale factor** (§8.5 tier 3, orbit half; Push 76) is a
+/// dimensionless multiplier `s` on that drag term, estimated as a tenth state:
+/// a first-order Gauss-Markov process about its nominal 1, `ṡ = −(s−1)/τ_s`.
+/// It replaces nothing — the isotropic `q_a` still covers the geopotential
+/// truncation, which is the larger error and is *not* secular in the way drag
+/// is — and it is the standard remedy for a force-model coefficient known worse
+/// than the measurements (TP §2.2.3.4; Vallado §8.6.4 [vallado2013]; Tapley,
+/// Schutz & Born §4.16 [tapley2004] for the augmented-state form).
+///
+/// Its column of the Jacobian is **exact and free**: `∂a/∂s` is the drag
+/// acceleration itself evaluated at unit scale, which the force model has
+/// already computed. That is why the drag term is factored out of
+/// @ref onboardAcceleration into @ref dragAcceleration rather than left inline.
+///
+/// Two properties to hold on to before reading an estimate. First, `s` is
+/// observable only through the **secular along-track** signature drag leaves
+/// over an arc — it is invisible in any single fix, in the same structural way
+/// the tier-3 dipole's component along `B` is invisible at any single epoch —
+/// so @ref OrbitOd::dragScaleSigma is published beside it and is the thing to
+/// read. Second, a scale outside `drag_scale_max_deviation` of 1 is **refused,
+/// not clamped**: an exponential atmosphere is not wrong by a factor of ten,
+/// so an estimate that says it is has been driven by something that is not
+/// drag, and clamping it would fly a magnitude the policy chose. The refusal
+/// holds the last accepted scale and leaves the pos/vel solution alone.
+///
+/// Setting `drag_scale_psd_per_s = 0` — or having drag off at all — disables the
+/// state completely: the scale is pinned at 1, its variance stays zero, and the
+/// filter is bit-for-bit the pre-Push-76 filter. **That is the flown value on
+/// the reference vehicle**, for the reason measured next.
+///
+/// ### What it is worth on this vehicle, measured
+///
+/// It is off in flight because it cannot resolve anything here, and the honest
+/// place to say so is beside the code rather than in a release note. The
+/// isotropic `q_a` is sized from the 8x8 geopotential truncation — 1.28 m over
+/// the 300 s coast horizon, an equivalent constant acceleration of
+/// 2.8e-5 m/s². The entire signal a drag scale factor has to work with is
+/// `(s−1)·a_drag`: at 400 km, `a_drag` ≈ 1.2e-6 m/s², so even a 60 % density
+/// error is 7.2e-7 m/s² — **39× under the truncation budget the filter is
+/// already carrying**. The filter is right to attribute the along-track
+/// signature to process noise, and the scale factor duly barely moves.
+///
+/// Measured against a truth atmosphere 60 % denser than the model
+/// (`tests/unit/orbit_od_drag_scale_test.cpp`), the estimate after six orbits
+/// at the flown tuning is **1.023 of a true 1.6** — 4 % of the error — with σ
+/// still 0.33 of its 0.5 prior. **Arc length is not the lever**: one orbit gives
+/// 1.006, six give 1.023. `q_a` is. At `q_a`/1000 the same filter reaches 1.516
+/// with σ 0.158 in a *single* orbit.
+///
+/// And `q_a` cannot simply be reduced: Push 74 measured that every reduced-`q_a`
+/// variant fails the NEES consistency gate, precisely because `q_a` is covering
+/// that truncation. So the two are locked together, and **what unblocks the drag
+/// scale factor on this vehicle is a higher-degree onboard geopotential, not a
+/// longer pass** — σ_a would have to fall to roughly the 4 cm/300 s class, which
+/// is a degree-20-plus field rather than the 8x8 flown here.
+///
+/// This is the same shape of result as the tier-3 *dipole* estimator's (§8.5),
+/// which measured its own signal 40× under the tier-2 observer's noise floor:
+/// the code ships tested, with the gates and the sigma that make the limit
+/// legible, and it is enabled on a vehicle or an onboard field where its own
+/// numbers say it resolves something. `OrbitOd::dragScaleSigma` is that
+/// statement at runtime.
 ///
 /// Any of the three terms is disabled by setting its coefficient to zero
 /// (`zonal_j2`, `drag_ballistic_coeff_m2_per_kg`), which is how the golden test
@@ -533,6 +596,36 @@ struct OrbitOdConfig {
   /// one per axis. Ignored when @ref dmc_tau_s is zero. Must be finite and
   /// non-negative.
   Eigen::Vector3d dmc_psd_rtn_m2_per_s5{Eigen::Vector3d::Zero()};
+  /// Correlation time τ_s [s] of the **drag scale factor** (§8.5 tier 3, orbit
+  /// half; Push 76). The estimated state is the dimensionless multiplier `s` on
+  /// the exponential-atmosphere drag term, first-order Gauss-Markov about its
+  /// nominal 1: `ṡ = −(s−1)/τ_s`. Must be finite and positive when
+  /// @ref drag_scale_psd_per_s is positive, and then at least ten
+  /// `max_step_s` — the same quadrature limit @ref dmc_tau_s carries, for the
+  /// same discrete-noise kernel.
+  double drag_scale_tau_s{0.0};
+  /// Process-noise PSD of the drag scale factor [1/s]. **Zero disables the
+  /// state** (the pre-Push-76 behaviour, and the value flown when drag is off):
+  /// the scale is pinned at 1, its variance stays zero, and nothing about the
+  /// filter changes. Positive gives a steady-state σ_s² = q_s·τ_s/2 — size it
+  /// from how wrong the *static* exponential atmosphere is allowed to be
+  /// against the real one, not from a receiver spec. Must be finite and
+  /// non-negative.
+  double drag_scale_psd_per_s{0.0};
+  /// Seed 1σ of the drag scale factor [-] on a cold start. Ignored when the
+  /// state is disabled; must be positive when it is enabled. This is the prior
+  /// on "how far from 1 could the true scale be", and on a static exponential
+  /// model against a real atmosphere that is a fraction of 1, not a fraction of
+  /// a percent.
+  double drag_scale_seed_sigma{0.0};
+  /// Bound on how far the estimated scale may travel from 1 [-] (Push 76).
+  /// A scale outside `[1−bound, 1+bound]` is **refused rather than clamped** —
+  /// clamping publishes a magnitude the policy chose instead of one the data
+  /// supported — and the state is held at its last accepted value while the
+  /// pos/vel solution carries on. The same rule, and the same reasoning, as the
+  /// tier-3 dipole estimator's cleanliness bound (§8.5). Must be positive when
+  /// the state is enabled.
+  double drag_scale_max_deviation{0.0};
   /// NIS rejection threshold for the 3-row **position** update [-]. A GNSS
   /// position innovation has no degenerate direction, so this is χ²₃ (99.9% ≈
   /// 16.27), unlike the attitude filter's transverse-by-construction vector
@@ -796,10 +889,29 @@ struct EarthOrientation {
 /// @param earth    Earth orientation at the evaluation epoch — the harmonic
 ///                 field is evaluated through it, the zonal and drag terms use
 ///                 its pole
+/// @param drag_scale multiplier on the drag term alone (Push 76). Defaults to
+///                 the nominal 1, so every pre-Push-76 caller — the golden test
+///                 included — evaluates exactly the model it did before.
 math::Vec3<math::frames::ECI> onboardAcceleration(const OrbitOdConfig& cfg,
                                                   const math::Vec3<math::frames::ECI>& position,
                                                   const math::Vec3<math::frames::ECI>& velocity,
-                                                  const EarthOrientation& earth);
+                                                  const EarthOrientation& earth,
+                                                  double drag_scale = 1.0);
+
+/// The drag term of @ref onboardAcceleration alone, at **unit scale** [m/s²].
+///
+/// Exposed because it is two things at once: the term itself, and — since the
+/// drag acceleration is exactly linear in the scale factor — the drag scale
+/// factor's column of the dynamics Jacobian, `∂a/∂s`. Computing it once and
+/// using it for both is why that column is exact rather than a central
+/// difference like the position and velocity blocks beside it.
+///
+/// Returns zero when drag is disabled, when the density underflows, or on a
+/// non-finite result, matching @ref onboardAcceleration's guard exactly.
+math::Vec3<math::frames::ECI> dragAcceleration(const OrbitOdConfig& cfg,
+                                               const math::Vec3<math::frames::ECI>& position,
+                                               const math::Vec3<math::frames::ECI>& velocity,
+                                               const EarthOrientation& earth);
 
 /// The Earth orientation at @p t, for @ref onboardAcceleration. Thin wrapper
 /// over the one ECI↔ECEF reduction (REQ-CONV-002); returns false, leaving
@@ -814,10 +926,11 @@ math::Vec3<math::frames::ECI> onboardAcceleration(const OrbitOdConfig& cfg,
 /// Plain value with fixed-size storage; allocates nothing.
 class OrbitOd {
  public:
-  /// Full error-state dimension: `[δr; δv; δa_dmc]` (Push 73). The three DMC
-  /// acceleration states are always carried in the covariance; with
-  /// `dmc_tau_s = 0` they sit at zero variance and change nothing.
-  static constexpr int kDim = 9;
+  /// Full error-state dimension: `[δr; δv; δa_dmc; δs_drag]` (Push 73, Push 76).
+  /// The three DMC acceleration states and the drag scale factor are always
+  /// carried in the covariance; with `dmc_tau_s = 0` and
+  /// `drag_scale_psd_per_s = 0` they sit at zero variance and change nothing.
+  static constexpr int kDim = 10;
   /// Dimension of the position/velocity marginal every consumer reads.
   static constexpr int kPosVelDim = 6;
   /// Row/column of the position error `δr` within @ref Covariance.
@@ -826,6 +939,9 @@ class OrbitOd {
   static constexpr int kVelocity = 3;
   /// Row/column of the DMC acceleration error (RTN) within @ref FullCovariance.
   static constexpr int kDmc = 6;
+  /// Row/column of the drag scale-factor error `δs` within @ref FullCovariance
+  /// (Push 76). One state, dimensionless, nominal 1.
+  static constexpr int kDragScale = 9;
   /// Hard bound on the RK4 sub-step loop, so it is bounded at compile time
   /// (§3.6) rather than by a config value. `OrbitOdConfig::isValid` requires
   /// `max_dt_s ≤ kMaxSubsteps · max_step_s`, so this bound can never be the
@@ -834,9 +950,9 @@ class OrbitOd {
   /// Position/velocity error covariance, blocked `[δr; δv]` — the same order and
   /// meaning as the corresponding blocks of `state::Covariance`. This is the
   /// marginal of @ref FullCovariance that every consumer, seed and metric works
-  /// with; the DMC states are internal to the filter.
+  /// with; the DMC and drag-scale states are internal to the filter.
   using Covariance = Eigen::Matrix<double, kPosVelDim, kPosVelDim>;
-  /// The full `[δr; δv; δa_dmc]` covariance (Push 73).
+  /// The full `[δr; δv; δa_dmc; δs_drag]` covariance (Push 73, Push 76).
   using FullCovariance = Eigen::Matrix<double, kDim, kDim>;
 
   /// Construct with @p config. If the config is invalid the filter is inert:
@@ -983,12 +1099,27 @@ class OrbitOd {
   /// of the full state, which is what the pre-Push-73 filter carried whole.
   Covariance covariance() const { return p_.topLeftCorner<kPosVelDim, kPosVelDim>(); }
 
-  /// The full 9×9 covariance including the DMC acceleration states (Push 73).
+  /// The full 10×10 covariance including the DMC acceleration states (Push 73)
+  /// and the drag scale factor (Push 76).
   const FullCovariance& fullCovariance() const { return p_; }
 
   /// Estimated DMC acceleration [m/s²] in **RTN** (radial, along-track,
   /// cross-track); zero when `dmc_tau_s = 0` (Push 73).
   const Eigen::Vector3d& dmcAcceleration() const { return dmc_; }
+
+  /// Estimated drag scale factor [-], the multiplier on the onboard
+  /// exponential-atmosphere drag term (Push 76). Exactly 1 when the state is
+  /// disabled (`drag_scale_psd_per_s = 0`) or drag itself is off.
+  double dragScale() const { return drag_scale_; }
+
+  /// 1σ of the drag scale factor [-], from the filter's own covariance. **Read
+  /// this before believing @ref dragScale.** Drag is observable only through
+  /// the secular along-track signature it leaves over an arc, so on a short arc
+  /// — or on a vehicle whose drag is small against the rest of the force-model
+  /// error — this stays near @ref OrbitOdConfig::drag_scale_seed_sigma and the
+  /// estimate is the prior, not a measurement. The estimator publishes the
+  /// sigma that says so rather than a fit it does not have (§8.5).
+  double dragScaleSigma() const { return std::sqrt(std::max(0.0, p_(kDragScale, kDragScale))); }
 
   /// TAI epoch the state is valid at.
   const time::Tai& epoch() const { return last_epoch_; }
@@ -1017,6 +1148,14 @@ class OrbitOd {
   /// forced update is neither a rejection nor a consistent acceptance.
   std::uint32_t forcedCount() const { return forced_; }
 
+  /// Drag scale-factor updates refused for leaving the configured band, since
+  /// construction or @ref reset (Push 76). A count that climbs says the
+  /// along-track signal the scale factor is fitting is not drag — an unmodelled
+  /// thrust, a bad ballistic coefficient, a spoof the NIS gate is letting
+  /// through — and is a *diagnosis* channel, not a fault: the pos/vel solution
+  /// those fixes carried was applied normally.
+  std::uint32_t dragScaleRefusedCount() const { return drag_scale_refused_; }
+
   /// Analysis-only 6-state NEES `eᵀP⁻¹e` against a known truth, with
   /// `e = [r_true − r̂; v_true − v̂]` (Bar-Shalom §5.4 [barshalom2001]). Averaged
   /// over Monte-Carlo runs it should sit inside the χ²₆ bounds; systematically
@@ -1035,6 +1174,15 @@ class OrbitOd {
   /// Zero the DMC estimate and set its block of `P` to the stationary
   /// variance qτ/2 (zero when off).
   void seedDmcBlock();
+  /// Return the drag scale factor to its nominal 1 and its variance to the
+  /// configured seed σ² (zero when off), clearing the cross terms. Called from
+  /// every path that seeds a fresh solution — the scale a dropped solution had
+  /// learned belongs to the arc that ended with it.
+  void seedDragScaleBlock();
+  /// True when the drag scale factor is an estimated state: positive PSD **and**
+  /// drag actually enabled. With drag off the state has no observability path
+  /// at all, so it is not carried even if a PSD was configured.
+  bool dragScaleEnabled() const;
 
   /// One 3-row update against a measurement of `H = [I 0]` (position, @p offset
   /// = kPosition) or `H = [0 I]` (velocity, @p offset = kVelocity).
@@ -1051,12 +1199,14 @@ class OrbitOd {
   Eigen::Vector3d position_{Eigen::Vector3d::Zero()};  ///< ECI position estimate [m]
   Eigen::Vector3d velocity_{Eigen::Vector3d::Zero()};  ///< ECI velocity estimate [m/s]
   Eigen::Vector3d dmc_{Eigen::Vector3d::Zero()};       ///< DMC acceleration estimate, RTN [m/s²]
-  FullCovariance p_{FullCovariance::Zero()};           ///< full error-state covariance
-  time::Tai last_epoch_{};                             ///< epoch of the state
-  time::Tai last_fix_epoch_{};                         ///< epoch of the last ingested fix
-  double age_s_{0.0};                                  ///< since the last accepted fix [s]
-  std::uint32_t rejected_{0};                          ///< NIS-gate rejections
-  std::uint32_t forced_{0};                            ///< updates applied past the gate
+  double drag_scale_{1.0};                    ///< Drag scale-factor estimate [-], nominal 1
+  FullCovariance p_{FullCovariance::Zero()};  ///< full error-state covariance
+  time::Tai last_epoch_{};                    ///< epoch of the state
+  time::Tai last_fix_epoch_{};                ///< epoch of the last ingested fix
+  double age_s_{0.0};                         ///< since the last accepted fix [s]
+  std::uint32_t rejected_{0};                 ///< NIS-gate rejections
+  std::uint32_t forced_{0};                   ///< updates applied past the gate
+  std::uint32_t drag_scale_refused_{0};       ///< drag-scale updates outside the band
   bool configured_{false};
   bool initialised_{false};
   bool have_fix_{false};  ///< `last_fix_epoch_` is meaningful

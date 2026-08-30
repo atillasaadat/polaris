@@ -375,3 +375,63 @@ Source: design doc §8.3, §11. Fully populated in Phase 6; firm seeds below.
    (``test_the_clean_fix_lockout_measures_the_longest_unbroken_refusal``,
    ``test_a_refusal_the_fault_earned_is_not_a_lockout``,
    ``test_a_fix_refused_while_the_solution_is_degraded_is_not_a_false_alarm``).
+
+.. req:: Onboard drag scale-factor estimation
+   :id: REQ-ODP-013
+   :status: reviewed
+   :level: L3
+   :tags: od, estimation, disturbances
+   :method: Test
+   :derived_from: REQ-ODP-001, REQ-ODP-005
+   :allocation: lib/gnc, flight/PolarisFsw/OrbitEstimator, tests/unit
+   :refs: carpenter2018, tapley2004, vallado2013
+
+   The onboard force model flies a **static** exponential atmosphere with no
+   solar or geomagnetic activity in it, so its density is wrong by a factor of
+   order one against the real one. The orbit filter **shall** be able to
+   estimate that error as a dimensionless **drag scale factor** — a multiplier
+   on the drag term, carried as a first-order Gauss-Markov state about its
+   nominal 1 (design doc §8.5 tier 3, orbit half; TP §2.2.3.4; Tapley, Schutz
+   & Born §4.16 for the augmented-state form).
+
+   Three properties are required of it, and they matter more than the estimate:
+
+   1. **It publishes its own uncertainty.** Drag is observable only through the
+      secular along-track signature it leaves over an arc, so on a short arc, or
+      on a vehicle whose drag is small against the rest of the force-model
+      error, the estimate *is* its prior. ``dragScaleSigma`` **shall** say so
+      rather than the filter reporting a fit it does not have.
+   2. **An out-of-band estimate is refused, not clamped.** An exponential
+      atmosphere is not wrong by the factor a wild estimate claims, so such an
+      estimate was driven by something that is not drag; clamping would fly a
+      magnitude the policy chose rather than one the data supported. The
+      refusal **shall** hold the last accepted scale and **shall not** disturb
+      the position/velocity solution the fix also carried.
+   3. **Disabled means absent.** With the process-noise PSD at zero — the flown
+      value — the trajectory **shall** be bit-for-bit that of the filter
+      without the state.
+
+   **As-delivered condition: the state ships disabled on the reference
+   vehicle, and the reason is measured.** The isotropic ``q_a`` is sized from
+   the 8x8 geopotential truncation: 1.28 m over the 300 s coast horizon, an
+   equivalent constant acceleration of 2.8e-5 m/s². The whole drag-scale signal
+   is ``(s-1)·a_drag``, and at 400 km ``a_drag`` is 1.2e-6 m/s², so even a 60 %
+   density error is 7.2e-7 m/s² — **39x under the budget the filter already
+   carries**. Measured against a truth atmosphere 60 % denser, the estimate
+   after six orbits at the flown tuning is **1.023 of a true 1.6** with σ still
+   0.33 of its 0.5 prior; at ``q_a``/1000 the same filter reaches 1.516 with σ
+   0.158 in one orbit. Arc length is not the lever and ``q_a`` cannot be reduced
+   — Push 74 measured every reduced-``q_a`` variant failing the NEES
+   consistency gate, precisely because ``q_a`` covers that truncation. What
+   unblocks the scale factor here is a **higher-degree onboard geopotential**,
+   not a longer pass, and this requirement is written to be satisfiable on the
+   vehicle that has one.
+
+   Verified by ``tests/unit/orbit_od_drag_scale_test.cpp`` (the exact Jacobian
+   column against a differenced one and against the term's linearity; recovery
+   of a known density bias; the flown tuning's measured non-resolution as an
+   asserted upper bound; the short-arc sigma; refused-not-clamped; re-seeding
+   on an enable-by-uplink; and the configuration refusals) and by
+   ``flight/PolarisFsw/OrbitEstimator``'s
+   ``DragScaleParametersAndTelemetry``, which covers the parameter path and the
+   ``DragScale``/``DragScaleSigma``/``DragScaleRefused`` channels.

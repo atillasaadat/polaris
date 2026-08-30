@@ -153,6 +153,13 @@ void OrbitEstimatorTester ::setValidParameters() {
     this->paramSet_AccelPsdRtnM2PerS3(zero, Fw::ParamValid::VALID);
     this->paramSet_DmcTauS(0.0, Fw::ParamValid::VALID);
     this->paramSet_DmcPsdRtnM2PerS5(zero, Fw::ParamValid::VALID);
+    // Drag scale factor off (Push 76), matching the flown tuning; the three
+    // shape parameters carry the values a vehicle that enabled it would use, so
+    // turning the PSD on in a case is the one-line change it should be.
+    this->paramSet_DragScaleTauS(86400.0, Fw::ParamValid::VALID);
+    this->paramSet_DragScalePsdPerS(0.0, Fw::ParamValid::VALID);
+    this->paramSet_DragScaleSeedSigma(0.5, Fw::ParamValid::VALID);
+    this->paramSet_DragScaleMaxDeviation(0.9, Fw::ParamValid::VALID);
   }
   this->paramSet_PositionNisGate(kNisGate, Fw::ParamValid::VALID);
   this->paramSet_VelocityNisGate(kNisGate, Fw::ParamValid::VALID);
@@ -764,6 +771,68 @@ void OrbitEstimatorTester ::testBackupEphemerisRestart() {
   ASSERT_EVENTS_OrbitSeeded_SIZE(1);
   ASSERT_EVENTS_FixRefused_SIZE(0);
   ASSERT_TLM_FixesAccepted(this->tlmHistory_FixesAccepted->size() - 1, 1u);
+}
+
+/// The drag scale factor's component seam (Push 76; REQ-ODP-013).
+///
+/// The library's own behaviour is measured in
+/// `tests/unit/orbit_od_drag_scale_test.cpp`; what this covers is the wiring
+/// the library cannot: that the four parameters reach `OrbitOdConfig` and that
+/// the three channels report the filter rather than a constant. It is worth a
+/// case of its own because the state ships **off** on this vehicle, so every
+/// other test here would pass just as well against a seam that was never
+/// connected.
+void OrbitEstimatorTester ::testDragScaleParametersAndTelemetry() {
+  this->setValidParameters();
+
+  // Off (the flown tuning): the channels report the nominal, not a sentinel.
+  this->component.loadParameters();
+  this->startTruthAt(kStartTaiNs);
+  I64 t = kStartTaiNs;
+  for (int s = 0; s <= 5; ++s) {
+    t = kStartTaiNs + s * kNsPerSecond;
+    this->sendFixAt(t);
+    this->runCycleAt(t);
+  }
+  ASSERT_EVENTS_OrbitTuningInvalid_SIZE(0);
+  EXPECT_DOUBLE_EQ(this->tlmHistory_DragScale->at(this->tlmHistory_DragScale->size() - 1).arg, 1.0);
+  EXPECT_DOUBLE_EQ(
+      this->tlmHistory_DragScaleSigma->at(this->tlmHistory_DragScaleSigma->size() - 1).arg, 0.0);
+  EXPECT_EQ(
+      this->tlmHistory_DragScaleRefused->at(this->tlmHistory_DragScaleRefused->size() - 1).arg, 0u);
+
+  // Enabled by uplink on a running filter — the real operational path, and the
+  // one with a trap in it: the state's covariance block was identically zero
+  // while it was off, which is a state the Kalman gain can never reach. The
+  // library re-seeds it to the configured prior on that transition, and this
+  // sigma is what says so. It is also the whole parameter path in one number:
+  // a seam that dropped any of the four would leave it at zero.
+  this->paramSet_DragScalePsdPerS(1.0e-8, Fw::ParamValid::VALID);
+  this->paramSend_DragScalePsdPerS(0, 0);
+  ASSERT_EVENTS_OrbitTuningInvalid_SIZE(0);
+  for (int s = 6; s <= 12; ++s) {
+    t = kStartTaiNs + s * kNsPerSecond;
+    this->sendFixAt(t);
+    this->runCycleAt(t);
+  }
+  ASSERT_EVENTS_OrbitTuningInvalid_SIZE(0);
+  const F64 sigma =
+      this->tlmHistory_DragScaleSigma->at(this->tlmHistory_DragScaleSigma->size() - 1).arg;
+  // At the configured 0.5 seed and only seconds of arc, essentially untouched —
+  // which is the honest answer and the one the library test pins in detail.
+  EXPECT_GT(sigma, 0.4);
+  EXPECT_LE(sigma, 0.5 * 1.001);
+
+  // A half-uploaded tuning is refused rather than silently completed, and the
+  // running filter keeps the set it had (TB 20-03 item g) rather than being
+  // made inert by a bad upload.
+  this->paramSet_DragScaleSeedSigma(0.0, Fw::ParamValid::VALID);
+  this->paramSend_DragScaleSeedSigma(0, 0);
+  ASSERT_EVENTS_OrbitTuningInvalid_SIZE(1);
+  t = kStartTaiNs + 13 * kNsPerSecond;
+  this->sendFixAt(t);
+  this->runCycleAt(t);
+  EXPECT_TRUE(this->last_estimate_.get_valid());
 }
 
 void OrbitEstimatorTester ::testCovarianceMetricsAndDmcParameters() {
