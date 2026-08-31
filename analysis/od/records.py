@@ -298,11 +298,21 @@ def load_campaign(paths: str | Path | list[str | Path]) -> Campaign:
     if not shards:
         raise FileNotFoundError(f"no JSONL shards found under {paths!r}")
 
-    accumulators: list[_Accumulator] = []
-    index: dict[tuple[int, str], _Accumulator] = {}
+    frozen: list[ScenarioRun] = []
     truncated: list[str] = []
 
     for shard in shards:
+        # Accumulators are per shard, and frozen the moment the file ends, so
+        # the raw dicts for one shard are the only ones ever live. Holding the
+        # whole campaign as dicts and freezing once at the end cost ~5x the
+        # JSONL on disk and OOM-killed a 30-run 24 h campaign at 22 GB RSS —
+        # `freeze` compacts a group into numpy columns, so the dicts are needed
+        # only until their group is closed. Keys never span shards (each is
+        # flown over a disjoint --first-run range), so a group is complete when
+        # its file is.
+        accumulators: list[_Accumulator] = []
+        index: dict[tuple[int, str], _Accumulator] = {}
+
         with shard.open(encoding="utf-8") as handle:
             for number, raw in enumerate(handle, start=1):
                 line = raw.strip()
@@ -351,8 +361,10 @@ def load_campaign(paths: str | Path | list[str | Path]) -> Campaign:
                     )
                 group.rows.append(row)
 
+        frozen.extend(a.freeze() for a in accumulators if a.rows)
+
     return Campaign(
-        runs=tuple(a.freeze() for a in accumulators if a.rows),
+        runs=tuple(frozen),
         paths=tuple(shards),
         truncated=tuple(Path(p) for p in dict.fromkeys(truncated)),
     )
