@@ -155,6 +155,34 @@ constexpr double kBallisticCoeff = 2.2 * 0.06 / 12.0;
 constexpr double kInitialPosSigmaM = 5.0e3;
 constexpr double kInitialVelSigmaMps = 5.0;
 
+/// The reference vehicle's correlated-GNSS allocation and the filter tuning that
+/// matches it (Push 77). Kept beside the receiver fixture so the pair cannot
+/// drift apart in this file the way a flight/sim parameter pair can in config.
+constexpr double kFlownCorrFraction = 0.5;
+constexpr double kFlownCorrTauS = 600.0;
+constexpr double kFlownCorrConsider = 1.0;  ///< 1 = consider (Schmidt), 0 = full estimator
+
+/// Optional overrides from the command line (Push 73): the DMC states and the
+/// RTN state-noise intensities, so the campaign can measure a candidate tuning
+/// against the flown one on the same runs before anything changes in the yaml.
+/// Zero = the flown configuration.
+struct TuningOverride {
+  double dmc_tau_s{0.0};
+  double dmc_psd_m2_per_s5{0.0};    ///< isotropic in RTN, all three axes
+  double accel_psd_iso_scale{1.0};  ///< multiplies the flown isotropic q_a
+  Eigen::Vector3d accel_psd_rtn{Eigen::Vector3d::Zero()};
+  /// Receiver correlated-error split and timescale (Push 77). The **flown**
+  /// values, not zero: unlike the knobs above, this one describes the hardware
+  /// rather than a filter tuning, so the campaign's default is the vehicle's.
+  double gnss_corr_fraction{kFlownCorrFraction};
+  double gnss_corr_tau_s{kFlownCorrTauS};
+  /// Consider (Schmidt) mode for the GNSS bias block: 1 = pin the estimate,
+  /// 0 = let the filter estimate the bias. The flown value is consider.
+  double gnss_bias_consider{kFlownCorrConsider};
+};
+
+TuningOverride g_override;
+
 /// Receiver spec keys, mirroring `config/hardware/gnss/novatel_oem7600.yaml`.
 ///
 /// **Latency is the one value not taken from the catalog**, because it is only
@@ -169,6 +197,8 @@ constexpr double kInitialVelSigmaMps = 5.0;
 /// at 50 Hz with the real value. See `GnssSpec::fix_latency_s`.
 psen::GnssSpec receiverSpec(double fix_latency_s) {
   return psen::GnssSpec::fromParams({
+      {"correlated_position_fraction", g_override.gnss_corr_fraction},
+      {"correlated_position_tau_s", g_override.gnss_corr_tau_s},
       {"horizontal_position_rms_m", 1.2},
       {"velocity_accuracy_m_s_rms", 0.03},
       {"time_accuracy_ns_rms", 5.0},
@@ -179,19 +209,6 @@ psen::GnssSpec receiverSpec(double fix_latency_s) {
       {"reacquisition_s", 0.5},
   });
 }
-
-/// Optional overrides from the command line (Push 73): the DMC states and the
-/// RTN state-noise intensities, so the campaign can measure a candidate tuning
-/// against the flown one on the same runs before anything changes in the yaml.
-/// Zero = the flown configuration.
-struct TuningOverride {
-  double dmc_tau_s{0.0};
-  double dmc_psd_m2_per_s5{0.0};    ///< isotropic in RTN, all three axes
-  double accel_psd_iso_scale{1.0};  ///< multiplies the flown isotropic q_a
-  Eigen::Vector3d accel_psd_rtn{Eigen::Vector3d::Zero()};
-};
-
-TuningOverride g_override;
 
 pg::OrbitOdConfig filterConfig() {
   pg::OrbitOdConfig cfg;
@@ -207,6 +224,13 @@ pg::OrbitOdConfig filterConfig() {
   cfg.accel_psd_rtn_m2_per_s3 = g_override.accel_psd_rtn;
   cfg.dmc_tau_s = g_override.dmc_tau_s;
   cfg.dmc_psd_rtn_m2_per_s5 = Eigen::Vector3d::Constant(g_override.dmc_psd_m2_per_s5);
+  // The correlated split the filter is told (Push 77) — taken from the SAME
+  // values the receiver fixture is built from, so the flight and sim halves of
+  // this pair cannot disagree here. In the flown config that agreement is what
+  // configc enforces by equality.
+  cfg.gnss_corr_fraction = g_override.gnss_corr_fraction;
+  cfg.gnss_corr_tau_s = g_override.gnss_corr_tau_s;
+  cfg.gnss_bias_consider = g_override.gnss_bias_consider != 0.0;
   cfg.position_nis_gate = kChi2_3_999;
   cfg.velocity_nis_gate = kChi2_3_999;
   cfg.max_coast_s = kCoastHorizonS;
@@ -766,16 +790,59 @@ int main(int argc, char** argv) {
       g_override.dmc_psd_m2_per_s5 = next(0.0);
     } else if (a == "--qa-scale") {
       g_override.accel_psd_iso_scale = next(1.0);
+    } else if (a == "--gnss-corr-fraction") {
+      g_override.gnss_corr_fraction = next(kFlownCorrFraction);
+    } else if (a == "--gnss-corr-tau-s") {
+      g_override.gnss_corr_tau_s = next(kFlownCorrTauS);
+    } else if (a == "--gnss-bias-consider") {
+      g_override.gnss_bias_consider = next(kFlownCorrConsider);
     } else if (a == "--q-rtn" && i + 3 < argc) {
       g_override.accel_psd_rtn =
           Eigen::Vector3d(std::atof(argv[i + 1]), std::atof(argv[i + 2]), std::atof(argv[i + 3]));
       i += 3;
-    } else if (a == "--help") {
+    } else if (a != "--help") {
+      // An unrecognised argument is refused, not ignored (Push 77). This driver
+      // silently accepted them until a stale sweep command kept passing a flag
+      // that had been renamed: nothing failed, and the runs quietly measured a
+      // different configuration than the command line said. A campaign that
+      // measures the wrong thing while looking right is worse than one that
+      // does not run.
+      //
+      // A flag the driver *does* know, given without its operand, falls here
+      // too — the branches that consume an operand are guarded on there being
+      // one. Say which of the two it is, or the message sends the reader
+      // hunting for a rename that never happened.
+      static const char* const kNeedsValue[] = {
+          "--out",      "--scenario",           "--q-rtn",           "--first-run",
+          "--runs",     "--duration-s",         "--dmc-tau-s",       "--dmc-psd",
+          "--qa-scale", "--gnss-corr-fraction", "--gnss-corr-tau-s", "--gnss-bias-consider"};
+      bool known = false;
+      for (const char* flag : kNeedsValue) {
+        if (a == flag) {
+          known = true;
+          break;
+        }
+      }
+      if (known) {
+        std::fprintf(stderr, "orbit_od_mc: flag '%s' requires a value (see --help)\n", a.c_str());
+      } else {
+        std::fprintf(stderr, "orbit_od_mc: unknown argument '%s' (see --help)\n", a.c_str());
+      }
+      return 2;
+    } else {
       std::printf(
           "usage: polaris_orbit_od_mc [--first-run N] [--runs N] [--duration-s S]\n"
           "                           [--scenario NAME] [--out PATH]\n"
           "                           [--dmc-tau-s S --dmc-psd Q] [--qa-scale K]\n"
-          "                           [--q-rtn qR qT qN]   (Push 73 tuning candidates)\n");
+          "                           [--q-rtn qR qT qN]   (Push 73 tuning candidates)\n"
+          "                           [--gnss-corr-fraction F --gnss-corr-tau-s S]\n"
+          "                           [--gnss-bias-consider 0|1]   (Push 77; 1 = Schmidt\n"
+          "                             consider block, 0 = estimate the bias)\n"
+          "\n"
+          "Fast tuning loop (Push 77): one scenario, a short arc, a few runs --\n"
+          "  --scenario nominal --runs 3 --duration-s 11000\n"
+          "runs in seconds rather than the full campaign's hours, and NEES is what\n"
+          "a consistency tuning is read off. Validate the winner on the full gate.\n");
       return 0;
     }
   }

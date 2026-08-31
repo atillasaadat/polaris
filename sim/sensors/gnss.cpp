@@ -46,6 +46,36 @@ GnssSpec GnssSpec::fromParams(const std::map<std::string, double>& p) {
 
   s.velocity_sigma_m_s = get(p, "velocity_accuracy_m_s_rms");
   s.time_sigma_s = get(p, "time_accuracy_ns_rms") * 1.0e-9;
+  // Correlated (common-mode) position error, Push 77.
+  //
+  // Expressed as the **fraction of the datasheet variance** that is correlated
+  // rather than as an absolute figure, so the total accuracy stays exactly what
+  // the datasheet quotes and only its *spectrum* changes:
+  //
+  //   sigma_white = sigma_total * sqrt(1 - f),   sigma_corr = sigma_total * sqrt(f)
+  //
+  // That is the honest way to add this to an existing entry. Taking a correlated
+  // RMS on top of the datasheet would model a receiver worse than the one the
+  // datasheet describes, and would confound "the error is bigger" with "the
+  // error is correlated" — and only the second is what the onboard filter is
+  // unprepared for. The receiver still *reports* the full datasheet sigma; it
+  // cannot see which part of its own error is common-mode.
+  //
+  // An absent or zero fraction leaves the term off and the model exactly as it
+  // was: an entry that has not been characterised does not silently acquire one.
+  const double f = get(p, "correlated_position_fraction");
+  if (f > 0.0) {
+    const double frac = std::min(1.0, f);
+    s.position_corr_sigma_h_m = s.position_sigma_h_m * std::sqrt(frac);
+    s.position_corr_sigma_v_m = s.position_sigma_v_m * std::sqrt(frac);
+    s.position_sigma_h_m *= std::sqrt(1.0 - frac);
+    s.position_sigma_v_m *= std::sqrt(1.0 - frac);
+  }
+  s.position_corr_tau_s = get(p, "correlated_position_tau_s");
+  // What the receiver reports: the datasheet total, i.e. both parts recombined.
+  // Identical to the white sigmas when the term is off.
+  s.position_reported_sigma_h_m = std::hypot(s.position_sigma_h_m, s.position_corr_sigma_h_m);
+  s.position_reported_sigma_v_m = std::hypot(s.position_sigma_v_m, s.position_corr_sigma_v_m);
 
   s.max_rate_hz = get(p, "max_rate_hz");
   s.sample_period_s = (s.max_rate_hz > 0.0) ? 1.0 / s.max_rate_hz : 0.0;
@@ -57,6 +87,54 @@ GnssSpec GnssSpec::fromParams(const std::map<std::string, double>& p) {
   s.hot_start_s = get(p, "hot_start_s");
   s.reacquisition_s = get(p, "reacquisition_s");
   return s;
+}
+
+/// Advance the correlated position-error state to @p gps_ns and return it as
+/// east/north/up components [m] (Push 77).
+///
+/// Exact first-order Gauss-Markov discretisation rather than an Euler step:
+/// `e <- e*phi + sigma*sqrt(1 - phi^2)*g` with `phi = exp(-dt/tau)`, which is
+/// stationary for *any* step size. That matters here because the step between
+/// fixes is whatever the caller's polling and the receiver's sample period make
+/// it — an approximation valid only for `dt << tau` would quietly change the
+/// error's variance when a scenario changed its fix cadence.
+///
+/// The first fix draws from the stationary distribution directly, so a scenario
+/// does not sample a warm-up transient that a longer one would have forgotten.
+Eigen::Vector3d Gnss::advanceCorrelatedError(std::int64_t gps_ns) {
+  const double sigma_h = spec_.position_corr_sigma_h_m;
+  const double sigma_v = spec_.position_corr_sigma_v_m;
+  if (!(sigma_h > 0.0) && !(sigma_v > 0.0)) {
+    return Eigen::Vector3d::Zero();
+  }
+  if (!(spec_.position_corr_tau_s > 0.0)) {
+    return Eigen::Vector3d::Zero();
+  }
+  const Eigen::Vector3d sigma(sigma_h, sigma_h, sigma_v);
+
+  if (!corr_seeded_) {
+    for (int i = 0; i < 3; ++i) {
+      corr_enu_(i) = sigma(i) * rng_.gaussian();
+    }
+    corr_seeded_ = true;
+    corr_last_gps_ns_ = gps_ns;
+    return corr_enu_;
+  }
+
+  const double dt = static_cast<double>(gps_ns - corr_last_gps_ns_) / kNsPerSecond;
+  // A non-advancing or backward tag (a clock jump, a replayed epoch) leaves the
+  // state where it is rather than driving exp() with a negative argument: the
+  // error is a property of the sky, not of how the time tag was written.
+  if (!(dt > 0.0)) {
+    return corr_enu_;
+  }
+  const double phi = std::exp(-dt / spec_.position_corr_tau_s);
+  const double driving = std::sqrt(std::max(0.0, 1.0 - phi * phi));
+  for (int i = 0; i < 3; ++i) {
+    corr_enu_(i) = phi * corr_enu_(i) + sigma(i) * driving * rng_.gaussian();
+  }
+  corr_last_gps_ns_ = gps_ns;
+  return corr_enu_;
 }
 
 GnssMeasurement Gnss::sample(const time::Tai& epoch, const GnssInput& input) {
@@ -92,8 +170,8 @@ GnssMeasurement Gnss::sample(const time::Tai& epoch, const GnssInput& input) {
   prev_outage_ = outage;
 
   GnssMeasurement m;
-  m.position_sigma_h_m = spec_.position_sigma_h_m;
-  m.position_sigma_v_m = spec_.position_sigma_v_m;
+  m.position_sigma_h_m = spec_.position_reported_sigma_h_m;
+  m.position_sigma_v_m = spec_.position_reported_sigma_v_m;
   m.velocity_sigma_m_s = spec_.velocity_sigma_m_s;
   m.time_sigma_s = spec_.time_sigma_s;
 
@@ -111,6 +189,13 @@ GnssMeasurement Gnss::sample(const time::Tai& epoch, const GnssInput& input) {
     pos_err = spec_.position_sigma_h_m * rng_.gaussian() * east +
               spec_.position_sigma_h_m * rng_.gaussian() * north +
               spec_.position_sigma_v_m * rng_.gaussian() * up;
+    // Correlated (common-mode) component, advanced to this fix and added in the
+    // same local basis (Push 77). Drawn *after* the white terms so that enabling
+    // it does not renumber the white draws — a scenario's white noise stays
+    // bit-identical whether or not the correlated term is on, which is what
+    // makes the two comparable on one seed.
+    const Eigen::Vector3d corr = advanceCorrelatedError(gps_ns);
+    pos_err += corr.x() * east + corr.y() * north + corr.z() * up;
     vel_err = Eigen::Vector3d(spec_.velocity_sigma_m_s * rng_.gaussian(),
                               spec_.velocity_sigma_m_s * rng_.gaussian(),
                               spec_.velocity_sigma_m_s * rng_.gaussian());
@@ -175,8 +260,8 @@ GnssMeasurement Gnss::sample(const time::Tai& epoch, const GnssInput& input) {
     // this is the same "no fix available" state a cold start is in, and a
     // consumer must treat it the same way.
     GnssMeasurement none;
-    none.position_sigma_h_m = spec_.position_sigma_h_m;
-    none.position_sigma_v_m = spec_.position_sigma_v_m;
+    none.position_sigma_h_m = spec_.position_reported_sigma_h_m;
+    none.position_sigma_v_m = spec_.position_reported_sigma_v_m;
     none.velocity_sigma_m_s = spec_.velocity_sigma_m_s;
     none.time_sigma_s = spec_.time_sigma_s;
     none.time_tag = gps;

@@ -33,6 +33,7 @@ from configc.prmdb import (
     MAX_ENTRIES,
     PRMDB_CONFIG_HEADER,
     _read_max_entries,
+    serialize_value,
 )
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -102,7 +103,9 @@ def test_values_are_serialized_big_endian_per_type():
     records = dict(_decode(build_param_file({"a": 1.5, "b": 7, "c": True}, dictionary)))
     assert records[1] == struct.pack(">d", 1.5)
     assert records[2] == b"\x00\x00\x00\x07"
-    assert records[3] == b"\x01"
+    # 0xFF, not 0x01: F´ deserializes a bool against FW_SERIALIZE_TRUE_VALUE
+    # and refuses any other byte. See the dedicated bool test below.
+    assert records[3] == b"\xff"
 
 
 def test_encoding_is_deterministic():
@@ -267,7 +270,8 @@ def test_integer_and_bool_values_survive_the_schema(tmp_path):
     }
     records = dict(_decode(build_param_file(sc.fsw_parameters, dictionary)))
     assert records[1] == b"\x00\x00\x00\x07"
-    assert records[2] == b"\x01"
+    # 0xFF, not 0x01 — see the bool test below.
+    assert records[2] == b"\xff"
 
 
 def test_malformed_dictionary_is_refused(tmp_path):
@@ -322,3 +326,29 @@ def test_config_naming_an_unknown_parameter_fails_the_compile(tmp_path):
 
     with pytest.raises(ConfigError, match="NoSuchParam"):
         compile_config(path, _HARDWARE, tmp_path, dictionary_path=_DICTIONARY)
+
+
+# --- bool, against the F´ reader's own two byte values -------------------------
+
+
+def test_bool_serialises_to_the_fprime_true_false_bytes_not_zero_one():
+    """F´ accepts 0xFF/0x00 for a bool and rejects every other byte.
+
+    ``Fw::SerializeBufferBase::deserialize(bool&)`` compares against
+    ``FW_SERIALIZE_TRUE_VALUE`` (0xFF) and ``FW_SERIALIZE_FALSE_VALUE`` (0x00)
+    and returns ``FW_DESERIALIZE_FORMAT_ERROR`` for anything else. Python's
+    ``struct`` ``>?`` writes 0x01 for True, which that reader refuses — and the
+    failure is silent in the worst way: the record is the right size, ``PrmDb``
+    reports it loaded, and the component reads the parameter back INVALID with
+    no error in between. Push 77 lost a full CI cycle to exactly that.
+    """
+    assert serialize_value(_spec("On", 0x100, "bool"), True) == b"\xff"
+    assert serialize_value(_spec("Off", 0x101, "bool"), False) == b"\x00"
+    # Explicitly *not* the struct default, which is what this pins.
+    assert serialize_value(_spec("On", 0x100, "bool"), True) != struct.pack(">?", True)
+
+
+def test_bool_parameter_refuses_an_integer():
+    """0/1 is not a bool here, because the wire byte is neither 0 nor 1."""
+    with pytest.raises(PrmDbError, match="not a bool"):
+        serialize_value(_spec("On", 0x100, "bool"), 1)

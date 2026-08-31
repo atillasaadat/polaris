@@ -265,6 +265,32 @@ module flight {
     @ footnote), one per axis; ignored when DmcTauS = 0. Each >= 0.
     param DmcPsdRtnM2PerS5: Vec3F64
 
+    @ Fraction of the GNSS receiver's reported position VARIANCE that is
+    @ common-mode (design doc §8.3/§6.2; Push 77). The receiver reports a total
+    @ sigma and cannot say which part of its error is shared across the
+    @ satellites it tracks, so the split is configured here: R takes (1-f) of
+    @ the reported variance and the three GNSS bias states take f as their
+    @ prior. The total is preserved for any f, which is why this is a fraction
+    @ and not a sigma — an absolute correlated sigma subtracted from the
+    @ reported one can go negative.
+    @
+    @ Must EQUAL the receiver entry's correlated_position_fraction; configc
+    @ cross-checks it by plain equality. 0 disables the block and is the
+    @ pre-Push-77 filter. Must be in [0, 1).
+    param GnssCorrFraction: F64
+
+    @ Correlation time of the GNSS bias states [s]. Must equal the receiver
+    @ entry's correlated_position_tau_s, and be 0 or >= 10 x MaxStepS.
+    param GnssCorrTauS: F64
+
+    @ Run the GNSS bias states as a CONSIDER (Schmidt) block: their covariance
+    @ propagates and shapes the Kalman gain, but the estimate stays pinned at
+    @ zero. True is the flown value, for three independent reasons: the bias is
+    @ not resolvable against the flown process noise; consistency does not
+    @ depend on resolving it, since the cross-covariance still reaches S; and a
+    @ pinned estimate is a state a slow spoof cannot walk (§9.2).
+    param GnssBiasConsider: bool
+
     @ Correlation time of the drag scale factor [s] (design doc §8.5 tier 3,
     @ orbit half; TP §2.2.3.4; Push 76). The scale is a dimensionless
     @ multiplier on the onboard exponential-atmosphere drag term, estimated as
@@ -378,6 +404,11 @@ module flight {
 
     @ sqrt(trace) of the DMC acceleration covariance [m/s^2]; 0 when off.
     telemetry DmcSigmaMps2: F64
+
+    @ sqrt(trace) of the GNSS bias covariance [m] (Push 77). In consider mode
+    @ this sits at its prior by construction; a value that has MOVED is the
+    @ signature of the consider switch failing to pin the gain.
+    telemetry GnssBiasSigmaM: F64
 
     @ Estimated drag scale factor [-] (§8.5 tier 3, orbit half; Push 76).
     @ Exactly 1 when the state is off or drag is disabled.

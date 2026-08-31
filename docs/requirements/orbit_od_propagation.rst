@@ -435,3 +435,114 @@ Source: design doc §8.3, §11. Fully populated in Phase 6; firm seeds below.
    ``flight/PolarisFsw/OrbitEstimator``'s
    ``DragScaleParametersAndTelemetry``, which covers the parameter path and the
    ``DragScale``/``DragScaleSigma``/``DragScaleRefused`` channels.
+
+.. req:: Correlated GNSS error and the consider block that survives it
+   :id: REQ-ODP-014
+   :status: reviewed
+   :level: L3
+   :tags: od, estimation, gnss, sensors
+   :method: Test
+   :derived_from: REQ-ODP-001
+   :allocation: sim/sensors, lib/gnc, flight/PolarisFsw/OrbitEstimator, tools/configc
+
+   Real single-point GNSS position error is **not white**: residual ionosphere,
+   broadcast ephemeris and satellite clock are common to the satellites in view
+   and decorrelate over minutes, not per fix. The receiver model **shall**
+   represent that as a first-order Gauss-Markov component of the position error,
+   and the orbit filter **shall** remain consistent against one — in **both**
+   the state and the innovation.
+
+   Four properties are required:
+
+   1. **The split preserves the datasheet.** The correlated part is a fraction
+      of the datasheet variance, so the receiver's total accuracy is unchanged
+      and only its spectrum differs. Adding a correlated term *on top* would
+      model a worse receiver than the one described and would confound "the
+      error is bigger" with "the error is correlated" — only the second is what
+      the filter is unprepared for.
+   2. **The receiver reports the total and nothing about the colour.** A formal
+      solution covariance can size an error but cannot say how much of it
+      survives to the next fix. A fix from a correlated receiver **shall** be
+      indistinguishable, on its reported sigmas alone, from one from a white
+      receiver of the same datasheet.
+   3. **The filter carries the correlated error as states**, so that the
+      correlation between its prior error and the measurement error is
+      represented rather than assumed away. It **shall** be told the split by
+      configuration, as a *fraction*, and that fraction **shall** equal the
+      receiver's declared one (``configc`` enforces equality).
+   4. **Disabled means absent.** With the fraction at zero the filter **shall**
+      be the pre-Push-77 filter.
+
+   **Why a covariance block and not an inflated R.** ``S = H P Hᵀ + R`` follows
+   from ``E[e vᵀ] = 0``, which is a *consequence* of whiteness: the prior error
+   is a functional of past measurements, and white noise is independent of all
+   of them. With a correlated error the past fixes carried nearly the same bias
+   — at the flown ``tau/dt = 60`` the neighbour correlation is 0.983 — so
+   ``C = E[e bᵀ] != 0`` and the true innovation covariance is
+   ``H P Hᵀ + R − H C − Cᵀ Hᵀ``. Those cross terms **subtract**: the innovation
+   is smaller than ``S`` by twice the bias the filter has already absorbed,
+   measured at about **two thirds**. NEES sees that absorbed bias as state error
+   and wants ``P`` larger; NIS sees it removed from the innovation and wants
+   ``S`` smaller. **No single R satisfies both**, measured:
+
+   .. list-table:: Inflation sweep, 12-run nominal (bands NEES [4.202, 8.113], NIS [1.778, 4.536])
+      :header-rows: 1
+
+      * - Inflation
+        - NEES
+        - NIS
+      * - 0
+        - 23.597 FAIL
+        - 1.676 FAIL
+      * - 2
+        - 11.406 FAIL
+        - 0.629 FAIL
+      * - 3
+        - 8.067 PASS
+        - 0.378 FAIL
+      * - 4
+        - 6.331 PASS
+        - 0.257 FAIL
+      * - 6
+        - 4.742 PASS
+        - 0.149 FAIL
+
+   Carrying the bias in the covariance puts ``C`` where it belongs, as the
+   ``P_rb`` block *inside* ``S``. The augmented model has white noise by
+   construction, so the innovations are white and ``S`` is genuinely their
+   covariance.
+
+   **The block ships in CONSIDER (Schmidt) form** — its covariance propagates
+   and shapes the gain, but the estimate stays pinned at zero — for three
+   independent reasons. The bias is not resolvable at the flown process noise
+   (4 cm of signal over the filter's 228 s memory against a 17.7 cm floor).
+   Consistency does not depend on resolving it: ``P_rb`` and ``P_bb`` still
+   reach ``S``, so an unobservable bias costs the estimate and not the
+   covariance. And a pinned estimate is a state a slow spoof cannot walk, which
+   §9.2 leaves as an open residual and which a 600 s FOGM position bias is
+   precisely the shape to absorb.
+
+   **Verified against a prediction made before the measurement.** Predicted
+   NEES 6.3 ± 0.8 and NIS 2.9 ± 0.30; measured, at the receiver's declared
+   ``f`` = 0.5 with nothing fitted, **NEES 5.548 and NIS 2.938**, both inside
+   their bands with 32 % and 35 % margin, and a clean-fix rejection rate of
+   0.076 %. The falsifier was stated in advance: *if both statistics passed only
+   at some* ``f`` *other than the receiver's declared value, the block would be
+   compensating rather than modelling.* They pass at the declared value.
+
+   The mechanism is confirmed directly by a correlation-time sweep with no
+   inflation, where NIS returns to its white value as the error becomes
+   effectively white: 2.969 (white), 2.954 (``tau`` 1 s), 2.879 (``tau`` 10 s =
+   the fix cadence), 2.408 (60 s), 1.676 (600 s). The control is also on record:
+   a white receiver at 30 runs measures NEES 5.283 / NIS 2.986, matching the
+   archived pre-Push-77 campaign to three decimals, so the criteria were sound
+   before this push and the regression was real.
+
+   Verified by ``tests/unit/sim_sensors_gnss_test.cpp`` (the datasheet-preserving
+   split, the stationary variance and its cadence invariance, the measured
+   autocorrelation against ``exp(-dt/tau)``, reported-sigma indistinguishability,
+   and disabled bit-identity), by
+   ``tests/unit/orbit_od_correlated_gnss_test.cpp`` (both statistics fixed at
+   once, bounded on both sides; and the consider pin holding the estimate at
+   exactly zero and its covariance at its prior), by ``tools/configc`` for the
+   flight/sim equality, and by the campaign itself.

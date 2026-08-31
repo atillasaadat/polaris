@@ -83,8 +83,24 @@ def _read_max_entries(header: Path = PRMDB_CONFIG_HEADER) -> int:
 MAX_ENTRIES = _read_max_entries()
 
 #: F´ scalar type name -> ``struct`` format, big-endian (F´ serialization order).
+#: F´ serializes a boolean as one byte, but **not** as 0/1: `Fw::SerializeBufferBase`
+#: writes `FW_SERIALIZE_TRUE_VALUE` / `FW_SERIALIZE_FALSE_VALUE`
+#: (`fprime/default/config/FpConstants.fpp`) and its deserializer returns
+#: `FW_DESERIALIZE_FORMAT_ERROR` for **any other byte**
+#: (`fprime/Fw/Types/Serializable.cpp`). Python's `struct` `>?` writes 0x01 for
+#: True, which that reader rejects — so a `bool` parameter emitted through
+#: `struct` loads into `Svc::PrmDb` as a record of the right size and then reads
+#: back INVALID at the component, with no error anywhere in between.
+#:
+#: These are therefore encoded by hand below rather than through `_VALUE_FORMATS`.
+#: Pinned against the F´ v4.2.2 reader, which is the rule this whole emitter
+#: follows: the byte layout is verified against the framework that parses it,
+#: never against our own helpers.
+_FW_SERIALIZE_TRUE_VALUE = 0xFF
+_FW_SERIALIZE_FALSE_VALUE = 0x00
+
 _VALUE_FORMATS: Mapping[str, str] = {
-    "bool": ">?",
+    "bool": ">B",  # value mapped through the constants above, not packed directly
     "U8": ">B",
     "I8": ">b",
     "U16": ">H",
@@ -200,6 +216,17 @@ def serialize_value(spec: ParamSpec, value: Any) -> bytes:
         )
     if isinstance(value, bool) and spec.type_name != "bool":
         raise PrmDbError(f"parameter '{spec.name}': bool given for {spec.type_name}")
+    if spec.type_name == "bool":
+        # See _FW_SERIALIZE_TRUE_VALUE: F´ accepts only its own two byte values.
+        if not isinstance(value, bool):
+            raise PrmDbError(
+                f"parameter '{spec.name}': {value!r} is not a bool. A bool "
+                f"parameter takes true or false, not 0/1 — the wire byte is "
+                f"neither of those and the distinction is not cosmetic."
+            )
+        return struct.pack(
+            fmt, _FW_SERIALIZE_TRUE_VALUE if value else _FW_SERIALIZE_FALSE_VALUE
+        )
     # NaN and +/-inf pack happily into IEEE-754 and would reach the vehicle as a
     # tuning value every consumer's finiteness check then rejects at runtime.
     # A config that says `.nan` is wrong on the ground, so fail on the ground.

@@ -858,3 +858,93 @@ fixture was found in the innovation sequence, not in review.
   force model carries no SRP term, so the SRP half meant building a term an
   order below the drag beside it. Deferring it with its magnitude is a decision;
   deferring it silently is a gap.
+
+## Sweep the tuning knob, not the whole gate (P77, analysis/od)
+
+- **A tuning trial and an acceptance run are different runs.** NEES is measured
+  on the `nominal` scenario alone, so a consistency tuning needs one scenario and
+  a short arc — ~1 minute a point — while the full campaign is twelve scenarios
+  of 24 h. Iterating on the gate is how tuning became an overnight loop; the fast
+  sweep plus one gate run at the end is the same confidence for a fraction of the
+  wall clock.
+- **But keep the run count honest even when sweeping.** The chi-square interval
+  widens as 1/sqrt(N); a three-run sweep ranks candidates and cannot accept one.
+  Push 74 already paid for this lesson once, when a three-run improvement
+  evaporated at gate size.
+- **Put the knob in the driver, not in a scratch patch.** The three
+  `--gnss-corr-*` flags cost a few lines and turned an ad-hoc printf scan into a
+  reproducible sweep anyone can rerun from the README.
+
+## An error's colour defeats a filter its magnitude does not (P77, gnss/orbit_od)
+
+- **Model the spectrum, not just the RMS.** A datasheet quotes a magnitude and
+  says nothing about correlation. Splitting that RMS into white and Gauss-Markov
+  parts — as a *fraction of the variance*, so the total is preserved — changes
+  only the colour, and the filter failed **both** consistency criteria on colour
+  alone. Adding correlated error *on top* of the datasheet would have confounded
+  "bigger" with "correlated" and proved nothing.
+- **Give the model the generous reading of what the sensor knows.** The receiver
+  reports the full total, not the white part — a formal covariance can size an
+  error but not say how much survives to the next sample. Defeating the filter
+  under the generous assumption is a stronger result than under a pessimistic one.
+
+## Check every criterion, not the one you are steering (P77, analysis/od)
+
+- **I grepped only the NEES lines while tuning, and shipped a regression.** NIS
+  was failing at every point of the sweep — including zero inflation — and the
+  sweep output would have said so. A tuning loop that reads one number cannot
+  see the cost it is paying somewhere else, and here the two criteria were
+  moving in *opposite* directions, which is the case where reading one is worst.
+- **A statistic tuned against cannot falsify the thing it tuned.** The inflation
+  factor was fitted until NEES entered its band, so any value that passed was by
+  definition "right" — unfalsifiable by construction. The replacement is a
+  *receiver property* cross-checked against the hardware entry by equality, and
+  NIS is then a genuine two-sided test of it. Prefer a parameter the world fixes
+  to one the gate fixes.
+- **Predict before you measure.** The consider block's NEES/NIS/RMS/rejection
+  numbers and its falsification conditions were written down *before* the code
+  existed. Measuring 5.548/2.938 against a predicted 6.3±0.8 / 2.9±0.30 is
+  evidence; fitting to 5.548 afterwards would have been decoration.
+- **The convenient hypothesis deserves the harshest test.** "The criterion is
+  mis-scoped" would have retired the failure at no cost, and Push 74 had set the
+  precedent for exactly that. It was refuted three ways: the interval is ~470x
+  *wider* than the true run-to-run spread (so it is loose, not tight); a white
+  receiver passes at 2.986; and NIS returns to ~2.95 as tau collapses to the fix
+  cadence. Test the escape hatch before taking it.
+
+## A trade between two consistency statistics is a modelling error, not a tuning (P77, orbit_od)
+
+- **`S = HPHᵀ + R` is a consequence of whiteness, not a definition.** It needs
+  `E[e vᵀ] = 0`, which holds because the prior error is built from past
+  measurements and white noise is independent of them. Colour the noise and
+  `C = E[e bᵀ] != 0` appears, the innovation covariance loses `HC + CᵀHᵀ`, and
+  the innovation is *smaller* than `S` by twice the bias already absorbed.
+- **So NEES and NIS move oppositely and no `R` fixes both.** Padding `R` treats
+  a correlation as a magnitude. Carrying the error as states puts `C` back where
+  it belongs — as a covariance cross-block — and both statistics become valid at
+  once. If two consistency tests disagree, look for a term the derivation
+  dropped before looking for a knob.
+- **A consider (Schmidt) block works even when the state is unobservable.** The
+  covariance still propagates and still shapes the gain, so `S` is right whether
+  or not the estimate is informative: unobservability costs the estimate, not
+  the consistency. That is what let the fix ship on a vehicle where the bias is
+  4.4x under the process-noise floor.
+- **Pin consider states on *every* update, not the one whose H sees them.** The
+  velocity measurement does not see the position bias, but `P` has a
+  bias/velocity cross-block, so an unpinned velocity update walked the estimate
+  anyway — the exact state a slow spoof would exploit.
+- **A state you refuse to estimate can be a security property.** A FOGM position
+  bias is precisely the shape to absorb a slow spoof ramp. Pinning the estimate
+  is not only an observability concession; record it as a threat-model decision
+  so nobody "improves" it later by enabling the estimator.
+
+## Refuse unknown flags in a measurement driver (P77, tests/mc)
+
+- **A silently ignored argument makes a campaign measure something it does not
+  name.** A sweep kept passing a flag that had been renamed; nothing failed, and
+  the runs quietly flew a different configuration than the command line claimed.
+  A tool whose output is *evidence* must refuse what it does not understand.
+- **And check which flag is load-bearing before accusing the data.** I called a
+  teammate's control invalid on seeing the dead flag, when a second flag in the
+  same command made the run correct regardless. The retraction cost more than
+  the check would have.

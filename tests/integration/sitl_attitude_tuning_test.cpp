@@ -101,14 +101,15 @@ TEST(SitlAttitudeTuning, CompiledParametersLetTheEstimatorAcquireAttitude) {
   EXPECT_NE(log.find("PrmFileLoadComplete"), std::string::npos)
       << "prmDb never loaded the compiled parameter file:\n"
       << log;
-  EXPECT_NE(log.find("Records: 151"), std::string::npos)
-      << "prmDb loaded a record count other than the 151 declared parameters "
+  EXPECT_NE(log.find("Records: 154"), std::string::npos)
+      << "prmDb loaded a record count other than the 154 declared parameters "
          "(Push 69 added the four wheel-speed-bias parameters; Push 72 MekfBiasTauSec; Push 71 "
          "added the six NESC TB 20-03 "
          "item (d) editing-policy and "
          "backup-ephemeris parameters: Position/VelocityMeasMode, BackupPeriodS, "
          "Sun/Mag/StMeasMode; Push 76 the four drag-scale-factor parameters: "
-         "DragScaleTauS/PsdPerS/SeedSigma/MaxDeviation):\n"
+         "DragScaleTauS/PsdPerS/SeedSigma/MaxDeviation; Push 77 the three "
+         "correlated-GNSS consider-block parameters GnssCorrFraction/TauS/BiasConsider):\n"
       << log;
 
   // 2. The estimator accepted the whole tuning set — both gates. ConfigInvalid

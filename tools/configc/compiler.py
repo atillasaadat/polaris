@@ -826,6 +826,8 @@ def _check_control_parameters(body: dict[str, Any]) -> None:
 
 
 _MAX_FIX_LATENCY_PARAM = "flight.orbitEstimator.MaxFixLatencyS"
+_GNSS_CORR_FRACTION_PARAM = "flight.orbitEstimator.GnssCorrFraction"
+_GNSS_CORR_TAU_PARAM = "flight.orbitEstimator.GnssCorrTauS"
 _MAX_MEAS_AGE_PARAM = "flight.attitudeEstimator.MaxMeasAgeSec"
 _BALLISTIC_PARAM = "flight.orbitEstimator.DragBallisticCoeffM2PerKg"
 _WHY_BALLISTIC = (
@@ -954,6 +956,74 @@ def _check_orbit_parameters(body: dict[str, Any]) -> None:
         )
 
 
+def _check_gnss_correlated_split(body: dict[str, Any]) -> None:
+    """Refuse a filter told a different error spectrum than its receiver has (§19.3).
+
+    The flight/sim pair (Push 77): the receiver entry's
+    ``correlated_position_fraction`` and ``correlated_position_tau_s`` say how
+    much of its datasheet variance is common-mode and on what timescale, and
+    ``GnssCorrFraction``/``GnssCorrTauS`` are what the orbit filter splits ``R``
+    on and sizes its bias states with. These are the **same physical quantity
+    written twice**, so this is a plain equality — unlike a tuned gain, there is
+    no engineering judgement in between for a tolerance to accommodate.
+
+    Two defects it catches, both silent. Declaring a correlated receiver and
+    leaving the filter at zero leaves the filter overconfident and nothing
+    fails loudly. Telling the filter a *larger* fraction than the receiver has
+    makes it conservative in a way the campaign reads as a passing NEES and a
+    low NIS — which looks like the very defect this push fixed.
+    """
+    sc = body["spacecraft"]
+    fsw = sc.get("fsw_parameters", {})
+    if _GNSS_CORR_FRACTION_PARAM not in fsw:
+        return
+    receivers = [u for u in sc.get("sensors", []) if u.get("kind") == "gnss"]
+    if not receivers:
+        return
+    declared: dict[str, tuple[float, float]] = {}
+    for u in receivers:
+        params = u.get("params", {})
+        # An ABSENT key is a declaration of zero, not an absence of opinion.
+        # `GnssSpec::fromParams` reads a missing `correlated_position_fraction`
+        # as 0 and builds a fully white receiver, so skipping the check for such
+        # an entry would wave through the worse of the two silent defects the
+        # docstring names: a filter told half its error is common-mode while the
+        # receiver emits none of it. R's white part is then under-sized by that
+        # fraction and P_bb is opened for a bias the truth never carries, which
+        # the campaign reads as a passing NEES and a floor-scraping NIS — the
+        # exact signature this push rejected inflation for producing.
+        declared[u["name"]] = (
+            float(params.get("correlated_position_fraction", 0.0)),
+            float(params.get("correlated_position_tau_s", 0.0)),
+        )
+    fractions = {v[0] for v in declared.values()}
+    taus = {v[1] for v in declared.values()}
+    if len(fractions) > 1 or len(taus) > 1:
+        raise ConfigError(
+            f"{_GNSS_CORR_FRACTION_PARAM} is a single value, but this vehicle's GNSS "
+            f"receivers do not share one error spectrum: "
+            f"{', '.join(f'{n} = f {f}, tau {t} s' for n, (f, t) in sorted(declared.items()))}.\n"
+            f"A mixed suite needs the split per receiver in flight; until it is, the "
+            f"flight scalar cannot describe it."
+        )
+    want_f, want_tau = next(iter(declared.values()))
+    got_f = float(fsw[_GNSS_CORR_FRACTION_PARAM])
+    got_tau = float(fsw.get(_GNSS_CORR_TAU_PARAM, 0.0))
+    if not _close(got_f, want_f, 1e-9) or not _close(got_tau, want_tau, 1e-9):
+        raise ConfigError(
+            f"{_GNSS_CORR_FRACTION_PARAM} = {got_f} / {_GNSS_CORR_TAU_PARAM} = {got_tau} s "
+            f"do not match the installed receiver's declared error spectrum "
+            f"(f = {want_f}, tau = {want_tau} s; "
+            f"{', '.join(sorted(declared))}).\n"
+            f"These are the same physical quantity written twice — how much of the "
+            f"receiver's error is common-mode, and on what timescale. The filter "
+            f"splits R on the flight value and sizes its GNSS bias states with it, "
+            f"so a disagreement makes the filter's covariance a statement about a "
+            f"receiver the vehicle does not carry. Set them equal, or set the "
+            f"receiver's correlated_position_fraction to 0 if it really is white."
+        )
+
+
 def _check_star_tracker_latency(body: dict[str, Any]) -> None:
     """Refuse a staleness window the installed star trackers cannot meet (§8.2, §9.1).
 
@@ -1029,6 +1099,7 @@ def resolve(
     _check_star_tracker_parameters(body)
     _check_control_parameters(body)
     _check_orbit_parameters(body)
+    _check_gnss_correlated_split(body)
     _check_star_tracker_latency(body)
     _check_burn_parameters(body)
     _check_catalog_pairs(body["spacecraft"])
