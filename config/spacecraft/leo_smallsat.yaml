@@ -307,7 +307,12 @@ spacecraft:
     # cannot say which part is common-mode, so the filter is told the split:
     # R takes (1-f) of the reported variance and three GNSS bias states take f
     # as their prior. GnssCorrFraction MUST EQUAL the receiver entry's
-    # correlated_position_fraction; configc enforces it by plain equality.
+    # correlated_position_fraction; configc enforces it by plain equality, and
+    # additionally bounds both to [0, 1) with a positive tau whenever f > 0.
+    # Equality alone was not enough: 1.5 against 1.5 agrees perfectly and is
+    # still nonsense, and it used to compile — the sim clamped it while the
+    # flight filter refused to configure, which reaches a reader as "no orbit
+    # solution, no magnetic reference, no attitude" three layers away.
     #
     # WHY A FRACTION AND NOT AN INFLATION. The first attempt at this inflated R
     # by a factor tuned until campaign NEES landed in its band. That fixed NEES

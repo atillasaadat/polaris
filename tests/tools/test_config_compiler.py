@@ -1324,3 +1324,114 @@ def test_thrust_axis_is_emitted_for_the_sim(tmp_path):
     thr = [u for u in body["spacecraft"]["actuators"] if u["kind"] == "thruster"]
     assert len(thr) == 1
     assert list(thr[0]["thrust_axis"]) == [1.0, 0.0, 0.0]
+
+
+# --- The correlated-GNSS split (Push 77), bounded (Push 78) -----------------
+#
+# The Push 77 check enforced only that the flight scalar equals the receiver's
+# declared value. Equality says nothing about whether either is a *usable*
+# fraction: 1.5 against 1.5 agrees perfectly and is nonsense. These pin the
+# range as well as the agreement, and they pin the equality direction too,
+# which shipped verified only by hand.
+
+_CORR_FRACTION = "flight.orbitEstimator.GnssCorrFraction"
+_CORR_TAU = "flight.orbitEstimator.GnssCorrTauS"
+
+
+def _receiver_library(fraction=None, tau_s=None):
+    """The real library with the installed receiver's split overridden."""
+    library = load_hardware_library(_HARDWARE)
+    model = library["NOVATEL-OEM7600"]
+    params = dict(model.params)
+    if fraction is not None:
+        params["correlated_position_fraction"] = fraction
+    if tau_s is not None:
+        params["correlated_position_tau_s"] = tau_s
+    library["NOVATEL-OEM7600"] = model.model_copy(update={"params": params})
+    return library
+
+
+def _resolve_with(library, tmp_path, name, mutate=None):
+    config = yaml.safe_load(_TEMPLATE.read_text(encoding="utf-8"))
+    if mutate is not None:
+        mutate(config)
+    path = tmp_path / f"{name}.yaml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    return resolve(load_config(path), library)
+
+
+@pytest.mark.parametrize("bad_fraction", [1.0, 1.5, -0.1])
+def test_correlated_fraction_outside_the_unit_interval_is_refused(
+    tmp_path, bad_fraction
+):
+    # A fraction of the *variance*, so [0, 1). At exactly 1 the white part of R
+    # is identically zero — a receiver with no independent noise at all — which
+    # the flight filter refuses at configure(). The sim used to clamp instead,
+    # and that disagreement is the whole defect: a clamped sim flew a receiver
+    # the filter would not configure for, surfacing three layers away as "no
+    # orbit solution, no magnetic reference, no attitude".
+    def mutate(config):
+        config["spacecraft"]["fsw_parameters"][_CORR_FRACTION] = bad_fraction
+
+    library = _receiver_library(fraction=bad_fraction)
+    with pytest.raises(ConfigError) as exc:
+        _resolve_with(library, tmp_path, "corr_fraction_range", mutate)
+    message = str(exc.value)
+    assert "gps_a" in message
+    assert "[0, 1)" in message
+
+
+def test_correlated_fraction_without_a_timescale_is_refused(tmp_path):
+    # The same divergence in the other variable: the sim's FOGM returns zero for
+    # a non-positive tau, so it would emit a white receiver while the entry
+    # claims a correlated one, and the flight filter (tau >= 10*max_step_s)
+    # would refuse to configure at all.
+    def mutate(config):
+        config["spacecraft"]["fsw_parameters"][_CORR_TAU] = 0.0
+
+    library = _receiver_library(tau_s=0.0)
+    with pytest.raises(ConfigError) as exc:
+        _resolve_with(library, tmp_path, "corr_tau_missing", mutate)
+    message = str(exc.value)
+    assert "gps_a" in message
+    assert "correlated_position_tau_s" in message
+
+
+def test_a_zero_fraction_needs_no_timescale(tmp_path):
+    # A white receiver is a legitimate configuration and must stay compilable:
+    # the timescale is only meaningful once a correlated share is declared.
+    def mutate(config):
+        config["spacecraft"]["fsw_parameters"][_CORR_FRACTION] = 0.0
+        config["spacecraft"]["fsw_parameters"][_CORR_TAU] = 0.0
+
+    library = _receiver_library(fraction=0.0, tau_s=0.0)
+    _resolve_with(library, tmp_path, "corr_white", mutate)  # must not raise
+
+
+def test_receiver_range_is_checked_without_the_flight_parameter(tmp_path):
+    # The range is wrong on the receiver's own terms, not merely inconsistent
+    # with something: the *sim* reads these keys straight out of the entry. So
+    # it must not be gated on the vehicle carrying the flight parameter, which
+    # is exactly what the equality check is gated on.
+    def mutate(config):
+        config["spacecraft"]["fsw_parameters"].pop(_CORR_FRACTION, None)
+        config["spacecraft"]["fsw_parameters"].pop(_CORR_TAU, None)
+
+    library = _receiver_library(fraction=1.5)
+    with pytest.raises(ConfigError) as exc:
+        _resolve_with(library, tmp_path, "corr_range_no_flight_param", mutate)
+    assert "[0, 1)" in str(exc.value)
+
+
+def test_flight_fraction_disagreeing_with_the_receiver_is_refused(tmp_path):
+    # The Push 77 check itself, which shipped with no automated test. Both
+    # values are individually in range, so only the equality can catch this.
+    def mutate(config):
+        config["spacecraft"]["fsw_parameters"][_CORR_FRACTION] = 0.25
+
+    library = _receiver_library(fraction=0.5)
+    with pytest.raises(ConfigError) as exc:
+        _resolve_with(library, tmp_path, "corr_fraction_mismatch", mutate)
+    message = str(exc.value)
+    assert "gps_a" in message
+    assert "0.25" in message

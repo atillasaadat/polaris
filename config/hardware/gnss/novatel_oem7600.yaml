@@ -44,7 +44,13 @@ params:
   # the onboard filter is unprepared for, and what the filter's three GNSS
   # bias states model (flight.orbitEstimator.GnssCorrFraction, which configc
   # requires to EQUAL the fraction below).
-  correlated_position_fraction: 0.5   # allocation, not datasheet
+  #
+  # Range is [0, 1), enforced by configc and refused by both the sim model and
+  # the flight filter: at 1 the receiver has no independent noise left at all,
+  # R's white part is identically zero and S is singular in the limit. A
+  # positive fraction also requires a positive tau — a correlated error needs
+  # the timescale it decorrelates over.
+  correlated_position_fraction: 0.5   # allocation, not datasheet; [0, 1)
   correlated_position_tau_s: 600.0    # allocation: ~10 min, SISRE-dominated
 
   # --- Velocity and time (datasheet) --------------------------------------------

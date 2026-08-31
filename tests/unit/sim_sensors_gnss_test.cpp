@@ -13,6 +13,7 @@
 
 #include <cmath>
 #include <Eigen/Core>
+#include <stdexcept>
 #include <vector>
 
 #include "constants/constants.hpp"
@@ -551,11 +552,17 @@ TEST(GnssSpec, SplitsTheDatasheetTotalAndDefaultsTheCorrelatedPartOff) {
   EXPECT_NEAR(corr.position_reported_sigma_v_m, total_h * 1.5, 1e-12);
   EXPECT_EQ(corr.position_corr_tau_s, 300.0);
 
-  // A fully correlated receiver has no white part left.
-  const sensors::GnssSpec all = correlatedSpec(1.2, 300.0, 1.0);
-  EXPECT_NEAR(all.position_sigma_h_m, 0.0, 1e-12);
-  EXPECT_NEAR(all.position_corr_sigma_h_m, total_h, 1e-12);
-  EXPECT_NEAR(all.position_reported_sigma_h_m, total_h, 1e-12);
+  // Approaching a fully correlated receiver, the white part goes to zero and
+  // the correlated part carries the whole datasheet total. The limit itself is
+  // **refused** rather than modelled (Push 78): at f = 1 there is no
+  // independent noise left, R's white part is identically zero, and the flight
+  // filter will not configure — so a sim that accepted it would model a
+  // receiver the vehicle cannot fly.
+  const sensors::GnssSpec nearly = correlatedSpec(1.2, 300.0, 0.99);
+  EXPECT_NEAR(nearly.position_sigma_h_m, total_h * std::sqrt(0.01), 1e-12);
+  EXPECT_NEAR(nearly.position_corr_sigma_h_m, total_h * std::sqrt(0.99), 1e-12);
+  EXPECT_NEAR(nearly.position_reported_sigma_h_m, total_h, 1e-12);
+  EXPECT_THROW(correlatedSpec(1.2, 300.0, 1.0), std::invalid_argument);
 }
 
 /// Variances add in quadrature, and the process is stationary from the first fix.
@@ -619,9 +626,13 @@ TEST(Gnss, CorrelatedErrorDecorrelatesOnItsConfiguredTimescale) {
   // autocorrelation is the correlated process's own, not a diluted one.
   const double tau = 300.0;
   const double cadence = 30.0;
-  // Fully correlated (fraction 1), so the measured autocorrelation is the
-  // process's own rather than one diluted by a white part.
-  sensors::Gnss gnss(correlatedSpec(1.2, tau, /*fraction=*/1.0), kSeed, kStream);
+  // Almost fully correlated, so the measured autocorrelation is essentially the
+  // process's own. Not *exactly* 1: that is a receiver with no independent
+  // noise at all, which the model refuses (Push 78) because the flight filter
+  // refuses it too. The residual 1 % of variance that stays white dilutes the
+  // lag-1 autocorrelation by the same 1 % — 0.99 * 0.9048 = 0.896 — which is
+  // named here rather than absorbed silently by the tolerance below.
+  sensors::Gnss gnss(correlatedSpec(1.2, tau, /*fraction=*/0.99), kSeed, kStream);
   const std::vector<Eigen::Vector3d> e = collectErrors(gnss, 8000, cadence);
   ASSERT_GT(e.size(), 7000u);
 
@@ -651,7 +662,10 @@ TEST(Gnss, CorrelatedErrorVarianceIsInvariantToFixCadence) {
   double rms[2] = {0.0, 0.0};
   const double cadences[2] = {1.0, 60.0};
   for (int k = 0; k < 2; ++k) {
-    sensors::Gnss gnss(correlatedSpec(1.2, 300.0, /*fraction=*/1.0), kSeed, kStream);
+    // 0.99 rather than 1.0 for the reason the refusal test states. The expected
+    // total is unaffected either way: the split preserves the datasheet
+    // variance exactly, so white and correlated always sum back to sigma.
+    sensors::Gnss gnss(correlatedSpec(1.2, 300.0, /*fraction=*/0.99), kSeed, kStream);
     const std::vector<Eigen::Vector3d> e = collectErrors(gnss, 20000, cadences[k]);
     double s = 0.0;
     for (const Eigen::Vector3d& v : e) {
@@ -706,5 +720,47 @@ TEST(Gnss, DisabledCorrelatedTermLeavesTheWhiteStreamBitIdentical) {
     const sensors::GnssMeasurement b = off.sample(epochPlus(i * 1.0), inputOnXAxis());
     ASSERT_EQ(a.position_m.eigen(), b.position_m.eigen()) << "fix " << i;
     ASSERT_EQ(a.velocity_m_s.eigen(), b.velocity_m_s.eigen()) << "fix " << i;
+  }
+}
+
+// --- The correlated split is bounded, not clamped (Push 78) ----------------
+
+TEST(GnssSpec, RefusesACorrelatedFractionOutsideTheUnitInterval) {
+  // The fraction is of the *variance*, so the usable range is [0, 1). The
+  // flight filter refuses the same values at configure(); this model used to
+  // clamp with std::min(1.0, f) instead, and that asymmetry was the defect —
+  // a clamped sim flies a receiver the filter will not configure for, which
+  // surfaces three layers away as "no orbit solution, no magnetic reference,
+  // no attitude" rather than as a bad number in a config file.
+  EXPECT_THROW(correlatedSpec(1.2, 300.0, 1.0), std::invalid_argument);
+  EXPECT_THROW(correlatedSpec(1.2, 300.0, 1.5), std::invalid_argument);
+  EXPECT_THROW(correlatedSpec(1.2, 300.0, -0.1), std::invalid_argument);
+}
+
+TEST(GnssSpec, RefusesACorrelatedFractionWithNoTimescale) {
+  // advanceCorrelatedError returns zero for a non-positive tau, so accepting
+  // this would emit a white receiver from an entry that claims a correlated
+  // one — the same divergence as the clamp, in the other variable.
+  EXPECT_THROW(correlatedSpec(1.2, 0.0, 0.5), std::invalid_argument);
+  EXPECT_THROW(correlatedSpec(1.2, -1.0, 0.5), std::invalid_argument);
+}
+
+TEST(GnssSpec, AWhiteReceiverNeedsNoTimescale) {
+  // A zero fraction is a legitimate, fully white receiver and must stay
+  // constructible: the timescale only means anything once a share is declared.
+  const auto s = correlatedSpec(1.2, 0.0, 0.0);
+  EXPECT_DOUBLE_EQ(s.position_corr_sigma_h_m, 0.0);
+  EXPECT_NEAR(s.position_reported_sigma_h_m, s.position_sigma_h_m, 1e-12);
+}
+
+TEST(GnssSpec, TheReportedSigmaIsTheDatasheetTotalForEveryFractionInRange) {
+  // The property the whole split rests on: only the spectrum changes, never the
+  // accuracy. Checked across the range rather than at the flown value, so a
+  // future re-derivation of the split cannot quietly change what the part is.
+  const auto white = correlatedSpec(1.2, 300.0, 0.0);
+  for (const double f : {0.0, 0.25, 0.5, 0.9, 0.99}) {
+    const auto s = correlatedSpec(1.2, 300.0, f);
+    EXPECT_NEAR(s.position_reported_sigma_h_m, white.position_sigma_h_m, 1e-12) << "f=" << f;
+    EXPECT_NEAR(s.position_reported_sigma_v_m, white.position_sigma_v_m, 1e-12) << "f=" << f;
   }
 }
