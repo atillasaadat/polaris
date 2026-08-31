@@ -978,18 +978,24 @@ def _check_gnss_correlated_split(body: dict[str, Any]) -> None:
     if _GNSS_CORR_FRACTION_PARAM not in fsw:
         return
     receivers = [u for u in sc.get("sensors", []) if u.get("kind") == "gnss"]
+    if not receivers:
+        return
     declared: dict[str, tuple[float, float]] = {}
     for u in receivers:
         params = u.get("params", {})
-        frac = params.get("correlated_position_fraction")
-        if frac is None:
-            continue
+        # An ABSENT key is a declaration of zero, not an absence of opinion.
+        # `GnssSpec::fromParams` reads a missing `correlated_position_fraction`
+        # as 0 and builds a fully white receiver, so skipping the check for such
+        # an entry would wave through the worse of the two silent defects the
+        # docstring names: a filter told half its error is common-mode while the
+        # receiver emits none of it. R's white part is then under-sized by that
+        # fraction and P_bb is opened for a bias the truth never carries, which
+        # the campaign reads as a passing NEES and a floor-scraping NIS — the
+        # exact signature this push rejected inflation for producing.
         declared[u["name"]] = (
-            float(frac),
+            float(params.get("correlated_position_fraction", 0.0)),
             float(params.get("correlated_position_tau_s", 0.0)),
         )
-    if not declared:
-        return
     fractions = {v[0] for v in declared.values()}
     taus = {v[1] for v in declared.values()}
     if len(fractions) > 1 or len(taus) > 1:

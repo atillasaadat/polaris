@@ -90,6 +90,17 @@ scenario::SpacecraftConfig twoReceiverSuite() {
   sc.sensors.push_back(unit("gps_b", "NOVATEL-OEM7600", "gnss",
                             {{"horizontal_position_rms_m", 1.2},
                              {"velocity_accuracy_m_s_rms", 0.03},
+                             // The flown receiver's error spectrum (Push 77). These MUST
+                             // track config/hardware/gnss/novatel_oem7600.yaml: the FSW's
+                             // GnssCorrFraction comes from the vehicle config through
+                             // PrmDb, so a fixture without them gives the filter a WHITE
+                             // receiver while telling it half the variance is correlated —
+                             // R's white part is then halved and the NIS gate refuses
+                             // honest fixes at ~19x its design false-alarm rate. configc
+                             // cross-checks the pair in the flown config; it cannot see a
+                             // hardcoded test fixture, so this comment is the guard.
+                             {"correlated_position_fraction", 0.5},
+                             {"correlated_position_tau_s", 600.0},
                              {"max_rate_hz", 10.0}}));
   return sc;
 }

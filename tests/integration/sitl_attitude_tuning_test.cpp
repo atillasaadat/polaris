@@ -108,7 +108,7 @@ TEST(SitlAttitudeTuning, CompiledParametersLetTheEstimatorAcquireAttitude) {
          "item (d) editing-policy and "
          "backup-ephemeris parameters: Position/VelocityMeasMode, BackupPeriodS, "
          "Sun/Mag/StMeasMode; Push 76 the four drag-scale-factor parameters: "
-         "DragScaleTauS/PsdPerS/SeedSigma/MaxDeviation; Push 77 the two "
+         "DragScaleTauS/PsdPerS/SeedSigma/MaxDeviation; Push 77 the three "
          "correlated-GNSS consider-block parameters GnssCorrFraction/TauS/BiasConsider):\n"
       << log;
 

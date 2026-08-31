@@ -291,7 +291,7 @@ module flight {
     @ pinned estimate is a state a slow spoof cannot walk (§9.2).
     param GnssBiasConsider: bool
 
-    @ Correlation time of the drag scale factor [s]    @ Correlation time of the drag scale factor [s] (design doc §8.5 tier 3,
+    @ Correlation time of the drag scale factor [s] (design doc §8.5 tier 3,
     @ orbit half; TP §2.2.3.4; Push 76). The scale is a dimensionless
     @ multiplier on the onboard exponential-atmosphere drag term, estimated as
     @ a first-order Gauss-Markov process about its nominal 1. Must be 0 or

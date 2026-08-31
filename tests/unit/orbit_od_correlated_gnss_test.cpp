@@ -1,6 +1,6 @@
 /// @file
-/// @brief The orbit filter against a **correlated** GNSS error, and the `R`
-/// repair that makes it honest (§8.3/§6.2; Push 77; REQ-ODP-014).
+/// @brief The orbit filter against a **correlated** GNSS error, and the consider
+/// block that survives it (§8.3/§6.2; Push 77; REQ-ODP-014).
 ///
 /// Every OD number this project has measured was taken against a receiver whose
 /// position error is white. Real single-point GNSS error is not: residual
@@ -11,10 +11,15 @@
 /// its covariance below the error it actually has and then rejects honest fixes
 /// on its own NIS gate.
 ///
-/// This file measures that, and measures the repair: inflating `R` by the
-/// correlated variance the receiver cannot report. The sim-side model is tested
-/// in `tests/unit/sim_sensors_gnss_test.cpp`; the error is regenerated here so
-/// the filter's behaviour is measured against a source this file fully controls.
+/// This file measures that, and measures the repair — which is **not** an
+/// inflated `R`. Padding the measurement covariance was the first attempt and is
+/// refuted here: it buys state consistency (NEES) by destroying innovation
+/// consistency (NIS), because per-update inflation cannot represent the
+/// correlation between the prior error and the measurement error. What ships is
+/// three GNSS bias states carried as a consider (Schmidt) block, which fixes
+/// both at once. The sim-side model is tested in
+/// `tests/unit/sim_sensors_gnss_test.cpp`; the error is regenerated here so the
+/// filter's behaviour is measured against a source this file fully controls.
 
 #include <gtest/gtest.h>
 

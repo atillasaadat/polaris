@@ -155,16 +155,6 @@ constexpr double kBallisticCoeff = 2.2 * 0.06 / 12.0;
 constexpr double kInitialPosSigmaM = 5.0e3;
 constexpr double kInitialVelSigmaMps = 5.0;
 
-/// Receiver spec keys, mirroring `config/hardware/gnss/novatel_oem7600.yaml`.
-///
-/// **Latency is the one value not taken from the catalog**, because it is only
-/// meaningful relative to the poll cadence and the cadence is per-scenario. The
-/// catalog carries `fix_latency_s: 0.05`; the delay-line model delivers the
-/// newest solution *at least* one latency old, so a scenario that polls slower
-/// than the latency gets a fix a whole poll old rather than 50 ms old. Flying
-/// the datasheet value at the long arcs' 10 s cadence therefore models a 10 s
-/// latency — measured, a constant 76.7 km of along-track offset that the filter
-/// tracks perfectly, because it is consistent and simply not the trajectory the
 /// The reference vehicle's correlated-GNSS allocation and the filter tuning that
 /// matches it (Push 77). Kept beside the receiver fixture so the pair cannot
 /// drift apart in this file the way a flight/sim parameter pair can in config.
@@ -193,6 +183,16 @@ struct TuningOverride {
 
 TuningOverride g_override;
 
+/// Receiver spec keys, mirroring `config/hardware/gnss/novatel_oem7600.yaml`.
+///
+/// **Latency is the one value not taken from the catalog**, because it is only
+/// meaningful relative to the poll cadence and the cadence is per-scenario. The
+/// catalog carries `fix_latency_s: 0.05`; the delay-line model delivers the
+/// newest solution *at least* one latency old, so a scenario that polls slower
+/// than the latency gets a fix a whole poll old rather than 50 ms old. Flying
+/// the datasheet value at the long arcs' 10 s cadence therefore models a 10 s
+/// latency — measured, a constant 76.7 km of along-track offset that the filter
+/// tracks perfectly, because it is consistent and simply not the trajectory the
 /// record compares against. So the long arcs pass zero and `latency_fast` polls
 /// at 50 Hz with the real value. See `GnssSpec::fix_latency_s`.
 psen::GnssSpec receiverSpec(double fix_latency_s) {
@@ -807,7 +807,27 @@ int main(int argc, char** argv) {
       // different configuration than the command line said. A campaign that
       // measures the wrong thing while looking right is worse than one that
       // does not run.
-      std::fprintf(stderr, "orbit_od_mc: unknown argument '%s' (see --help)\n", a.c_str());
+      //
+      // A flag the driver *does* know, given without its operand, falls here
+      // too — the branches that consume an operand are guarded on there being
+      // one. Say which of the two it is, or the message sends the reader
+      // hunting for a rename that never happened.
+      static const char* const kNeedsValue[] = {
+          "--out",      "--scenario",           "--q-rtn",           "--first-run",
+          "--runs",     "--duration-s",         "--dmc-tau-s",       "--dmc-psd",
+          "--qa-scale", "--gnss-corr-fraction", "--gnss-corr-tau-s", "--gnss-bias-consider"};
+      bool known = false;
+      for (const char* flag : kNeedsValue) {
+        if (a == flag) {
+          known = true;
+          break;
+        }
+      }
+      if (known) {
+        std::fprintf(stderr, "orbit_od_mc: flag '%s' requires a value (see --help)\n", a.c_str());
+      } else {
+        std::fprintf(stderr, "orbit_od_mc: unknown argument '%s' (see --help)\n", a.c_str());
+      }
       return 2;
     } else {
       std::printf(
