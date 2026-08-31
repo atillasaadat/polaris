@@ -948,3 +948,28 @@ fixture was found in the innovation sequence, not in review.
   teammate's control invalid on seeing the dead flag, when a second flag in the
   same command made the run correct regardless. The retraction cost more than
   the check would have.
+
+## Agreement is not validity: bound a shared quantity, not just its equality (P78, configc/sim)
+
+- **A cross-check that compares two copies cannot see that both are nonsense.**
+  Push 77 made `GnssCorrFraction` and the receiver's
+  `correlated_position_fraction` a plain equality, which is right and was not
+  enough: `1.5` against `1.5` agrees perfectly, compiled clean, and produced a
+  vehicle whose sim flew a receiver with zero white noise while the flight
+  filter refused to configure. A flight/sim pair needs **both** halves — the two
+  agree, *and* the agreed value is inside the range each side can fly.
+- **Never let the two sides disagree on how to reject a bad value.** The sim
+  clamped (`std::min(1.0, f)`) where the flight filter refused. The clamp is
+  what turned a one-character config typo into the silent cascade — "no orbit
+  solution, no magnetic reference, no attitude" — three layers from its cause.
+  Defensive coercion in one implementation of a pair is not defensive; it hides
+  the disagreement the pair exists to expose.
+- **Validate a config value where the config is compiled, not only where it is
+  consumed.** The range check belongs in `configc`, which both sides pass
+  through, so the failure names the file and the value instead of surfacing as
+  behaviour. Consumers still refuse it, but as a backstop for hand-built
+  fixtures — which is exactly how P77's SITL rows went wrong.
+- **A checker shipped without tests gets verified once, by hand, and then
+  never.** P77's split check had no automated test at all; it was confirmed
+  interactively and left. This push added the range cases *and* the equality
+  case it should have had.

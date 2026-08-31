@@ -1,6 +1,8 @@
 #include "sensors/gnss.hpp"
 
 #include <cmath>
+#include <stdexcept>
+#include <string>
 
 namespace polaris::sim::sensors {
 namespace {
@@ -63,15 +65,45 @@ GnssSpec GnssSpec::fromParams(const std::map<std::string, double>& p) {
   //
   // An absent or zero fraction leaves the term off and the model exactly as it
   // was: an entry that has not been characterised does not silently acquire one.
+  //
+  // Refused rather than clamped outside [0, 1), and that asymmetry was the
+  // defect: the flight filter refuses the same value at `configure()`
+  // (`OrbitOdConfig::isValid`), so a sim that quietly clamped disagreed with it
+  // on exactly the inputs a typo produces. The vehicle then flew a receiver with
+  // no independent noise at all while the filter refused to configure, which
+  // surfaces three layers away as "no orbit solution, no magnetic reference, no
+  // attitude" — the silent-cascade class this model must not re-enter. At f = 1
+  // the white part of R is identically zero and S is singular in the limit,
+  // which is why the bound is half-open on the right.
   const double f = get(p, "correlated_position_fraction");
+  if (!(f >= 0.0) || !(f < 1.0)) {
+    throw std::invalid_argument(
+        "GnssSpec::fromParams: correlated_position_fraction = " + std::to_string(f) +
+        " is outside [0, 1). It is the fraction of the datasheet variance that is "
+        "common-mode; at 1 the receiver has no independent noise at all. The flight "
+        "filter refuses the same value, so clamping here would hide the disagreement "
+        "rather than fix it.");
+  }
   if (f > 0.0) {
-    const double frac = std::min(1.0, f);
+    const double frac = f;
     s.position_corr_sigma_h_m = s.position_sigma_h_m * std::sqrt(frac);
     s.position_corr_sigma_v_m = s.position_sigma_v_m * std::sqrt(frac);
     s.position_sigma_h_m *= std::sqrt(1.0 - frac);
     s.position_sigma_v_m *= std::sqrt(1.0 - frac);
   }
   s.position_corr_tau_s = get(p, "correlated_position_tau_s");
+  // A declared correlated fraction with no timescale is the same divergence in
+  // the other variable: `advanceCorrelatedError` returns zero for a non-positive
+  // tau, so the sim would fly a white receiver while the entry claims a
+  // correlated one, and the flight filter (which demands tau >= 10*max_step_s)
+  // would refuse to configure at all.
+  if (f > 0.0 && !(s.position_corr_tau_s > 0.0)) {
+    throw std::invalid_argument(
+        "GnssSpec::fromParams: correlated_position_fraction = " + std::to_string(f) +
+        " declares a common-mode error, but correlated_position_tau_s = " +
+        std::to_string(s.position_corr_tau_s) +
+        " is not positive. A correlated error needs the timescale it decorrelates over.");
+  }
   // What the receiver reports: the datasheet total, i.e. both parts recombined.
   // Identical to the white sigmas when the term is off.
   s.position_reported_sigma_h_m = std::hypot(s.position_sigma_h_m, s.position_corr_sigma_h_m);

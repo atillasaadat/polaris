@@ -975,8 +975,6 @@ def _check_gnss_correlated_split(body: dict[str, Any]) -> None:
     """
     sc = body["spacecraft"]
     fsw = sc.get("fsw_parameters", {})
-    if _GNSS_CORR_FRACTION_PARAM not in fsw:
-        return
     receivers = [u for u in sc.get("sensors", []) if u.get("kind") == "gnss"]
     if not receivers:
         return
@@ -996,6 +994,34 @@ def _check_gnss_correlated_split(body: dict[str, Any]) -> None:
             float(params.get("correlated_position_fraction", 0.0)),
             float(params.get("correlated_position_tau_s", 0.0)),
         )
+    # Range first, and independently of whether the vehicle carries the flight
+    # parameter at all: the *sim* reads these keys straight out of the receiver
+    # entry, so an out-of-range value is wrong on its own terms and not merely
+    # inconsistent with something. The equality check below cannot see it —
+    # 1.5 against 1.5 agrees perfectly and is still nonsense.
+    for name, (f, tau) in sorted(declared.items()):
+        if not (0.0 <= f < 1.0):
+            raise ConfigError(
+                f"{name}: correlated_position_fraction = {f} is outside [0, 1).\n"
+                f"It is the fraction of the datasheet *variance* that is common-mode, "
+                f"so the split is sigma_white = sigma*sqrt(1-f), sigma_corr = "
+                f"sigma*sqrt(f). At f = 1 the receiver has no independent noise left "
+                f"at all — R's white part is identically zero and S is singular in the "
+                f"limit — which is why the flight filter refuses it at configure() "
+                f"rather than clamping, and why the bound is half-open on the right."
+            )
+        if f > 0.0 and not tau > 0.0:
+            raise ConfigError(
+                f"{name}: correlated_position_fraction = {f} declares a common-mode "
+                f"error, but correlated_position_tau_s = {tau} is not positive.\n"
+                f"A correlated error needs the timescale it decorrelates over. With no "
+                f"timescale the sim emits a white receiver while the entry claims a "
+                f"correlated one, and the flight filter refuses to configure at all."
+            )
+
+    if _GNSS_CORR_FRACTION_PARAM not in fsw:
+        return
+
     fractions = {v[0] for v in declared.values()}
     taus = {v[1] for v in declared.values()}
     if len(fractions) > 1 or len(taus) > 1:
