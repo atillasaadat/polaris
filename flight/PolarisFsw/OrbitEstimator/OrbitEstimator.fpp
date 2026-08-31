@@ -265,29 +265,33 @@ module flight {
     @ footnote), one per axis; ignored when DmcTauS = 0. Each >= 0.
     param DmcPsdRtnM2PerS5: Vec3F64
 
-    @ Per-axis 1-sigma [m] of the receiver's COMMON-MODE horizontal position
-    @ error, added in quadrature to the sigmas each fix reports when the
-    @ measurement covariance is built (design doc §8.3/§6.2; Push 77). A
-    @ receiver's formal accuracy is derived from its own residuals and geometry,
-    @ so it can say how big its error is but not how much of it will still be
-    @ there on the next fix; a filter that averages successive fixes therefore
-    @ drives its covariance below the error it has and rejects honest fixes.
+    @ Fraction of the GNSS receiver's reported position VARIANCE that is
+    @ common-mode (design doc §8.3/§6.2; Push 77). The receiver reports a total
+    @ sigma and cannot say which part of its error is shared across the
+    @ satellites it tracks, so the split is configured here: R takes (1-f) of
+    @ the reported variance and the three GNSS bias states take f as their
+    @ prior. The total is preserved for any f, which is why this is a fraction
+    @ and not a sigma — an absolute correlated sigma subtracted from the
+    @ reported one can go negative.
     @
-    @ NOT simply the receiver's correlated sigma: the tuned value is ~4x it,
-    @ because per-update inflation cannot reproduce time correlation and must be
-    @ sized for the error's PERSISTENCE across the fixes the filter averages, not
-    @ for its size. Measured on the reference vehicle (12-run nominal campaign,
-    @ chi-square interval [4.202, 8.113]): NEES 20.8 at 0x, 8.07 at 3x — passing
-    @ by 0.6 % — and 6.33 at 4x. Retune per vehicle against NEES; the fast loop
-    @ is polaris_orbit_od_mc --scenario nominal --runs 12 --duration-s 11000.
-    @ Zero trusts the reported sigmas whole, which is the pre-Push-77 filter.
-    @ Must be >= 0.
-    param GnssCorrSigmaHM: F64
+    @ Must EQUAL the receiver entry's correlated_position_fraction; configc
+    @ cross-checks it by plain equality. 0 disables the block and is the
+    @ pre-Push-77 filter. Must be in [0, 1).
+    param GnssCorrFraction: F64
 
-    @ Vertical counterpart of GnssCorrSigmaHM [m]. Must be >= 0.
-    param GnssCorrSigmaVM: F64
+    @ Correlation time of the GNSS bias states [s]. Must equal the receiver
+    @ entry's correlated_position_tau_s, and be 0 or >= 10 x MaxStepS.
+    param GnssCorrTauS: F64
 
-    @ Correlation time of the drag scale factor [s] (design doc §8.5 tier 3,
+    @ Run the GNSS bias states as a CONSIDER (Schmidt) block: their covariance
+    @ propagates and shapes the Kalman gain, but the estimate stays pinned at
+    @ zero. True is the flown value, for three independent reasons: the bias is
+    @ not resolvable against the flown process noise; consistency does not
+    @ depend on resolving it, since the cross-covariance still reaches S; and a
+    @ pinned estimate is a state a slow spoof cannot walk (§9.2).
+    param GnssBiasConsider: bool
+
+    @ Correlation time of the drag scale factor [s]    @ Correlation time of the drag scale factor [s] (design doc §8.5 tier 3,
     @ orbit half; TP §2.2.3.4; Push 76). The scale is a dimensionless
     @ multiplier on the onboard exponential-atmosphere drag term, estimated as
     @ a first-order Gauss-Markov process about its nominal 1. Must be 0 or
@@ -400,6 +404,11 @@ module flight {
 
     @ sqrt(trace) of the DMC acceleration covariance [m/s^2]; 0 when off.
     telemetry DmcSigmaMps2: F64
+
+    @ sqrt(trace) of the GNSS bias covariance [m] (Push 77). In consider mode
+    @ this sits at its prior by construction; a value that has MOVED is the
+    @ signature of the consider switch failing to pin the gain.
+    telemetry GnssBiasSigmaM: F64
 
     @ Estimated drag scale factor [-] (§8.5 tier 3, orbit half; Push 76).
     @ Exactly 1 when the state is off or drag is disabled.

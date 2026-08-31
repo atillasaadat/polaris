@@ -73,7 +73,7 @@ bool OrbitOdConfig::isValid() const {
       std::isfinite(drag_ref_altitude_m) && std::isfinite(drag_scale_height_m) &&
       std::isfinite(accel_psd_m2_per_s3) && accel_psd_rtn_m2_per_s3.allFinite() &&
       std::isfinite(dmc_tau_s) && dmc_psd_rtn_m2_per_s5.allFinite() &&
-      std::isfinite(gnss_corr_sigma_h_m) && std::isfinite(gnss_corr_sigma_v_m) &&
+      std::isfinite(gnss_corr_fraction) && std::isfinite(gnss_corr_tau_s) &&
       std::isfinite(drag_scale_tau_s) && std::isfinite(drag_scale_psd_per_s) &&
       std::isfinite(drag_scale_seed_sigma) && std::isfinite(drag_scale_max_deviation) &&
       std::isfinite(position_nis_gate) && std::isfinite(velocity_nis_gate) &&
@@ -153,9 +153,20 @@ bool OrbitOdConfig::isValid() const {
   if (dmc_tau_s > 0.0 && dmc_tau_s < 10.0 * max_step_s) {
     return false;
   }
-  // The correlated-GNSS R inflation (Push 77). Zero is off; negative is not a
-  // smaller error, it is a covariance being *shrunk* by configuration.
-  if (gnss_corr_sigma_h_m < 0.0 || gnss_corr_sigma_v_m < 0.0) {
+  // The correlated-GNSS consider block (Push 77). Zero is off. A fraction at or
+  // above 1 would leave the *white* part of R at zero — a receiver with no
+  // independent noise at all, which no measurement model should accept, and
+  // which would make S singular in the limit.
+  if (gnss_corr_fraction < 0.0 || !(gnss_corr_fraction < 1.0)) {
+    return false;
+  }
+  if (gnss_corr_fraction > 0.0) {
+    // Same ten-sub-step quadrature limit the DMC and drag-scale kernels carry,
+    // for the same reason: it is the same discrete-noise form.
+    if (!(gnss_corr_tau_s >= 10.0 * max_step_s)) {
+      return false;
+    }
+  } else if (gnss_corr_tau_s < 0.0) {
     return false;
   }
   // The drag scale factor (Push 76). Zero PSD is off; positive demands the rest
@@ -373,6 +384,8 @@ void OrbitOd::dropSolution() {
   // the atmosphere, and "nothing" for a multiplier is unity. The scale the old
   // arc had learned belonged to that arc.
   drag_scale_ = 1.0;
+  gnss_bias_.setZero();
+  gnss_bias_sigma_.setZero();
   p_.setZero();
   last_epoch_ = time::Tai{};
   age_s_ = 0.0;
@@ -441,6 +454,12 @@ OrbitOdRefusal OrbitOd::reinitializeCovariance(double sigma_pos_m, double sigma_
   const double drag_scale_kept = drag_scale_;
   seedDragScaleBlock();
   drag_scale_ = drag_scale_kept;
+  // The bias block is re-opened to its **prior**, not scaled with the rest.
+  // sigma_b is a physical property of the receiver, established on the ground;
+  // multiplying it up would claim a receiver worse than the part, and the
+  // operator's instruction here is "my state covariance is too tight", which
+  // says nothing about the receiver.
+  seedGnssBiasBlock(gnss_bias_sigma_);
   return OrbitOdRefusal::kNone;
 }
 
@@ -485,6 +504,10 @@ OrbitOdRefusal OrbitOd::initialize(const time::Tai& epoch,
   p_.topLeftCorner<kPosVelDim, kPosVelDim>() = cov;
   seedDmcBlock();
   seedDragScaleBlock();
+  // No fix in hand here (this is the ground-uploaded / test seed), so the bias
+  // prior is whatever the last accepted fix left; zero on a cold start, and the
+  // first ingest refreshes it.
+  seedGnssBiasBlock(gnss_bias_sigma_);
   symmetrise(p_);
   last_epoch_ = epoch;
   age_s_ = 0.0;
@@ -503,6 +526,51 @@ void OrbitOd::seedDmcBlock() {
   p_.block<kPosVelDim, 3>(0, kDmc).setZero();
   if (cfg_.dmc_tau_s > 0.0) {
     p_.block<3, 3>(kDmc, kDmc) = (0.5 * cfg_.dmc_tau_s * cfg_.dmc_psd_rtn_m2_per_s5).asDiagonal();
+  }
+}
+
+Eigen::Matrix3d OrbitOd::gnssBiasCovariance(const Eigen::Vector3d& r_ecef,
+                                            const Eigen::Matrix3d& eci_from_ecef, double sigma_h_m,
+                                            double sigma_v_m) const {
+  if (!gnssBiasEnabled()) {
+    return Eigen::Matrix3d::Zero();
+  }
+  // The correlated share of the reported variance, in the same local geodetic
+  // basis the receiver's own split is realised in, rotated into ECI.
+  //
+  // The states are carried in **ECI** rather than ENU deliberately: Φ and the
+  // covariance both assume a frame that does not turn, and an ENU-anchored
+  // state would need the frame's rotation inside the transition. The physical
+  // structure — that the error is anisotropic in the *local* frame — lives here
+  // in Σ_b instead, refreshed at each fix. That the local basis sweeps around
+  // the orbit is not a nuisance: it is what stops any bias component sitting in
+  // the one CW-degenerate direction (a constant along-track offset) long enough
+  // to become unobservable.
+  const Eigen::Matrix3d enu = enuBasis(r_ecef);
+  const double f = cfg_.gnss_corr_fraction;
+  const Eigen::Vector3d var(f * sigma_h_m * sigma_h_m, f * sigma_h_m * sigma_h_m,
+                            f * sigma_v_m * sigma_v_m);
+  const Eigen::Matrix3d ecef = enu * var.asDiagonal() * enu.transpose();
+  Eigen::Matrix3d eci = eci_from_ecef * ecef * eci_from_ecef.transpose();
+  eci = 0.5 * (eci + eci.transpose().eval());
+  if (!eci.allFinite()) {
+    return Eigen::Matrix3d::Zero();
+  }
+  return eci;
+}
+
+void OrbitOd::seedGnssBiasBlock(const Eigen::Matrix3d& sigma_b_eci) {
+  // A fresh solution is uncorrelated with the receiver's bias, so the cross
+  // terms start at zero and the block starts at its prior. The estimate starts
+  // at zero in both modes — in consider mode it stays there.
+  gnss_bias_.setZero();
+  p_.block<3, kDim>(kGnssBias, 0).setZero();
+  p_.block<kDim, 3>(0, kGnssBias).setZero();
+  if (gnssBiasEnabled()) {
+    gnss_bias_sigma_ = sigma_b_eci;
+    p_.block<3, 3>(kGnssBias, kGnssBias) = sigma_b_eci;
+  } else {
+    gnss_bias_sigma_.setZero();
   }
 }
 
@@ -609,6 +677,15 @@ OrbitOdRefusal OrbitOd::propagate(const time::Tai& epoch, const frames::EopValue
   // channel instead of three, with the state-dependent map ∂a/∂s = a_drag in
   // place of the DMC's constant M_rtn. That map is held across the sub-step
   // exactly as the Jacobian and the RTN basis already are.
+  // The GNSS bias states (Push 77). Same FOGM shape as the DMC and drag-scale
+  // states, on a prior refreshed from the last fix's reported sigmas. The
+  // states do not couple into the dynamics at all — that is the point: the
+  // bias belongs to the receiver, not to the vehicle, so its only path into the
+  // solution is through the measurement.
+  const bool bias_on = gnssBiasEnabled();
+  const double phi_b = bias_on ? std::exp(-h / cfg_.gnss_corr_tau_s) : 1.0;
+  const double q_b_scale = bias_on ? (1.0 - phi_b * phi_b) : 0.0;
+  Eigen::Vector3d bias_state = gnss_bias_;
   const bool drag_scale_on = dragScaleEnabled();
   const Eigen::Matrix3d psi_s =
       drag_scale_on ? dmcNoiseKernel(h, cfg_.drag_scale_tau_s) : Eigen::Matrix3d::Zero();
@@ -689,6 +766,12 @@ OrbitOdRefusal OrbitOd::propagate(const time::Tai& epoch, const frames::EopValue
       q_d.block<1, 3>(kDragScale, kVelocity) = psi_s(2, 1) * qb.transpose();
       q_d(kDragScale, kDragScale) = psi_s(2, 2) * q_s;
     }
+    // The bias block's discrete noise: the stationary FOGM form, which holds
+    // P_bb at Σ_b for any step size rather than letting it drift with the
+    // sub-step length.
+    if (bias_on) {
+      q_d.block<3, 3>(kGnssBias, kGnssBias) = q_b_scale * gnss_bias_sigma_;
+    }
 
     // Φ from the Jacobian at the sub-step start. The covariance does not need
     // the state's integration order: over h ≤ max_step_s the Jacobian's own
@@ -710,6 +793,9 @@ OrbitOdRefusal OrbitOd::propagate(const time::Tai& epoch, const frames::EopValue
               .eigen();
       f(kDragScale, kDragScale) = -(1.0 / cfg_.drag_scale_tau_s);
     }
+    if (bias_on) {
+      f.block<3, 3>(kGnssBias, kGnssBias) = -(1.0 / cfg_.gnss_corr_tau_s) * id;
+    }
     const FullCovariance phi = FullCovariance::Identity() + f * h + 0.5 * (f * f) * (h * h);
 
     // Classical RK4 on the state, the DMC acceleration (constant over the
@@ -725,13 +811,14 @@ OrbitOdRefusal OrbitOd::propagate(const time::Tai& epoch, const frames::EopValue
     // The scale decays toward its nominal 1, not toward zero: it is a
     // multiplier on a term that exists, so "no information" means 1.
     drag_scale_state = 1.0 + (drag_scale_state - 1.0) * phi_s;
+    bias_state *= phi_b;  // the FOGM mean decays toward zero (TP §5.2.4)
 
     p = phi * p * phi.transpose() + q_d;
   }
   symmetrise(p);
 
   if (!x.allFinite() || !p.allFinite() || !dmc_state.allFinite() ||
-      !std::isfinite(drag_scale_state)) {
+      !std::isfinite(drag_scale_state) || !bias_state.allFinite()) {
     dropSolution();  // a NaN can never recover on its own; drop back to cold start
     return OrbitOdRefusal::kFilterFault;
   }
@@ -740,6 +827,7 @@ OrbitOdRefusal OrbitOd::propagate(const time::Tai& epoch, const frames::EopValue
   velocity_ = x.tail<3>();
   dmc_ = dmc_state;
   drag_scale_ = drag_scale_state;
+  gnss_bias_ = bias_state;
   p_ = p;
   last_epoch_ = epoch;
   age_s_ += dt_s;
@@ -779,9 +867,25 @@ bool OrbitOd::applyUpdate(int offset, const Eigen::Vector3d& measured, const Eig
   // diagonal block and PHᵀ the corresponding 6×3 column block — written that way
   // rather than as a matrix product because a sparse H multiplied out is the
   // same arithmetic with more places to get an index wrong.
-  const Eigen::Vector3d predicted = (offset == kPosition) ? position_ : velocity_;
+  // The position measurement sees the state **plus the receiver's common-mode
+  // bias**; the velocity measurement does not (the correlated error is a
+  // position error — `sim/sensors/gnss.cpp` applies it to position alone). That
+  // asymmetry is what lets an unbiased velocity fix help separate the bias from
+  // the position state.
+  const bool biased_row = (offset == kPosition) && gnssBiasEnabled();
+  const Eigen::Vector3d predicted =
+      (offset == kPosition) ? Eigen::Vector3d(position_ + gnss_bias_) : velocity_;
   const Eigen::Vector3d y = measured - predicted;
-  const Eigen::Matrix3d s = p_.block<3, 3>(offset, offset) + r_cov;
+  // S = H P Hᵀ + R with H carrying the bias identity block. The cross term
+  // P_rb is the whole reason this filter is consistent: it is exactly the
+  // correlation between the prior state error and the measurement error that a
+  // white-noise Kalman derivation assumes away, and dropping it is what made
+  // the innovation smaller than S predicted.
+  Eigen::Matrix3d s = p_.block<3, 3>(offset, offset) + r_cov;
+  if (biased_row) {
+    s += p_.block<3, 3>(kGnssBias, kGnssBias) + p_.block<3, 3>(offset, kGnssBias) +
+         p_.block<3, 3>(kGnssBias, offset);
+  }
   // Published before the inversion is checked, so a numeric fault still
   // telemeters the innovation it faulted on rather than a zero that reads as a
   // perfect fit.
@@ -828,7 +932,30 @@ bool OrbitOd::applyUpdate(int offset, const Eigen::Vector3d& measured, const Eig
 
   Eigen::Matrix<double, kDim, 3> h_t = Eigen::Matrix<double, kDim, 3>::Zero();
   h_t.block<3, 3>(offset, 0) = Eigen::Matrix3d::Identity();
-  const Eigen::Matrix<double, kDim, 3> k_gain = p_ * h_t * s_inv;
+  if (biased_row) {
+    h_t.block<3, 3>(kGnssBias, 0) = Eigen::Matrix3d::Identity();
+  }
+  Eigen::Matrix<double, kDim, 3> k_gain = p_ * h_t * s_inv;
+  // Schmidt/consider form: the bias block's covariance shapes the gain through
+  // P_rb above, but the estimate itself is not updated. Three reasons it is the
+  // flown mode, and they are independent — the bias is not resolvable at the
+  // flown q_a; consistency does not depend on resolving it, since P_rb and P_bb
+  // still reach S; and a pinned estimate is a state a slow spoof cannot walk,
+  // which the §9.2 ramp residual makes a live concern rather than a hypothetical.
+  // The Joseph update below stays correct under this deliberately suboptimal
+  // gain, which is why it was written that way.
+  if (gnssBiasEnabled() && cfg_.gnss_bias_consider) {
+    // Every update, not only the position one. The velocity measurement does
+    // not *see* the bias (its H row is zero there), but P has a bias/velocity
+    // cross-block, so an unpinned velocity update would walk the bias estimate
+    // anyway — which is precisely the state a slow spoof would use. A consider
+    // state is one no measurement updates.
+    //
+    // With these rows zeroed the Joseph form leaves P_bb exactly unchanged
+    // ((I−KH) carries an identity row for the block), which is what "consider"
+    // means and what the covariance assertion in the unit test pins.
+    k_gain.block<3, 3>(kGnssBias, 0).setZero();
+  }
   const Eigen::Matrix<double, kDim, 1> dx = k_gain * y;
   if (!k_gain.allFinite() || !dx.allFinite()) {
     out.numeric_fault = true;
@@ -846,8 +973,9 @@ bool OrbitOd::applyUpdate(int offset, const Eigen::Vector3d& measured, const Eig
   const Eigen::Vector3d new_velocity = velocity_ + dx.segment<3>(kVelocity);
   const Eigen::Vector3d new_dmc = dmc_ + dx.segment<3>(kDmc);
   const double new_drag_scale = drag_scale_ + dx(kDragScale);
+  const Eigen::Vector3d new_bias = gnss_bias_ + dx.segment<3>(kGnssBias);
   if (!new_position.allFinite() || !new_velocity.allFinite() || !new_dmc.allFinite() ||
-      !std::isfinite(new_drag_scale) || !p_new.allFinite()) {
+      !std::isfinite(new_drag_scale) || !new_bias.allFinite() || !p_new.allFinite()) {
     dropSolution();
     out = OrbitOdUpdate{};
     out.numeric_fault = true;
@@ -855,7 +983,8 @@ bool OrbitOd::applyUpdate(int offset, const Eigen::Vector3d& measured, const Eig
   }
   position_ = new_position;
   velocity_ = new_velocity;
-  dmc_ = new_dmc;  // zero-variance when off, so a gain of exactly zero reaches it
+  dmc_ = new_dmc;         // zero-variance when off, so a gain of exactly zero reaches it
+  gnss_bias_ = new_bias;  // unchanged in consider mode: the gain's rows are zero
   // The drag scale factor is **refused rather than clamped** outside its
   // configured band (§8.5, and the same rule the tier-3 dipole estimator flies):
   // an exponential atmosphere is not wrong by the factor an out-of-band estimate
@@ -933,16 +1062,15 @@ bool OrbitOd::ingest(const GnssFix& fix, const frames::EopValue& eop, OrbitOdRes
   // (§6.2), so flattening it to a scalar would throw away accuracy the receiver
   // reported and mis-weight the vertical direction by the VDOP/HDOP ratio.
   const Eigen::Matrix3d enu = enuBasis(fix.position_m.eigen());
-  // The reported sigmas describe the receiver's *white* error only — its formal
-  // covariance is blind to an error common to every satellite it tracks — so the
-  // configured correlated sigmas are added in quadrature here, in the same local
-  // basis the reported ones are split in (Push 77; see the config field docs for
-  // why this is inflation and not a bias state). Zero leaves R exactly as
-  // reported, which is the pre-Push-77 filter.
-  const double sig_h2 = fix.position_sigma_h_m * fix.position_sigma_h_m +
-                        cfg_.gnss_corr_sigma_h_m * cfg_.gnss_corr_sigma_h_m;
-  const double sig_v2 = fix.position_sigma_v_m * fix.position_sigma_v_m +
-                        cfg_.gnss_corr_sigma_v_m * cfg_.gnss_corr_sigma_v_m;
+  // The reported sigma is the receiver's **total** — it cannot say which part of
+  // its error is common to every satellite it tracks — so the configured
+  // fraction splits it (Push 77). `R` takes the white part `(1−f)`, and the
+  // correlated part `f` becomes the bias states' prior `Σ_b` below. The total is
+  // preserved for any f, which is why this is a fraction and not a sigma: an
+  // absolute correlated sigma subtracted from the reported one can go negative.
+  const double white = 1.0 - cfg_.gnss_corr_fraction;
+  const double sig_h2 = white * fix.position_sigma_h_m * fix.position_sigma_h_m;
+  const double sig_v2 = white * fix.position_sigma_v_m * fix.position_sigma_v_m;
   Eigen::Vector3d sig2(sig_h2, sig_h2, sig_v2);
   const Eigen::Matrix3d r_pos_ecef = enu * sig2.asDiagonal() * enu.transpose();
   const Eigen::Matrix3d a_eci_ecef = q_eci_ecef.core().toRotationMatrix();
@@ -952,6 +1080,31 @@ bool OrbitOd::ingest(const GnssFix& fix, const frames::EopValue& eop, OrbitOdRes
     out.refusal = OrbitOdRefusal::kFrameConversion;
     return false;
   }
+  // Refresh the bias prior Σ_b from this fix (Push 77): the correlated share of
+  // the reported variance, in the local geodetic basis at the fix, rotated into
+  // ECI. Done once per fix rather than per sub-step — the basis turns at the
+  // orbital rate, and Q_bb is a small correction over one propagation step.
+  // ponytail: per-fix refresh; move into the sub-step loop only if a coast ever
+  // runs long enough for the local basis to turn appreciably within one step.
+  if (gnssBiasEnabled()) {
+    const Eigen::Matrix3d sigma_b = gnssBiasCovariance(
+        fix.position_m.eigen(), a_eci_ecef, fix.position_sigma_h_m, fix.position_sigma_v_m);
+    if (sigma_b.allFinite() && sigma_b.trace() > 0.0) {
+      const bool first_known = !(gnss_bias_sigma_.trace() > 0.0);
+      gnss_bias_sigma_ = sigma_b;
+      // Σ_b is built from a fix's reported sigmas, so a filter seeded from a
+      // ground upload has no prior for the block until the first fix arrives.
+      // Open it *here*, the moment it is known, rather than letting the process
+      // noise walk it up over a correlation time: until P_bb covers the
+      // correlated variance, S is short by exactly that amount and the
+      // innovations read too large — a cold-start transient in the one
+      // statistic this block exists to make honest.
+      if (first_known && initialised_) {
+        seedGnssBiasBlock(sigma_b);
+      }
+    }
+  }
+
   // The velocity error is per-axis white in ECEF, and a rotation leaves σ²I
   // alone — so it needs no basis change. (The ω⊕ × r transport term does add
   // the position error's rotation into the ECI velocity, ~1.5e-4 m/s on a 2 m

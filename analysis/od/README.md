@@ -89,8 +89,8 @@ inconsistent" and "there was no campaign" are different answers.
 
 ## Tuning fast (Push 77)
 
-A consistency tuning is read off **NEES**, and NEES is measured on the `nominal`
-scenario alone — the other eleven exist to answer different questions. So a
+A consistency check is read off **NEES and NIS — both, always**, and they are
+measured on the `nominal` scenario alone — the other eleven exist to answer different questions. So a
 tuning trial does not need the full campaign, and iterating on the full campaign
 is how tuning became a multi-hour loop:
 
@@ -99,13 +99,17 @@ is how tuning became a multi-hour loop:
 # the gate uses. Vary the knob, not the scenario list.
 ./build-fprime-automatic-native/bin/Linux/polaris_orbit_od_mc \
     --scenario nominal --runs 12 --duration-s 11000 \
-    --gnss-corr-inflate 4 --out build-artifacts/mc/tune-k4/shard-0.jsonl
+    --gnss-corr-fraction 0.5 --out build-artifacts/mc/tune-f05/shard-0.jsonl
 
 PYTHONPATH=tools uv run --group analysis python -m analysis.od \
-    build-artifacts/mc/tune-k4 --no-browser | grep "Campaign NEES"
+    build-artifacts/mc/tune-f05 --no-browser | grep -E "Campaign NEES|Campaign NIS"
 ```
 
-Points are independent, so sweep them in parallel and read the column. **Twelve
+Points are independent, so sweep them in parallel and read **both** columns.
+Reading one is how Push 77 shipped a regression: an `R` inflation was tuned until
+NEES entered its band while NIS fell out the bottom, and the two statistics were
+moving in *opposite* directions the whole time. A change that improves one and
+degrades the other is a modelling error wearing a tuning's clothes. **Twelve
 runs, not three**: the chi-square interval widens as 1/sqrt(N) and below ten runs
 it admits a filter that is a factor of two optimistic — the same reason the gate
 demands ten. A three-run sweep is fine for *ranking* candidates and must not be
@@ -118,9 +122,9 @@ the ensemble bounds. Tune on the fast loop, accept on the gate.
 
 Knobs the driver takes (`--help` lists them): `--qa-scale`, `--q-rtn`,
 `--dmc-tau-s`/`--dmc-psd` (Push 73), and `--gnss-corr-fraction`,
-`--gnss-corr-tau-s`, `--gnss-corr-inflate` (Push 77 — the last in units of the
-receiver's own correlated per-axis sigma, which is the form the tuning answer
-comes in).
+`--gnss-corr-tau-s`, `--gnss-bias-consider` (Push 77). Unknown flags are
+**refused**, not ignored: a stale sweep command once kept passing a renamed flag
+and quietly measured a different configuration than it named.
 
 ## Reproducing one run
 

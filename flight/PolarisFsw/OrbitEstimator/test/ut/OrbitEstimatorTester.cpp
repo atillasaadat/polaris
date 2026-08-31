@@ -153,10 +153,11 @@ void OrbitEstimatorTester ::setValidParameters() {
     this->paramSet_AccelPsdRtnM2PerS3(zero, Fw::ParamValid::VALID);
     this->paramSet_DmcTauS(0.0, Fw::ParamValid::VALID);
     this->paramSet_DmcPsdRtnM2PerS5(zero, Fw::ParamValid::VALID);
-    // Correlated-GNSS R inflation (Push 77): the flown values, so the tester
-    // exercises the configuration the vehicle actually flies.
-    this->paramSet_GnssCorrSigmaHM(2.4, Fw::ParamValid::VALID);
-    this->paramSet_GnssCorrSigmaVM(3.6, Fw::ParamValid::VALID);
+    // Correlated-GNSS consider block (Push 77): the flown values, so the
+    // tester exercises the configuration the vehicle actually flies.
+    this->paramSet_GnssCorrFraction(0.5, Fw::ParamValid::VALID);
+    this->paramSet_GnssCorrTauS(600.0, Fw::ParamValid::VALID);
+    this->paramSet_GnssBiasConsider(true, Fw::ParamValid::VALID);
     // Drag scale factor off (Push 76), matching the flown tuning; the three
     // shape parameters carry the values a vehicle that enabled it would use, so
     // turning the PSD on in a case is the one-line change it should be.

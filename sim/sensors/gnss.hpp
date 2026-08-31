@@ -99,7 +99,9 @@ struct GnssSpec {
   /// residuals and geometry and cannot see an error common to every satellite it
   /// is tracking. That asymmetry is the point of the model, not an oversight —
   /// it is what makes the onboard `R` optimistic, and what
-  /// `OrbitOdConfig::gnss_corr_sigma_h_m` exists to repair.
+  /// the orbit filter's three GNSS bias states exist to model
+  /// (`OrbitOdConfig::gnss_corr_fraction`, which `configc` requires to equal
+  /// the fraction configured here).
   ///
   /// A zero σ disables the term completely and reproduces the pre-Push-77 model
   /// exactly.

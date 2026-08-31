@@ -300,33 +300,43 @@ spacecraft:
     flight.orbitEstimator.AccelPsdRtnM2PerS3: [0.0, 0.0, 0.0]  # [m^2/s^3] R, T, N
     flight.orbitEstimator.DmcTauS: 0.0                          # [s] 0 = off
     flight.orbitEstimator.DmcPsdRtnM2PerS5: [0.0, 0.0, 0.0]    # [m^2/s^5] R, T, N
-    # --- Correlated-GNSS R inflation (§8.3/§6.2; Push 77) -------------------
-    # The receiver's datasheet RMS is split half white / half common-mode on a
-    # 600 s timescale (config/hardware/gnss/novatel_oem7600.yaml — an engineering
-    # allocation, labelled as one). The total accuracy is unchanged and the
-    # receiver still reports the full 1.2 m; what changes is the error's COLOUR,
-    # and that is what defeats a Kalman filter, which assumes white measurement
-    # noise and so averages a common error as if the samples were independent.
+    # --- Correlated GNSS error: the consider block (§8.3/§6.2; Push 77) -----
+    # The receiver's datasheet RMS is half white / half common-mode on a 600 s
+    # timescale (config/hardware/gnss/novatel_oem7600.yaml — an engineering
+    # allocation, labelled as one there). The receiver reports the TOTAL and
+    # cannot say which part is common-mode, so the filter is told the split:
+    # R takes (1-f) of the reported variance and three GNSS bias states take f
+    # as their prior. GnssCorrFraction MUST EQUAL the receiver entry's
+    # correlated_position_fraction; configc enforces it by plain equality.
     #
-    # NOT simply the receiver's correlated sigma. Per-axis that sigma is
-    # 1.2/sqrt(2)*sqrt(0.5) = 0.600 m horizontal, 0.900 m vertical; the values
-    # below are 4x it, because the inflation must be sized for the error's
-    # PERSISTENCE across the fixes the filter averages, not for its size.
+    # WHY A FRACTION AND NOT AN INFLATION. The first attempt at this inflated R
+    # by a factor tuned until campaign NEES landed in its band. That fixed NEES
+    # (23.6 -> 6.3) and DESTROYED NIS (2.98 -> 0.26), because a Kalman filter
+    # assumes white measurement noise: over the ~60 fixes that share one
+    # realisation of a 600 s error it drives its covariance down as though
+    # averaging independent samples, and the innovation is smaller than
+    # S = HPH' + R by twice the bias it has already absorbed (measured: it
+    # absorbs two thirds of it). Inflating R cannot represent that cross term;
+    # it can only trade one statistic against the other. Carrying the bias in
+    # the covariance puts the cross term where it belongs, as P_rb inside S.
     #
-    # MEASURED on the 12-run nominal campaign (chi-square interval [4.202,
-    # 8.113] at 12 runs): NEES 20.8 with no inflation, 8.07 at 3x — which passes
-    # by 0.6 % and is not a margin — and 6.33 at 4x, comfortably centred (22 %
-    # and 51 % margin on the two sides). Position RMS pays 1.317 -> 1.400 m for
-    # it, which is the honest cost of a covariance that is no longer a fiction.
-    #
-    # The multiple is NOT a formula: sweeping fix cadence at fixed tau gives
-    # k ~ 0.58*sqrt(tau/dt), but sweeping tau at fixed cadence shows k saturating
-    # near 3.2 once tau exceeds the timescale on which q_a reopens the covariance
-    # anyway. Retune per vehicle against NEES. The fast loop is minutes, not
-    # hours: polaris_orbit_od_mc --scenario nominal --runs 12 --duration-s 11000
-    # --gnss-corr-inflate K, then the full gate to confirm.
-    flight.orbitEstimator.GnssCorrSigmaHM: 2.4                  # [m] 4x the 0.600 m correlated sigma
-    flight.orbitEstimator.GnssCorrSigmaVM: 3.6                  # [m] 4x the 0.900 m correlated sigma
+    # And it is FALSIFIABLE, which the inflation factor was not: any inflation
+    # that made NEES pass was by definition "right", whereas f is a property of
+    # the receiver that NIS now tests two-sidedly.
+    flight.orbitEstimator.GnssCorrFraction: 0.5                 # [-] = receiver's correlated_position_fraction
+    flight.orbitEstimator.GnssCorrTauS: 600.0                   # [s] = receiver's correlated_position_tau_s
+    # CONSIDER (Schmidt) mode: the block's covariance shapes the gain, the
+    # estimate stays pinned at zero. Three independent reasons, any one of which
+    # would be enough. (1) The bias is not resolvable at the flown q_a — 4 cm of
+    # signal over the filter's 228 s memory against a 17.7 cm floor, 4.4x under,
+    # the same q_a lockout that blocks the drag scale factor at 39x. (2)
+    # Consistency does not depend on resolving it: P_rb and P_bb still reach S,
+    # so an unobservable bias costs the estimate and not the covariance. (3) A
+    # pinned estimate is a state a slow spoof cannot walk — §9.2 leaves exactly
+    # that residual open, and a 600 s FOGM position bias is precisely the shape
+    # that would absorb a ramp. Flip to false only on a vehicle whose numbers
+    # say the bias resolves, and re-read §9.2 before doing so.
+    flight.orbitEstimator.GnssBiasConsider: true                # [-] Schmidt form
     # --- Drag scale factor (§8.5 tier 3, orbit half; Push 76) ---------------
     # OFF on this vehicle, and the reason is measured rather than assumed. The
     # isotropic q_a above is sized from the 8x8 geopotential truncation: 1.28 m

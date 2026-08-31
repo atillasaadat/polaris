@@ -422,6 +422,7 @@ void OrbitEstimator ::publish(I64 nowNs) {
     this->tlmWrite_DmcAccelRtnMps2(toVec3F64(this->od_.dmcAcceleration()));
     this->tlmWrite_DmcSigmaMps2(std::sqrt(
         this->od_.fullCovariance().block<3, 3>(pg::OrbitOd::kDmc, pg::OrbitOd::kDmc).trace()));
+    this->tlmWrite_GnssBiasSigmaM(this->od_.gnssBiasSigma());
     this->tlmWrite_DragScale(this->od_.dragScale());
     this->tlmWrite_DragScaleSigma(this->od_.dragScaleSigma());
   } else {
@@ -432,6 +433,7 @@ void OrbitEstimator ::publish(I64 nowNs) {
     // The nominal, not a sentinel: with no solution the scale *is* 1, which is
     // what dropSolution() leaves it at, and a -1 here would read as a physical
     // sign flip rather than as "no data".
+    this->tlmWrite_GnssBiasSigmaM(0.0);
     this->tlmWrite_DragScale(1.0);
     this->tlmWrite_DragScaleSigma(0.0);
   }
@@ -515,8 +517,16 @@ bool OrbitEstimator ::applyParameters() {
   // The correlated-GNSS R repair (Push 77). Fetched unconditionally: a filter
   // flying a receiver with a correlated error and no inflation is exactly the
   // overconfident case this exists to prevent, so the value is never defaulted.
-  POLARIS_GET(cfg.gnss_corr_sigma_h_m, paramGet_GnssCorrSigmaHM, "GnssCorrSigmaHM");
-  POLARIS_GET(cfg.gnss_corr_sigma_v_m, paramGet_GnssCorrSigmaVM, "GnssCorrSigmaVM");
+  POLARIS_GET(cfg.gnss_corr_fraction, paramGet_GnssCorrFraction, "GnssCorrFraction");
+  POLARIS_GET(cfg.gnss_corr_tau_s, paramGet_GnssCorrTauS, "GnssCorrTauS");
+  {
+    Fw::ParamValid v = Fw::ParamValid::INVALID;
+    const bool consider = this->paramGet_GnssBiasConsider(v);
+    if (v != Fw::ParamValid::VALID) {
+      return fail("GnssBiasConsider");
+    }
+    cfg.gnss_bias_consider = consider;
+  }
   // §8.5 tier 3, orbit half (Push 76). Fetched unconditionally rather than
   // only when the PSD is positive: a half-uploaded tuning has to reach
   // OrbitOdConfig::isValid, which refuses it, instead of being silently

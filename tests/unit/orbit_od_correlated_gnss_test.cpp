@@ -159,6 +159,7 @@ struct ArcResult {
   std::uint32_t rejected = 0;  ///< NIS-gate refusals of honest fixes
   std::uint32_t accepted = 0;  ///< fixes folded in
   double mean_nees = 0.0;      ///< time-averaged 6-state NEES against truth
+  double mean_nis = 0.0;       ///< time-averaged 3-row position NIS
   double rms_pos_err_m = 0.0;  ///< RMS |estimate - truth| over the arc
 };
 
@@ -198,8 +199,10 @@ ArcResult flyArc(const OrbitOdConfig& cfg, double corr_sigma_m, std::uint64_t se
 
   ArcResult out;
   double nees_sum = 0.0;
+  double nis_sum = 0.0;
   double err_sq_sum = 0.0;
   int samples = 0;
+  int nis_samples = 0;
 
   for (double t = g_fix_period_s; t <= kArcS; t += g_fix_period_s) {
     const pt::Tai now = advance(epoch0, t);
@@ -227,15 +230,25 @@ ArcResult flyArc(const OrbitOdConfig& cfg, double corr_sigma_m, std::uint64_t se
     fix.time_tag = pt::toGps(now);
     fix.position_m = r_ecef;
     fix.velocity_m_s = v_ecef;
-    // The receiver reports its **white** sigma only — it cannot see an error
-    // common to every satellite it tracks. That is the whole premise.
-    fix.position_sigma_h_m = kWhiteSigmaM;
-    fix.position_sigma_v_m = kWhiteSigmaM;
+    // The receiver reports its **total** sigma — white and correlated
+    // recombined — exactly as `sim/sensors/gnss.cpp` does. It can size its own
+    // error but cannot say which part of it is common to every satellite it
+    // tracks, which is why the filter has to be told the split by config. (The
+    // earlier version of this harness reported the white part alone, which
+    // understated the magnitude as well as mis-stating the colour and made the
+    // two effects impossible to separate.)
+    const double total = std::hypot(kWhiteSigmaM, corr_sigma_m);
+    fix.position_sigma_h_m = total;
+    fix.position_sigma_v_m = total;
     fix.velocity_sigma_m_s = kVelSigmaMps;
     fix.velocity_valid = true;
 
     OrbitOdResult res;
     filter.ingest(fix, eop, res);
+    if (t >= 2000.0 && res.position.accepted && std::isfinite(res.position.nis)) {
+      nis_sum += res.position.nis;
+      ++nis_samples;
+    }
 
     // Skip the opening transient: the seed covariance has to come down before
     // either the gate or the NEES says anything about steady state.
@@ -253,6 +266,7 @@ ArcResult flyArc(const OrbitOdConfig& cfg, double corr_sigma_m, std::uint64_t se
   out.rejected = filter.rejectedCount();
   out.accepted = static_cast<std::uint32_t>(kArcS / g_fix_period_s) - out.rejected;
   out.mean_nees = (samples > 0) ? nees_sum / samples : 0.0;
+  out.mean_nis = (nis_samples > 0) ? nis_sum / nis_samples : 0.0;
   out.rms_pos_err_m = (samples > 0) ? std::sqrt(err_sq_sum / samples) : 0.0;
   return out;
 }
@@ -291,92 +305,161 @@ TEST(OrbitOdCorrelatedGnss, CorrelatedErrorDegradesTheFilterAndItsConsistency) {
       << "correlated NEES " << correlated.mean_nees << " against white " << white_only.mean_nees;
 }
 
-/// **The `R` repair restores consistency — but only when it is sized for the
-/// error's persistence, not for its size.**
+/// **The consider block fixes both statistics at once — which `R` inflation
+/// provably cannot.**
 ///
-/// This is the push's substantive finding, and it is the opposite of the obvious
-/// implementation. Inflating `R` by the correlated variance itself (`k` = 1) is
-/// what the textbook remedy for unmodelled measurement error suggests, and it
-/// closes only *half* the gap: NEES 49.6 -> 23.7 against a chi^2_6 mean of 6.
-/// The reason is structural. A Kalman filter assumes measurement noise is white,
-/// so over the `tau/dt` fixes that share one realisation of the correlated error
-/// it drives its covariance down as if it were averaging independent samples,
-/// while the error itself does not average away at all. Per-update inflation
-/// cannot reproduce time correlation; it can only be made large enough that the
-/// over-averaging lands somewhere honest.
+/// This is the push's substantive result, and it is the second attempt. The
+/// first inflated `R` by a factor tuned until campaign NEES landed in its band.
+/// That worked on NEES (23.6 -> 6.3) and **destroyed NIS** (2.98 -> 0.26), and
+/// the reason is structural rather than a mistuning.
 ///
-/// Measured, at the 10 s cadence and 300 s correlation time flown here
-/// (`k` in units of the correlated per-axis sigma):
+/// `S = H P Hᵀ + R` follows from `E[e vᵀ] = 0`, which is a *consequence* of
+/// whiteness: the prior error `e` is a functional of past measurements, and a
+/// white `v` is independent of all of them. With a correlated error the past
+/// fixes all carried nearly the same bias `b` (at `tau/dt = 60`, correlation
+/// 0.983 between neighbours), so `C = E[e bᵀ] != 0` and the true innovation
+/// covariance is `H P Hᵀ + R − H C − Cᵀ Hᵀ`. Those cross terms **subtract**: the
+/// innovation is smaller than `S` by twice the bias the filter has already
+/// absorbed into its position state. Measured here, that absorbed fraction is
+/// about **two thirds**. NEES sees that absorbed bias as state error and wants
+/// `P` larger; NIS sees it removed from the innovation and wants `S` smaller.
+/// No single `R` satisfies both — inflation only slides along the trade.
 ///
-///     k     0      1      2      3      5     10
-///  NEES  49.6   23.7   10.8   6.46   3.66   2.41
-///   RMS  1.815  1.781  1.756  1.763  1.829  2.138  [m]
+/// Carrying the bias in the covariance puts `C` where it belongs, as the `P_rb`
+/// block *inside* `S`. The augmented model has white noise by construction, so
+/// the innovations are white and `S` is genuinely their covariance: NIS becomes
+/// a valid chi-square test again and NEES is fixed with `R` back to the white
+/// part alone. No inflation factor, and nothing left to fit.
 ///
-/// `k` = 3 lands on the chi^2_6 mean at no cost in accuracy — the estimate is as
-/// good as the best of the row — and past it the filter turns conservative and
-/// the estimate degrades as the measurement is progressively thrown away.
-///
-/// **`k` is a tuning, not a formula, and this is where it is written down.**
-/// Sweeping the fix cadence at fixed tau gives k ~ 0.58*sqrt(tau/dt) (k = 4.4,
-/// 3.1, 1.9, 1.3 at dt = 5, 10, 30, 60 s), which looks like a law until tau is
-/// swept at fixed dt: there k *saturates* near 3.2 for tau >= 300 s rather than
-/// continuing to grow (k = 2.2, 3.1, 3.2, 3.2 at tau = 120, 300, 600, 1200 s).
-/// The filter's own process noise reopens its covariance on a timescale set by
-/// `q_a`, and once tau exceeds that, the correlated error is no longer the
-/// binding constraint. A formula fitted to one of those regimes would be wrong
-/// in the other, so the config carries an explicit sigma and the tuning is
-/// verified by NEES per configuration. What removes the need for the tuning
-/// altogether is the raw pseudorange path (§8.3, still owed), where the
-/// common-mode terms have their own signature across the satellites in view.
-TEST(OrbitOdCorrelatedGnss, InflatingRRestoresConsistencyAgainstACorrelatedReceiver) {
+/// **The block works whether or not the bias is observable**, which is why the
+/// flown vehicle ships it in consider mode. If an arc yields no information
+/// about `b`, `P_bb` stays at its prior and `b̂` stays at zero — but `P_rb` and
+/// `P_bb` still propagate and still shape the gain, so `S` is still right.
+/// Unobservability costs the estimate, not the consistency.
+TEST(OrbitOdCorrelatedGnss, ConsiderBlockFixesBothNeesAndNis) {
   RecordProperty("verifies", "REQ-ODP-014");
 
-  const ArcResult naive = flyArc(baseConfig(), kCorrSigmaM, /*seed=*/2024);
+  // The defect: told nothing about the correlation.
+  OrbitOdConfig blind = baseConfig();
+  blind.gnss_corr_fraction = 0.0;
+  const ArcResult naive = flyArc(blind, kCorrSigmaM, /*seed=*/2024);
 
-  // 3x the correlated sigma — the tuned value, for the reason in the comment
-  // above. 1x is the obvious choice and is measured here as insufficient.
-  OrbitOdConfig naive_inflation = baseConfig();
-  naive_inflation.gnss_corr_sigma_h_m = kCorrSigmaM;
-  naive_inflation.gnss_corr_sigma_v_m = kCorrSigmaM;
-  const ArcResult one_sigma = flyArc(naive_inflation, kCorrSigmaM, /*seed=*/2024);
-  RecordProperty("one_sigma_mean_nees", std::to_string(one_sigma.mean_nees));
-  EXPECT_GT(one_sigma.mean_nees, 12.0)
-      << "inflating by 1x the correlated sigma is enough after all (" << one_sigma.mean_nees
-      << ") — re-read this test's comment, the tuning table has moved";
-
-  OrbitOdConfig repaired = baseConfig();
-  repaired.gnss_corr_sigma_h_m = 3.0 * kCorrSigmaM;
-  repaired.gnss_corr_sigma_v_m = 3.0 * kCorrSigmaM;
-  ASSERT_TRUE(repaired.isValid());
-  const ArcResult fixed = flyArc(repaired, kCorrSigmaM, /*seed=*/2024);
+  // The fix: told the split the receiver actually has, and nothing else.
+  // The fraction the receiver actually has: the correlated share of its total
+  // variance. Computed, not fitted — that is the point of the design.
+  const double f_true =
+      (kCorrSigmaM * kCorrSigmaM) / (kCorrSigmaM * kCorrSigmaM + kWhiteSigmaM * kWhiteSigmaM);
+  OrbitOdConfig fixed_cfg = baseConfig();
+  fixed_cfg.gnss_corr_fraction = f_true;
+  fixed_cfg.gnss_corr_tau_s = g_corr_tau_s;
+  ASSERT_TRUE(fixed_cfg.isValid());
+  const ArcResult fixed = flyArc(fixed_cfg, kCorrSigmaM, /*seed=*/2024);
 
   RecordProperty("naive_mean_nees", std::to_string(naive.mean_nees));
-  RecordProperty("repaired_mean_nees", std::to_string(fixed.mean_nees));
-  RecordProperty("naive_rejected", std::to_string(naive.rejected));
-  RecordProperty("repaired_rejected", std::to_string(fixed.rejected));
+  RecordProperty("naive_mean_nis", std::to_string(naive.mean_nis));
+  RecordProperty("fixed_mean_nees", std::to_string(fixed.mean_nees));
+  RecordProperty("fixed_mean_nis", std::to_string(fixed.mean_nis));
   RecordProperty("naive_rms_pos_err_m", std::to_string(naive.rms_pos_err_m));
-  RecordProperty("repaired_rms_pos_err_m", std::to_string(fixed.rms_pos_err_m));
+  RecordProperty("fixed_rms_pos_err_m", std::to_string(fixed.rms_pos_err_m));
 
+  // Both statistics improve. That is the claim inflation could not make: it
+  // moved them in opposite directions.
   EXPECT_LT(fixed.mean_nees, naive.mean_nees)
-      << "R inflation did not improve consistency: " << fixed.mean_nees << " vs "
-      << naive.mean_nees;
-  // chi^2_6 has mean 6; a consistent filter sits near it. Both sides are bounded
-  // — too small means overconfident, too large means the measurement is being
-  // thrown away — so this cannot be satisfied by inflating without limit.
-  EXPECT_LT(fixed.mean_nees, 10.0) << "repaired NEES " << fixed.mean_nees << " is still optimistic";
-  EXPECT_GT(fixed.mean_nees, 3.0) << "repaired NEES " << fixed.mean_nees
-                                  << " is conservative — the fixes are being discarded";
-  // And consistency is not bought with accuracy: the estimate is no worse than
-  // the uninflated filter's.
-  EXPECT_LT(fixed.rms_pos_err_m, 1.05 * naive.rms_pos_err_m);
+      << "NEES " << fixed.mean_nees << " vs blind " << naive.mean_nees;
+  EXPECT_GT(fixed.mean_nis, naive.mean_nis)
+      << "NIS " << fixed.mean_nis << " vs blind " << naive.mean_nis;
+
+  // And both land near their chi-square means (6 and 3), bounded on both sides
+  // so neither can be bought by making the filter conservative.
+  EXPECT_GT(fixed.mean_nees, 3.0) << "NEES " << fixed.mean_nees;
+  EXPECT_LT(fixed.mean_nees, 11.0) << "NEES " << fixed.mean_nees;
+  EXPECT_GT(fixed.mean_nis, 1.8) << "NIS " << fixed.mean_nis;
+  EXPECT_LT(fixed.mean_nis, 4.5) << "NIS " << fixed.mean_nis;
+}
+
+/// In consider mode the bias covariance does not move — that is what "consider"
+/// means, and it is the one assertion that catches the gain pin silently
+/// failing.
+TEST(OrbitOdCorrelatedGnss, ConsiderModePinsTheBiasEstimateAndItsCovariance) {
+  RecordProperty("verifies", "REQ-ODP-014");
+  OrbitOdConfig cfg = baseConfig();
+  cfg.gnss_corr_fraction = 0.5;
+  cfg.gnss_corr_tau_s = g_corr_tau_s;
+  cfg.gnss_bias_consider = true;
+
+  // flyArc runs the filter internally; what this case needs is the filter it
+  // flew, so drive one here and inspect it directly.
+  const pt::Tai epoch0 = testEpoch();
+  const pf::EopValue eop = zeroEop(epoch0);
+  Eigen::Vector3d r0;
+  Eigen::Vector3d v0;
+  circularState(r0, v0);
+
+  OrbitOd truth(baseConfig());
+  ASSERT_EQ(truth.initialize(epoch0, pm::Vec3<pmf::ECI>(r0), pm::Vec3<pmf::ECI>(v0),
+                             OrbitOd::Covariance::Identity()),
+            OrbitOdRefusal::kNone);
+  OrbitOd flown(cfg);
+  ASSERT_EQ(flown.initialize(epoch0, pm::Vec3<pmf::ECI>(r0), pm::Vec3<pmf::ECI>(v0),
+                             OrbitOd::Covariance::Identity()),
+            OrbitOdRefusal::kNone);
+  // The prior is built from a fix's reported sigmas, so it is established by
+  // the first ingest rather than at initialize(); captured below on the first
+  // pass through the loop.
+  double sigma_prior = 0.0;
+
+  Gauss g(99);
+  Eigen::Vector3d corr(kCorrSigmaM * g(), kCorrSigmaM * g(), kCorrSigmaM * g());
+  const double phi = std::exp(-g_fix_period_s / g_corr_tau_s);
+  const double driving = std::sqrt(std::max(0.0, 1.0 - phi * phi));
+  for (double t = g_fix_period_s; t <= 4000.0; t += g_fix_period_s) {
+    const pt::Tai now = advance(epoch0, t);
+    while (truth.epoch() < now) {
+      const double remaining = (now - truth.epoch()).seconds();
+      const pt::Tai next = remaining <= 10.0 ? now : advance(truth.epoch(), 10.0);
+      ASSERT_EQ(truth.propagate(next, eop), OrbitOdRefusal::kNone);
+    }
+    for (int i = 0; i < 3; ++i) {
+      corr(i) = phi * corr(i) + kCorrSigmaM * driving * g();
+    }
+    const Eigen::Vector3d white(kWhiteSigmaM * g(), kWhiteSigmaM * g(), kWhiteSigmaM * g());
+    pm::Vec3<pmf::ECEF> r_ecef;
+    pm::Vec3<pmf::ECEF> v_ecef;
+    ASSERT_TRUE(pf::ecefStateFromEci(now, eop,
+                                     pm::Vec3<pmf::ECI>(truth.position().eigen() + white + corr),
+                                     pm::Vec3<pmf::ECI>(truth.velocity().eigen()), r_ecef, v_ecef));
+    GnssFix fix;
+    fix.time_tag = pt::toGps(now);
+    fix.position_m = r_ecef;
+    fix.velocity_m_s = v_ecef;
+    fix.position_sigma_h_m = std::hypot(kWhiteSigmaM, kCorrSigmaM);
+    fix.position_sigma_v_m = fix.position_sigma_h_m;
+    fix.velocity_sigma_m_s = kVelSigmaMps;
+    fix.velocity_valid = true;
+    OrbitOdResult res;
+    flown.ingest(fix, eop, res);
+    if (sigma_prior == 0.0) {
+      sigma_prior = flown.gnssBiasSigma();
+      EXPECT_GT(sigma_prior, 0.0) << "the bias block was never opened";
+    }
+  }
+
+  // The estimate is pinned at *exactly* zero — not "small": the gain's bias
+  // rows are zeroed, not merely tiny.
+  EXPECT_EQ(flown.gnssBias(), Eigen::Vector3d::Zero());
+  // And the covariance has not collapsed: in consider mode the block is never
+  // informed by a measurement, so its sigma stays at the prior it was seeded
+  // with. A sigma that has *fallen* is the gain pin having failed.
+  EXPECT_NEAR(flown.gnssBiasSigma(), sigma_prior, 0.05 * sigma_prior)
+      << "bias sigma moved from " << sigma_prior << " to " << flown.gnssBiasSigma()
+      << " — the consider pin is not holding";
 }
 
 /// Zero inflation is exactly the pre-Push-77 filter.
 TEST(OrbitOdCorrelatedGnss, ZeroInflationLeavesTheFilterBitForBit) {
   RecordProperty("verifies", "REQ-ODP-014");
   OrbitOdConfig explicit_zero = baseConfig();
-  explicit_zero.gnss_corr_sigma_h_m = 0.0;
-  explicit_zero.gnss_corr_sigma_v_m = 0.0;
+  explicit_zero.gnss_corr_fraction = 0.0;
 
   const ArcResult a = flyArc(baseConfig(), kCorrSigmaM, /*seed=*/7);
   const ArcResult b = flyArc(explicit_zero, kCorrSigmaM, /*seed=*/7);
@@ -389,9 +472,16 @@ TEST(OrbitOdCorrelatedGnss, ZeroInflationLeavesTheFilterBitForBit) {
 TEST(OrbitOdCorrelatedGnss, NegativeInflationIsRefused) {
   RecordProperty("verifies", "REQ-ODP-014");
   OrbitOdConfig cfg = baseConfig();
-  cfg.gnss_corr_sigma_h_m = -1.0;
+  cfg.gnss_corr_fraction = -0.1;
   EXPECT_FALSE(cfg.isValid());
+  // A fraction of 1 leaves R's white part at zero — a receiver with no
+  // independent noise, which makes S singular in the limit.
   cfg = baseConfig();
-  cfg.gnss_corr_sigma_v_m = -1.0;
+  cfg.gnss_corr_fraction = 1.0;
+  EXPECT_FALSE(cfg.isValid());
+  // A fraction without a correlation time is half a configuration.
+  cfg = baseConfig();
+  cfg.gnss_corr_fraction = 0.5;
+  cfg.gnss_corr_tau_s = 0.0;
   EXPECT_FALSE(cfg.isValid());
 }

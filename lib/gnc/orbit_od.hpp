@@ -155,6 +155,61 @@
 /// (`zonal_j2`, `drag_ballistic_coeff_m2_per_kg`), which is how the golden test
 /// compares this propagator against GMAT **at matched fidelity**.
 ///
+/// ## The GNSS common-mode bias, and why it is a state (Push 77)
+///
+/// Real single-point GNSS position error is **not white**: residual ionosphere,
+/// broadcast ephemeris and satellite clock are common to the satellites in view
+/// and decorrelate over minutes. The receiver reports a total sigma and cannot
+/// say which part of its error is common-mode, so the filter is told the split
+/// as a fraction (@ref OrbitOdConfig::gnss_corr_fraction) and carries the
+/// correlated part as three states.
+///
+/// **The reason it is a state and not an inflated `R`.** `S = H P Hᵀ + R`
+/// follows from `E[e vᵀ] = 0`, which is a *consequence* of whiteness: the prior
+/// error `e` is a functional of past measurements, and white noise is
+/// independent of all of them. With a coloured error the past fixes all carried
+/// nearly the same bias — at the flown `τ/Δt = 60` the neighbour correlation is
+/// 0.983 — so `C = E[e bᵀ] ≠ 0` and the true innovation covariance is
+/// `H P Hᵀ + R − H C − Cᵀ Hᵀ`. Those cross terms **subtract**: the innovation is
+/// smaller than `S` by twice the bias the filter has already absorbed into its
+/// position state, measured at about **two thirds**.
+///
+/// That is why the two consistency statistics move in opposite directions under
+/// an inflated `R`. NEES sees the absorbed bias as state error and wants `P`
+/// larger; NIS sees it removed from the innovation and wants `S` smaller. **No
+/// single `R` satisfies both** — measured across an inflation sweep, NEES enters
+/// its band only past 3× while NIS is already under its floor at 0× and falls
+/// monotonically. Carrying the bias in the covariance puts `C` where it belongs,
+/// as the `P_rb` block *inside* `S`; the augmented model has white noise by
+/// construction, so the innovations are white and `S` is genuinely theirs.
+///
+/// **Consider (Schmidt) form is what flies.** The block's covariance propagates
+/// and shapes the gain, but the estimate is pinned at zero
+/// (@ref OrbitOdConfig::gnss_bias_consider), for three independent reasons:
+///
+///  1. The bias is **not resolvable** at the flown `q_a` — 4 cm of signal over
+///     the filter's 228 s memory against a 17.7 cm floor. That is the same
+///     process-noise lockout that blocks the drag scale factor above, 4.4×
+///     under rather than 39×, and a higher-degree onboard field lifts both.
+///  2. **Consistency does not depend on resolving it.** With no information the
+///     block degenerates into a consider filter: `P_bb` stays at its prior and
+///     `b̂` at zero, but `P_rb` and `P_bb` still propagate and still reach `S`.
+///     Unobservability costs the estimate, not the covariance.
+///  3. A pinned estimate is a state a **slow spoof cannot walk**. §9.2 leaves
+///     exactly that residual open, and a 600 s FOGM position bias is precisely
+///     the shape that would absorb a ramp. Enabling the full estimator later
+///     re-opens it — boundedly, since the 3σ refusal caps the excursion, but
+///     re-opens it. Read §9.2 before flipping that switch.
+///
+/// The states are observable in principle — a constant position offset is not a
+/// solution of the equations of motion, since `∂a/∂r · δr ≠ 0`, so the dynamics
+/// separate a bias from the state even under position-only measurements. The one
+/// exactly-degenerate direction is a constant *along-track* offset, which is a
+/// free Clohessy-Wiltshire mode with no velocity signature; it does not persist
+/// because the bias is anisotropic in the **local geodetic** frame, whose
+/// heading sweeps around the orbit. That is why `Σ_b` is built in ENU and
+/// rotated, rather than the states being carried in an orbit-fixed frame.
+///
 /// ## Propagation and the state transition
 ///
 /// The state is integrated with classical **RK4** over sub-steps of at most
@@ -596,40 +651,44 @@ struct OrbitOdConfig {
   /// one per axis. Ignored when @ref dmc_tau_s is zero. Must be finite and
   /// non-negative.
   Eigen::Vector3d dmc_psd_rtn_m2_per_s5{Eigen::Vector3d::Zero()};
-  /// @name Correlated GNSS position error — the `R` repair (Push 77)
+  /// @name Correlated GNSS position error — the consider block (Push 77)
   /// @{
   ///
-  /// Per-axis 1σ [m] of the receiver's **common-mode** position error, added in
-  /// quadrature to the sigmas the fix reports when the measurement covariance is
-  /// built. Zero — the pre-Push-77 behaviour — trusts the reported sigmas whole.
+  /// Real single-point GNSS position error is not white: residual ionosphere,
+  /// broadcast ephemeris and satellite clock are common to the satellites in
+  /// view and decorrelate over minutes. The receiver reports a **total** sigma
+  /// and cannot say which part of its error is common-mode, so the filter is
+  /// told the split here.
   ///
-  /// **Why this is needed at all.** A receiver's reported covariance comes from
-  /// its own measurement residuals and geometry, so it cannot see an error
-  /// common to every satellite it is tracking — residual ionosphere, broadcast
-  /// ephemeris and satellite clock. Those terms decorrelate over minutes, not
-  /// over one fix, so a filter that averages successive fixes drives its
-  /// covariance below the error it actually has, and then rejects honest fixes
-  /// on the NIS gate. Inflating `R` by the correlated variance is the standard
-  /// remedy (Tapley, Schutz & Born §4.15 [tapley2004] on unmodelled measurement
-  /// error; TP §2.2.2).
+  /// **This is a fraction, not a sigma, and that is load-bearing.** The white
+  /// and correlated covariances are `(1−f)·R_reported` and `f·R_reported`, so
+  /// the total is preserved for any `f ∈ [0,1]` and the white part can never go
+  /// negative — which an absolute sigma subtracted from the reported one can,
+  /// needing a clamp whose silent failure would be an under-covered `R`. It is
+  /// also the *same key the receiver model carries*
+  /// (`correlated_position_fraction`), so `configc` cross-checks it by plain
+  /// equality against the hardware entry rather than against a derived quantity.
   ///
-  /// **Why not a bias state instead** — the alternative §8.3 named. Under
-  /// position-only measurements a slowly-varying position bias is very nearly
-  /// **degenerate with the position state itself**: both enter the measurement
-  /// through the identity, and only the orbital dynamics — which the bias does
-  /// not obey — separate them at all. Carrying it would add three states whose
-  /// covariance the filter cannot honestly reduce, and whose estimate would
-  /// trade against position in whatever proportion `Q` happened to allow. What
-  /// actually separates them is the raw pseudorange path (§8.3, still owed),
-  /// where the common-mode terms have their own, differently-shaped signature
-  /// across the satellites in view. Until then, inflation is the honest model:
-  /// it widens the covariance to cover an error the filter cannot resolve,
-  /// rather than claiming to resolve it.
+  /// Most importantly it is **falsifiable**. The abandoned first attempt at this
+  /// (an `R` inflation factor tuned until the campaign NEES landed in its band)
+  /// could not be wrong: any value that passed was by definition correct, and it
+  /// bought NEES by destroying NIS. `f` is a property of the receiver, and NIS
+  /// is a valid two-sided test against it again — see the file header.
   ///
-  /// Horizontal per-axis σ [m]; must be finite and non-negative.
-  double gnss_corr_sigma_h_m{0.0};
-  /// Vertical σ [m]; must be finite and non-negative.
-  double gnss_corr_sigma_v_m{0.0};
+  /// Zero disables the block entirely and is the pre-Push-77 filter.
+  /// Must be in [0, 1).
+  double gnss_corr_fraction{0.0};
+  /// Correlation time τ_b [s] of the GNSS bias states. Must be positive when
+  /// @ref gnss_corr_fraction is, and at least ten `max_step_s` — the same
+  /// quadrature limit the DMC and drag-scale kernels carry.
+  double gnss_corr_tau_s{0.0};
+  /// Run the bias states as a **consider** (Schmidt) block: their covariance
+  /// propagates and shapes the Kalman gain, but the estimate itself stays
+  /// pinned at zero. True is the flown value, for three independent reasons
+  /// given in the file header — the bias is not resolvable at the flown `q_a`,
+  /// consistency does not depend on resolving it, and a pinned estimate cannot
+  /// be walked by a slow spoof.
+  bool gnss_bias_consider{true};
   /// @}
 
   /// Correlation time τ_s [s] of the **drag scale factor** (§8.5 tier 3, orbit
@@ -962,11 +1021,15 @@ math::Vec3<math::frames::ECI> dragAcceleration(const OrbitOdConfig& cfg,
 /// Plain value with fixed-size storage; allocates nothing.
 class OrbitOd {
  public:
-  /// Full error-state dimension: `[δr; δv; δa_dmc; δs_drag]` (Push 73, Push 76).
-  /// The three DMC acceleration states and the drag scale factor are always
-  /// carried in the covariance; with `dmc_tau_s = 0` and
-  /// `drag_scale_psd_per_s = 0` they sit at zero variance and change nothing.
-  static constexpr int kDim = 10;
+  /// Full error-state dimension: `[δr; δv; δa_dmc; δs_drag; δb_gnss]`
+  /// (Push 73, 76, 77). The DMC acceleration states, the drag scale factor and
+  /// the three GNSS bias states are always carried in the covariance; each sits
+  /// at zero variance and changes nothing when its own knob is zero.
+  ///
+  /// The bias states are **appended**, not inserted, so every offset below —
+  /// and every consumer that reads the position/velocity marginal — is
+  /// unchanged by their arrival.
+  static constexpr int kDim = 13;
   /// Dimension of the position/velocity marginal every consumer reads.
   static constexpr int kPosVelDim = 6;
   /// Row/column of the position error `δr` within @ref Covariance.
@@ -978,6 +1041,9 @@ class OrbitOd {
   /// Row/column of the drag scale-factor error `δs` within @ref FullCovariance
   /// (Push 76). One state, dimensionless, nominal 1.
   static constexpr int kDragScale = 9;
+  /// Row/column of the GNSS common-mode position bias `δb` within
+  /// @ref FullCovariance (Push 77). Three states, **ECI metres**.
+  static constexpr int kGnssBias = 10;
   /// Hard bound on the RK4 sub-step loop, so it is bounded at compile time
   /// (§3.6) rather than by a config value. `OrbitOdConfig::isValid` requires
   /// `max_dt_s ≤ kMaxSubsteps · max_step_s`, so this bound can never be the
@@ -986,9 +1052,9 @@ class OrbitOd {
   /// Position/velocity error covariance, blocked `[δr; δv]` — the same order and
   /// meaning as the corresponding blocks of `state::Covariance`. This is the
   /// marginal of @ref FullCovariance that every consumer, seed and metric works
-  /// with; the DMC and drag-scale states are internal to the filter.
+  /// with; the DMC, drag-scale and GNSS-bias states are internal to the filter.
   using Covariance = Eigen::Matrix<double, kPosVelDim, kPosVelDim>;
-  /// The full `[δr; δv; δa_dmc; δs_drag]` covariance (Push 73, Push 76).
+  /// The full `[δr; δv; δa_dmc; δs_drag; δb_gnss]` covariance (Pushes 73/76/77).
   using FullCovariance = Eigen::Matrix<double, kDim, kDim>;
 
   /// Construct with @p config. If the config is invalid the filter is inert:
@@ -1135,8 +1201,8 @@ class OrbitOd {
   /// of the full state, which is what the pre-Push-73 filter carried whole.
   Covariance covariance() const { return p_.topLeftCorner<kPosVelDim, kPosVelDim>(); }
 
-  /// The full 10×10 covariance including the DMC acceleration states (Push 73)
-  /// and the drag scale factor (Push 76).
+  /// The full 13×13 covariance including the DMC acceleration states (Push 73),
+  /// the drag scale factor (Push 76) and the GNSS bias states (Push 77).
   const FullCovariance& fullCovariance() const { return p_; }
 
   /// Estimated DMC acceleration [m/s²] in **RTN** (radial, along-track,
@@ -1156,6 +1222,19 @@ class OrbitOd {
   /// estimate is the prior, not a measurement. The estimator publishes the
   /// sigma that says so rather than a fit it does not have (§8.5).
   double dragScaleSigma() const { return std::sqrt(std::max(0.0, p_(kDragScale, kDragScale))); }
+
+  /// Estimated GNSS common-mode position bias [m], ECI (Push 77). Exactly zero
+  /// in the flown **consider** mode, where the block shapes the gain but the
+  /// estimate is pinned — read @ref gnssBiasSigma for what the filter believes
+  /// about it, which is the part that matters.
+  const Eigen::Vector3d& gnssBias() const { return gnss_bias_; }
+
+  /// `sqrt(trace)` of the GNSS bias covariance [m]. In consider mode this stays
+  /// at its prior by construction, and a value that has *moved* is the
+  /// signature of the consider switch failing to pin the gain.
+  double gnssBiasSigma() const {
+    return std::sqrt(std::max(0.0, p_.block<3, 3>(kGnssBias, kGnssBias).trace()));
+  }
 
   /// TAI epoch the state is valid at.
   const time::Tai& epoch() const { return last_epoch_; }
@@ -1220,6 +1299,20 @@ class OrbitOd {
   /// at all, so it is not carried even if a PSD was configured.
   bool dragScaleEnabled() const;
 
+  /// True when the GNSS bias block is carried: a positive correlated fraction.
+  bool gnssBiasEnabled() const { return cfg_.gnss_corr_fraction > 0.0; }
+
+  /// Seed the GNSS bias block: estimate to zero, `P_bb` to the prior built from
+  /// @p sigma_b_eci, and the cross terms to zero — a fresh solution is
+  /// uncorrelated with the receiver's bias.
+  void seedGnssBiasBlock(const Eigen::Matrix3d& sigma_b_eci);
+  /// The correlated-error covariance `Σ_b` in ECI [m²], built from a fix's
+  /// reported sigmas and the configured fraction, in the local geodetic basis
+  /// and rotated out. Zero when the block is disabled.
+  Eigen::Matrix3d gnssBiasCovariance(const Eigen::Vector3d& r_ecef,
+                                     const Eigen::Matrix3d& eci_from_ecef, double sigma_h_m,
+                                     double sigma_v_m) const;
+
   /// One 3-row update against a measurement of `H = [I 0]` (position, @p offset
   /// = kPosition) or `H = [0 I]` (velocity, @p offset = kVelocity).
   bool applyUpdate(int offset, const Eigen::Vector3d& measured, const Eigen::Matrix3d& r_cov,
@@ -1235,7 +1328,14 @@ class OrbitOd {
   Eigen::Vector3d position_{Eigen::Vector3d::Zero()};  ///< ECI position estimate [m]
   Eigen::Vector3d velocity_{Eigen::Vector3d::Zero()};  ///< ECI velocity estimate [m/s]
   Eigen::Vector3d dmc_{Eigen::Vector3d::Zero()};       ///< DMC acceleration estimate, RTN [m/s²]
-  double drag_scale_{1.0};                    ///< Drag scale-factor estimate [-], nominal 1
+  double drag_scale_{1.0};  ///< Drag scale-factor estimate [-], nominal 1
+  /// GNSS common-mode position bias estimate, ECI [m] (Push 77). Pinned at zero
+  /// in the flown consider mode.
+  Eigen::Vector3d gnss_bias_{Eigen::Vector3d::Zero()};
+  /// The bias prior Σ_b in ECI [m²], refreshed from each fix's reported sigmas
+  /// and the configured correlated fraction, and held across the propagation
+  /// steps between fixes.
+  Eigen::Matrix3d gnss_bias_sigma_{Eigen::Matrix3d::Zero()};
   FullCovariance p_{FullCovariance::Zero()};  ///< full error-state covariance
   time::Tai last_epoch_{};                    ///< epoch of the state
   time::Tai last_fix_epoch_{};                ///< epoch of the last ingested fix

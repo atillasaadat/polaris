@@ -41,8 +41,9 @@ params:
   # The split PRESERVES the datasheet total: sigma_white = sigma*sqrt(1-f) and
   # sigma_corr = sigma*sqrt(f), and the receiver still reports the full 1.2 m.
   # It changes the COLOUR of the error, not its size — which is precisely what
-  # the onboard filter is unprepared for, and what
-  # flight.orbitEstimator.GnssCorrSigma{H,V}M is tuned against.
+  # the onboard filter is unprepared for, and what the filter's three GNSS
+  # bias states model (flight.orbitEstimator.GnssCorrFraction, which configc
+  # requires to EQUAL the fraction below).
   correlated_position_fraction: 0.5   # allocation, not datasheet
   correlated_position_tau_s: 600.0    # allocation: ~10 min, SISRE-dominated
 

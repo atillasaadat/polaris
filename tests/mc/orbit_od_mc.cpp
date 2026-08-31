@@ -170,7 +170,7 @@ constexpr double kInitialVelSigmaMps = 5.0;
 /// drift apart in this file the way a flight/sim parameter pair can in config.
 constexpr double kFlownCorrFraction = 0.5;
 constexpr double kFlownCorrTauS = 600.0;
-constexpr double kFlownCorrInflate = 3.0;
+constexpr double kFlownCorrConsider = 1.0;  ///< 1 = consider (Schmidt), 0 = full estimator
 
 /// Optional overrides from the command line (Push 73): the DMC states and the
 /// RTN state-noise intensities, so the campaign can measure a candidate tuning
@@ -186,11 +186,9 @@ struct TuningOverride {
   /// rather than a filter tuning, so the campaign's default is the vehicle's.
   double gnss_corr_fraction{kFlownCorrFraction};
   double gnss_corr_tau_s{kFlownCorrTauS};
-  /// The filter's `R` inflation, as a **multiple of the receiver's correlated
-  /// per-axis sigma** — which is the form the tuning is actually done in, since
-  /// the measured answer is "about 3x" rather than an absolute metre figure
-  /// (`tests/unit/orbit_od_correlated_gnss_test.cpp`).
-  double gnss_corr_inflate{kFlownCorrInflate};
+  /// Consider (Schmidt) mode for the GNSS bias block: 1 = pin the estimate,
+  /// 0 = let the filter estimate the bias. The flown value is consider.
+  double gnss_bias_consider{kFlownCorrConsider};
 };
 
 TuningOverride g_override;
@@ -226,15 +224,13 @@ pg::OrbitOdConfig filterConfig() {
   cfg.accel_psd_rtn_m2_per_s3 = g_override.accel_psd_rtn;
   cfg.dmc_tau_s = g_override.dmc_tau_s;
   cfg.dmc_psd_rtn_m2_per_s5 = Eigen::Vector3d::Constant(g_override.dmc_psd_m2_per_s5);
-  // The R inflation that matches the receiver's correlated split (Push 77).
-  // Derived from the *same* fixture the receiver is built from, so the flight
-  // and sim halves of this pair cannot be set inconsistently here — the
-  // configc cross-check is what enforces it in the flown config.
-  {
-    const psen::GnssSpec rx = receiverSpec(0.0);
-    cfg.gnss_corr_sigma_h_m = g_override.gnss_corr_inflate * rx.position_corr_sigma_h_m;
-    cfg.gnss_corr_sigma_v_m = g_override.gnss_corr_inflate * rx.position_corr_sigma_v_m;
-  }
+  // The correlated split the filter is told (Push 77) — taken from the SAME
+  // values the receiver fixture is built from, so the flight and sim halves of
+  // this pair cannot disagree here. In the flown config that agreement is what
+  // configc enforces by equality.
+  cfg.gnss_corr_fraction = g_override.gnss_corr_fraction;
+  cfg.gnss_corr_tau_s = g_override.gnss_corr_tau_s;
+  cfg.gnss_bias_consider = g_override.gnss_bias_consider != 0.0;
   cfg.position_nis_gate = kChi2_3_999;
   cfg.velocity_nis_gate = kChi2_3_999;
   cfg.max_coast_s = kCoastHorizonS;
@@ -798,21 +794,30 @@ int main(int argc, char** argv) {
       g_override.gnss_corr_fraction = next(kFlownCorrFraction);
     } else if (a == "--gnss-corr-tau-s") {
       g_override.gnss_corr_tau_s = next(kFlownCorrTauS);
-    } else if (a == "--gnss-corr-inflate") {
-      g_override.gnss_corr_inflate = next(kFlownCorrInflate);
+    } else if (a == "--gnss-bias-consider") {
+      g_override.gnss_bias_consider = next(kFlownCorrConsider);
     } else if (a == "--q-rtn" && i + 3 < argc) {
       g_override.accel_psd_rtn =
           Eigen::Vector3d(std::atof(argv[i + 1]), std::atof(argv[i + 2]), std::atof(argv[i + 3]));
       i += 3;
-    } else if (a == "--help") {
+    } else if (a != "--help") {
+      // An unrecognised argument is refused, not ignored (Push 77). This driver
+      // silently accepted them until a stale sweep command kept passing a flag
+      // that had been renamed: nothing failed, and the runs quietly measured a
+      // different configuration than the command line said. A campaign that
+      // measures the wrong thing while looking right is worse than one that
+      // does not run.
+      std::fprintf(stderr, "orbit_od_mc: unknown argument '%s' (see --help)\n", a.c_str());
+      return 2;
+    } else {
       std::printf(
           "usage: polaris_orbit_od_mc [--first-run N] [--runs N] [--duration-s S]\n"
           "                           [--scenario NAME] [--out PATH]\n"
           "                           [--dmc-tau-s S --dmc-psd Q] [--qa-scale K]\n"
           "                           [--q-rtn qR qT qN]   (Push 73 tuning candidates)\n"
           "                           [--gnss-corr-fraction F --gnss-corr-tau-s S]\n"
-          "                           [--gnss-corr-inflate K]   (Push 77; K in units of\n"
-          "                             the receiver's correlated per-axis sigma)\n"
+          "                           [--gnss-bias-consider 0|1]   (Push 77; 1 = Schmidt\n"
+          "                             consider block, 0 = estimate the bias)\n"
           "\n"
           "Fast tuning loop (Push 77): one scenario, a short arc, a few runs --\n"
           "  --scenario nominal --runs 3 --duration-s 11000\n"
