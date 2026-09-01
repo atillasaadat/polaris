@@ -32,6 +32,7 @@ module flight {
     instance burnExecutor
     instance attitudeEstimator
     instance attitudeController
+    instance pointingGuidance
     instance rateGroup1
     instance rateGroup2
     instance rateGroup3
@@ -154,7 +155,12 @@ module flight {
       # magnetic and sun references are evaluated at, published earlier in the
       # same rate-group cycle. Through an outage the estimator coasts on this
       # rather than losing the magnetic pair on the next cycle.
-      orbitEstimator.orbitStateOut        -> attitudeEstimator.orbitStateIn
+      orbitEstimator.orbitStateOut[0]     -> attitudeEstimator.orbitStateIn
+      # Every orbit-relative pointing target — nadir, LVLH, and every line of
+      # sight — is measured from this solution, which is why the guidance runs
+      # after the orbit estimator in the same cycle rather than on the previous
+      # cycle's state.
+      orbitEstimator.orbitStateOut[1]     -> pointingGuidance.orbitStateIn
 
       # The §8.0 estimate to its consumer, and the §7 duty-cycle schedule back:
       # a cycle within the rate group, closed deliberately. The estimator runs
@@ -162,6 +168,11 @@ module flight {
       # is the period this cycle's magnetometer sample was taken in — the correct
       # pairing, not a staleness bug (see GncPorts.MtqActuation).
       attitudeEstimator.estimateOut[0]    -> attitudeController.estimateIn
+      # The §8.4 seam: a commanded attitude and a feedforward rate, and nothing
+      # about which pointing mode produced them.
+      pointingGuidance.guidanceOut        -> attitudeController.guidanceIn
+      pointingGuidance.getBodyPosition    -> onboardTables.getBodyPosition
+      pointingGuidance.getEopAt           -> onboardTables.getEopAt
       # The burn executor's second copy of the estimate: it rotates the
       # commanded thrust to ECI for the orbit filter (§17).
       attitudeEstimator.estimateOut[1]    -> burnExecutor.attitudeIn
@@ -191,16 +202,22 @@ module flight {
       # instead (recipe: PolarisFsw/README.md).
       PolarisSitl.sitlRateGroup.RateGroupMemberOut[0] -> orbitEstimator.run
       PolarisSitl.sitlRateGroup.RateGroupMemberOut[1] -> attitudeEstimator.run
-      # Member 2 is the controller: it acts on the solution member 1 just
-      # published, in the same cycle, and its commands ride the STEP_REPLY the
-      # bridge builds after the group returns (§2.4 step 4).
-      PolarisSitl.sitlRateGroup.RateGroupMemberOut[2] -> attitudeController.run
+      # Member 2 is the pointing guidance: it needs member 0's orbit solution and
+      # must produce this cycle's attitude target *before* the controller reads
+      # it, so it sits between them. Ordering is the whole reason it is a
+      # separate member rather than a call from inside the controller.
+      PolarisSitl.sitlRateGroup.RateGroupMemberOut[2] -> pointingGuidance.run
+      # Member 3 is the controller: it acts on the solution member 1 just
+      # published and the target member 2 just computed, in the same cycle, and
+      # its commands ride the STEP_REPLY the bridge builds after the group
+      # returns (§2.4 step 4).
+      PolarisSitl.sitlRateGroup.RateGroupMemberOut[3] -> attitudeController.run
       attitudeController.wheelCmdOut -> PolarisSitl.sitlBridge.wheelCmdIn
       attitudeController.mtqCmdOut   -> PolarisSitl.sitlBridge.mtqCmdIn
-      # Member 3 is the burn executor (§17): its throttle rides the same
+      # Member 4 is the burn executor (§17): its throttle rides the same
       # STEP_REPLY, and the acceleration it publishes is latched by member 0
       # for the next cycle — the step over which that throttle first acts.
-      PolarisSitl.sitlRateGroup.RateGroupMemberOut[3] -> burnExecutor.run
+      PolarisSitl.sitlRateGroup.RateGroupMemberOut[4] -> burnExecutor.run
       burnExecutor.thrusterCmdOut -> PolarisSitl.sitlBridge.thrusterCmdIn
 
       # Sensor measurements, SITL end of the GncPorts seam. One line per installed

@@ -1394,6 +1394,50 @@ spacecraft:
     # The attitude estimate is published every 100 ms cycle; three missed
     # cycles is a fault, not a schedule.
     flight.burnExecutor.MaxAttitudeAgeS: 0.35
+
+    # --- Pointing guidance (§8.4; REQ-AGN-004/-005) -----------------------
+    # The body vectors an align/constrain command may name. The star-tracker and
+    # sun-sensor entries are the SAME numbers as the attitudeEstimator
+    # parameters above, and the config compiler cross-checks them by equality:
+    # two independently maintained copies of a mounting vector is the failure
+    # class this repository keeps rediscovering, and here it would point the
+    # instrument somewhere nobody could attribute.
+    flight.pointingGuidance.StBoresightsBody: [
+      -0.7071067811865476, 0.0, -0.7071067811865476,   # 0: st_a (KING)
+       0.7071067811865476, 0.0, -0.7071067811865476,   # 1: st_b
+       0.0, 0.0, 0.0,    # 2: not installed
+       0.0, 0.0, 0.0,    # 3: not installed
+       0.0, 0.0, 0.0,    # 4: not installed
+       0.0, 0.0, 0.0,    # 5: not installed
+       0.0, 0.0, 0.0,    # 6: not installed
+       0.0, 0.0, 0.0]    # 7: not installed
+    flight.pointingGuidance.SunSensorBoresightsBody: [
+       0.0,  0.0,  1.0,    # 0: ss_zp  (+Z, solar-array normal)
+       0.0,  0.0, -1.0,    # 1: ss_zm  (-Z)
+       1.0,  0.0,  0.0,    # 2: ss_xp  (+X)
+      -1.0,  0.0,  0.0,    # 3: ss_xm  (-X)
+       0.0,  1.0,  0.0,    # 4: ss_yp  (+Y)
+       0.0, -1.0,  0.0,    # 5: ss_ym  (-Y)
+       0.0,  0.0,  0.0,    # 6: not installed
+       0.0,  0.0,  0.0]    # 7: not installed
+    # Camera boresights have no estimator counterpart — a camera is not an
+    # attitude sensor — so this is the only definition of them on the vehicle.
+    # One payload camera on +Z, the 6U long axis.
+    flight.pointingGuidance.CameraBoresightsBody: [
+       0.0, 0.0, 1.0,    # 0: payload camera, +Z
+       0.0, 0.0, 0.0,    # 1: not installed
+       0.0, 0.0, 0.0,    # 2: not installed
+       0.0, 0.0, 0.0,    # 3: not installed
+       0.0, 0.0, 0.0,    # 4: not installed
+       0.0, 0.0, 0.0,    # 5: not installed
+       0.0, 0.0, 0.0,    # 6: not installed
+       0.0, 0.0, 0.0]    # 7: not installed
+    # Beyond this age every orbit-relative target (nadir, LVLH, any line of
+    # sight) is refused rather than pointed from a coasted state whose error
+    # nobody bounded. 30 s is three OD cycles: long enough to ride out a missed
+    # fix, short enough that a real outage stops pointing rather than degrading
+    # it invisibly.
+    flight.pointingGuidance.MaxOrbitStateAgeSec: 30.0
   drag_area_m2: 0.06                 # 6U broadside, ~0.2 x 0.3 m
   drag_cd: 2.2
   srp_area_m2: 0.06

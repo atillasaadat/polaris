@@ -119,6 +119,7 @@ class AttitudeController final : public AttitudeControllerComponentBase {
 
   //! Latch one wheel's tachometer reading for this cycle.
   void wheelSpeedIn_handler(FwIndexType portNum, const WheelSpeedMeas& meas) override;
+  void guidanceIn_handler(FwIndexType portNum, const AttitudeTarget& target) override;
 
   // ----------------------------------------------------------------------
   // Commands
@@ -311,6 +312,15 @@ class AttitudeController final : public AttitudeControllerComponentBase {
   CtrlMode::T mode_{CtrlMode::IDLE};
   polaris::math::Quat<polaris::math::frames::Body, polaris::math::frames::ECI> target_{};
   bool have_target_{false};
+
+  //! The §8.4 guidance solution for this cycle, consumed only in TRACK.
+  //! Refreshed every cycle and *not* latched: `guidance_valid_` false means the
+  //! cycle is refused with NO_GUIDANCE rather than flown against a stale
+  //! attitude, because a frozen target is indistinguishable from a held one
+  //! right up until the vehicle is pointing somewhere nobody asked for.
+  polaris::math::Quat<polaris::math::frames::Body, polaris::math::frames::ECI> guidance_target_{};
+  polaris::math::Vec3<polaris::math::frames::Body> guidance_rate_{};
+  bool guidance_valid_{false};
 
   //! Cached tuning the cycle reads directly.
   F64 control_period_s_{0.0};

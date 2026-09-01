@@ -81,7 +81,13 @@ module flight {
 
     @ The orbit solution, published every cycle. `valid` false when there is
     @ none — a consumer MUST treat position as unavailable then (§9.1).
-    output port orbitStateOut: OrbitEstimatePort
+    @
+    @ An array because more than one component needs it: the attitude estimator
+    @ (for the position-dependent references) and the §8.4 pointing guidance
+    @ (every orbit-relative target is measured from it). Fanning out from one
+    @ output rather than letting a second consumer re-derive the state is what
+    @ keeps a single orbit solution on the vehicle.
+    output port orbitStateOut: [2] OrbitEstimatePort
 
     # ----------------------------------------------------------------------
     # Types

@@ -57,6 +57,27 @@ AttitudeController ::AttitudeController(const char* const compName)
 
 AttitudeController ::~AttitudeController() {}
 
+void AttitudeController ::guidanceIn_handler(FwIndexType, const AttitudeTarget& target) {
+  if (!target.get_valid()) {
+    this->guidance_valid_ = false;
+    return;
+  }
+  const QuatF64& q = target.get_qBodyFromEci();
+  const polaris::math::Quaternion core(q[0], q[1], q[2], q[3]);
+  const Vec3F64& w = target.get_rateBodyRadS();
+  const pm::Vec3<Body> rate(w[0], w[1], w[2]);
+  // A non-finite or null-norm target is dropped rather than normalised into
+  // something plausible: the guidance is the only thing that knows what it
+  // meant, and a controller that repairs its input hides the fault.
+  if (!core.isFinite() || !rate.isFinite() || !(core.coeffs().norm() > 0.0)) {
+    this->guidance_valid_ = false;
+    return;
+  }
+  this->guidance_target_ = polaris::math::Quat<Body, ECI>(core.canonical());
+  this->guidance_rate_ = rate;
+  this->guidance_valid_ = true;
+}
+
 void AttitudeController ::commandModeAtStartup(U32 mode, const F64 q[4]) {
   const double norm = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
   if (norm > 0.0) {
@@ -582,6 +603,14 @@ bool AttitudeController ::tryEnterMode(CtrlMode::T requested, CtrlRefusal::T& re
     reason = CtrlRefusal::NO_TARGET;
     return false;
   }
+  // TRACK is refused unless the guidance is solving *now*. Entering it on the
+  // strength of a command alone would put the vehicle in a mode whose first act
+  // is to refuse every cycle, which reads to an operator as a controller fault
+  // rather than as a pointing command that cannot be met.
+  if (requested == CtrlMode::TRACK && !this->guidance_valid_) {
+    reason = CtrlRefusal::NO_GUIDANCE;
+    return false;
+  }
   if (requested == CtrlMode::DETUMBLE && !this->estimate_.get_magFieldValid()) {
     reason = CtrlRefusal::NO_FIELD;
     return false;
@@ -796,10 +825,24 @@ bool AttitudeController ::runPoint(double dtSec, double* wheelTorque, CtrlRefusa
   // would fight the integrator that is cancelling the same disturbance.
   const pm::Vec3<Body>& feedforward = this->feedforward_nm_;
 
+  // POINT holds a fixed inertial attitude at zero commanded rate; TRACK follows
+  // whatever the guidance streams, including its feedforward rate. One control
+  // law, two sources — the PID already takes a target rate, so tracking is a
+  // change of argument rather than a second controller.
+  const bool tracking = this->mode_ == CtrlMode::TRACK;
+  if (tracking && !this->guidance_valid_) {
+    reason = CtrlRefusal::NO_GUIDANCE;
+    return false;
+  }
+  const polaris::math::Quat<Body, ECI>& commanded_att =
+      tracking ? this->guidance_target_ : this->target_;
+  const pm::Vec3<Body> commanded_rate =
+      tracking ? this->guidance_rate_ : pm::Vec3<Body>(Eigen::Vector3d::Zero());
+
   polaris::gnc::AttitudePidResult pid;
   if (!this->pid_.update(polaris::math::Quat<Body, ECI>(estimate),
-                         fromVec3F64(this->estimate_.get_bodyRateRadps()), this->target_,
-                         pm::Vec3<Body>(Eigen::Vector3d::Zero()), feedforward, dtSec, pid)) {
+                         fromVec3F64(this->estimate_.get_bodyRateRadps()), commanded_att,
+                         commanded_rate, feedforward, dtSec, pid)) {
     reason = CtrlRefusal::ATTITUDE_INVALID;
     return false;
   }
@@ -1175,7 +1218,14 @@ void AttitudeController ::run_handler(FwIndexType portNum, U32 context) {
     if (this->mode_ == CtrlMode::DETUMBLE) {
       ok = this->runDetumble(dipole, reason);
       rods_active = ok;
-    } else if (!this->have_target_) {
+    } else if (this->mode_ == CtrlMode::TRACK && !this->guidance_valid_) {
+      // TRACK's precondition is a guidance solution *this cycle*, not a target
+      // ever having been commanded. The two refusals are kept apart because the
+      // operator's fix differs: NO_TARGET means uplink one, NO_GUIDANCE means
+      // the one you uplinked cannot be met right now.
+      ok = false;
+      reason = CtrlRefusal::NO_GUIDANCE;
+    } else if (this->mode_ == CtrlMode::POINT && !this->have_target_) {
       ok = false;
       reason = CtrlRefusal::NO_TARGET;
     } else {
