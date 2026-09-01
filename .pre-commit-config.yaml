@@ -3,6 +3,15 @@
 # Run on demand: pre-commit run --all-files
 minimum_pre_commit_version: "3.5.0"
 
+# BOTH hook types, or the pre-push stage is configured and never installed.
+# `pre-commit install` wires only the pre-commit hook by default, so the
+# FreeFlyer V&V gate below sat in this file — declared, reviewed, documented in
+# PROGRESS.md as "a push gate" — and never once ran on a developer machine.
+# Nothing reported that: an uninstalled hook is indistinguishable from a passing
+# one. Declaring the hook types here means the documented install command is the
+# whole install, rather than one that silently wires half of this file.
+default_install_hook_types: [pre-commit, pre-push]
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0

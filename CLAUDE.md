@@ -167,6 +167,38 @@ uv run --only-group dev pre-commit run --all-files       # lint (git-add first)
 `PROGRESS.md` § "Build & verify locally" carries the full recipe, including the
 `configc` → `PrmDb.dat` → `-P` tuning path a SITL run needs.
 
+### Local gates: run them, or don't — never both halves of neither
+
+CI already runs the **full SITL suite** (`.github/workflows/ci.yml`, three
+`ctest` steps: attitude control, fault matrix, and the `^Sitl` complement), and
+CI is the authoritative gate. The local build tree is the same configuration
+(`-O2`, `Debug`, ASan/UBSan), so a local run is a genuine duplicate, not a
+weaker smoke test. That makes the only question *when it buys anything*:
+
+- **Run it and wait for it** when the change can plausibly reach SITL — sim
+  models, `flight/` components, harness fixtures, parameters, `configc` output.
+  Push only once it is green.
+- **Skip it** when the change cannot — docs, analysis tooling, config comments.
+  Let CI be the gate and say so.
+- **Never run it and push before it finishes.** That is the one combination
+  that costs the compute and buys none of the feedback, and it is the easy
+  mistake to make because the run *looks* like diligence while it gates nothing.
+
+Two caveats worth holding. Running the binary directly executes the rows
+serially in one process; CI runs `ctest -j$(nproc)`, so **a local pass does not
+prove a CI pass** — contention has produced failures here before. And a green
+local SITL says nothing about the ~28 min F´ job as a whole.
+
+**FreeFlyer V&V runs as a `pre-push` hook** (`freeflyer-vv` in
+`.pre-commit-config.yaml`), which is why `default_install_hook_types` names both
+hook types: `pre-commit install` wires only `pre-commit` by default, and this
+gate spent its whole life declared-but-never-installed as a result. It runs the
+matrix against a locally installed, licensed FreeFlyer when one is discoverable
+and **skips visibly** when none is (`tests/freeflyer/conftest.py` owns the skip,
+so a machine without the seat is never silently green). ~2 s of engine time
+warm. It is on `pre-push` rather than `pre-commit` deliberately: it gates code
+leaving the machine without taxing every intermediate commit.
+
 ## CLI Quick Reference
 
 ```bash

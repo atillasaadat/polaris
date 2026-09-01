@@ -973,3 +973,25 @@ fixture was found in the innovation sequence, not in review.
   never.** P77's split check had no automated test at all; it was confirmed
   interactively and left. This push added the range cases *and* the equality
   case it should have had.
+
+## An uninstalled hook is indistinguishable from a passing one (P79, tooling)
+
+- **A gate that is declared, reviewed and documented can still never run.**
+  `freeflyer-vv` sat in `.pre-commit-config.yaml` with `stages: [pre-push]` from
+  Push 57, was described in `PROGRESS.md` as "a push gate", and had never
+  executed on any developer machine: `pre-commit install` wires only the
+  `pre-commit` hook type by default, and nothing documented `--hook-type
+  pre-push`. Fix the *installability*, not just the declaration —
+  `default_install_hook_types` makes the documented command the whole install.
+- **Verify a gate by watching it fire, never by reading its config.** The same
+  error as asserting an emitter's own bytes instead of the reader's (P78), and
+  as a green CI job whose tests all `GTEST_SKIP`ped since Push 41. Silent
+  success is this repo's recurring failure mode; assume it until a run proves
+  otherwise.
+- **Duplicating a CI gate locally is only worth it if you wait for it.**
+  Running the SITL suite and pushing before it finishes spends the compute and
+  buys none of the feedback, while looking like diligence. Decide per change:
+  run and wait, or skip and let CI gate — never the middle.
+- **And a local pass is not a CI pass.** The binary run directly executes rows
+  serially; CI runs them under `ctest -j$(nproc)`, where contention has produced
+  failures this repo has already debugged once.
