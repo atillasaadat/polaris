@@ -10,7 +10,8 @@ add_executable(polaris_golden_tests
   orbit_od_golden_test.cpp
   time_scales_golden_test.cpp
   eop_golden_test.cpp
-  egm2008_golden_test.cpp)
+  egm2008_golden_test.cpp
+  sgp4_verification_golden_test.cpp)
 
 target_compile_definitions(polaris_golden_tests
   PRIVATE GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}")

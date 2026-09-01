@@ -131,7 +131,14 @@ add_library(polaris_gnc
   gnc/disturbance.cpp
   gnc/dipole_estimation.cpp
   gnc/geopotential.cpp
-  gnc/orbit_od.cpp)
+  gnc/orbit_od.cpp
+  # SGP4/SDP4 and its TLE input (REQ-ODP-003). Split three ways for size: the
+  # near-Earth initialisation, the propagation core, and the deep-space half
+  # that 24 of the 33 official verification cases exercise.
+  gnc/tle.cpp
+  gnc/sgp4.cpp
+  gnc/sgp4_propagate.cpp
+  gnc/sgp4_deep_space.cpp)
 target_include_directories(polaris_gnc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # polaris_frames is PUBLIC because the onboard OD filter (§8.3) takes EOP and
 # converts every GNSS fix from ECEF/GPS to ECI/TAI through the one reduction in
