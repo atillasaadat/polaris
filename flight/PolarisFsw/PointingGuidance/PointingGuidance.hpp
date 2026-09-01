@@ -35,6 +35,18 @@ class PointingGuidance final : public PointingGuidanceComponentBase {
   explicit PointingGuidance(const char* compName);
   ~PointingGuidance() override = default;
 
+ public:
+  //! SITL/bench only: issue a SET_GUIDANCE at startup, with no ground link
+  //! attached. Runs the command handler's body through the real command port,
+  //! so the uplink path's validation is exercised rather than bypassed — a row
+  //! that sets an invalid pair must be refused here exactly as it would be from
+  //! the ground.
+  void commandGuidanceAtStartup(U32 alignVecKind, U32 alignVecIndex, bool alignVecNegate,
+                                U32 alignTgtKind, U32 alignTgtIndex, bool alignTgtNegate,
+                                F64 alignTgtParam0, F64 alignTgtParam1, U32 conVecKind,
+                                U32 conVecIndex, bool conVecNegate, U32 conTgtKind, U32 conTgtIndex,
+                                bool conTgtNegate, F64 conTgtParam0, F64 conTgtParam1);
+
  private:
   void run_handler(FwIndexType portNum, U32 context) override;
   void orbitStateIn_handler(FwIndexType portNum, const OrbitEstimate& estimate) override;
@@ -81,6 +93,17 @@ class PointingGuidance final : public PointingGuidanceComponentBase {
   // ---- The active command.
   polaris::gnc::GuidanceCommand command_{};
   bool commanded_ = false;
+
+  //! A command latched before the parameters were available (SITL/bench: see
+  //! commandGuidanceAtStartup), retried once per cycle until it can be
+  //! validated. The mounting parameters arrive from PrmDb *after* topology
+  //! setup, so a startup command validated once at setup would always be
+  //! refused with BODY_VECTOR_UNKNOWN — not because it is wrong but because
+  //! nothing had loaded yet. The same latch-and-retry AttitudeController uses
+  //! for its startup mode, and for the same reason: it is what a ground
+  //! operator would do.
+  polaris::gnc::GuidanceCommand pending_command_{};
+  bool pending_ = false;
 
   // ---- Latest orbit solution.
   OrbitEstimate orbit_{};

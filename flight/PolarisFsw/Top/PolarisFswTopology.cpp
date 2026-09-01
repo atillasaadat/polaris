@@ -212,6 +212,18 @@ void setupTopology(const TopologyState& state) {
   // same reason — it dispatches the flight opcodes through the component's own
   // command port, and it must follow loadParameters() because an unconfigured
   // controller refuses every mode but IDLE.
+  // The §8.4 pointing command must be issued *before* the mode latch, because
+  // TRACK is refused unless the guidance is already solving. Same placement rule
+  // as the line below: after loadParameters(), since the guidance resolves body
+  // vectors through the mounting parameters and would otherwise refuse a
+  // perfectly good command for want of a boresight.
+  if (state.guidanceSet) {
+    pointingGuidance.commandGuidanceAtStartup(
+        state.alignVecKind, state.alignVecIndex, state.alignVecNegate, state.alignTgtKind,
+        state.alignTgtIndex, state.alignTgtNegate, state.alignTgtParam0, state.alignTgtParam1,
+        state.conVecKind, state.conVecIndex, state.conVecNegate, state.conTgtKind,
+        state.conTgtIndex, state.conTgtNegate, state.conTgtParam0, state.conTgtParam1);
+  }
   attitudeController.commandModeAtStartup(state.ctrlMode, state.ctrlTargetQ);
   // Feedforward override, same rule and same reason: it must follow
   // loadParameters(), which would otherwise overwrite the values it sets.

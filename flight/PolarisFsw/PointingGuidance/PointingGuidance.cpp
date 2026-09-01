@@ -79,6 +79,36 @@ pg::PointingTargetKind toLibTargetKind(PointingGuidance_TargetKind k) {
 PointingGuidance::PointingGuidance(const char* compName)
     : PointingGuidanceComponentBase(compName) {}
 
+void PointingGuidance ::commandGuidanceAtStartup(U32 alignVecKind, U32 alignVecIndex,
+                                                 bool alignVecNegate, U32 alignTgtKind,
+                                                 U32 alignTgtIndex, bool alignTgtNegate,
+                                                 F64 alignTgtParam0, F64 alignTgtParam1,
+                                                 U32 conVecKind, U32 conVecIndex, bool conVecNegate,
+                                                 U32 conTgtKind, U32 conTgtIndex, bool conTgtNegate,
+                                                 F64 conTgtParam0, F64 conTgtParam1) {
+  // Serialised through the real command port rather than by assigning command_
+  // directly: the point of the hook is that a SITL row exercises the *uplink*
+  // path, validation included, so a row that names an impossible pair is
+  // refused here exactly as it would be from the ground.
+  Fw::CmdArgBuffer args;
+  const auto ok = [](Fw::SerializeStatus s) { return s == Fw::FW_SERIALIZE_OK; };
+  if (ok(args.serializeFrom(static_cast<U8>(alignVecKind))) &&
+      ok(args.serializeFrom(static_cast<U8>(alignVecIndex))) &&
+      ok(args.serializeFrom(alignVecNegate)) &&
+      ok(args.serializeFrom(static_cast<U8>(alignTgtKind))) &&
+      ok(args.serializeFrom(static_cast<U8>(alignTgtIndex))) &&
+      ok(args.serializeFrom(alignTgtNegate)) && ok(args.serializeFrom(alignTgtParam0)) &&
+      ok(args.serializeFrom(alignTgtParam1)) &&
+      ok(args.serializeFrom(static_cast<U8>(conVecKind))) &&
+      ok(args.serializeFrom(static_cast<U8>(conVecIndex))) &&
+      ok(args.serializeFrom(conVecNegate)) && ok(args.serializeFrom(static_cast<U8>(conTgtKind))) &&
+      ok(args.serializeFrom(static_cast<U8>(conTgtIndex))) &&
+      ok(args.serializeFrom(conTgtNegate)) && ok(args.serializeFrom(conTgtParam0)) &&
+      ok(args.serializeFrom(conTgtParam1))) {
+    this->get_cmdIn_InputPort(0)->invoke(this->getIdBase() + OPCODE_SET_GUIDANCE, 0, args);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Parameters
 // ---------------------------------------------------------------------------
@@ -230,6 +260,16 @@ void PointingGuidance::publishNoTarget(pt::Tai now, pg::GuidanceStatus status) {
 }
 
 void PointingGuidance::run_handler(FwIndexType, U32) {
+  // Read the mounting parameters until they take. `parameterUpdated` fires on a
+  // ground PRM_SET, not on the initial load from PrmDb, so a component that only
+  // listened for it would fly with an empty table and refuse every command with
+  // BODY_VECTOR_UNKNOWN — a configuration failure wearing a geometry failure's
+  // name. Retried rather than read once because the load completes after
+  // topology setup.
+  if (!configured_) {
+    reloadMountingParameters();
+  }
+
   Fw::Time fw_now = this->getTime();
   const pt::Tai now =
       pt::Tai::fromNanosecondsSinceEpoch(static_cast<I64>(fw_now.getSeconds()) * 1000000000LL +
@@ -240,6 +280,22 @@ void PointingGuidance::run_handler(FwIndexType, U32) {
       static_cast<U8>(catalog_.occupiedCount(pg::TargetKind::kStateVector)));
   this->tlmWrite_GroundPointsUsed(static_cast<U8>(ground_points_.count()));
   this->tlmWrite_CustomVecsUsed(static_cast<U8>(body_vectors_.customCount()));
+
+  // A startup command retried until the parameters it names have loaded. Once
+  // it validates it becomes the active command; a *genuinely* invalid one keeps
+  // failing and stays visible as an unfulfilled latch rather than being
+  // silently dropped at setup.
+  if (pending_) {
+    if (pg::validateGuidanceCommand(pending_command_, body_vectors_, &catalog_, &ground_points_) ==
+        pg::GuidanceStatus::kOk) {
+      command_ = pending_command_;
+      commanded_ = true;
+      pending_ = false;
+      this->log_ACTIVITY_HI_GuidanceCommanded(
+          static_cast<BodyVecKind::T>(command_.align_vector.kind), command_.align_vector.index,
+          static_cast<TargetKind::T>(command_.align_target.kind), command_.align_target.index);
+    }
+  }
 
   if (!commanded_) {
     publishNoTarget(now, pg::GuidanceStatus::kOk);
@@ -374,6 +430,16 @@ void PointingGuidance::SET_GUIDANCE_cmdHandler(
   const pg::GuidanceStatus status =
       pg::validateGuidanceCommand(cmd, body_vectors_, &catalog_, &ground_points_);
   if (status != pg::GuidanceStatus::kOk) {
+    // BODY_VECTOR_UNKNOWN before the mounting parameters have loaded is a
+    // *timing* problem, not a bad command, and only at startup: latch it and
+    // retry each cycle rather than rejecting a command that would be accepted a
+    // moment later. Every other refusal is a real one and is reported now.
+    if (status == pg::GuidanceStatus::kBodyVectorUnknown && !configured_) {
+      pending_command_ = cmd;
+      pending_ = true;
+      this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
+      return;
+    }
     this->log_WARNING_LO_GuidanceCommandRefused(toRefusal(status));
     this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::VALIDATION_ERROR);
     return;
@@ -387,6 +453,7 @@ void PointingGuidance::SET_GUIDANCE_cmdHandler(
 
 void PointingGuidance::CLEAR_GUIDANCE_cmdHandler(FwOpcodeType opCode, U32 cmdSeq) {
   commanded_ = false;
+  pending_ = false;
   this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
 }
 

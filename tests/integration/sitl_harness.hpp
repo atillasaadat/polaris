@@ -115,12 +115,17 @@ inline int compileConfig(const std::string& out_dir, const std::string& err_path
 /// (`-R`), the §8.3 reset-and-reseed row's way of getting a mid-run command in.
 /// @p burnSpec, when non-null, is "cycle,durationS,throttle" for `-b`: arm a
 /// §17 BURN_START on that GNC cycle, the burn rows' way of firing a thruster.
+/// @p guidanceSpec, when non-null, is the sixteen comma-separated SET_GUIDANCE
+/// arguments for `-G` — the §8.4 align/constrain pointing command a TRACK row
+/// flies. It is issued through the real command port before the mode latch, so
+/// a row naming an impossible pair is refused exactly as an uplink would be.
 inline pid_t spawnFsw(const std::string& bin, std::uint16_t port, const std::string& prm_path,
                       const std::string& log_path, unsigned magCalSamples = 0,
                       unsigned stAlignPairs = 0, unsigned stAlignUnit = 1, unsigned ctrlMode = 0,
                       const double* ctrlTargetQ = nullptr, int feedforward = -1,
                       unsigned odResetCycle = 0, const char* burnSpec = nullptr,
-                      int odAccelInput = -1, int wheelBias = -1) {
+                      int odAccelInput = -1, int wheelBias = -1,
+                      const char* guidanceSpec = nullptr) {
   const pid_t pid = ::fork();
   if (pid == 0) {
     // A child whose log cannot be opened must not fly and report nothing: the
@@ -172,6 +177,11 @@ inline pid_t spawnFsw(const std::string& bin, std::uint16_t port, const std::str
     if (wheelBias >= 0) {
       argv_[argc_++] = "-W";
       argv_[argc_++] = bias_str.c_str();
+    }
+    // `-G <16 fields>` sets the §8.4 pointing command (see spawnFsw's doc).
+    if (guidanceSpec != nullptr) {
+      argv_[argc_++] = "-G";
+      argv_[argc_++] = guidanceSpec;
     }
     argv_[argc_] = nullptr;
     // execv takes char* const*; the strings are not modified.

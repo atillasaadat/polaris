@@ -82,7 +82,12 @@ int main(int argc, char* argv[]) {
   CHAR* hostname = nullptr;
   U16 port_number = 0;
   U16 sitl_port = 0;
-  U32 ctrl_mode = 0;                            // 0 = leave the controller in IDLE
+  U32 ctrl_mode = 0;  // 0 = leave the controller in IDLE
+  // SITL/bench align/constrain pointing command (§8.4); absent = uncommanded,
+  // which is the flight default since a real one arrives by uplink.
+  bool guidance_set = false;
+  unsigned guidance_fields[12] = {};
+  double guidance_params[4] = {};
   F64 ctrl_target_q[4] = {0.0, 0.0, 0.0, 0.0};  // null norm = no target commanded
   const char* onboard_eop_path = nullptr;
   const char* onboard_ephem_path = nullptr;
@@ -104,7 +109,7 @@ int main(int argc, char* argv[]) {
   Os::init();
 
   // Loop while reading the getopt supplied options
-  while ((option = getopt(argc, argv, "hp:a:s:c:q:E:B:I:Y:P:M:A:F:R:W:b:N:")) != -1) {
+  while ((option = getopt(argc, argv, "hp:a:s:c:q:E:B:I:Y:P:M:A:F:R:W:b:N:G:")) != -1) {
     switch (option) {
       // Handle the -a argument for address/hostname
       case 'a':
@@ -130,9 +135,10 @@ int main(int argc, char* argv[]) {
       // SITL/bench control-mode latch and inertial-hold target (design doc §8.5).
       case 'c': {
         const long parsed = ::strtol(optarg, nullptr, 10);
-        if (parsed < 0 || parsed > 2) {
-          (void)printf("Invalid control mode '%s' (expected 0=IDLE, 1=DETUMBLE, 2=POINT)\n",
-                       optarg);
+        if (parsed < 0 || parsed > 3) {
+          (void)printf(
+              "Invalid control mode '%s' (expected 0=IDLE, 1=DETUMBLE, 2=POINT, 3=TRACK)\n",
+              optarg);
           return 1;
         }
         ctrl_mode = static_cast<U32>(parsed);
@@ -144,6 +150,42 @@ int main(int argc, char* argv[]) {
           (void)printf("Invalid target quaternion '%s' (expected q0,q1,q2,q3)\n", optarg);
           return 1;
         }
+        break;
+      }
+      // SITL/bench align/constrain pointing command (design doc §8.4). Sixteen
+      // comma-separated SET_GUIDANCE arguments in declaration order, so a row
+      // reads the same as the uplink it stands in for:
+      //   alignVecKind,alignVecIndex,alignVecNegate,
+      //   alignTgtKind,alignTgtIndex,alignTgtNegate,alignTgtParam0,alignTgtParam1,
+      //   conVecKind,conVecIndex,conVecNegate,
+      //   conTgtKind,conTgtIndex,conTgtNegate,conTgtParam0,conTgtParam1
+      case 'G': {
+        unsigned av_k = 0, av_i = 0, av_n = 0, at_k = 0, at_i = 0, at_n = 0;
+        unsigned cv_k = 0, cv_i = 0, cv_n = 0, ct_k = 0, ct_i = 0, ct_n = 0;
+        double at_p0 = 0.0, at_p1 = 0.0, ct_p0 = 0.0, ct_p1 = 0.0;
+        if (::sscanf(optarg, "%u,%u,%u,%u,%u,%u,%lf,%lf,%u,%u,%u,%u,%u,%u,%lf,%lf", &av_k, &av_i,
+                     &av_n, &at_k, &at_i, &at_n, &at_p0, &at_p1, &cv_k, &cv_i, &cv_n, &ct_k, &ct_i,
+                     &ct_n, &ct_p0, &ct_p1) != 16) {
+          (void)printf("Invalid guidance spec '%s' (expected 16 comma-separated fields)\n", optarg);
+          return 1;
+        }
+        guidance_set = true;
+        guidance_fields[0] = av_k;
+        guidance_fields[1] = av_i;
+        guidance_fields[2] = av_n;
+        guidance_fields[3] = at_k;
+        guidance_fields[4] = at_i;
+        guidance_fields[5] = at_n;
+        guidance_fields[6] = cv_k;
+        guidance_fields[7] = cv_i;
+        guidance_fields[8] = cv_n;
+        guidance_fields[9] = ct_k;
+        guidance_fields[10] = ct_i;
+        guidance_fields[11] = ct_n;
+        guidance_params[0] = at_p0;
+        guidance_params[1] = at_p1;
+        guidance_params[2] = ct_p0;
+        guidance_params[3] = ct_p1;
         break;
       }
       // Onboard-table paths (design doc §11.3, §22); absent = topology defaults.
@@ -293,6 +335,23 @@ int main(int argc, char* argv[]) {
   inputs.port = port_number;
   inputs.sitlPort = sitl_port;
   inputs.ctrlMode = ctrl_mode;
+  inputs.guidanceSet = guidance_set;
+  inputs.alignVecKind = guidance_fields[0];
+  inputs.alignVecIndex = guidance_fields[1];
+  inputs.alignVecNegate = guidance_fields[2] != 0;
+  inputs.alignTgtKind = guidance_fields[3];
+  inputs.alignTgtIndex = guidance_fields[4];
+  inputs.alignTgtNegate = guidance_fields[5] != 0;
+  inputs.alignTgtParam0 = guidance_params[0];
+  inputs.alignTgtParam1 = guidance_params[1];
+  inputs.conVecKind = guidance_fields[6];
+  inputs.conVecIndex = guidance_fields[7];
+  inputs.conVecNegate = guidance_fields[8] != 0;
+  inputs.conTgtKind = guidance_fields[9];
+  inputs.conTgtIndex = guidance_fields[10];
+  inputs.conTgtNegate = guidance_fields[11] != 0;
+  inputs.conTgtParam0 = guidance_params[2];
+  inputs.conTgtParam1 = guidance_params[3];
   for (int i = 0; i < 4; ++i) {
     inputs.ctrlTargetQ[i] = ctrl_target_q[i];
   }

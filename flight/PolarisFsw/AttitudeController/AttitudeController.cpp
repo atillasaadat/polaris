@@ -1185,10 +1185,11 @@ void AttitudeController ::run_handler(FwIndexType portNum, U32 context) {
     ok = this->estimateUsable(nowNs, this->mode_, reason);
   }
 
-  // **Desaturation runs concurrently with POINT**: the wheels hold the attitude
-  // and the rods dump what the wheels are holding, in the same cycle on
-  // different actuators. `desatDue` excludes every mode but POINT, so B-dot's
-  // ownership of the rods in DETUMBLE is never contested.
+  // **Desaturation runs concurrently with the wheel-pointing modes**: the wheels
+  // hold the attitude and the rods dump what the wheels are holding, in the same
+  // cycle on different actuators. `desatDue` admits POINT and TRACK and excludes
+  // everything else, so B-dot's ownership of the rods in DETUMBLE is never
+  // contested.
   //
   // It is decided **before** the pointing law, and that ordering is load-bearing
   // rather than tidy: the magnetic torque the rods are about to apply is a
