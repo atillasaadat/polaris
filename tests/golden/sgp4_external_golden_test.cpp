@@ -130,7 +130,7 @@ Worst CompareCase(const json& c) {
 
     // The conversion under test alongside the propagator.
     pm::Vec3<pmf::ECI> r_eci;
-    const bool converted = pf::eciFromTeme(epoch + pt::Duration::fromSeconds(t_s), r_teme, r_eci);
+    const bool converted = pf::eciFromTeme(epoch + pt::Duration::fromSecondsF(t_s), r_teme, r_eci);
     EXPECT_TRUE(converted) << c.at("name").get<std::string>() << " at t=" << t_s << " s: TEME->ECI";
     if (!converted) {
       continue;
@@ -342,7 +342,7 @@ TEST(Sgp4External, GmatIndependentlyConfirmsTheFrameBiasPolarisApplies) {
         continue;
       }
       pm::Vec3<pmf::ECI> r_eci;
-      if (!pf::eciFromTeme(epoch + pt::Duration::fromSeconds(t_s), r_teme, r_eci)) {
+      if (!pf::eciFromTeme(epoch + pt::Duration::fromSecondsF(t_s), r_teme, r_eci)) {
         continue;
       }
       const auto icrf = s.at("position_km").get<std::vector<double>>();

@@ -143,7 +143,10 @@ add_library(polaris_gnc
   gnc/tle.cpp
   gnc/sgp4.cpp
   gnc/sgp4_propagate.cpp
-  gnc/sgp4_deep_space.cpp)
+  gnc/sgp4_deep_space.cpp
+  gnc/j2_propagator.cpp
+  gnc/target_catalog.cpp
+  gnc/target_pointing.cpp)
 target_include_directories(polaris_gnc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # polaris_frames is PUBLIC because the onboard OD filter (§8.3) takes EOP and
 # converts every GNSS fix from ECEF/GPS to ECI/TAI through the one reduction in
