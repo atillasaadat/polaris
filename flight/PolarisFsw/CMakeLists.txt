@@ -46,6 +46,12 @@ add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/AttitudeEstimator/")
 # ScriptedCmdSource in Push 54, which is why that component no longer exists.
 add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/AttitudeController/")
 
+# Align/constrain pointing guidance (design doc §8.4). Sits between the orbit
+# estimator (whose state every orbit-relative target is measured from) and the
+# controller (which receives only a target attitude and a feedforward rate, and
+# deliberately does not know which pointing mode produced them).
+add_fprime_subdirectory("${CMAKE_CURRENT_LIST_DIR}/PointingGuidance/")
+
 # SITL lockstep transport, packaged as an importable subtopology (design doc
 # §2.2). Added after the SITL components it groups and before Top, which imports
 # it. A hardware build drops this line (see PolarisFsw/README.md).

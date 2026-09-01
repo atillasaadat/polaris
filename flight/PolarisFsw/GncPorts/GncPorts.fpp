@@ -289,4 +289,27 @@ module flight {
   @ Wheel tachometer, actuator source -> controller (§8.5 momentum management).
   port WheelSpeedMeasPort(meas: WheelSpeedMeas)
 
+  @ Commanded attitude and feedforward body rate, guidance -> controller (§8.4).
+  @
+  @ The whole interface between guidance and control, and deliberately narrow:
+  @ the controller must not know whether this came from a fixed quaternion, a
+  @ nadir hold or a satellite track. Adding the *source* here would let control
+  @ law behaviour depend on the pointing mode, which is exactly the coupling the
+  @ align/constrain design exists to avoid.
+  @
+  @ `rateBodyRadS` is the feedforward, not a limit: it is how fast the commanded
+  @ attitude is itself moving, so a controller that ignores it lags a moving
+  @ target by roughly the line-of-sight rate over its bandwidth. Zero is a
+  @ legitimate value (an inertial hold), which is why `valid` is separate — the
+  @ controller must be able to tell "hold still" from "no target".
+  struct AttitudeTarget {
+    epochTaiNs: I64 @< TAI ns the target was computed for
+    qBodyFromEci: QuatF64 @< commanded attitude, canonical (q0 >= 0)
+    rateBodyRadS: Vec3F64 @< feedforward body rate [rad/s]
+    valid: bool @< false means the controller must fall back, not fly a stale target
+  }
+
+  @ Commanded attitude, guidance -> controller (§8.4).
+  port AttitudeTargetPort(target: AttitudeTarget)
+
 }
