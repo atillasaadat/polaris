@@ -53,7 +53,12 @@ add_library(polaris::ephemeris ALIAS polaris_ephemeris)
 # rotations. ERFA is PUBLIC-free: it is an implementation detail, kept out of the
 # public headers, so it links PRIVATE.
 add_library(polaris_frames
-  frames/eci_ecef.cpp)
+  frames/eci_ecef.cpp
+  # TEME<->ECI, the frame boundary SGP4 sits behind (REQ-ODP-003). Deliberately
+  # on the IAU-76/80 chain rather than 2006/2000A: TEME is defined by the theory
+  # SGP4 was fitted with, so the two files disagreeing on precession model is
+  # correct, not an inconsistency to reconcile.
+  frames/teme_eci.cpp)
 target_include_directories(polaris_frames PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_frames
   PUBLIC Eigen3::Eigen polaris_math polaris_time polaris_constants

@@ -278,6 +278,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return code
 
 
+def _cmd_sgp4_fixture(_args) -> int:
+    """Regenerate the committed FreeFlyer SGP4/TLE cross-validation fixture."""
+    from freeflyer import sgp4_fixture
+
+    return sgp4_fixture.main()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="python -m freeflyer", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -377,12 +384,18 @@ def main() -> int:
         help="which window(s)",
     )
 
+    sub.add_parser(
+        "sgp4-fixture",
+        help="regenerate tests/golden/freeflyer_sgp4.json from a live FreeFlyer",
+    )
+
     args = parser.parse_args()
     return {
         "status": _cmd_status,
         "viz": _cmd_viz,
         "panel": _cmd_panel,
         "run": _cmd_run,
+        "sgp4-fixture": _cmd_sgp4_fixture,
     }[args.command](args)
 
 

@@ -28,6 +28,7 @@ Frame and unit notes
 from __future__ import annotations
 
 import json
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -226,3 +227,88 @@ def run_case(install: FreeFlyerInstall, case: dict) -> list[dict]:
             entry["attitude_quaternion"] = [row[10], row[7], row[8], row[9]]
         out.append(entry)
     return out
+
+
+# --- SGP4 / TLE cross-validation (Push 81, REQ-ODP-003, REQ-VV-006) ---------
+#
+# FreeFlyer's SGP4 is the **US Space Force AstroStds library v9.5**, not
+# Vallado's reference — a genuinely separate lineage of the same theory. That
+# makes this a stronger cross-check than the numerical-propagation cases above,
+# where all three tools integrate the same equations: here two independent
+# *implementations* of one analytical theory are compared, and a disagreement
+# cannot be explained away as integrator truncation.
+#
+# It exercises the frame conversion too. FreeFlyer reports the state in ICRF
+# while SGP4 works in TEME, so a comparison against `polaris::gnc::Sgp4` output
+# necessarily runs it through `frames::eciFromTeme`. Propagator and conversion
+# are validated by one measurement, which is the right coupling: they are only
+# ever used together.
+
+
+def build_tle_script(tle_path: Path, sample_times_s: list[float]) -> str:
+    """FreeFlyer script that SGP4-propagates the TLE in *tle_path*.
+
+    The state is read in FreeFlyer's ICRF, and the sampling loop is the same
+    single-statement For form the numerical cases use — see the long comment in
+    ``build_case_script`` for the two failure modes that ruled out the
+    alternatives on this build.
+    """
+    lines = [
+        "Spacecraft s;",
+        # LoadTLE(file, index): index 0 is the first (and here only) element set.
+        f's.LoadTLE("{tle_path}", 0);',
+        "s.SetPropagatorType(TypeOf(SGP4));",
+        f"Array sampleTimes = {{{_fmt(sample_times_s)}}};",
+        f"Matrix out({len(sample_times_s)}, 7);",
+        "Variable i;",
+        "For i = 0 to sampleTimes.Dimension - 1;",
+        "\tStep s to (s.ElapsedTime == TimeSpan.FromSeconds(sampleTimes[i]));",
+        "\tout[i, 0] = s.ElapsedTime.ToSeconds();",
+        "\tout[i, 1] = s.Position[0];",
+        "\tout[i, 2] = s.Position[1];",
+        "\tout[i, 3] = s.Position[2];",
+        "\tout[i, 4] = s.Velocity[0];",
+        "\tout[i, 5] = s.Velocity[1];",
+        "\tout[i, 6] = s.Velocity[2];",
+        "End;",
+        'ApiLabel "Done";',
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def run_tle_case(
+    install: FreeFlyerInstall,
+    name: str,
+    line1: str,
+    line2: str,
+    sample_times_s: list[float],
+) -> list[dict]:
+    """SGP4-propagate one TLE in FreeFlyer; return ICRF states in km, km/s.
+
+    The element set is written to a scratch file beside the generated mission
+    plan because ``LoadTLE`` takes a path — FreeFlyer's string-array overload
+    exists but reads its lines through the same parser, and a file keeps the
+    exact bytes we validated against visible on disk when a run is debugged.
+    """
+    plan_dir = Path(tempfile.mkdtemp(prefix="polaris-ff-tle-"))
+    tle_path = plan_dir / f"vv_tle_{name}.tle"
+    tle_path.write_text(f"{line1}\n{line2}\n", encoding="ascii")
+
+    plan = write_mission_plan(
+        install, build_tle_script(tle_path, sample_times_s), f"vv_tle_{name}", plan_dir
+    )
+    with open_engine(install) as engine:
+        engine.loadMissionPlanFromFile(str(plan))
+        engine.prepareMissionPlan()
+        engine.executeUntilApiLabel("Done")
+        rows = engine.getExpressionMatrix("out")
+        engine.executeRemainingStatements()
+
+    return [
+        {
+            "t_s": row[0],
+            "position_km": [row[1], row[2], row[3]],
+            "velocity_km_s": [row[4], row[5], row[6]],
+        }
+        for row in rows
+    ]

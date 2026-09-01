@@ -53,3 +53,22 @@ def test_committed_propagation_fixture_agrees_with_gmat():
         regenerated = regenerate_propagation_fixture(_gmat_console(), tmp)
     drift = compare_propagation(committed, regenerated)
     assert not drift, "GMAT disagrees with committed fixture:\n" + "\n".join(drift)
+
+
+@pytest.mark.verifies("REQ-ODP-003")
+@_needs_gmat
+def test_committed_sgp4_fixture_agrees_with_gmat():
+    """The SGP4/TLE fixture still matches what GMAT's SPICESGP4 recomputes.
+
+    Separate from the numerical-propagation drift check above because it
+    exercises a different GMAT subsystem entirely: the ``SPICESGP4`` plugin and
+    its TLE reader, not the force-model integrators. A GMAT release that changed
+    only its SPICE kernels would move this and leave the other untouched.
+    """
+    from gmat.tle import FIXTURE_PATH, compare_tle, regenerate_tle_fixture
+
+    committed = json.loads(FIXTURE_PATH.read_text())
+    with tempfile.TemporaryDirectory() as tmp:
+        regenerated = regenerate_tle_fixture(_gmat_console(), tmp)
+    drift = compare_tle(committed, regenerated)
+    assert not drift, "GMAT disagrees with committed SGP4 fixture:\n" + "\n".join(drift)

@@ -995,3 +995,53 @@ fixture was found in the innovation sequence, not in review.
 - **And a local pass is not a CI pass.** The binary run directly executes rows
   serially; CI runs them under `ctest -j$(nproc)`, where contention has produced
   failures this repo has already debugged once.
+
+## P81 — a harness artefact masquerading as a tolerance
+
+**Class:** a measurement's own precision limit read as the thing being measured.
+
+The Polaris-vs-GMAT SGP4 comparison came in at 0.16–0.21 arcsec while the
+Polaris-vs-FreeFlyer comparison on the *same element sets* came in at
+0.027–0.035. The tempting move is to give GMAT a looser band and note that
+"GMAT agrees less well" — which is a sentence that explains nothing and buries
+a defect.
+
+The cause was in the harness. GMAT's `UTCGregorian` epoch format carries three
+decimal places, so setting a spacecraft epoch that way rounds it to the nearest
+millisecond, and 0.5 ms at LEO orbital speed is **4 metres** of along-track
+position. Switching the generated script to GMAT's `UTCModJulian` double (ULP
+~0.3 µs, ~2 mm at LEO) brought the disagreement to 0.008–0.056 arcsec, in line
+with FreeFlyer.
+
+**Why it belongs in this file:** it is the same shape as the silent-success
+class, one level up. A silent-success check reports green while testing nothing;
+this reports a *number* while measuring the wrong thing, and the number is
+plausible enough to be written into a band and defended forever. The tell was
+comparative — two independent tools should not disagree with Polaris by 6x when
+they agree with each other — and the discipline is to treat an unexplained ratio
+between two measurements of the same quantity as a defect in the measurement
+until shown otherwise.
+
+**How to apply:** before widening a band, ask what the *harness* can resolve.
+Epoch precision, report column width, output format decimals and unit
+conversions are all part of the error budget and none of them appear in the
+physics. When two references disagree with you by different amounts, the
+difference between them is the diagnostic, not the two absolute numbers.
+
+## P81b — assert the decision, not just the behaviour
+
+`lib/frames/teme_eci.cpp` composes `eraBp00` to cross the FK5→GCRS frame bias.
+Every test written against it initially passed *whether or not the term was
+there*, because they compared the code to itself or to a band wide enough to
+contain both answers.
+
+The fix was to find a reference that separates the two hypotheses. GMAT reports
+a state in both ICRF (GCRS) and `EarthMJ2000Eq` (FK5), so the fixture carries
+both columns and the test asserts Polaris lands **closer to the ICRF one**.
+That assertion reverses if the bias term is removed — and this was verified by
+removing it (39.7/57.0 m becomes 81.7/60.1 m, test red), not assumed.
+
+**How to apply:** when a line of code encodes a *choice* between two defensible
+conventions, a passing test that would also pass with the other choice is not
+covering it. Look for a reference that distinguishes them, and confirm the test
+fails when the choice is inverted.
