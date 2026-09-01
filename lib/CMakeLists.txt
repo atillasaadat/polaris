@@ -53,7 +53,12 @@ add_library(polaris::ephemeris ALIAS polaris_ephemeris)
 # rotations. ERFA is PUBLIC-free: it is an implementation detail, kept out of the
 # public headers, so it links PRIVATE.
 add_library(polaris_frames
-  frames/eci_ecef.cpp)
+  frames/eci_ecef.cpp
+  # TEME<->ECI, the frame boundary SGP4 sits behind (REQ-ODP-003). Deliberately
+  # on the IAU-76/80 chain rather than 2006/2000A: TEME is defined by the theory
+  # SGP4 was fitted with, so the two files disagreeing on precession model is
+  # correct, not an inconsistency to reconcile.
+  frames/teme_eci.cpp)
 target_include_directories(polaris_frames PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_frames
   PUBLIC Eigen3::Eigen polaris_math polaris_time polaris_constants
@@ -131,7 +136,14 @@ add_library(polaris_gnc
   gnc/disturbance.cpp
   gnc/dipole_estimation.cpp
   gnc/geopotential.cpp
-  gnc/orbit_od.cpp)
+  gnc/orbit_od.cpp
+  # SGP4/SDP4 and its TLE input (REQ-ODP-003). Split three ways for size: the
+  # near-Earth initialisation, the propagation core, and the deep-space half
+  # that 24 of the 33 official verification cases exercise.
+  gnc/tle.cpp
+  gnc/sgp4.cpp
+  gnc/sgp4_propagate.cpp
+  gnc/sgp4_deep_space.cpp)
 target_include_directories(polaris_gnc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # polaris_frames is PUBLIC because the onboard OD filter (§8.3) takes EOP and
 # converts every GNSS fix from ECEF/GPS to ECI/TAI through the one reduction in

@@ -60,8 +60,50 @@ def main(argv: list[str] | None = None) -> int:
         "--fixture", required=True, help="committed fixture to check"
     )
 
+    tle_regen = sub.add_parser(
+        "regenerate-sgp4", help="run GMAT's SPICESGP4 and write the SGP4/TLE fixture"
+    )
+    tle_regen.add_argument(
+        "--out", help="fixture path to write (default: the committed one)"
+    )
+
+    tle_drift = sub.add_parser(
+        "drift-check-sgp4", help="fail if the committed SGP4/TLE fixture drifts"
+    )
+    tle_drift.add_argument(
+        "--fixture", help="fixture to check (default: the committed one)"
+    )
+
     args = parser.parse_args(argv)
     console = _resolve_console(args.console)
+
+    # The SGP4/TLE fixture goes through its own module (gmat.tle): it drives the
+    # SPICESGP4 plugin rather than the force-model integrators, so it shares no
+    # script-building or parsing code with the two cases below.
+    if args.cmd.endswith("-sgp4"):
+        from gmat.tle import (
+            FIXTURE_PATH,
+            compare_tle,
+            regenerate_tle_fixture,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = regenerate_tle_fixture(console, tmp)
+        if args.cmd == "regenerate-sgp4":
+            out = Path(args.out) if args.out else FIXTURE_PATH
+            out.write_text(json.dumps(fixture, indent=2) + "\n")
+            print(f"wrote {out}")
+            return 0
+        path = Path(args.fixture) if args.fixture else FIXTURE_PATH
+        drift_msgs = compare_tle(json.loads(path.read_text()), fixture)
+        if drift_msgs:
+            print(f"GMAT drift vs {path}:")
+            for msg in drift_msgs:
+                print(f"  - {msg}")
+            return 1
+        print(f"OK: GMAT agrees with {path} within tolerance")
+        return 0
+
     propagation = args.cmd.endswith("-propagation")
 
     with tempfile.TemporaryDirectory() as tmp:

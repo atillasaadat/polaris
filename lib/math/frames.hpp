@@ -21,6 +21,21 @@ struct ECEF {
   static constexpr const char* kName = "ECEF";
 };
 
+/// True Equator, Mean Equinox — the frame **SGP4 works in and only SGP4**
+/// (Vallado 2006, §3.7 committed TLE fixtures).
+///
+/// It is deliberately its own tag rather than an alias for ECI. TEME differs
+/// from J2000/GCRF by precession, nutation and the equation of the equinoxes —
+/// order 100 km of position after a few decades of precession, and tens of
+/// metres within a year — and the two are numerically close enough that mixing
+/// them produces a *plausible* wrong answer rather than an obvious one. That is
+/// the classic SGP4 integration bug, and it is exactly the class Golden Rule 4
+/// exists to make a compile error. A TEME state reaches the rest of the system
+/// only through an explicit conversion, never by assignment.
+struct TEME {
+  static constexpr const char* kName = "TEME";
+};
+
 /// Local-vertical / local-horizontal (nadir/orbit-relative pointing).
 struct LVLH {
   static constexpr const char* kName = "LVLH";
