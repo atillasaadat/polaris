@@ -319,8 +319,23 @@ bool toolchainMissing(std::string& why) {
 // which still misses by degrees fails, which is the case that matters.
 // ----------------------------------------------------------------------
 
-/// Fraction of the settled tail during which **at least one** star tracker had
-/// an unobstructed boresight, computed entirely from truth.
+/// Fraction of the settled tail during which **at least one** star tracker could
+/// actually have been delivering solutions, computed entirely from truth.
+///
+/// Availability is not just geometry, and getting that wrong is what made an
+/// earlier version of this file call a working vehicle defective. The sim's
+/// tracker model has a two-envelope availability machine: a unit knocked out of
+/// the wide *tracking* envelope cannot resume when it drops back under it — it
+/// must sit inside the tighter *acquisition* envelope continuously for
+/// `lost_in_space_s`, and any excursion resets the clock. So a tracker with a
+/// perfectly clear boresight is still unavailable on a vehicle whose angular
+/// acceleration keeps brushing the acquisition limit.
+///
+/// This therefore checks occlusion **and** both acquisition envelopes, against
+/// the truth body rate and its numerical derivative — the same quantities the
+/// model gates on. The boresight comes from the model's own `boresightBody()`
+/// rather than being recomputed here, so the check cannot disagree with the unit
+/// it is describing.
 double trackerAvailabilityFraction(const GuidanceRun& r, const scenario::Vehicle& vehicle,
                                    std::size_t tail_samples = 300) {
   if (vehicle.star_trackers.empty() || r.trace.empty()) {
@@ -487,12 +502,22 @@ TEST(SitlPointingGuidance, HoldsAnInertialAxisAgainstTruth) {
   const double trackers = trackerAvailabilityFraction(r, r.vehicle);
   const double bound = justifiedBoundDeg(trackers);
   RecordProperty("inertial_tracker_availability", std::to_string(trackers));
-  // OPEN DEFECT, and this row is what found it. Truth geometry says at least one
-  // star tracker is unobstructed for the whole tail (availability 1.0, with the
-  // Auriga's real 35 deg Sun and 22 deg Earth exclusions applied), yet the
-  // estimator reports "Fine-mode source changed STAR_TRACKER -> SUN_MAG (0
-  // tracker(s) fused)" about 200 s in and never returns, leaving the vehicle
-  // pointing to the 3 deg coarse band while a fine-mode source was available.
+  // OPEN DEFECT, and this row is what found it.
+  //
+  // Over the settled tail, truth says at least one star tracker is unobstructed
+  // (the Auriga's real 35 deg Sun and 22 deg Earth exclusions applied) **and**
+  // the vehicle is inside that unit's acquisition rate and acceleration
+  // envelopes — availability 1.0 on both counts, so the model's own
+  // re-acquisition gate is satisfiable. The acquisition envelope was added to
+  // this check specifically to rule out the innocent explanation: a tracker with
+  // a clear boresight on a vehicle too twitchy to re-acquire would be the model
+  // working as designed, not a defect. It is not that.
+  //
+  // Yet the estimator reports "Fine-mode source changed STAR_TRACKER -> SUN_MAG
+  // (0 tracker(s) fused)" about 200 s in and never returns, with no
+  // StUnitExcluded, no FineTrackerAdoptionRefused and no StConfigInvalid to
+  // account for it. The vehicle holds to the 3 deg coarse band for the remaining
+  // 700 s while a fine-mode source was available throughout.
   //
   // The bound stays at the value the *available* knowledge justifies, so this
   // row fails until the estimator recovers its trackers. Relaxing it to 3.5
