@@ -291,6 +291,33 @@ module flight {
     @ the only definition of them on the vehicle.
     param CameraBoresightsBody: Vec3F64PerUnit
 
+    @ Geopotential degree and order the **state-vector** target slots are
+    @ propagated with (§8.3). TLE slots are unaffected: SGP4 is the theory a TLE
+    @ was fitted with and is not a truncation choice.
+    @
+    @ **8 x 8 by default**, the same EGM2008 truncation the orbit filter already
+    @ flies, because measurement said the previous two-body + J2 cost ~13 m over
+    @ 900 s and ~1.3 km over the propagator's 12 h horizon — more error than the
+    @ slot's own uncertainty model claimed for everything it omits.
+    @
+    @ **Order is also the EOP dependency.** A zonal harmonic is axisymmetric and
+    @ needs no Earth-rotation angle; anything above order 0 does. So
+    @ `TargetGeopotentialOrder: 0` is the setting that keeps target propagation
+    @ working through an EOP outage, and `degree 2, order 0` reproduces the old
+    @ two-body + J2 exactly. The propagator additionally falls back to order 0 by
+    @ itself on any cycle the EOP tables cannot answer, so this parameter chooses
+    @ the *ceiling*, not a promise.
+    @
+    @ Cost, measured on the flight tuning: 34 us per 10 Hz cycle in steady state
+    @ (0.034 % of the cycle), because the propagator carries a grid-anchored
+    @ cursor. The first call after an upload catches the whole span up at once —
+    @ 3 ms for a 15-minute-old state, 141 ms at the 12 h bound.
+    param TargetGeopotentialDegree: U8
+
+    @ See TargetGeopotentialDegree. Clamped to that degree; 0 is the zonal,
+    @ EOP-free setting.
+    param TargetGeopotentialOrder: U8
+
     @ Maximum age of an orbit solution the guidance will use [s]. Beyond it every
     @ orbit-relative target is refused with NO_ORBIT_STATE rather than pointed
     @ from a coasted state whose error nobody bounded.

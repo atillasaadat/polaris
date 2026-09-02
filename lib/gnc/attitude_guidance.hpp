@@ -44,6 +44,7 @@
 ///
 /// Flight-safe (§3.6): no heap, no exceptions, fixed-size Eigen, no recursion.
 
+#include "frames/eop.hpp"
 #include "gnc/pointing_refs.hpp"
 #include "gnc/target_catalog.hpp"
 #include "math/frames.hpp"
@@ -114,11 +115,18 @@ struct GuidanceContext {
   math::Vec3<math::frames::ECI> moon_velocity_m_s;
   bool moon_velocity_valid = false;
 
-  /// ECI <- ECEF rotation for `kEcefPoint`. Unlike everything else here this
-  /// needs Earth-orientation data, which is why an ECEF target is the one kind
-  /// that can be refused during a long EOP outage while the rest keep working.
+  /// ECI <- ECEF rotation for `kEcefPoint`. Needs Earth-orientation data, which
+  /// is why an ECEF target is the one kind that can be *refused* during a long
+  /// EOP outage — a state-vector target degrades instead of failing.
   Eigen::Matrix3d eci_from_ecef = Eigen::Matrix3d::Identity();
   bool earth_orientation_valid = false;
+
+  /// The raw Earth-orientation record, for the state-vector propagator's own
+  /// reduction (it integrates across a span, so one rotation at `t` will not
+  /// do). Null means none is available, which drops that propagation to order 0
+  /// for the cycle — see `TargetPropagator::propagate`. A TLE slot is
+  /// unaffected either way.
+  const frames::EopValue* eop = nullptr;
 
   /// Propagated target slots. May be null when no command names one.
   const TargetCatalog* catalog = nullptr;

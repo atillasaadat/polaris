@@ -1437,6 +1437,18 @@ spacecraft:
     # nobody bounded. 30 s is three OD cycles: long enough to ride out a missed
     # fix, short enough that a real outage stops pointing rather than degrading
     # it invisibly.
+    # Geopotential the state-vector target slots are propagated with. 8x8 is
+    # the same EGM2008 truncation the orbit filter flies, and the measured cost
+    # is 34 us per 10 Hz cycle (0.034 %) because the propagator carries a
+    # grid-anchored cursor rather than re-integrating the span each call.
+    #
+    # Order is also the EOP dependency: 0 is zonal-only and needs no
+    # Earth-rotation angle, so `2 / 0` reproduces the pre-Push-82 two-body + J2
+    # and is the setting to fly if target propagation must survive an EOP
+    # outage by configuration rather than by the propagator's own per-cycle
+    # fallback. TLE slots are unaffected either way.
+    flight.pointingGuidance.TargetGeopotentialDegree: 8
+    flight.pointingGuidance.TargetGeopotentialOrder: 8
     flight.pointingGuidance.MaxOrbitStateAgeSec: 30.0
   drag_area_m2: 0.06                 # 6U broadside, ~0.2 x 0.3 m
   drag_cd: 2.2

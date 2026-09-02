@@ -23,7 +23,7 @@
 ///    is Push 81's three-way golden test and does not belong here.
 ///  - **State vector** → RK4 over the sim's own `SphericalHarmonicGravity` at
 ///    the scenario's degree, which is **not** the onboard model. The flight
-///    side runs two-body + J2 with no EOP (`lib/gnc/j2_propagator`); this runs
+///    side runs the onboard 8x8 truncation (`lib/gnc/target_propagator`); this runs
 ///    the full field the vehicle itself flies through. The difference is real
 ///    and it is the point: it is measured at ~13 m over 900 s for an 8 000 km
 ///    target and ~1.1 km over the propagator's 12 h horizon for a 500 km one,

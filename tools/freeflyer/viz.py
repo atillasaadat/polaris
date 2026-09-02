@@ -371,7 +371,7 @@ def follow(
 
 
 def _push_camera(engine, meta: dict | None) -> None:
-    """Write the camera boresight into the loaded plan, once.
+    """Write every sensor boresight into the loaded plan, once, and verify it.
 
     Separate from the scene script because the parser will not take an array
     literal for it (see _VIZ_CAMERA). Synchronous rather than queued: it happens
@@ -381,9 +381,24 @@ def _push_camera(engine, meta: dict | None) -> None:
     cameras = (meta or {}).get("cameras", [])
     if not cameras:
         return
-    engine.setExpressionArray(
-        "Polaris.Sensors[0].BoresightUnitVector", list(cameras[0]["boresight_body"])
-    )
+    for i, cam in enumerate(cameras):
+        engine.setExpressionArray(
+            f"Polaris.Sensors[{i}].BoresightUnitVector", list(cam["boresight_body"])
+        )
+    # Read back, because this is the second silent-write bug in this file's
+    # short life: a boresight that fails to land leaves the sensor at
+    # FreeFlyer's default (+Z, the parent body's z-axis), which is *also* where
+    # the payload camera points -- so the failure renders as two instruments
+    # perfectly aligned, which looks like a plausible spacecraft rather than
+    # like a bug. The check costs three round-trips once per run.
+    for i, cam in enumerate(cameras):
+        got = engine.getExpressionArray(f"Polaris.Sensors[{i}].BoresightUnitVector")
+        want = list(cam["boresight_body"])
+        if max(abs(a - b) for a, b in zip(got, want)) > 1e-6:
+            raise RuntimeError(
+                f"FreeFlyer kept boresight {got} for sensor {cam['name']} "
+                f"(index {i}); {want} was written and did not land"
+            )
 
 
 def split_meta(states):

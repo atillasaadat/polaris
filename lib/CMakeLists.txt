@@ -144,7 +144,7 @@ add_library(polaris_gnc
   gnc/sgp4.cpp
   gnc/sgp4_propagate.cpp
   gnc/sgp4_deep_space.cpp
-  gnc/j2_propagator.cpp
+  gnc/target_propagator.cpp
   gnc/target_catalog.cpp
   gnc/pointing_refs.cpp
   gnc/attitude_guidance.cpp)

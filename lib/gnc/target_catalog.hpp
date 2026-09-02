@@ -24,7 +24,7 @@
 ///    two lines copied from a public catalogue.
 ///  - A **state vector** is an osculating Cartesian state from a ground OD
 ///    solution, an operator upload, or another vehicle's downlink. It is
-///    propagated by `gnc::J2Propagator`. It can be far more accurate than a TLE
+///    propagated by `gnc::TargetPropagator`. It can be far more accurate than a TLE
 ///    — metres, if the ground solution was good — and it degrades faster,
 ///    because nothing models the target's drag.
 ///
@@ -60,8 +60,8 @@
 
 #include <cstdint>
 
-#include "gnc/j2_propagator.hpp"
 #include "gnc/sgp4.hpp"
+#include "gnc/target_propagator.hpp"
 #include "gnc/tle.hpp"
 #include "math/frames.hpp"
 #include "math/typed_vector.hpp"
@@ -153,7 +153,19 @@ class TargetCatalog {
   ///
   /// The one call a guidance mode makes. Deliberately does **not** take a
   /// staleness limit: see the header.
-  TargetStatus positionAt(TargetKind kind, int index, const time::Tai& t, TargetState& out) const;
+  /// @p eop is the Earth orientation the state-vector propagator's configured
+  /// order needs (§8.3). `nullptr` means none is available, which drops that
+  /// propagation to order 0 for the call — see `TargetPropagator::propagate`.
+  /// A TLE slot ignores it: SGP4 and TEME->ECI need no EOP by construction,
+  /// which is why a catalogue can still answer through an outage.
+  TargetStatus positionAt(TargetKind kind, int index, const time::Tai& t, TargetState& out,
+                          const frames::EopValue* eop = nullptr) const;
+
+  /// Apply @p model to every state-vector slot. One setting for the catalogue
+  /// rather than per slot: the field is a property of the vehicle's onboard
+  /// model, not of a particular target, and letting slots disagree would make
+  /// two targets' positions incomparable for no operational gain.
+  void setForceModel(const TargetForceModel& model);
 
   /// How many slots of @p kind are occupied.
   int occupiedCount(TargetKind kind) const;
@@ -166,7 +178,7 @@ class TargetCatalog {
   };
 
   struct StateEntry {
-    J2Propagator propagator;
+    TargetPropagator propagator;
     bool occupied = false;
   };
 

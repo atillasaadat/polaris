@@ -51,7 +51,7 @@ add_executable(polaris_unit_tests
   orbit_od_correlated_gnss_test.cpp
   tle_test.cpp
   teme_eci_test.cpp
-  j2_propagator_test.cpp
+  target_propagator_test.cpp
   target_catalog_test.cpp
   tracked_object_test.cpp
   attitude_guidance_test.cpp

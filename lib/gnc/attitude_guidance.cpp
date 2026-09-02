@@ -236,7 +236,8 @@ GuidanceStatus resolveTarget(const PointingTargetRef& ref, const GuidanceContext
       const TargetKind kind =
           ref.kind == PointingTargetKind::kSatTle ? TargetKind::kTle : TargetKind::kStateVector;
       TargetState st;
-      const TargetStatus s = ctx.catalog->positionAt(kind, static_cast<int>(ref.index), ctx.t, st);
+      const TargetStatus s =
+          ctx.catalog->positionAt(kind, static_cast<int>(ref.index), ctx.t, st, ctx.eop);
       if (s == TargetStatus::kEmpty) {
         return GuidanceStatus::kTargetSlotEmpty;
       }

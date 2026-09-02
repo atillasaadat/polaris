@@ -769,10 +769,20 @@ TEST(SitlPointingGuidance, RefusesAnImpossiblePairAndNeverEntersTrack) {
 //     omega = sqrt( mu/r^3 + (3/2) J2 mu Re^2 / r^5 )
 //
 // That is algebra, not integration, and it shares no code with the flight
-// propagator's RK4 or its hand-written gradient. If the flight J2 sign, its
-// magnitude, or its step control is wrong, the two positions separate and the
-// pointing error grows with time — which is exactly the failure a tail
-// assertion catches and an initial-sample one would not.
+// propagator's RK4. If the flight field's sign, its magnitude, or its step
+// control is wrong, the two positions separate and the pointing error grows
+// with time — which is exactly the failure a tail assertion catches and an
+// initial-sample one would not.
+//
+// **The reference is deliberately one model behind the vehicle.** Since Push 82
+// the flight propagator defaults to 8x8 EGM2008, so this closed form is exact
+// for the *J2 setting* and differs from what the vehicle flies by the
+// truncation itself: ~13 m over this row's 900 s. That is not a weakened
+// assertion, it is a second measurement of the same thing — switching the
+// default from J2 to 8x8 moved this row from 0.0076 to 0.0082 deg, and 0.0006
+// deg at the row's 2 628 km range is 27 m, the size the offline scoping
+// measurement predicted. A reference that tracked the setting would have shown
+// nothing.
 //
 // The target is placed 30 deg ahead of the vehicle in true anomaly so the line
 // of sight is neither the zenith nor the along-track direction at any point in

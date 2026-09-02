@@ -113,6 +113,12 @@ class PointingGuidance final : public PointingGuidanceComponentBase {
   polaris::gnc::GroundPointTable ground_points_;
 
   // ---- The active command.
+  /// The cycle's Earth-orientation record, held because GuidanceContext points
+  /// at it rather than copying it (the propagator needs the record, not one
+  /// rotation).
+  polaris::frames::EopValue eop_{};
+  bool eop_valid_ = false;
+
   polaris::gnc::GuidanceCommand command_{};
   bool commanded_ = false;
 

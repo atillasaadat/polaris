@@ -163,6 +163,20 @@ void PointingGuidance::reloadMountingParameters() {
   const F64 age = this->paramGet_MaxOrbitStateAgeSec(valid);
   const bool age_ok = valid == Fw::ParamValid::VALID && std::isfinite(age) && age > 0.0;
 
+  // The target field. Pushed into the catalogue rather than consulted per query,
+  // because changing it resets each slot's integration cursor and that must
+  // happen once on a parameter change, not on every cycle.
+  const U8 tgt_degree = this->paramGet_TargetGeopotentialDegree(valid);
+  const bool degree_ok = valid == Fw::ParamValid::VALID;
+  const U8 tgt_order = this->paramGet_TargetGeopotentialOrder(valid);
+  const bool order_ok = valid == Fw::ParamValid::VALID;
+  if (degree_ok && order_ok) {
+    pg::TargetForceModel model;
+    model.degree = static_cast<int>(tgt_degree);
+    model.order = static_cast<int>(tgt_order);
+    catalog_.setForceModel(model);  // clamps to what the compiled table supports
+  }
+
   // A slot whose vector is null is *not* installed. Zeroed entries are how the
   // estimator's mounting parameters already spell "no unit here", and mirroring
   // that convention means naming an absent unit is refused rather than resolving
@@ -255,19 +269,27 @@ bool PointingGuidance::buildContext(pt::Tai now, pg::GuidanceContext& ctx,
   // ResolvedDirection::rate_known. See GuidanceContext.
 
   // ---- Earth orientation, needed only by ECEF_TARGET.
+  // Earth orientation. ECEF_TARGET needs the rotation at `now`; the
+  // state-vector propagator needs the EOP record itself, because it integrates
+  // across a span and reduces at each of its own sub-steps. Both come from one
+  // lookup, and both are absent together — which is the honest coupling, since
+  // they fail for the same reason.
   EopSample eop;
   if (this->isConnected_getEopAt_OutputPort(0) &&
       this->getEopAt_out(0, now.nanosecondsSinceEpoch(), eop)) {
-    polaris::frames::EopValue lib_eop;
-    lib_eop.ut1_minus_tai = eop.get_ut1MinusTai();
-    lib_eop.xp_arcsec = eop.get_xpArcsec();
-    lib_eop.yp_arcsec = eop.get_ypArcsec();
+    eop_.ut1_minus_tai = eop.get_ut1MinusTai();
+    eop_.xp_arcsec = eop.get_xpArcsec();
+    eop_.yp_arcsec = eop.get_ypArcsec();
+    eop_valid_ = true;
     pm::Quat<pmf::ECI, pmf::ECEF> q_eci_ecef;
-    if (polaris::frames::eciFromEcef(now, lib_eop, q_eci_ecef)) {
+    if (polaris::frames::eciFromEcef(now, eop_, q_eci_ecef)) {
       ctx.eci_from_ecef = q_eci_ecef.core().toRotationMatrix().transpose();
       ctx.earth_orientation_valid = true;
     }
+  } else {
+    eop_valid_ = false;
   }
+  ctx.eop = eop_valid_ ? &eop_ : nullptr;
 
   status = pg::GuidanceStatus::kOk;
   return true;

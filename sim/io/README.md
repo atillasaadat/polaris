@@ -100,7 +100,7 @@ state so a viewer never correlates two streams by time: the target drawn in a
 frame is the one that was true at the vehicle state drawn in that frame, by
 construction. The truth side propagates them itself — SGP4 + TEME→ECI for a
 TLE, RK4 over the scenario's own spherical-harmonic field for a state vector —
-and deliberately **not** with the onboard `lib/gnc/j2_propagator` the flight
+and deliberately **not** with the onboard `lib/gnc/target_propagator` the flight
 software aims the camera by. Drawing the onboard position would make the picture
 circular in the way an assertion computed from the guidance is circular: the
 camera would appear to track perfectly however wrong the onboard propagation

@@ -73,7 +73,7 @@ TargetStatus TargetCatalog::loadStateVector(int index, const StateVectorSlot& sl
   if (!validIndex(index)) {
     return TargetStatus::kBadSlot;
   }
-  J2Propagator propagator;
+  TargetPropagator propagator;
   if (!propagator.setState(slot)) {
     return TargetStatus::kPropagationFailed;
   }
@@ -111,8 +111,14 @@ int TargetCatalog::occupiedCount(TargetKind kind) const {
   return n;
 }
 
+void TargetCatalog::setForceModel(const TargetForceModel& model) {
+  for (auto& entry : state_) {
+    entry.propagator.setForceModel(model);
+  }
+}
+
 TargetStatus TargetCatalog::positionAt(TargetKind kind, int index, const time::Tai& t,
-                                       TargetState& out) const {
+                                       TargetState& out, const frames::EopValue* eop) const {
   if (!validIndex(index)) {
     return TargetStatus::kBadSlot;
   }
@@ -150,7 +156,7 @@ TargetStatus TargetCatalog::positionAt(TargetKind kind, int index, const time::T
     const StateEntry& entry = state_[index];
     math::Vec3<math::frames::ECI> r;
     math::Vec3<math::frames::ECI> v;
-    if (entry.propagator.propagate(t, r, v) != J2Status::kOk) {
+    if (entry.propagator.propagate(t, eop, r, v) != PropagationStatus::kOk) {
       return TargetStatus::kPropagationFailed;
     }
     result.position_m = r;
