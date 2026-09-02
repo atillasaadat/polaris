@@ -67,6 +67,7 @@
 #include "sensors/star_tracker.hpp"
 #include "sensors/sun_sensor.hpp"
 #include "time/timescales.hpp"
+#include "world/tracked_object.hpp"
 
 namespace polaris::sim::io {
 
@@ -216,6 +217,19 @@ struct MacroSample {
 ///
 /// The callback sees **measurements only** — `TruthState` never crosses it
 /// (§2.3). The default (no callback) flies open loop.
+/// An instrument boresight the viewer should draw a field of view for (§8.4.1).
+///
+/// The sim already models these — `Vehicle::payload_sensors` carries the
+/// as-mounted boresight and the field shape — so this is a projection of a
+/// truth model rather than a second definition of the camera. It exists because
+/// the stream reader cannot see the vehicle.
+struct CameraOverlay {
+  std::string name;
+  Eigen::Vector3d boresight_body = Eigen::Vector3d::UnitZ();
+  double half_fov_x_deg = 0.0;
+  double half_fov_y_deg = 0.0;
+};
+
 class ClosedLoop {
  public:
   /// @param runner   Built plant + environment. The runner must have been built
@@ -244,6 +258,15 @@ class ClosedLoop {
   bool run(const FswCallback& fsw, std::vector<MacroSample>* trace = nullptr,
            std::string* error = nullptr);
 
+  /// Secondary objects the truth side should propagate and stream (§8.4.1).
+  ///
+  /// Held by pointer and not owned; must outlive the loop. Purely an output
+  /// concern — the objects never reach the plant, the sensor models or the
+  /// flight software, so adding one cannot change what a run does. That is what
+  /// makes it safe to draw them beside the vehicle and still call the picture
+  /// evidence.
+  void setTrackedObjects(const world::TrackedObjectSet* objects) { tracked_ = objects; }
+
   /// The payload sensors' latest pointing geometry, in `Vehicle::payload_sensors`
   /// order, as of the end of the last `run`. Sim-side only (see
   /// @ref PayloadGeometry).
@@ -270,6 +293,7 @@ class ClosedLoop {
   double mass_kg_{0.0};
   scenario::DataPaths paths_;
   std::vector<PayloadGeometry> payload_geometry_;
+  const world::TrackedObjectSet* tracked_ = nullptr;
 };
 
 }  // namespace polaris::sim::io

@@ -163,6 +163,11 @@ Eigen::Vector3d bodyVector(BodyVec kind, unsigned index, bool negate) {
   return negate ? Eigen::Vector3d(-v) : v;
 }
 
+/// Angle between two directions [deg], by atan2 (lib/README.md).
+double separationDeg(const Eigen::Vector3d& a, const Eigen::Vector3d& b) {
+  return std::atan2(a.cross(b).norm(), a.dot(b)) * kRadToDeg;
+}
+
 /// Angle [deg] between the commanded body vector — placed in ECI by the **truth**
 /// attitude — and the direction it was told to point at, also from truth.
 double truthPointingErrorDeg(const TruthState& s, const Eigen::Vector3d& body_unit,
@@ -171,8 +176,11 @@ double truthPointingErrorDeg(const TruthState& s, const Eigen::Vector3d& body_un
   // with the body vector is the same angle, computed without inverting anything.
   const Eigen::Vector3d target_body =
       s.attitude.rotate(pm::Vec3<pm::frames::ECI>(target_eci_unit.normalized())).eigen();
-  const double c = std::clamp(target_body.dot(body_unit.normalized()), -1.0, 1.0);
-  return std::acos(c) * kRadToDeg;
+  // atan2 of the cross and the dot, never acos of the dot (lib/README.md).
+  // These rows measure down to 0.009 deg, which is precisely where acos of a
+  // dot product near 1 loses half its digits; clamping hides that, it does not
+  // fix it.
+  return separationDeg(target_body, body_unit.normalized());
 }
 
 /// What one guidance row produced.
@@ -202,9 +210,15 @@ double worstTailDeg(const GuidanceRun& r, const Eigen::Vector3d& body_unit,
 /// Compile the vehicle, fork the deployment with @p spec as its §8.4 pointing
 /// command and TRACK latched, fly @p orbit against it, and return the truth
 /// trace and the event stream.
+/// Build the truth-side objects a row wants drawn, given the scenario's own
+/// gravity field. Called after the runner is built, because a state-vector
+/// target flies that field rather than a second copy of it.
+using MakeTargets = std::function<world::TrackedObjectSet(const world::SphericalHarmonicGravity*)>;
+
 GuidanceRun flyGuidance(const std::string& tag, const scenario::SimConfig& orbit,
                         const std::string& spec, unsigned ctrlMode = 3,
-                        const std::string& stateVectorSpec = "", const std::string& tleSpec = "") {
+                        const std::string& stateVectorSpec = "", const std::string& tleSpec = "",
+                        const MakeTargets& makeTargets = nullptr) {
   GuidanceRun result;
   const std::string work_dir =
       "build-artifacts/test-guidance-" + tag + "-" + std::to_string(::getpid());
@@ -252,6 +266,16 @@ GuidanceRun flyGuidance(const std::string& tag, const scenario::SimConfig& orbit
     ADD_FAILURE() << error;
     reapFsw(pid);
     return result;
+  }
+  // Truth-side secondary objects, for the viewer only (sim/world/tracked_object).
+  // They are propagated by the *sim's* field, not the onboard one, so a stream
+  // watched in FreeFlyer shows where the target really is against where the
+  // camera is aimed — the onboard model error is visible rather than absorbed.
+  // Declared here so it outlives loop.run().
+  world::TrackedObjectSet targets;
+  if (makeTargets) {
+    targets = makeTargets(runner.gravityField());
+    loop.setTrackedObjects(&targets);
   }
   if (!loop.run(server.callback(), &result.trace, &error)) {
     ADD_FAILURE() << error;
@@ -812,7 +836,19 @@ TEST(SitlPointingGuidance, TracksAnUploadedStateVectorTarget) {
   // ALIGN camera 0 (+Z) with SAT_STATE_0, CONSTRAIN +X toward J2000_Z.
   const std::string spec = guidanceSpec(kCamera, 0, false, kSatState, 0, false, 0.0, 0.0, kBodyX, 0,
                                         false, kJ2000Z, 0, false, 0.0, 0.0);
-  const GuidanceRun r = flyGuidance("sat-state", orbit, spec, /*ctrlMode=*/3, upload.str());
+  // The same state, handed to the truth side so the viewer has something to
+  // draw — and drawn from the *sim's* full spherical-harmonic field rather than
+  // the onboard two-body + J2 that aims the camera. That is what makes the
+  // picture worth watching: an onboard propagation error shows up as the target
+  // drifting off the boresight, instead of being carried along with it.
+  const GuidanceRun r =
+      flyGuidance("sat-state", orbit, spec, /*ctrlMode=*/3, upload.str(), /*tleSpec=*/"",
+                  [&p0, &v0](const world::SphericalHarmonicGravity* g) {
+                    world::TrackedObjectSet set;
+                    set.push_back(world::TrackedObject::fromState(
+                        "TargetState", pt::Tai::fromNanosecondsSinceEpoch(kEpochTaiNs), p0, v0, g));
+                    return set;
+                  });
   ASSERT_TRUE(r.sim_healthy);
   ASSERT_FALSE(r.trace.empty());
   EXPECT_GE(countOf(r.log, "Guidance set:"), 1u) << "the pointing command was never accepted";
@@ -832,9 +868,8 @@ TEST(SitlPointingGuidance, TracksAnUploadedStateVectorTarget) {
   // nadir or the Sun, a guidance bug that resolved the wrong kind would pass.
   const TruthState& tail = r.trace.back().state;
   const Eigen::Vector3d los = truthSatStateDirection(tail);
-  const double from_nadir = std::acos(std::clamp(los.dot(truthNadir(tail)), -1.0, 1.0)) * kRadToDeg;
-  const double from_sun =
-      std::acos(std::clamp(los.dot(truthSunDirection(tail)), -1.0, 1.0)) * kRadToDeg;
+  const double from_nadir = separationDeg(los, truthNadir(tail));
+  const double from_sun = separationDeg(los, truthSunDirection(tail));
   EXPECT_GT(from_nadir, 20.0) << "the catalogue target is too close to nadir to be distinguishable";
   EXPECT_GT(from_sun, 20.0) << "the catalogue target is too close to the Sun to be distinguishable";
 
@@ -935,8 +970,14 @@ TEST(SitlPointingGuidance, TracksAnUploadedTleTarget) {
   // ALIGN camera 0 (+Z) with SAT_TLE_0, CONSTRAIN +X toward J2000_Z.
   const std::string spec = guidanceSpec(kCamera, 0, false, kSatTle, 0, false, 0.0, 0.0, kBodyX, 0,
                                         false, kJ2000Z, 0, false, 0.0, 0.0);
-  const GuidanceRun r =
-      flyGuidance("sat-tle", orbit, spec, /*ctrlMode=*/3, /*stateVectorSpec=*/"", upload);
+  const GuidanceRun r = flyGuidance(
+      "sat-tle", orbit, spec, /*ctrlMode=*/3, /*stateVectorSpec=*/"", upload,
+      [](const world::SphericalHarmonicGravity*) {
+        world::TrackedObjectSet set;
+        set.push_back(world::TrackedObject::fromTle("TargetTle", kSatTleLine1, kSatTleLine2,
+                                                    pt::LeapSecondTable::historical()));
+        return set;
+      });
   ASSERT_TRUE(r.sim_healthy);
   ASSERT_FALSE(r.trace.empty());
   EXPECT_GE(countOf(r.log, "Guidance set:"), 1u) << "the pointing command was never accepted";
@@ -954,7 +995,7 @@ TEST(SitlPointingGuidance, TracksAnUploadedTleTarget) {
   // nadir" is a live way for a wrong resolution to pass.
   const TruthState& tail = r.trace.back().state;
   const Eigen::Vector3d los = truthSatTleDirection(tail);
-  const double from_nadir = std::acos(std::clamp(los.dot(truthNadir(tail)), -1.0, 1.0)) * kRadToDeg;
+  const double from_nadir = separationDeg(los, truthNadir(tail));
   EXPECT_GT(from_nadir, 20.0) << "the TLE target is too close to nadir to be distinguishable";
 
   const double worst = worstTailDeg(r, body, truthSatTleDirection);

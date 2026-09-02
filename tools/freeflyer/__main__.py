@@ -117,7 +117,8 @@ def _cmd_panel(args: argparse.Namespace) -> int:
         print("no runnable licensed FreeFlyer found", file=sys.stderr)
         return 1
     stream = Path(args.stream)
-    states = list(viz.replay(stream))
+    meta, rest = viz.split_meta(viz.replay(stream))
+    states = list(rest)
     if not states:
         print(f"{stream}: no states to replay", file=sys.stderr)
         return 1
@@ -136,6 +137,7 @@ def _cmd_panel(args: argparse.Namespace) -> int:
             windowed=not args.headless,
             max_fps=args.fps,
             view=args.view,
+            meta=meta,
         )
     except KeyboardInterrupt:
         print("\ninterrupted — engine killed", file=sys.stderr)

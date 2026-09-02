@@ -122,12 +122,54 @@ PYTHONPATH=tools python -m freeflyer viz --stream $STREAM --pace 20
 | Nadir hold, moving target | `SitlPointingGuidance.HoldsNadirAgainstTruthWhileTheTargetMoves` | the vehicle turning once per orbit to keep -Z down; the feedforward at work, not repeated repointing — use `--replay` |
 | Inertial hold | `SitlPointingGuidance.HoldsAnInertialAxisAgainstTruth` | the same machinery with a *stationary* target: the vehicle stops turning while the orbit carries on beneath it |
 | Anti-sun (the negate flag) | `SitlPointingGuidance.TheNegateFlagPointsTheVehicleTheOtherWay` | the same command as the first row with one flag set, and the vehicle ends up 180° from it |
-| **Track an uploaded state vector** | `SitlPointingGuidance.TracksAnUploadedStateVectorTarget` | the camera following a satellite the operator uploaded as an ECI state — the first row whose target does not exist in the sim at all, propagated onboard with two-body + J2; use `--replay` |
-| Track an uploaded TLE | `SitlPointingGuidance.TracksAnUploadedTleTarget` | the same, from a two-line element set: SGP4 onboard, TEME→ECI, and the camera tracking an inclined target across the sky; use `--replay` |
+| **Track an uploaded state vector** | `SitlPointingGuidance.TracksAnUploadedStateVectorTarget` | the target satellite drawn beside the vehicle and a **camera POV window**: the target enters the frame and settles near the boresight (90.7° off at the first frame, 3.05° at the end against a 4°/5° half-FOV); use `--replay` |
+| **Track an uploaded TLE** | `SitlPointingGuidance.TracksAnUploadedTleTarget` | the same from a two-line element set, SGP4 + TEME→ECI on the truth side: 120.9° off at the first frame, 1.51° at the end; use `--replay` |
 | GNSS outage | `SitlOdFault.GnssOutagePastTheFineHorizonIsDegradedNotDropped` | the orbit filter coasting |
 | Burn in an outage | `SitlOdBurn.BurnInsideAnOutageIsCoastedOnTheCommandedThrust` | a finite burn flown blind on thrust |
 | One orbit | `SitlOdFault.OneOrbitPeriodHoldsOneSolution` | a full period, one solution |
 | **Full orbit + eclipse** | `ClosedLoopOrbit.SensorsAgreeWithIndependentlyRecomputedGeometry` | a complete 94-min orbit through eclipse and back into sunlight — use `--replay` |
+
+### Watching the camera track another satellite
+
+The two `SitlPointingGuidance` catalogue rows open a **third window**: the view
+through the payload imager. It is the window that answers the question those
+rows exist to ask — not "is the pointing error small" but "is the thing it was
+told to point at actually in the frame".
+
+Three pieces make that picture honest rather than decorative:
+
+- **The camera is the one the sim models.** Its boresight and field half-angles
+  come off `Vehicle::payload_sensors` through the stream's `meta` record, not
+  from a number typed into the viewer. FreeFlyer's sensor cone is conic and the
+  imager's field is rectangular (5° × 4° half-angles), so the drawn cone is the
+  circumscribing one: it over-states the corners and never under-states the
+  field, which is the safe direction for an "is it inside?" glance. The view is
+  drawn wider than the instrument so a target *outside* the field is still
+  visible approaching it — a view clipped to the field shows an empty frame for
+  a near miss and an empty frame for a wild miss, which are the two cases most
+  worth telling apart.
+- **The target is propagated by the truth side, not by the flight software.**
+  `sim/world/tracked_object.hpp`: SGP4 + TEME→ECI for a TLE, RK4 over the
+  scenario's own spherical-harmonic field for a state vector. The onboard model
+  is two-body + J2 with no EOP. Drawing the *onboard* position would make the
+  picture circular — the camera would appear to track perfectly however wrong
+  the propagation was, because both halves came from it. Drawing the truth
+  position means an onboard model error shows as the target drifting off the
+  boresight. (Measured: the two models differ by ~13 m over 900 s at 8 000 km,
+  which at these ranges is far under a pixel. The mechanism is there for when it
+  is not.)
+- **FreeFlyer still propagates nothing.** The target is a bare `Spacecraft`
+  whose position this client writes every frame from the stream, exactly as
+  Polaris is. Same rule, same reason.
+
+```bash
+PYTHONPATH=tools python -m freeflyer run --replay --pace 100 \
+  --scenario SitlPointingGuidance.TracksAnUploadedTleTarget
+```
+
+One camera gets a POV window even if the vehicle carries several: more would be
+more windows than frames per second, and the pointing rows aim exactly one
+instrument.
 
 > **A detumble row does not end at zero rate, and that is the physics.** B-dot
 > damps the body rate *perpendicular* to the field; the component along the

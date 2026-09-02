@@ -53,6 +53,7 @@ add_executable(polaris_unit_tests
   teme_eci_test.cpp
   j2_propagator_test.cpp
   target_catalog_test.cpp
+  tracked_object_test.cpp
   attitude_guidance_test.cpp
   geopotential_test.cpp
   mag_calibration_test.cpp
