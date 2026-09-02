@@ -72,11 +72,18 @@ class StreamTap {
   /// as its own record kind so a reader that does not know about it can skip a
   /// line rather than misparse a sample.
   void writeMeta(const std::vector<CameraOverlay>& cameras,
-                 const std::vector<std::string>& target_names) {
+                 const std::vector<std::string>& target_names, double duration_s, double rate_hz) {
     if (!out_.is_open()) {
       return;
     }
-    out_ << "{\"meta\":1,\"cameras\":[";
+    // The planned duration is here so a reader can show *progress* rather than
+    // a spinner: the sim is the only party that knows how long the run is, and
+    // a viewer that had to guess would either invent a denominator or show
+    // none. Written per phase — a scenario that runs several ClosedLoop phases
+    // in one process emits one meta record each, and the last one is the phase
+    // currently being written.
+    out_ << "{\"meta\":1,\"duration_s\":" << duration_s << ",\"rate_hz\":" << rate_hz
+         << ",\"cameras\":[";
     for (std::size_t i = 0; i < cameras.size(); ++i) {
       const CameraOverlay& c = cameras[i];
       out_ << (i > 0 ? "," : "") << "{\"name\":\"" << c.name << "\",\"boresight_body\":["
@@ -542,7 +549,7 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
         }
       }
     }
-    stream.writeMeta(cameras, names);
+    stream.writeMeta(cameras, names, prop.duration_s, prop.fsw_rate_hz);
   }
   // Sample the tracked objects at a truth epoch. An object that refuses the
   // epoch keeps its previous position rather than jumping to the origin, and

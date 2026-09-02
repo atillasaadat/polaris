@@ -50,7 +50,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import locate, panel, viz, winhost
+from . import locate, panel, progress, viz, winhost
 
 
 def _cmd_status(_args: argparse.Namespace) -> int:
@@ -211,7 +211,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     "[run] simulating (the windows open when it finishes)...",
                     flush=True,
                 )
+                # Progress comes off the truth stream the sim is already
+                # writing, so nothing is attached to the simulation itself and
+                # it cannot be slowed or blocked by being watched. On a
+                # non-TTY this prints nothing; see freeflyer.progress.
+                progress.watch(stream, lambda: sim.poll() is None)
                 sim.wait()
+                print(f"[run] simulated {args.scenario}", flush=True)
                 viz_argv = [
                     "viz",
                     "--stream",
@@ -224,6 +230,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     args.view,
                 ]
             else:
+                # Live-follow still has a silent gap: the viewer waits on the
+                # first state, and on a SITL row that is minutes of config
+                # compilation and table loading before the loop marches. Show
+                # the same bar until the stream exists, then hand over to the
+                # renderer, which is its own progress indicator.
+                progress.watch(
+                    stream,
+                    lambda: sim.poll() is None and not stream.exists(),
+                )
                 viz_argv = [
                     "viz",
                     "--stream",

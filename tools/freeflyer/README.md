@@ -74,6 +74,21 @@ PYTHONPATH=tools python -m freeflyer run \
   --scenario SitlAttitudeControl.DetumblesThenAcquiresSunPointing
 ```
 
+The simulate phase shows a **progress bar**:
+
+```
+[run] [####################################--]  94.7%  853/900 s sim eta 0:03
+```
+
+It reads the truth stream the sim is already writing, so nothing is attached to
+the simulation and it cannot be slowed by being watched. The denominator is
+exact rather than guessed — the stream's `meta` record carries the run's planned
+`duration_s`, because the sim is the only party that knows how long the row is.
+Before the first macro step (config compilation and table loading, minutes on a
+SITL row) it shows a spinner saying so, which beats a bar that looks stuck at
+zero. **On a non-TTY it prints nothing at all**: a carriage-return bar in a CI
+log is thousands of lines of noise around the one line that mattered.
+
 `run` starts the SITL row with `POLARIS_SIM_STREAM` pointed at a fresh stream,
 follows it live in the windows, and cleans the simulation up on the way out
 (including on Ctrl-C — a SITL binary left running holds ports and a PrmDb). The

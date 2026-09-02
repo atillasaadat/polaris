@@ -84,8 +84,12 @@ any harness (unit rows, the SITL integration suite, a long local run).
 
 **Two things ride the stream besides the vehicle (Push 82).**
 
-A single `{"meta":1,...}` record leads the file, carrying what a viewer needs to
-build its scene and cannot derive from a truth sample: the payload cameras'
+A single `{"meta":1,...}` record leads the file, carrying what a reader needs
+and cannot derive from a truth sample: the run's planned `duration_s` and
+`rate_hz` (so a runner can show *progress* rather than a spinner — the sim is
+the only party that knows how long the run is, and a reader that had to guess
+would either invent a denominator or show none), plus what a viewer needs to
+build its scene: the payload cameras'
 as-mounted boresights and field half-angles (read off `Vehicle::payload_sensors`,
 so the drawn instrument is the one the sim models rather than a second
 definition of it), and the names of the tracked objects. It is written once

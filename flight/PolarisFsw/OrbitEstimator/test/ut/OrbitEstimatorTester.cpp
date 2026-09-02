@@ -130,7 +130,17 @@ bool OrbitEstimatorTester ::from_getEopAt_handler(FwIndexType portNum, I64 taiNs
 void OrbitEstimatorTester ::from_orbitStateOut_handler(FwIndexType portNum,
                                                        const OrbitEstimate& estimate) {
   this->last_estimate_ = estimate;
-  ++this->estimate_count_;
+  // Counted on port 0 only. `estimate_count_` is a statement about the
+  // *component's* per-cycle behaviour — "it published once this cycle", or
+  // "it published nothing while unconfigured" — and the tester connects every
+  // port of the array, so counting all of them would make that number a
+  // function of how many consumers happen to be wired. It already did: Push 82
+  // widened `orbitStateOut` from [1] to [2] for the pointing guidance and this
+  // count silently became 2, failing a test about tuning validity with an
+  // arity change that had nothing to do with it.
+  if (portNum == 0) {
+    ++this->estimate_count_;
+  }
 }
 
 // ----------------------------------------------------------------------
