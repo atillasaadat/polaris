@@ -37,7 +37,7 @@ jobs:
       - name: Build docs (warnings are errors)
         run: uv run --only-group docs bash tools/dev/build_docs.sh
       - name: Upload site artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: docs/_build/html
 
