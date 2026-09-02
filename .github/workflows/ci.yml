@@ -59,7 +59,7 @@ jobs:
       # run so the updated cache is always saved; restored from the most recent
       # prior run via the prefix.
       - name: Cache compiler output (ccache)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: /home/runner/.ccache
           key: ccache-${{ github.run_id }}
@@ -72,7 +72,7 @@ jobs:
       # the license note in cmake/Dependencies.cmake).
       - name: Cache NRLMSIS 2.1 tarball
         id: nrlmsis-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/polaris/nrlmsis2.1.tar.gz
           key: nrlmsis-41e47b29f795d36a5cc252b2858aa2a384c4a7323ace3d48d3ea2f2b37a1a6a8
@@ -197,7 +197,7 @@ jobs:
           enable-cache: true
       - name: Cache the FreeFlyer RPM + runtime sonames
         id: ff-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/freeflyer-pkg
           key: freeflyer-7.10.1.60799527-el9-deps-v1

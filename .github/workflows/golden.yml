@@ -23,7 +23,7 @@ jobs:
         with:
           enable-cache: true
       - name: Cache GMAT install
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/polaris-gmat
           key: gmat-${{ runner.os }}-R2026a
