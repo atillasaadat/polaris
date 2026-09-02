@@ -18,7 +18,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set up uv (provisions Python from .python-version)
         uses: astral-sh/setup-uv@v7
         with:
@@ -43,7 +43,7 @@ jobs:
       CCACHE_DIR: /home/runner/.ccache
       CCACHE_MAXSIZE: 2G
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive          # fprime + its nested submodules
       - name: Set up uv (provisions Python from .python-version)
@@ -168,7 +168,7 @@ jobs:
     name: python tests (tools/ + analysis/)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set up uv (provisions Python from .python-version)
         uses: astral-sh/setup-uv@v7
         with:
@@ -190,7 +190,7 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ vars.FREEFLYER_CI_ENABLED == 'true' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set up uv (provisions Python from .python-version)
         uses: astral-sh/setup-uv@v7
         with:

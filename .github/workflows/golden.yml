@@ -17,7 +17,7 @@ jobs:
     # runner to match, so the prebuilt binary's shared libs resolve.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set up uv (provisions Python from .python-version)
         uses: astral-sh/setup-uv@v7
         with:
