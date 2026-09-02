@@ -27,6 +27,10 @@ target_link_libraries(polaris_integration_tests
     polaris::scenario
     polaris::io
     polaris::constants
+    # SGP4, the TLE parser and TEME->ECI: the SAT_TLE_n guidance row forms its
+    # expected direction from them (sitl_pointing_guidance_test).
+    polaris::gnc
+    polaris::frames
     polaris::ephemeris
     polaris::math
     polaris::state

@@ -103,7 +103,10 @@ TEST(TargetCatalog, ARejectedUploadLeavesThePreviousTargetInService) {
   pg::TargetState before;
   ASSERT_EQ(cat.positionAt(pg::TargetKind::kTle, 0, tleEpoch(), before), pg::TargetStatus::kOk);
 
-  EXPECT_EQ(cat.loadTle(0, "1 garbage", "2 garbage", leap()), pg::TargetStatus::kPropagationFailed);
+  // kBadElements rather than the old catch-all kPropagationFailed: a refused
+  // upload has to tell the operator which of "re-uplink it", "fix the date" and
+  // "send a different element set" is the next action.
+  EXPECT_EQ(cat.loadTle(0, "1 garbage", "2 garbage", leap()), pg::TargetStatus::kBadElements);
   EXPECT_TRUE(cat.isOccupied(pg::TargetKind::kTle, 0));
 
   pg::TargetState after;
@@ -139,7 +142,7 @@ TEST(TargetCatalog, VerifiesTleChecksumsByDefaultSoAFlippedCharacterIsCaught) {
   corrupted[9] = corrupted[9] == '4' ? '5' : '4';  // 34.2682 -> 44.2682 inclination
 
   pg::TargetCatalog cat;
-  EXPECT_EQ(cat.loadTle(0, kLine1, corrupted, leap()), pg::TargetStatus::kPropagationFailed);
+  EXPECT_EQ(cat.loadTle(0, kLine1, corrupted, leap()), pg::TargetStatus::kBadElements);
   EXPECT_FALSE(cat.isOccupied(pg::TargetKind::kTle, 0))
       << "a corrupted element set was accepted into the catalogue";
 

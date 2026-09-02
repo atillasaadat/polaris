@@ -36,8 +36,8 @@ void print_usage(const char* app) {
       "-I\tonboard IAGA IGRF-14 coefficients (default tests/golden/igrf14coeffs.txt)\n"
       "-Y\tmission epoch for the IGRF snapshot, decimal year (default: system clock)\n"
       "-P\tParameterDb file from the config compiler (default ./PrmDb.dat)\n"
-      "-c\tcontrol mode to latch at startup: 1=DETUMBLE, 2=POINT (SITL/bench "
-      "only; 0/absent = stay IDLE)\n"
+      "-c\tcontrol mode to latch at startup: 1=DETUMBLE, 2=POINT, 3=TRACK "
+      "(SITL/bench only; 0/absent = stay IDLE). TRACK needs -G.\n"
       "-q\tinertial-hold target quaternion q0,q1,q2,q3 (JPL scalar-first), for -c 2\n"
       "-M\tcommand MAG_CAL_START for N samples at startup (SITL/bench only; "
       "0/absent = no calibration)\n"
@@ -50,7 +50,13 @@ void print_usage(const char* app) {
       "-N\torbit filter uses the burn executor's acceleration 0/1 (SITL/bench only; "
       "absent = 1)\n"
       "-b\tcommand BURN_START as cycle,durationS,throttle (SITL/bench only; absent = "
-      "no burn)\n",
+      "no burn)\n"
+      "-G\tSET_GUIDANCE at startup: 16 comma-separated fields in declaration order "
+      "(SITL/bench only; absent = uncommanded)\n"
+      "-V\tLOAD_STATE_VECTOR at startup: slot,epochTaiNs,pX,pY,pZ,vX,vY,vZ,sigmaM "
+      "(SITL/bench only; absent = no upload)\n"
+      "-L\tLOAD_TLE at startup: slot|line1|line2|verifyChecksum (SITL/bench only; "
+      "absent = no upload)\n",
       app);
 }
 
@@ -88,6 +94,18 @@ int main(int argc, char* argv[]) {
   bool guidance_set = false;
   unsigned guidance_fields[12] = {};
   double guidance_params[4] = {};
+  // SITL/bench target-catalogue uploads (§8.4). A catalogue slot is uplinked on
+  // a real vehicle, so both are off by default and a row that wants to point at
+  // a satellite has to say which one.
+  I32 sat_state_slot = -1;
+  long long sat_state_epoch_ns = 0;
+  double sat_state_pos[3] = {};
+  double sat_state_vel[3] = {};
+  double sat_state_sigma = 0.0;
+  I32 sat_tle_slot = -1;
+  char sat_tle_line1[72] = {};
+  char sat_tle_line2[72] = {};
+  unsigned sat_tle_verify = 1;
   F64 ctrl_target_q[4] = {0.0, 0.0, 0.0, 0.0};  // null norm = no target commanded
   const char* onboard_eop_path = nullptr;
   const char* onboard_ephem_path = nullptr;
@@ -109,7 +127,7 @@ int main(int argc, char* argv[]) {
   Os::init();
 
   // Loop while reading the getopt supplied options
-  while ((option = getopt(argc, argv, "hp:a:s:c:q:E:B:I:Y:P:M:A:F:R:W:b:N:G:")) != -1) {
+  while ((option = getopt(argc, argv, "hp:a:s:c:q:E:B:I:Y:P:M:A:F:R:W:b:N:G:V:L:")) != -1) {
     switch (option) {
       // Handle the -a argument for address/hostname
       case 'a':
@@ -186,6 +204,38 @@ int main(int argc, char* argv[]) {
         guidance_params[1] = at_p1;
         guidance_params[2] = ct_p0;
         guidance_params[3] = ct_p1;
+        break;
+      }
+      // SITL/bench state-vector upload (design doc §8.4/§8.3). Nine
+      // comma-separated LOAD_STATE_VECTOR arguments in declaration order:
+      //   slot,epochTaiNs,posX,posY,posZ,velX,velY,velZ,sigmaM
+      case 'V': {
+        unsigned slot = 0;
+        if (::sscanf(optarg, "%u,%lld,%lf,%lf,%lf,%lf,%lf,%lf,%lf", &slot, &sat_state_epoch_ns,
+                     &sat_state_pos[0], &sat_state_pos[1], &sat_state_pos[2], &sat_state_vel[0],
+                     &sat_state_vel[1], &sat_state_vel[2], &sat_state_sigma) != 9) {
+          (void)printf("Invalid state-vector spec '%s' (expected 9 comma-separated fields)\n",
+                       optarg);
+          return 1;
+        }
+        sat_state_slot = static_cast<I32>(slot);
+        break;
+      }
+      // SITL/bench TLE upload (design doc §8.4/§3.1). Pipe-separated because a
+      // TLE line is full of spaces and periods but never a pipe:
+      //   slot|line1|line2|verifyChecksum
+      // The checksum flag is spelled out rather than forced on, because the
+      // committed AIAA verification element sets carry stale checksums and are
+      // exactly the lines a row wants to fly.
+      case 'L': {
+        unsigned slot = 0;
+        if (::sscanf(optarg, "%u|%71[^|]|%71[^|]|%u", &slot, sat_tle_line1, sat_tle_line2,
+                     &sat_tle_verify) != 4) {
+          (void)printf("Invalid TLE spec '%s' (expected slot|line1|line2|verifyChecksum)\n",
+                       optarg);
+          return 1;
+        }
+        sat_tle_slot = static_cast<I32>(slot);
         break;
       }
       // Onboard-table paths (design doc §11.3, §22); absent = topology defaults.
@@ -352,6 +402,19 @@ int main(int argc, char* argv[]) {
   inputs.conTgtNegate = guidance_fields[11] != 0;
   inputs.conTgtParam0 = guidance_params[2];
   inputs.conTgtParam1 = guidance_params[3];
+  inputs.satStateSlot = sat_state_slot;
+  inputs.satStateEpochTaiNs = static_cast<I64>(sat_state_epoch_ns);
+  inputs.satStatePosM[0] = sat_state_pos[0];
+  inputs.satStatePosM[1] = sat_state_pos[1];
+  inputs.satStatePosM[2] = sat_state_pos[2];
+  inputs.satStateVelMps[0] = sat_state_vel[0];
+  inputs.satStateVelMps[1] = sat_state_vel[1];
+  inputs.satStateVelMps[2] = sat_state_vel[2];
+  inputs.satStateSigmaM = sat_state_sigma;
+  inputs.satTleSlot = sat_tle_slot;
+  inputs.satTleLine1 = sat_tle_line1;
+  inputs.satTleLine2 = sat_tle_line2;
+  inputs.satTleVerifyChecksum = sat_tle_verify != 0;
   for (int i = 0; i < 4; ++i) {
     inputs.ctrlTargetQ[i] = ctrl_target_q[i];
   }

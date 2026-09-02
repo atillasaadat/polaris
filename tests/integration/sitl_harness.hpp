@@ -124,8 +124,8 @@ inline pid_t spawnFsw(const std::string& bin, std::uint16_t port, const std::str
                       unsigned stAlignPairs = 0, unsigned stAlignUnit = 1, unsigned ctrlMode = 0,
                       const double* ctrlTargetQ = nullptr, int feedforward = -1,
                       unsigned odResetCycle = 0, const char* burnSpec = nullptr,
-                      int odAccelInput = -1, int wheelBias = -1,
-                      const char* guidanceSpec = nullptr) {
+                      int odAccelInput = -1, int wheelBias = -1, const char* guidanceSpec = nullptr,
+                      const char* stateVectorSpec = nullptr, const char* tleSpec = nullptr) {
   const pid_t pid = ::fork();
   if (pid == 0) {
     // A child whose log cannot be opened must not fly and report nothing: the
@@ -155,7 +155,7 @@ inline pid_t spawnFsw(const std::string& bin, std::uint16_t port, const std::str
     const std::string bias_str = std::to_string(wheelBias);
     // Optional overrides are passed only when asked for, so a row that does not
     // set one flies the ParameterDb value rather than a default of ours.
-    const char* argv_[32] = {
+    const char* argv_[40] = {
         bin.c_str(),       "-s", port_str.c_str(),   "-P", prm_path.c_str(),  "-Y",
         kEpochDecimalYear, "-M", cal_str.c_str(),    "-A", align_str.c_str(), "-c",
         ctrl_str.c_str(),  "-q", target_str.c_str(), "-R", reset_str.c_str()};
@@ -182,6 +182,18 @@ inline pid_t spawnFsw(const std::string& bin, std::uint16_t port, const std::str
     if (guidanceSpec != nullptr) {
       argv_[argc_++] = "-G";
       argv_[argc_++] = guidanceSpec;
+    }
+    // Catalogue uploads. The deployment issues these *before* the -G command
+    // for the reason PolarisFswTopology.cpp gives: SET_GUIDANCE checks slot
+    // occupancy on arrival, so a satellite row whose slot is still empty is
+    // refused at uplink. Order here is irrelevant; order there is not.
+    if (stateVectorSpec != nullptr) {
+      argv_[argc_++] = "-V";
+      argv_[argc_++] = stateVectorSpec;
+    }
+    if (tleSpec != nullptr) {
+      argv_[argc_++] = "-L";
+      argv_[argc_++] = tleSpec;
     }
     argv_[argc_] = nullptr;
     // execv takes char* const*; the strings are not modified.

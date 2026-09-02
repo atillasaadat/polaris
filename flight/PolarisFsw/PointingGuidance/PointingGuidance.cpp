@@ -109,6 +109,43 @@ void PointingGuidance ::commandGuidanceAtStartup(U32 alignVecKind, U32 alignVecI
   }
 }
 
+void PointingGuidance ::commandStateVectorAtStartup(U32 slot, I64 epochTaiNs, const F64 posM[3],
+                                                    const F64 velMps[3], F64 sigmaM) {
+  Fw::CmdArgBuffer args;
+  const auto ok = [](Fw::SerializeStatus s) { return s == Fw::FW_SERIALIZE_OK; };
+  if (ok(args.serializeFrom(static_cast<U8>(slot))) && ok(args.serializeFrom(epochTaiNs)) &&
+      ok(args.serializeFrom(posM[0])) && ok(args.serializeFrom(posM[1])) &&
+      ok(args.serializeFrom(posM[2])) && ok(args.serializeFrom(velMps[0])) &&
+      ok(args.serializeFrom(velMps[1])) && ok(args.serializeFrom(velMps[2])) &&
+      ok(args.serializeFrom(sigmaM))) {
+    this->get_cmdIn_InputPort(0)->invoke(this->getIdBase() + OPCODE_LOAD_STATE_VECTOR, 0, args);
+  }
+}
+
+void PointingGuidance ::commandTleAtStartup(U32 slot, const char* line1, const char* line2,
+                                            bool verifyChecksum) {
+  if (line1 == nullptr || line2 == nullptr) {
+    return;
+  }
+  const std::string l1(line1);
+  const std::string l2(line2);
+  if (l1.size() != kTleLineColumns || l2.size() != kTleLineColumns) {
+    return;  // the handler would refuse it; do not spend an opcode saying so
+  }
+  // The same split the ground tool performs, for the same reason.
+  const Fw::CmdStringArg l1a(l1.substr(0, kTleSplitColumn).c_str());
+  const Fw::CmdStringArg l1b(l1.substr(kTleSplitColumn).c_str());
+  const Fw::CmdStringArg l2a(l2.substr(0, kTleSplitColumn).c_str());
+  const Fw::CmdStringArg l2b(l2.substr(kTleSplitColumn).c_str());
+  Fw::CmdArgBuffer args;
+  const auto ok = [](Fw::SerializeStatus s) { return s == Fw::FW_SERIALIZE_OK; };
+  if (ok(args.serializeFrom(static_cast<U8>(slot))) && ok(args.serializeFrom(l1a)) &&
+      ok(args.serializeFrom(l1b)) && ok(args.serializeFrom(l2a)) && ok(args.serializeFrom(l2b)) &&
+      ok(args.serializeFrom(verifyChecksum))) {
+    this->get_cmdIn_InputPort(0)->invoke(this->getIdBase() + OPCODE_LOAD_TLE, 0, args);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Parameters
 // ---------------------------------------------------------------------------
@@ -369,6 +406,24 @@ void PointingGuidance::run_handler(FwIndexType, U32) {
 // Commands
 // ---------------------------------------------------------------------------
 
+PointingGuidance::TargetRefusal PointingGuidance::toRefusal(pg::TargetStatus status) {
+  switch (status) {
+    case pg::TargetStatus::kBadSlot:
+      return TargetRefusal::BAD_SLOT;
+    case pg::TargetStatus::kBadElements:
+      return TargetRefusal::BAD_ELEMENTS;
+    case pg::TargetStatus::kBadEpoch:
+      return TargetRefusal::BAD_EPOCH;
+    case pg::TargetStatus::kBadOrbit:
+      return TargetRefusal::BAD_ORBIT;
+    case pg::TargetStatus::kOk:
+    case pg::TargetStatus::kEmpty:
+    case pg::TargetStatus::kPropagationFailed:
+      break;
+  }
+  return TargetRefusal::OTHER;
+}
+
 PointingGuidance::GuidanceRefusal PointingGuidance::toRefusal(pg::GuidanceStatus status) {
   switch (status) {
     case pg::GuidanceStatus::kSameBodyAxis:
@@ -458,14 +513,28 @@ void PointingGuidance::CLEAR_GUIDANCE_cmdHandler(FwOpcodeType opCode, U32 cmdSeq
 }
 
 void PointingGuidance::LOAD_TLE_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, U8 slot,
-                                           const Fw::CmdStringArg& line1,
-                                           const Fw::CmdStringArg& line2, bool verifyChecksum) {
+                                           const Fw::CmdStringArg& line1a,
+                                           const Fw::CmdStringArg& line1b,
+                                           const Fw::CmdStringArg& line2a,
+                                           const Fw::CmdStringArg& line2b, bool verifyChecksum) {
+  // Reassemble the halves the uplink had to split (see LOAD_TLE in the .fpp for
+  // why it is split at all), then refuse anything that is not exactly 69
+  // columns. That length check is the whole point: a truncated line still
+  // parses far enough to fail somewhere specific and misleading, and the first
+  // time this happened the reported cause was a checksum error four fields
+  // downstream of the actual loss.
+  const std::string l1 = std::string(line1a.toChar()) + line1b.toChar();
+  const std::string l2 = std::string(line2a.toChar()) + line2b.toChar();
+  if (l1.size() != kTleLineColumns || l2.size() != kTleLineColumns) {
+    this->log_WARNING_LO_TargetLoadRefused(true, slot, TargetRefusal::LINE_LENGTH);
+    this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::VALIDATION_ERROR);
+    return;
+  }
   const pg::TleChecksumPolicy policy =
       verifyChecksum ? pg::TleChecksumPolicy::kVerify : pg::TleChecksumPolicy::kIgnore;
-  const pg::TargetStatus s =
-      catalog_.loadTle(static_cast<int>(slot), line1.toChar(), line2.toChar(), leap_, policy);
+  const pg::TargetStatus s = catalog_.loadTle(static_cast<int>(slot), l1, l2, leap_, policy);
   if (s != pg::TargetStatus::kOk) {
-    this->log_WARNING_LO_TargetLoadRefused(true, slot);
+    this->log_WARNING_LO_TargetLoadRefused(true, slot, toRefusal(s));
     this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::VALIDATION_ERROR);
     return;
   }
@@ -482,8 +551,9 @@ void PointingGuidance::LOAD_STATE_VECTOR_cmdHandler(FwOpcodeType opCode, U32 cmd
   sv.position_m = pm::Vec3<pmf::ECI>(posXM, posYM, posZM);
   sv.velocity_m_s = pm::Vec3<pmf::ECI>(velXMps, velYMps, velZMps);
   sv.sigma_at_epoch_m = sigmaM;
-  if (catalog_.loadStateVector(static_cast<int>(slot), sv) != pg::TargetStatus::kOk) {
-    this->log_WARNING_LO_TargetLoadRefused(false, slot);
+  const pg::TargetStatus sv_status = catalog_.loadStateVector(static_cast<int>(slot), sv);
+  if (sv_status != pg::TargetStatus::kOk) {
+    this->log_WARNING_LO_TargetLoadRefused(false, slot, toRefusal(sv_status));
     this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::VALIDATION_ERROR);
     return;
   }

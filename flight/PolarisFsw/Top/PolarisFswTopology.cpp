@@ -217,6 +217,20 @@ void setupTopology(const TopologyState& state) {
   // as the line below: after loadParameters(), since the guidance resolves body
   // vectors through the mounting parameters and would otherwise refuse a
   // perfectly good command for want of a boresight.
+  // Catalogue uploads must precede the pointing command, and the ordering is
+  // load-bearing rather than tidy: SET_GUIDANCE validates slot *occupancy* on
+  // arrival (§8.4 — a target that cannot be resolved is refused at uplink, not
+  // discovered mid-slew), so a row naming SAT_STATE_0 before the slot is filled
+  // is refused for exactly the right reason at exactly the wrong time.
+  if (state.satStateSlot >= 0) {
+    pointingGuidance.commandStateVectorAtStartup(static_cast<U32>(state.satStateSlot),
+                                                 state.satStateEpochTaiNs, state.satStatePosM,
+                                                 state.satStateVelMps, state.satStateSigmaM);
+  }
+  if (state.satTleSlot >= 0) {
+    pointingGuidance.commandTleAtStartup(static_cast<U32>(state.satTleSlot), state.satTleLine1,
+                                         state.satTleLine2, state.satTleVerifyChecksum);
+  }
   if (state.guidanceSet) {
     pointingGuidance.commandGuidanceAtStartup(
         state.alignVecKind, state.alignVecIndex, state.alignVecNegate, state.alignTgtKind,

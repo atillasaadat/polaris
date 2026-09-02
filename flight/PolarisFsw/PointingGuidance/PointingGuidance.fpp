@@ -173,10 +173,25 @@ module flight {
     @ character is a plausible orbit somewhere else, not obvious garbage. It is
     @ waivable because hand-written element sets — including the official AIAA
     @ verification fixture's own lines — legitimately carry stale checksums.
+    @
+    @ **Each 69-column line arrives in two halves, and that is the framework's
+    @ constraint rather than a design choice.** A `string size N` in a command
+    @ declaration is documentation: the autocoder emits `Fw::CmdStringArg` for
+    @ every command string, whose capacity is the framework-wide
+    @ `FW_CMD_STRING_MAX_SIZE` — **40** in the F´ default config this deployment
+    @ uses. A 69-column line handed to that type is silently truncated to 40,
+    @ which is what this command did until a SITL row tried to fly a TLE and was
+    @ refused with a parse error whose real cause was five layers away. The
+    @ alternative was forking F´'s config directory to raise a global constant
+    @ for one command; halves are the smaller change. The handler concatenates
+    @ and refuses anything that is not exactly 69 columns, so a truncation can
+    @ never again be discovered as a mysterious parse failure.
     guarded command LOAD_TLE(
                               slot: U8 @< 0..4
-                              line1: string size 72 @< TLE line 1, 69 columns
-                              line2: string size 72 @< TLE line 2, 69 columns
+                              line1a: string size 40 @< TLE line 1, columns 1-35
+                              line1b: string size 40 @< TLE line 1, columns 36-69
+                              line2a: string size 40 @< TLE line 2, columns 1-35
+                              line2b: string size 40 @< TLE line 2, columns 36-69
                               verifyChecksum: bool @< true in operations
                             ) \
       opcode 2
@@ -363,13 +378,28 @@ module flight {
       severity activity high \
       format "Target loaded: TLE={} slot {}"
 
+    @ Why an upload was refused. One value per operator action: a checksum or
+    @ format error is a re-uplink, an impossible date is a ground-tool bug, and
+    @ an element set SGP4 cannot start from is a different element set. These
+    @ were one value until a SITL row was refused and the event said only
+    @ "refused", which left guessing as the only recovery.
+    enum TargetRefusal : U8 {
+      BAD_SLOT = 0 @< slot index out of range
+      BAD_ELEMENTS = 1 @< the two lines did not parse, or the checksum did not verify
+      BAD_EPOCH = 2 @< the epoch fields do not form a real date
+      BAD_ORBIT = 3 @< parsed, but the propagator cannot be initialised from it
+      LINE_LENGTH = 4 @< the reassembled line is not 69 columns: the uplink truncated it
+      OTHER = 5 @< a refusal with no more specific value
+    }
+
     @ A target upload was refused; the slot is unchanged.
     event TargetLoadRefused(
                              isTle: bool
                              slot: U8
+                             reason: TargetRefusal
                            ) \
       severity warning low \
-      format "Target upload refused: TLE={} slot {} (slot unchanged)"
+      format "Target upload refused: TLE={} slot {} reason {} (slot unchanged)"
 
     @ A ground point or custom body vector was stored or refused.
     event StoreUpdated(

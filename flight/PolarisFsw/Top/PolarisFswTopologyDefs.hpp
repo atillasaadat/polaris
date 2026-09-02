@@ -103,6 +103,19 @@ struct TopologyState {
   bool conTgtNegate;
   F64 conTgtParam0;
   F64 conTgtParam1;
+  //! SITL/bench only: a target-catalogue slot to fill at startup, so a
+  //! `SAT_STATE_n` or `SAT_TLE_n` row can be flown with no ground link. Both are
+  //! off by default (`< 0` / null), which is the flight default: a catalogue
+  //! slot is uplinked, never born full.
+  I32 satStateSlot;  //!< < 0 = do not load a state vector
+  I64 satStateEpochTaiNs;
+  F64 satStatePosM[3];
+  F64 satStateVelMps[3];
+  F64 satStateSigmaM;
+  I32 satTleSlot;  //!< < 0 = do not load a TLE
+  const char* satTleLine1;
+  const char* satTleLine2;
+  bool satTleVerifyChecksum;
   U16 sitlPort;                       //!< SITL lockstep port (0 = SITL disabled, §2.2)
   const char* onboardEopPath;         //!< Onboard IERS EOP table file (§11.3, §22)
   const char* onboardEphemPath;       //!< Onboard Chebyshev ephemeris fixture (§11.3, §22)

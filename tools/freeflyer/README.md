@@ -122,6 +122,8 @@ PYTHONPATH=tools python -m freeflyer viz --stream $STREAM --pace 20
 | Nadir hold, moving target | `SitlPointingGuidance.HoldsNadirAgainstTruthWhileTheTargetMoves` | the vehicle turning once per orbit to keep -Z down; the feedforward at work, not repeated repointing — use `--replay` |
 | Inertial hold | `SitlPointingGuidance.HoldsAnInertialAxisAgainstTruth` | the same machinery with a *stationary* target: the vehicle stops turning while the orbit carries on beneath it |
 | Anti-sun (the negate flag) | `SitlPointingGuidance.TheNegateFlagPointsTheVehicleTheOtherWay` | the same command as the first row with one flag set, and the vehicle ends up 180° from it |
+| **Track an uploaded state vector** | `SitlPointingGuidance.TracksAnUploadedStateVectorTarget` | the camera following a satellite the operator uploaded as an ECI state — the first row whose target does not exist in the sim at all, propagated onboard with two-body + J2; use `--replay` |
+| Track an uploaded TLE | `SitlPointingGuidance.TracksAnUploadedTleTarget` | the same, from a two-line element set: SGP4 onboard, TEME→ECI, and the camera tracking an inclined target across the sky; use `--replay` |
 | GNSS outage | `SitlOdFault.GnssOutagePastTheFineHorizonIsDegradedNotDropped` | the orbit filter coasting |
 | Burn in an outage | `SitlOdBurn.BurnInsideAnOutageIsCoastedOnTheCommandedThrust` | a finite burn flown blind on thrust |
 | One orbit | `SitlOdFault.OneOrbitPeriodHoldsOneSolution` | a full period, one solution |

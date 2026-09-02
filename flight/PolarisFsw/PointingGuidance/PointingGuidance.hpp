@@ -28,9 +28,16 @@ namespace flight {
 
 class PointingGuidance final : public PointingGuidanceComponentBase {
  public:
+  //! A TLE line is 69 columns, and each one crosses the command boundary in two
+  //! pieces because `Fw::CmdStringArg` holds only FW_CMD_STRING_MAX_SIZE (40)
+  //! characters. See LOAD_TLE in the .fpp.
+  static constexpr std::size_t kTleLineColumns = 69;
+  static constexpr std::size_t kTleSplitColumn = 35;
+
   using BodyVecKind = PointingGuidance_BodyVecKind;
   using TargetKind = PointingGuidance_TargetKind;
   using GuidanceRefusal = PointingGuidance_GuidanceRefusal;
+  using TargetRefusal = PointingGuidance_TargetRefusal;
 
   explicit PointingGuidance(const char* compName);
   ~PointingGuidance() override = default;
@@ -47,6 +54,19 @@ class PointingGuidance final : public PointingGuidanceComponentBase {
                                 U32 conVecIndex, bool conVecNegate, U32 conTgtKind, U32 conTgtIndex,
                                 bool conTgtNegate, F64 conTgtParam0, F64 conTgtParam1);
 
+  //! SITL/bench only: fill a state-vector target slot at startup, the same way
+  //! and for the same reason as commandGuidanceAtStartup — through the real
+  //! LOAD_STATE_VECTOR handler, so a bad upload is refused here as it would be
+  //! from the ground. Without this a `SAT_STATE_n` row could never be flown
+  //! without a ground link, which is to say could never be flown.
+  void commandStateVectorAtStartup(U32 slot, I64 epochTaiNs, const F64 posM[3], const F64 velMps[3],
+                                   F64 sigmaM);
+
+  //! The TLE twin. @p verifyChecksum is passed through rather than forced,
+  //! because the committed AIAA verification element sets legitimately carry
+  //! stale checksums and are exactly what a row wants to fly.
+  void commandTleAtStartup(U32 slot, const char* line1, const char* line2, bool verifyChecksum);
+
  private:
   void run_handler(FwIndexType portNum, U32 context) override;
   void orbitStateIn_handler(FwIndexType portNum, const OrbitEstimate& estimate) override;
@@ -59,8 +79,9 @@ class PointingGuidance final : public PointingGuidanceComponentBase {
                                bool conVecNegate, TargetKind conTgtKind, U8 conTgtIndex,
                                bool conTgtNegate, F64 conTgtParam0, F64 conTgtParam1) override;
   void CLEAR_GUIDANCE_cmdHandler(FwOpcodeType opCode, U32 cmdSeq) override;
-  void LOAD_TLE_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, U8 slot, const Fw::CmdStringArg& line1,
-                           const Fw::CmdStringArg& line2, bool verifyChecksum) override;
+  void LOAD_TLE_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, U8 slot, const Fw::CmdStringArg& line1a,
+                           const Fw::CmdStringArg& line1b, const Fw::CmdStringArg& line2a,
+                           const Fw::CmdStringArg& line2b, bool verifyChecksum) override;
   void LOAD_STATE_VECTOR_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, U8 slot, I64 epochTaiNs,
                                     F64 posXM, F64 posYM, F64 posZM, F64 velXMps, F64 velYMps,
                                     F64 velZMps, F64 sigmaM) override;
@@ -84,6 +105,7 @@ class PointingGuidance final : public PointingGuidanceComponentBase {
   void publishNoTarget(polaris::time::Tai now, polaris::gnc::GuidanceStatus status);
 
   static GuidanceRefusal toRefusal(polaris::gnc::GuidanceStatus status);
+  static TargetRefusal toRefusal(polaris::gnc::TargetStatus status);
 
   // ---- Stores. Fixed-size, owned here; see the class comment.
   polaris::gnc::TargetCatalog catalog_;

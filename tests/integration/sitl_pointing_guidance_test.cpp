@@ -41,6 +41,10 @@
 #include <cstdio>
 #include <string>
 
+#include "constants/constants.hpp"
+#include "frames/teme_eci.hpp"
+#include "gnc/sgp4.hpp"
+#include "gnc/tle.hpp"
 #include "sensors/occlusion.hpp"
 #include "sitl_harness.hpp"
 #include "world/ephemeris_file.hpp"
@@ -199,7 +203,8 @@ double worstTailDeg(const GuidanceRun& r, const Eigen::Vector3d& body_unit,
 /// command and TRACK latched, fly @p orbit against it, and return the truth
 /// trace and the event stream.
 GuidanceRun flyGuidance(const std::string& tag, const scenario::SimConfig& orbit,
-                        const std::string& spec, unsigned ctrlMode = 3) {
+                        const std::string& spec, unsigned ctrlMode = 3,
+                        const std::string& stateVectorSpec = "", const std::string& tleSpec = "") {
   GuidanceRun result;
   const std::string work_dir =
       "build-artifacts/test-guidance-" + tag + "-" + std::to_string(::getpid());
@@ -220,7 +225,9 @@ GuidanceRun flyGuidance(const std::string& tag, const scenario::SimConfig& orbit
                              /*magCalSamples=*/0, /*stAlignPairs=*/0, /*stAlignUnit=*/1, ctrlMode,
                              /*ctrlTargetQ=*/nullptr, /*feedforward=*/-1, /*odResetCycle=*/0,
                              /*burnSpec=*/nullptr, /*odAccelInput=*/-1, /*wheelBias=*/-1,
-                             spec.empty() ? nullptr : spec.c_str());
+                             spec.empty() ? nullptr : spec.c_str(),
+                             stateVectorSpec.empty() ? nullptr : stateVectorSpec.c_str(),
+                             tleSpec.empty() ? nullptr : tleSpec.c_str());
   if (pid < 0) {
     ADD_FAILURE() << "fork failed";
     return result;
@@ -708,6 +715,256 @@ TEST(SitlPointingGuidance, RefusesAnImpossiblePairAndNeverEntersTrack) {
   // every cycle reads to an operator as a controller fault rather than as a
   // pointing command that cannot be met.
   EXPECT_EQ(countOf(r.log, "-> TRACK"), 0u) << "TRACK was entered with no guidance";
+}
+
+// ======================================================================
+// Row 6 — ALIGN the camera (+Z) with SAT_STATE_0
+//
+// The first row to fly the *target catalogue* rather than a target the vehicle
+// can derive from its own state. An operator uploads an osculating ECI state and
+// names the slot; the guidance propagates it with two-body + J2 and points at
+// where it is *now*, not where it was uploaded.
+//
+// ## The expected direction here is closed-form, and that is the point
+//
+// Every other row's expectation comes from truth geometry the sim already owns
+// (the Sun's ephemeris, the vehicle's own position). This one's target has no
+// existence in the plant at all — there is no second vehicle — so the honest
+// reference has to be computed here, and computing it with `J2Propagator` would
+// make the row circular: a propagation bug would move the command and the
+// expectation together and the row would pass.
+//
+// So the uploaded orbit is chosen to have a **closed form**. A circular
+// equatorial orbit stays circular and equatorial under two-body + J2, because
+// with `z = 0` the J2 term is purely radial:
+//
+//     a_r = -mu/r^2 - (3/2) J2 mu Re^2 / r^4      (the bulge pulls *harder* at
+//                                                  the equator, which is the
+//                                                  sign a unit test got backwards
+//                                                  once)
+//     omega = sqrt( mu/r^3 + (3/2) J2 mu Re^2 / r^5 )
+//
+// That is algebra, not integration, and it shares no code with the flight
+// propagator's RK4 or its hand-written gradient. If the flight J2 sign, its
+// magnitude, or its step control is wrong, the two positions separate and the
+// pointing error grows with time — which is exactly the failure a tail
+// assertion catches and an initial-sample one would not.
+//
+// The target is placed 30 deg ahead of the vehicle in true anomaly so the line
+// of sight is neither the zenith nor the along-track direction at any point in
+// the run: a guidance bug that resolved NADIR, or the vehicle's own velocity,
+// cannot pass by coincidence. It is a slowly moving target by construction
+// (~0.03 deg/s), so the feedforward is not what this row stresses — row 2 owns
+// that. This row is about the catalogue, the propagation and the resolution.
+// ======================================================================
+namespace {
+
+/// Radius and phase of the uploaded circular-equatorial target.
+constexpr double kSatStateRadiusM = 8.0e6;
+constexpr double kSatStatePhase0Rad = 30.0 * M_PI / 180.0;
+
+/// Mean motion of a circular equatorial orbit under two-body + J2 [rad/s].
+/// Closed form; see the row comment for the derivation and for why this must
+/// not call `J2Propagator`.
+double circularEquatorialRateRadS(double r) {
+  namespace c = polaris::constants;
+  const double mu = c::gravity::kGM;
+  const double re = c::gravity::kReferenceRadius;
+  const double j2 = c::gravity::kJ2;
+  return std::sqrt(mu / (r * r * r) + 1.5 * j2 * mu * re * re / (r * r * r * r * r));
+}
+
+/// The uploaded state at the sim epoch, in ECI.
+void satStateUpload(Eigen::Vector3d& pos, Eigen::Vector3d& vel) {
+  const double w = circularEquatorialRateRadS(kSatStateRadiusM);
+  const double c0 = std::cos(kSatStatePhase0Rad);
+  const double s0 = std::sin(kSatStatePhase0Rad);
+  pos = kSatStateRadiusM * Eigen::Vector3d(c0, s0, 0.0);
+  vel = w * kSatStateRadiusM * Eigen::Vector3d(-s0, c0, 0.0);
+}
+
+/// Truth line of sight to the uploaded target, from the closed form.
+Eigen::Vector3d truthSatStateDirection(const TruthState& s) {
+  const double dt = static_cast<double>(s.epoch.nanosecondsSinceEpoch() - kEpochTaiNs) * 1.0e-9;
+  const double theta = kSatStatePhase0Rad + circularEquatorialRateRadS(kSatStateRadiusM) * dt;
+  const Eigen::Vector3d target =
+      kSatStateRadiusM * Eigen::Vector3d(std::cos(theta), std::sin(theta), 0.0);
+  return (target - s.position.eigen()).normalized();
+}
+
+}  // namespace
+
+TEST(SitlPointingGuidance, TracksAnUploadedStateVectorTarget) {
+  std::string why;
+  if (toolchainMissing(why)) {
+    GTEST_SKIP() << why;
+  }
+  scenario::SimConfig orbit = faultMatrixOrbit(900.0, "sitl-guidance-sat-state");
+
+  Eigen::Vector3d p0 = Eigen::Vector3d::Zero();
+  Eigen::Vector3d v0 = Eigen::Vector3d::Zero();
+  satStateUpload(p0, v0);
+  std::ostringstream upload;
+  upload.precision(17);
+  upload << "0," << kEpochTaiNs << "," << p0.x() << "," << p0.y() << "," << p0.z() << "," << v0.x()
+         << "," << v0.y() << "," << v0.z() << ",50.0";
+
+  // ALIGN camera 0 (+Z) with SAT_STATE_0, CONSTRAIN +X toward J2000_Z.
+  const std::string spec = guidanceSpec(kCamera, 0, false, kSatState, 0, false, 0.0, 0.0, kBodyX, 0,
+                                        false, kJ2000Z, 0, false, 0.0, 0.0);
+  const GuidanceRun r = flyGuidance("sat-state", orbit, spec, /*ctrlMode=*/3, upload.str());
+  ASSERT_TRUE(r.sim_healthy);
+  ASSERT_FALSE(r.trace.empty());
+  EXPECT_GE(countOf(r.log, "Guidance set:"), 1u) << "the pointing command was never accepted";
+  EXPECT_EQ(countOf(r.log, "Guidance command refused"), 0u);
+  // A slot that failed to load would refuse the command, not answer with a stale
+  // position — assert the refusal did not happen rather than inferring it from
+  // the pointing error.
+  EXPECT_EQ(countOf(r.log, "TARGET_SLOT_EMPTY"), 0u) << "the state-vector upload did not land";
+
+  const Eigen::Vector3d body = bodyVector(kCamera, 0, false);
+  const double initial_deg = truthPointingErrorDeg(r.trace.front().state, body,
+                                                   truthSatStateDirection(r.trace.front().state));
+  EXPECT_GT(initial_deg, 20.0) << "the row started already on target; it proves nothing";
+
+  // The target must be distinguishable from the ones the vehicle could derive
+  // without the catalogue: if the line of sight were within a few degrees of
+  // nadir or the Sun, a guidance bug that resolved the wrong kind would pass.
+  const TruthState& tail = r.trace.back().state;
+  const Eigen::Vector3d los = truthSatStateDirection(tail);
+  const double from_nadir = std::acos(std::clamp(los.dot(truthNadir(tail)), -1.0, 1.0)) * kRadToDeg;
+  const double from_sun =
+      std::acos(std::clamp(los.dot(truthSunDirection(tail)), -1.0, 1.0)) * kRadToDeg;
+  EXPECT_GT(from_nadir, 20.0) << "the catalogue target is too close to nadir to be distinguishable";
+  EXPECT_GT(from_sun, 20.0) << "the catalogue target is too close to the Sun to be distinguishable";
+
+  const double worst = worstTailDeg(r, body, truthSatStateDirection);
+  const double trackers = trackerAvailabilityFraction(r, r.vehicle);
+  const double bound = justifiedBoundDeg(trackers);
+  RecordProperty("sat_state_initial_deg", std::to_string(initial_deg));
+  RecordProperty("sat_state_tail_worst_deg", std::to_string(worst));
+  RecordProperty("sat_state_los_from_nadir_deg", std::to_string(from_nadir));
+  RecordProperty("sat_state_tracker_availability", std::to_string(trackers));
+  expectPointedAndKnew(r, "sat-state", worst, bound, trackers);
+}
+
+// ======================================================================
+// Row 7 — ALIGN the camera (+Z) with SAT_TLE_0
+//
+// The catalogue's other half: a TLE, propagated with SGP4 and converted out of
+// TEME into ECI before the geometry ever sees it.
+//
+// ## What this row does and does not prove
+//
+// It does **not** re-verify SGP4. The expected direction here is formed by
+// calling the same `Sgp4` and `eciFromTeme` the flight side calls, so a defect
+// inside either would move the command and the expectation together. That
+// verification is Push 81's job and it is a stronger one than this row could
+// make: three independent lineages (Vallado here, USSF AstroStds in FreeFlyer,
+// NAIF SPICE in GMAT) agreeing to under 0.06 arcsec, in
+// `tests/golden/sgp4_external_golden_test.cpp`.
+//
+// What this row proves is everything *between* that propagator and the vehicle's
+// attitude, none of which the golden test touches: that a TLE uplinked as two
+// 69-column strings is parsed and checksum-verified, that it lands in the named
+// slot, that the catalogue answers for the *current* epoch rather than the
+// upload epoch, that the answer arrives in ECI rather than TEME, and that the
+// vehicle then physically points at it. The two rows together cover the path;
+// neither covers it alone, and saying so is cheaper than a weaker claim.
+//
+// The element set is synthetic (catalogue number 99001) and carries **valid**
+// checksums, so the row flies with `verifyChecksum` on — the operational
+// configuration. A 12 011 km semi-major axis at 51.6 deg keeps the range above
+// 5 000 km for the whole run, which bounds the line-of-sight rate: a near
+// conjunction would turn this into an unannounced slew-rate test.
+// ======================================================================
+namespace {
+
+/// A synthetic element set epoched at the sim start (2026 day 1). Held here
+/// rather than in `tests/golden/` on purpose: it is a test fixture, not
+/// external reference data, and nothing upstream published it.
+constexpr const char* kSatTleLine1 =
+    "1 99001U 26001A   26001.00000000  .00000000  00000-0  00000-0 0  9997";
+constexpr const char* kSatTleLine2 =
+    "2 99001  51.6000  30.0000 0001000  90.0000 270.0000  6.60000000    07";
+
+/// Truth line of sight to the TLE target. Shares the propagator with the flight
+/// side by necessity; see the row comment for what that does and does not leave
+/// covered.
+Eigen::Vector3d truthSatTleDirection(const TruthState& s) {
+  static polaris::gnc::Sgp4 sgp4;
+  static polaris::time::Tai tle_epoch;
+  static bool ready = false;
+  if (!ready) {
+    polaris::gnc::TleElements elements;
+    EXPECT_EQ(polaris::gnc::parseTle(kSatTleLine1, kSatTleLine2, elements),
+              polaris::gnc::TleStatus::kOk);
+    EXPECT_EQ(sgp4.initialise(elements), polaris::gnc::Sgp4Status::kOk);
+    EXPECT_TRUE(elements.epochTai(pt::LeapSecondTable::historical(), tle_epoch));
+    ready = true;
+  }
+  const double minutes =
+      static_cast<double>(s.epoch.nanosecondsSinceEpoch() - tle_epoch.nanosecondsSinceEpoch()) *
+      1.0e-9 / 60.0;
+  polaris::gnc::Sgp4::PositionKm p_teme;
+  polaris::gnc::Sgp4::VelocityKmS v_teme;
+  if (sgp4.propagate(minutes, p_teme, v_teme) != polaris::gnc::Sgp4Status::kOk) {
+    ADD_FAILURE() << "the reference SGP4 refused to propagate the row's own element set";
+    return Eigen::Vector3d::UnitX();
+  }
+  pm::Vec3<pm::frames::ECI> target_eci;
+  if (!polaris::frames::eciFromTeme(s.epoch, pm::Vec3<pm::frames::TEME>(p_teme.eigen() * 1000.0),
+                                    target_eci)) {
+    ADD_FAILURE() << "the reference TEME->ECI conversion refused the row's own epoch";
+    return Eigen::Vector3d::UnitX();
+  }
+  return (target_eci.eigen() - s.position.eigen()).normalized();
+}
+
+}  // namespace
+
+TEST(SitlPointingGuidance, TracksAnUploadedTleTarget) {
+  std::string why;
+  if (toolchainMissing(why)) {
+    GTEST_SKIP() << why;
+  }
+  scenario::SimConfig orbit = faultMatrixOrbit(900.0, "sitl-guidance-sat-tle");
+  const std::string upload =
+      std::string("0|") + kSatTleLine1 + "|" + kSatTleLine2 + "|1";  // checksums verified
+
+  // ALIGN camera 0 (+Z) with SAT_TLE_0, CONSTRAIN +X toward J2000_Z.
+  const std::string spec = guidanceSpec(kCamera, 0, false, kSatTle, 0, false, 0.0, 0.0, kBodyX, 0,
+                                        false, kJ2000Z, 0, false, 0.0, 0.0);
+  const GuidanceRun r =
+      flyGuidance("sat-tle", orbit, spec, /*ctrlMode=*/3, /*stateVectorSpec=*/"", upload);
+  ASSERT_TRUE(r.sim_healthy);
+  ASSERT_FALSE(r.trace.empty());
+  EXPECT_GE(countOf(r.log, "Guidance set:"), 1u) << "the pointing command was never accepted";
+  EXPECT_EQ(countOf(r.log, "Guidance command refused"), 0u);
+  EXPECT_EQ(countOf(r.log, "TARGET_SLOT_EMPTY"), 0u)
+      << "the TLE upload did not land — a parse or checksum refusal, not a pointing failure";
+
+  const Eigen::Vector3d body = bodyVector(kCamera, 0, false);
+  const double initial_deg = truthPointingErrorDeg(r.trace.front().state, body,
+                                                   truthSatTleDirection(r.trace.front().state));
+  EXPECT_GT(initial_deg, 20.0) << "the row started already on target; it proves nothing";
+
+  // Same distinguishability guard as row 6, and it earns more here: a TLE target
+  // is inclined and its line of sight sweeps, so "it happened to look like
+  // nadir" is a live way for a wrong resolution to pass.
+  const TruthState& tail = r.trace.back().state;
+  const Eigen::Vector3d los = truthSatTleDirection(tail);
+  const double from_nadir = std::acos(std::clamp(los.dot(truthNadir(tail)), -1.0, 1.0)) * kRadToDeg;
+  EXPECT_GT(from_nadir, 20.0) << "the TLE target is too close to nadir to be distinguishable";
+
+  const double worst = worstTailDeg(r, body, truthSatTleDirection);
+  const double trackers = trackerAvailabilityFraction(r, r.vehicle);
+  const double bound = justifiedBoundDeg(trackers);
+  RecordProperty("sat_tle_initial_deg", std::to_string(initial_deg));
+  RecordProperty("sat_tle_tail_worst_deg", std::to_string(worst));
+  RecordProperty("sat_tle_los_from_nadir_deg", std::to_string(from_nadir));
+  RecordProperty("sat_tle_tracker_availability", std::to_string(trackers));
+  expectPointedAndKnew(r, "sat-tle", worst, bound, trackers);
 }
 
 }  // namespace polaris::test::sitl

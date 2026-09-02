@@ -1080,3 +1080,37 @@ ownership, mode, a latch. Availability that stops at physics will pass a
 resource the software is correctly declining. And when strengthening a check
 leaves the answer unchanged, treat that as *weak* evidence, not confirmation:
 ask what the strengthening could not have detected.
+
+---
+
+## P82b — A test that never crosses the boundary the bug lives on
+
+`LOAD_TLE` declared its two lines as `string size 72`. The F´ autocoder emits
+`Fw::CmdStringArg` for every command string regardless, and its capacity is the
+framework-wide `FW_CMD_STRING_MAX_SIZE` — 40. Every 69-column line was
+truncated to 40 characters. The command could never have loaded a TLE, from the
+day it was written.
+
+The library beneath it was correct and well covered: `TargetCatalog::loadTle`
+takes `std::string_view`, and the unit suite fed it good lines, garbage lines
+and a deliberately corrupted checksum. Every one of those tests passed, and
+none of them could have failed, because none crossed the command boundary where
+the loss happened. The FPP's `size 72` read as a specification and was
+decoration.
+
+The symptom, when a SITL row finally flew the uplink path, pointed away from
+the cause: a truncated line still parses far enough to fail on a *specific*
+field, so the first report was a checksum error four fields downstream.
+
+**Why it belongs here:** the P81/P82a class is a measurement that looks like
+evidence. This is its structural sibling — a *test suite* that looks like
+coverage. Both leave a defect standing behind something green.
+
+**How to apply:** for any value that crosses a framework boundary — a command
+argument, a telemetry channel, a parameter, a port struct — find the concrete
+type the autocoder actually emits and its capacity, and do not trust the width
+written in the model. Then ask of any component whose library is well tested:
+is there a test that exercises the *component*, or only the library it calls?
+A declared size that nothing asserts is a comment. The fix pairs with the
+guard: the handler now refuses anything that does not reassemble to exactly 69
+columns, so the next truncation is a named refusal rather than a mystery.

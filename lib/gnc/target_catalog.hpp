@@ -81,9 +81,17 @@ const char* toString(TargetKind kind);
 /// Why a catalogue query produced no position.
 enum class TargetStatus : unsigned char {
   kOk = 0,
-  kBadSlot,           ///< slot index outside [0, kMaxSlots)
-  kEmpty,             ///< nothing has been uploaded to this slot
-  kPropagationFailed  ///< the slot's propagator refused this epoch
+  kBadSlot,            ///< slot index outside [0, kMaxSlots)
+  kEmpty,              ///< nothing has been uploaded to this slot
+  kPropagationFailed,  ///< the slot's propagator refused this epoch
+  // The three ways an *upload* can fail. They were one value until a SITL row
+  // was refused and the event said only "refused": a bad checksum, an
+  // impossible date and an element set the theory cannot start from are three
+  // different things for an operator to do next, and reporting them
+  // identically leaves the only recovery as guessing.
+  kBadElements,  ///< the two lines did not parse, or the checksum did not verify
+  kBadEpoch,     ///< the epoch fields do not form a real date
+  kBadOrbit      ///< parsed, but SGP4 cannot be initialised from it
 };
 
 const char* toString(TargetStatus status);

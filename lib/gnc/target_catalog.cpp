@@ -33,6 +33,12 @@ const char* toString(TargetStatus status) {
       return "EMPTY";
     case TargetStatus::kPropagationFailed:
       return "PROPAGATION_FAILED";
+    case TargetStatus::kBadElements:
+      return "BAD_ELEMENTS";
+    case TargetStatus::kBadEpoch:
+      return "BAD_EPOCH";
+    case TargetStatus::kBadOrbit:
+      return "BAD_ORBIT";
   }
   return "UNKNOWN";
 }
@@ -46,15 +52,15 @@ TargetStatus TargetCatalog::loadTle(int index, std::string_view line1, std::stri
   // once all of it has succeeded.
   TleElements elements;
   if (parseTle(line1, line2, elements, checksum) != TleStatus::kOk) {
-    return TargetStatus::kPropagationFailed;
+    return TargetStatus::kBadElements;
   }
   time::Tai epoch;
   if (!elements.epochTai(leap, epoch)) {
-    return TargetStatus::kPropagationFailed;
+    return TargetStatus::kBadEpoch;
   }
   Sgp4 propagator;
   if (propagator.initialise(elements, Sgp4OpsMode::kAfspc) != Sgp4Status::kOk) {
-    return TargetStatus::kPropagationFailed;
+    return TargetStatus::kBadOrbit;
   }
 
   tle_[index].propagator = propagator;
