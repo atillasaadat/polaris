@@ -1183,6 +1183,25 @@ A single, unified, nicely-formatted docs site built from code docstrings — mat
 - **Diagrams:** architecture, data-flow, and sequence diagrams are source-controlled Mermaid blocks in the MyST guides (`sphinxcontrib-mermaid`) — e.g. the §2.4 macro-step sequence, the config-compiler pipeline, and the frame graph — so they version with the code they describe.
 - Rendering: MathJax via Sphinx; Doxygen formulas flow through Breathe untouched, so the same header renders identically in an IDE tooltip (raw LaTeX) and on the site (typeset).
 
+### 8.4.1 Align/constrain pointing guidance (Push 82; REQ-AGN-004, REQ-AGN-005)
+
+An attitude is three degrees of freedom; pointing something at something is two. So **every** pointing mode is one command with different nouns:
+
+    ALIGN     <body vector>  with   <inertial target>   — exact, 2 DOF
+    CONSTRAIN <body vector>  toward <inertial target>   — best effort, 1 DOF
+
+Nadir hold is `ALIGN -Z with NADIR, CONSTRAIN +X toward LVLH_X`. Sun-safe is `ALIGN array-normal with SUN`. Ground-station track is `ALIGN antenna with ECEF_TARGET_n`. Satellite track is `ALIGN camera with SAT_TLE_n`. None of those is a mode in the code — they are commands built from two enumerated noun lists (`lib/gnc/pointing_refs.hpp`), so a new mission mode is an operator command rather than new flight software, and there is **one** geometry implementation and **one** validator to get right instead of one of each per mode.
+
+**Body vectors:** `BODY_X/Y/Z`, `STAR_TRACKER_n`, `SUN_SENSOR_n`, `CAMERA_n` (n < 8), `CUSTOM_BODY_VEC_n` (n < 10, operator-written at runtime for an antenna or aperture the frozen parameter set does not cover). The sensor kinds resolve through the *estimator's* mounting parameters rather than a second copy of those numbers; `configc` cross-checks the two by **equality**, because a boresight is one physical fact and a drifted copy points the instrument off-target while the estimator, the controller and every telemetry channel agree it is exactly on target (§19.3).
+
+**Targets:** `SUN`, `MOON`, `NADIR`, `ECEF_TARGET_n` (30 stored geodetic ground points — a station list is static mission data reused for years, and geodetic because that is how a station is published and checked by a human), `STAR_J2000`, `J2000_X/Y/Z`, `LVLH_X/Y/Z`, `SAT_TLE_n`, `SAT_STATE_n` (§8.3's five-and-five catalogue). Both lists carry a `negate` flag rather than doubled enumerators: anti-sun, −Z and anti-nadir are as ordinary as their positives, and two spellings of one direction is one too many. The flag applies to the direction and **not** to its rate — negating an axis does not change how fast it turns — and **not** to the same-axis validation, since aligning +X while constraining −X is exactly as unsatisfiable as naming +X twice.
+
+**Validation is split by timing, and that split is load-bearing.** Static checks belong to the *command* and run once on arrival: the two body vectors are not the same axis, both resolve, named slots are occupied, parameters are in range. Collinearity of the two *targets* is deliberately **not** checked then — it is a property of the sky at a moment, and a constraint that is fine at command time can degenerate an orbit later as the Sun, the target and the vehicle line up. It is re-checked every cycle and reported, never resolved by silently picking a roll.
+
+The feedforward rate is the analytic derivative of the commanded triad (`ω = ½ Σ eᵢ × ėᵢ`, with the Gram-Schmidt differentiated in closed form), not a difference of successive quaternions, which would amplify a day-old TLE's position noise by 1/dt.
+
+`PointingGuidance` runs between the orbit estimator and the controller on the GNC rate group, so the target the controller acts on came from this cycle's orbit solution. The seam to the controller is deliberately narrow — a quaternion, a body rate and a valid flag — so the control law cannot come to behave differently depending on the pointing mode. `AttitudeController` gains `TRACK`, which is a change of argument rather than a second control law: the PID already accepted a target rate, so POINT passes a fixed target and zero rate and TRACK passes what the guidance streams.
+
 ### 21.4 Live Web Tools (future phase)
 - A public interactive site exposing tools such as **RW momentum budgeting/allocation**, detumble-time, and link budget — **driven by the same codebase** so the web tool and the FSW compute identically.
 - Mechanism: the **pybind11-bound C++** is either compiled to **WebAssembly (Pyodide/Emscripten)** for client-side execution or served by a thin backend; either way the live tools call the exact §12 implementations — no reimplementation, no divergence.

@@ -118,6 +118,10 @@ PYTHONPATH=tools python -m freeflyer viz --stream $STREAM --pace 20
 | Every source at once | `SitlFaultMatrix.GeometryMakesEverySourceAvailableAtOnce` | sun, mag and both trackers live |
 | Dark start | `SitlFaultMatrix.DarkStartSeedsFromATrackerAndSurvivesSunrise` | eclipse start, sunrise transition |
 | Both trackers lost | `SitlFaultMatrix.BothTrackersLostFallsToSunMagAndClimbsBackOnReturn` | the demotion and the climb back |
+| **Point a sun sensor at the Sun** | `SitlPointingGuidance.AlignsASunSensorWithTheTrueSun` | the §8.4 align/constrain command end to end: an arbitrary start attitude, a slew, and the named body vector arriving on the Sun — **the row to watch first if you want to see pointing get commanded** |
+| Nadir hold, moving target | `SitlPointingGuidance.HoldsNadirAgainstTruthWhileTheTargetMoves` | the vehicle turning once per orbit to keep -Z down; the feedforward at work, not repeated repointing — use `--replay` |
+| Inertial hold | `SitlPointingGuidance.HoldsAnInertialAxisAgainstTruth` | the same machinery with a *stationary* target: the vehicle stops turning while the orbit carries on beneath it |
+| Anti-sun (the negate flag) | `SitlPointingGuidance.TheNegateFlagPointsTheVehicleTheOtherWay` | the same command as the first row with one flag set, and the vehicle ends up 180° from it |
 | GNSS outage | `SitlOdFault.GnssOutagePastTheFineHorizonIsDegradedNotDropped` | the orbit filter coasting |
 | Burn in an outage | `SitlOdBurn.BurnInsideAnOutageIsCoastedOnTheCommandedThrust` | a finite burn flown blind on thrust |
 | One orbit | `SitlOdFault.OneOrbitPeriodHoldsOneSolution` | a full period, one solution |

@@ -1045,3 +1045,38 @@ removing it (39.7/57.0 m becomes 81.7/60.1 m, test red), not assumed.
 conventions, a passing test that would also pass with the other choice is not
 covering it. Look for a reference that distinguishes them, and confirm the test
 fails when the choice is inverted.
+
+## P82 — "available" is not "usable"
+
+**Class:** a resource check that stops one gate short of the one that matters,
+and convicts working code with a plausible number.
+
+A SITL row bounded its pointing accuracy by whether a star tracker was
+available, computed from truth geometry: boresight unobstructed, Sun and Earth
+keep-outs applied. It reported availability 1.0 while the estimator fused zero
+trackers, which looked like a clear estimator defect and was reported as one.
+
+Strengthening the check did not help, and that is the interesting part. Adding
+the model's acquisition rate and acceleration envelopes — the tighter gate a
+lost tracker must pass to re-acquire — felt like ruling out the innocent
+explanation. The number stayed at 1.0, which read as confirmation. It had ruled
+out *an* innocent explanation while leaving the real one untouched.
+
+The real one: the estimator fuses **king-only** until `ST_ALIGN_CAL` has run,
+because a non-king unit's as-mounted reading carries the two units' bias
+difference. The unobstructed tracker was the non-king one. The king was inside
+the Earth keep-out. No fine-mode source was ever available, the coarse fallback
+was correct, and the 3 deg result was the requirement being met.
+
+**Why it belongs here:** this is the P81 class one turn further on. There the
+harness's own precision was read as the measured quantity; here the harness's
+own *model of eligibility* was. Both produce a number that is plausible, stable
+under strengthening, and wrong — and both survive review because the number
+looks like evidence.
+
+**How to apply:** when a check says a resource is available, ask what the
+consumer additionally requires before it can use it — calibration state,
+ownership, mode, a latch. Availability that stops at physics will pass a
+resource the software is correctly declining. And when strengthening a check
+leaves the answer unchanged, treat that as *weak* evidence, not confirmation:
+ask what the strengthening could not have detected.
