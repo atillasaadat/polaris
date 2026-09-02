@@ -57,6 +57,10 @@ using polaris::state::TruthState;
 
 constexpr double kRadToDeg = 180.0 / M_PI;
 
+/// `flight.attitudeEstimator.StKingUnit` on this vehicle: the one tracker the
+/// estimator will fuse before ST_ALIGN_CAL has run.
+constexpr std::size_t kKingTrackerUnit = 0;
+
 /// Body-vector kinds, mirroring PointingGuidance.fpp's BodyVecKind.
 enum BodyVec : unsigned {
   kBodyX = 0,
@@ -319,8 +323,8 @@ bool toolchainMissing(std::string& why) {
 // which still misses by degrees fails, which is the case that matters.
 // ----------------------------------------------------------------------
 
-/// Fraction of the settled tail during which **at least one** star tracker could
-/// actually have been delivering solutions, computed entirely from truth.
+/// Fraction of the settled tail during which the vehicle could actually have had
+/// a fine-mode attitude source, computed entirely from truth.
 ///
 /// Availability is not just geometry, and getting that wrong is what made an
 /// earlier version of this file call a working vehicle defective. The sim's
@@ -336,6 +340,17 @@ bool toolchainMissing(std::string& why) {
 /// model gates on. The boresight comes from the model's own `boresightBody()`
 /// rather than being recomputed here, so the check cannot disagree with the unit
 /// it is describing.
+///
+/// And it counts only the **king** unit, which is the correction that matters
+/// most. The estimator deliberately fuses king-only until `ST_ALIGN_CAL` has
+/// run: a non-king unit's as-mounted reading carries the *difference* of the two
+/// units' fixed biases (45-110 arcsec on this vehicle), and fusing that at the
+/// declared 21.5 arcsec sigma would sell a systematic as white noise. These rows
+/// never run the alignment, so a clear non-king tracker is genuinely unusable —
+/// and counting it made an earlier version of this file report a fine-mode
+/// source as available when none was, and call the flight software defective for
+/// correctly declining to use it. "Available" has to mean *fusable*, not merely
+/// unobstructed.
 double trackerAvailabilityFraction(const GuidanceRun& r, const scenario::Vehicle& vehicle,
                                    std::size_t tail_samples = 300) {
   if (vehicle.star_trackers.empty() || r.trace.empty()) {
@@ -370,7 +385,11 @@ double trackerAvailabilityFraction(const GuidanceRun& r, const scenario::Vehicle
     sky.moon = moon_eci.eigen();
 
     bool any = false;
-    for (const auto& mounted : vehicle.star_trackers) {
+    for (std::size_t unit = 0; unit < vehicle.star_trackers.size(); ++unit) {
+      if (unit != kKingTrackerUnit) {
+        continue;  // king-only until ST_ALIGN_CAL; see the function comment.
+      }
+      const auto& mounted = vehicle.star_trackers[unit];
       // The unit's boresight is its +Z through the mounting, rotated into ECI by
       // the *truth* attitude — the same construction the sim uses to sample it.
       const Eigen::Vector3d bore_body = mounted.mounting_dcm * Eigen::Vector3d::UnitZ();
@@ -502,29 +521,30 @@ TEST(SitlPointingGuidance, HoldsAnInertialAxisAgainstTruth) {
   const double trackers = trackerAvailabilityFraction(r, r.vehicle);
   const double bound = justifiedBoundDeg(trackers);
   RecordProperty("inertial_tracker_availability", std::to_string(trackers));
-  // OPEN DEFECT, and this row is what found it.
+  // This row spent three iterations being wrong about the flight software, and
+  // the sequence is worth keeping because each step looked conclusive.
   //
-  // Over the settled tail, truth says at least one star tracker is unobstructed
-  // (the Auriga's real 35 deg Sun and 22 deg Earth exclusions applied) **and**
-  // the vehicle is inside that unit's acquisition rate and acceleration
-  // envelopes — availability 1.0 on both counts, so the model's own
-  // re-acquisition gate is satisfiable. The acquisition envelope was added to
-  // this check specifically to rule out the innocent explanation: a tracker with
-  // a clear boresight on a vehicle too twitchy to re-acquire would be the model
-  // working as designed, not a defect. It is not that.
+  // It holds to the 3 deg coarse band, and the estimator reports "Fine-mode
+  // source changed STAR_TRACKER -> SUN_MAG (0 tracker(s) fused)" about 200 s in,
+  // never returning. A geometry-only availability check said a tracker was
+  // unobstructed the whole time, so this looked like a defect. Adding the
+  // acquisition rate and acceleration envelopes did not change it, which seemed
+  // to confirm one.
   //
-  // Yet the estimator reports "Fine-mode source changed STAR_TRACKER -> SUN_MAG
-  // (0 tracker(s) fused)" about 200 s in and never returns, with no
-  // StUnitExcluded, no FineTrackerAdoptionRefused and no StConfigInvalid to
-  // account for it. The vehicle holds to the 3 deg coarse band for the remaining
-  // 700 s while a fine-mode source was available throughout.
+  // The check was measuring the wrong thing. With body +X on the Sun line the
+  // *king* tracker's boresight sits about 46 deg from nadir, inside the Earth
+  // keep-out at this altitude (the Earth's angular radius is ~66 deg from 600 km,
+  // plus a 22 deg exclusion), while the clear tracker is the **non-king** unit —
+  // which the estimator deliberately will not fuse until ST_ALIGN_CAL has run,
+  // because its as-mounted reading carries the two units' bias difference. These
+  // rows never run that calibration. So a fine-mode source was never actually
+  // available, the vehicle correctly fell back to the sun/magnetic pair, and the
+  // 3 deg result is the requirement being met rather than missed.
   //
-  // The bound stays at the value the *available* knowledge justifies, so this
-  // row fails until the estimator recovers its trackers. Relaxing it to 3.5
-  // would make the row green by asserting the defect is acceptable, which is the
-  // one thing it must not do — the whole point of attributing accuracy from
-  // truth is to tell "pointed badly" from "knew badly", and here the vehicle
-  // knew badly for no geometric reason.
+  // The lesson, and why the comment is this long: "available" for an attitude
+  // source means *fusable*, not merely unobstructed. An availability check that
+  // stops at geometry will convict correct flight software, confidently and with
+  // a plausible number to show for it.
   EXPECT_LT(worst, bound) << "inertial hold is " << worst << " deg off in truth, against a "
                           << bound << " deg bound; star-tracker availability over the tail was "
                           << trackers
