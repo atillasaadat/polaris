@@ -40,6 +40,7 @@
 #include <cmath>
 #include <string>
 
+#include "sensors/occlusion.hpp"
 #include "sitl_harness.hpp"
 #include "world/ephemeris_file.hpp"
 
@@ -49,6 +50,7 @@ namespace {
 namespace pm = polaris::math;
 namespace pt = polaris::time;
 namespace world = polaris::sim::world;
+namespace sensors = polaris::sim::sensors;
 namespace scenario = polaris::sim::scenario;
 
 using polaris::state::TruthState;
@@ -169,6 +171,10 @@ struct GuidanceRun {
   std::string log;
   bool sim_healthy = false;
   std::vector<io::MacroSample> trace;
+  /// The truth vehicle the run flew, kept so a row can re-evaluate sensor
+  /// geometry from truth after the fact — which is how a row attributes its own
+  /// accuracy instead of merely reporting an angle.
+  scenario::Vehicle vehicle;
 };
 
 /// Worst pointing error over the settled tail of a run [deg].
@@ -215,7 +221,7 @@ GuidanceRun flyGuidance(const std::string& tag, const scenario::SimConfig& orbit
     return result;
   }
 
-  scenario::Vehicle vehicle;
+  scenario::Vehicle& vehicle = result.vehicle;
   std::string error;
   scenario::SpacecraftConfig suite;
   if (!controlSuite(work_dir + "/sim_setup.json", suite, &error)) {
@@ -289,30 +295,94 @@ bool toolchainMissing(std::string& why) {
 }  // namespace
 
 // ----------------------------------------------------------------------
-// A limit these rows currently have, stated rather than hidden.
+// Attributing the achieved accuracy, from truth
 //
-// Each row asserts that TRUTH agrees with the command. It cannot yet assert the
-// second half the design owes — that the *estimate* agrees with truth — because
-// the attitude estimate does not cross the SITL wire: `io::MacroSample` carries
-// the plant's truth state and the actuator commands, and nothing the FSW
-// believes. So a row that fails cannot distinguish "the vehicle pointed badly"
-// from "the vehicle pointed exactly where it believed, and its belief was
-// wrong".
+// A pointing row that only bounds the truth error cannot say *why* it missed.
+// The vehicle can be pointing exactly where it believes while the belief is
+// wrong, and that is a different fault with a different fix from a guidance or
+// control error.
 //
-// That distinction is not academic here. Two rows below hold to ~3 deg rather
-// than the ~0.01 deg the existing POINT rows reach, and the leading explanation
-// is attitude *knowledge*: a commanded attitude that puts both star trackers in
-// their keep-out zones drops the estimator to the sun/magnetic pair, whose
-// accuracy is the 3 deg REQ-ADET-002 band — in which case the guidance and the
-// control law are both correct and the vehicle is doing exactly what it should.
-// Their bounds are therefore set at that requirement, with margin, and NOT at
-// the measured value: a bound fitted to what was observed would pass whatever
-// happened next.
+// The sim already knows which case it is, because it owns the geometry the
+// estimator can only infer: `sensors::evaluateLineOfSight` answers, from the
+// truth position, the truth attitude and the truth ephemeris, whether each star
+// tracker's boresight is inside its own keep-out cones. So each row computes
+// tracker availability itself, from truth, and then bounds the pointing error
+// by the requirement that applies to the attitude source the vehicle *could*
+// have had:
 //
-// Owed: put the estimate on the SITL reply so these rows can assert both halves
-// and attribute a failure to the estimator or the controller instead of
-// reporting an angle with no owner.
+//   * both trackers available for the whole tail -> the fine-mode band applies
+//   * neither available -> the coarse sun/magnetic band (REQ-ADET-002, 3 deg)
+//     applies, and a 3 deg pointing error is the vehicle behaving correctly
+//
+// The bound is therefore a requirement selected by measured geometry, never a
+// number fitted to what was observed. A row whose trackers are available and
+// which still misses by degrees fails, which is the case that matters.
 // ----------------------------------------------------------------------
+
+/// Fraction of the settled tail during which **at least one** star tracker had
+/// an unobstructed boresight, computed entirely from truth.
+double trackerAvailabilityFraction(const GuidanceRun& r, const scenario::Vehicle& vehicle,
+                                   std::size_t tail_samples = 300) {
+  if (vehicle.star_trackers.empty() || r.trace.empty()) {
+    return 0.0;
+  }
+  static world::EphemerisSet ephemeris;
+  static bool loaded = false;
+  if (!loaded) {
+    std::string error;
+    EXPECT_TRUE(world::loadEphemerisFile(scenario::DataPaths::under(POLARIS_GOLDEN_DIR).ephemeris,
+                                         ephemeris, &error))
+        << error;
+    loaded = true;
+  }
+  const world::BodyPositionFn sun_fn = world::bodyPositionFn(ephemeris.sun);
+  const world::BodyPositionFn moon_fn = world::bodyPositionFn(ephemeris.moon);
+
+  std::size_t available = 0;
+  std::size_t counted = 0;
+  const std::size_t start = r.trace.size() - std::min(tail_samples, r.trace.size());
+  for (std::size_t i = start; i < r.trace.size(); ++i) {
+    const TruthState& st = r.trace[i].state;
+    pm::Vec3<pm::frames::ECI> sun_eci;
+    pm::Vec3<pm::frames::ECI> moon_eci;
+    const pt::Tdb tdb = pt::toTdb(pt::toTt(st.epoch));
+    if (!sun_fn(tdb, sun_eci) || !moon_fn(tdb, moon_eci)) {
+      continue;
+    }
+    sensors::SkyGeometry sky;
+    sky.sat = st.position.eigen();
+    sky.sun = sun_eci.eigen();
+    sky.moon = moon_eci.eigen();
+
+    bool any = false;
+    for (const auto& mounted : vehicle.star_trackers) {
+      // The unit's boresight is its +Z through the mounting, rotated into ECI by
+      // the *truth* attitude — the same construction the sim uses to sample it.
+      const Eigen::Vector3d bore_body = mounted.mounting_dcm * Eigen::Vector3d::UnitZ();
+      const Eigen::Vector3d bore_eci = st.attitude.core().inverse().rotate(bore_body);
+      const sensors::OcclusionState occ = sensors::evaluateLineOfSight(
+          bore_eci, 0.5 * mounted.model.spec().fov_rad, sky, mounted.model.spec().keep_out);
+      if (occ.occluder == sensors::Occluder::kNone) {
+        any = true;
+        break;
+      }
+    }
+    available += any ? 1u : 0u;
+    ++counted;
+  }
+  return counted == 0 ? 0.0 : static_cast<double>(available) / static_cast<double>(counted);
+}
+
+/// The pointing bound the vehicle's *available* attitude knowledge justifies
+/// [deg], given the tracker availability measured from truth.
+///
+/// Fine mode is bounded well above REQ-ADET-003's 0.05 deg because a pointing
+/// error is the attitude error plus the control error, and this is the latter's
+/// class bound — the same 2 deg the existing acquisition rows use. Coarse is
+/// REQ-ADET-002's 3 deg plus margin.
+double justifiedBoundDeg(double tracker_availability) {
+  return tracker_availability > 0.99 ? 2.0 : 3.5;
+}
 
 // ======================================================================
 // Row 1 — ALIGN sun-sensor +Z with SUN
@@ -382,10 +452,11 @@ TEST(SitlPointingGuidance, HoldsNadirAgainstTruthWhileTheTargetMoves) {
   RecordProperty("nadir_tail_worst_deg", std::to_string(worst));
   // Nadir moves at the orbit rate, so a controller with no feedforward lags it
   // by roughly (rate / bandwidth) and this bound is what catches that.
-  // The REQ-ADET-002 coarse band (3 deg) plus margin, not the measured value —
-  // see the note above on why these two rows do not reach the fine-mode figure
-  // and why the bound is a requirement rather than an observation.
-  EXPECT_LT(worst, 3.5) << "nadir hold is " << worst << " deg off in truth";
+  const double trackers = trackerAvailabilityFraction(r, r.vehicle);
+  const double bound = justifiedBoundDeg(trackers);
+  RecordProperty("nadir_tracker_availability", std::to_string(trackers));
+  EXPECT_LT(worst, bound) << "nadir hold is " << worst << " deg off in truth, against a " << bound
+                          << " deg bound; star-tracker availability over the tail was " << trackers;
 }
 
 // ======================================================================
@@ -413,7 +484,26 @@ TEST(SitlPointingGuidance, HoldsAnInertialAxisAgainstTruth) {
   const double final_deg = truthPointingErrorDeg(r.trace.back().state, body, j2000x({}));
   RecordProperty("inertial_final_deg", std::to_string(final_deg));
   RecordProperty("inertial_tail_worst_deg", std::to_string(worst));
-  EXPECT_LT(worst, 3.5) << "inertial hold is " << worst << " deg off in truth";
+  const double trackers = trackerAvailabilityFraction(r, r.vehicle);
+  const double bound = justifiedBoundDeg(trackers);
+  RecordProperty("inertial_tracker_availability", std::to_string(trackers));
+  // OPEN DEFECT, and this row is what found it. Truth geometry says at least one
+  // star tracker is unobstructed for the whole tail (availability 1.0, with the
+  // Auriga's real 35 deg Sun and 22 deg Earth exclusions applied), yet the
+  // estimator reports "Fine-mode source changed STAR_TRACKER -> SUN_MAG (0
+  // tracker(s) fused)" about 200 s in and never returns, leaving the vehicle
+  // pointing to the 3 deg coarse band while a fine-mode source was available.
+  //
+  // The bound stays at the value the *available* knowledge justifies, so this
+  // row fails until the estimator recovers its trackers. Relaxing it to 3.5
+  // would make the row green by asserting the defect is acceptable, which is the
+  // one thing it must not do — the whole point of attributing accuracy from
+  // truth is to tell "pointed badly" from "knew badly", and here the vehicle
+  // knew badly for no geometric reason.
+  EXPECT_LT(worst, bound) << "inertial hold is " << worst << " deg off in truth, against a "
+                          << bound << " deg bound; star-tracker availability over the tail was "
+                          << trackers
+                          << " (>0.99 means a fine-mode source was geometrically available)";
 }
 
 // ======================================================================
@@ -440,8 +530,13 @@ TEST(SitlPointingGuidance, TheNegateFlagPointsTheVehicleTheOtherWay) {
   const auto antiSun = [](const TruthState& s) { return Eigen::Vector3d(-truthSunDirection(s)); };
   const double worst_anti = worstTailDeg(r, body, antiSun);
   const double worst_sun = worstTailDeg(r, body, truthSunDirection);
+  const double trackers = trackerAvailabilityFraction(r, r.vehicle);
+  const double bound = justifiedBoundDeg(trackers);
   RecordProperty("antisun_tail_worst_deg", std::to_string(worst_anti));
-  EXPECT_LT(worst_anti, 2.0) << "anti-sun pointing is " << worst_anti << " deg off in truth";
+  RecordProperty("antisun_tracker_availability", std::to_string(trackers));
+  EXPECT_LT(worst_anti, bound) << "anti-sun pointing is " << worst_anti
+                               << " deg off in truth, against a " << bound
+                               << " deg bound; star-tracker availability was " << trackers;
   EXPECT_GT(worst_sun, 170.0) << "the negate flag was ignored: the vehicle is sun-pointing";
 }
 
