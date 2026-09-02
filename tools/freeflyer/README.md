@@ -122,8 +122,8 @@ PYTHONPATH=tools python -m freeflyer viz --stream $STREAM --pace 20
 | Nadir hold, moving target | `SitlPointingGuidance.HoldsNadirAgainstTruthWhileTheTargetMoves` | the vehicle turning once per orbit to keep -Z down; the feedforward at work, not repeated repointing — use `--replay` |
 | Inertial hold | `SitlPointingGuidance.HoldsAnInertialAxisAgainstTruth` | the same machinery with a *stationary* target: the vehicle stops turning while the orbit carries on beneath it |
 | Anti-sun (the negate flag) | `SitlPointingGuidance.TheNegateFlagPointsTheVehicleTheOtherWay` | the same command as the first row with one flag set, and the vehicle ends up 180° from it |
-| **Track an uploaded state vector** | `SitlPointingGuidance.TracksAnUploadedStateVectorTarget` | the target satellite drawn beside the vehicle and a **camera POV window**: the target enters the frame and settles near the boresight (90.7° off at the first frame, 3.05° at the end against a 4°/5° half-FOV); use `--replay` |
-| **Track an uploaded TLE** | `SitlPointingGuidance.TracksAnUploadedTleTarget` | the same from a two-line element set, SGP4 + TEME→ECI on the truth side: 120.9° off at the first frame, 1.51° at the end; use `--replay` |
+| **Track an uploaded state vector** | `SitlPointingGuidance.TracksAnUploadedStateVectorTarget` | the target satellite drawn beside the vehicle, a **camera POV** and a **king-star-tracker POV**: the target arrives at the centre of the camera frame and stays (0.0076° truth pointing, 0.0045° knowledge) while the tracker window shows clear sky; use `--replay` |
+| **Track an uploaded TLE** | `SitlPointingGuidance.TracksAnUploadedTleTarget` | the same from a two-line element set, SGP4 + TEME→ECI on the truth side. Knowledge 0.0045°, so the residual 1.23° in the camera window is the **control loop**, not the estimator — which is the point of having both windows |
 | GNSS outage | `SitlOdFault.GnssOutagePastTheFineHorizonIsDegradedNotDropped` | the orbit filter coasting |
 | Burn in an outage | `SitlOdBurn.BurnInsideAnOutageIsCoastedOnTheCommandedThrust` | a finite burn flown blind on thrust |
 | One orbit | `SitlOdFault.OneOrbitPeriodHoldsOneSolution` | a full period, one solution |
@@ -167,9 +167,34 @@ PYTHONPATH=tools python -m freeflyer run --replay --pace 100 \
   --scenario SitlPointingGuidance.TracksAnUploadedTleTarget
 ```
 
-One camera gets a POV window even if the vehicle carries several: more would be
-more windows than frames per second, and the pointing rows aim exactly one
-instrument.
+### And the star trackers, which are usually the real limit
+
+Every modelled instrument with a boresight gets a cone — the payload camera and
+both star trackers — and the **king tracker gets its own POV window**. That
+window is not decoration. On this vehicle the trackers sit 45° off body **-Z**
+while the payload is on **+Z**, so aiming the camera at a target above the
+vehicle sweeps both trackers across the Earth, and the Earth filling the tracker
+window is what a coarse-mode knowledge error looks like from the outside.
+
+It found exactly that. The catalogue rows originally constrained `+X toward
+J2000_Z` — an arbitrary inertial roll — and flew with **both trackers inside the
+Earth keep-out on 100% of settled samples**, on the coarse sun+mag pair, at
+3.05° and 1.65°. The roll is the only freedom left once the camera is aimed, so
+spending it on an arbitrary axis wastes the one degree of freedom that decides
+whether the vehicle can see any stars. Constraining the **king tracker toward
+zenith** instead — one command, `CONSTRAIN STAR_TRACKER_0 toward NADIR negated`
+— puts it 68.5° clear of the keep-out and takes the state-vector row from 3.05°
+to **0.0076°**.
+
+There is a geometric limit worth knowing, and it is not a roll problem: roll
+moves a tracker *around* the 45° cone but cannot change the angle between -Z and
+nadir. A target within about **45° of the vehicle's zenith** therefore cannot be
+cleared by any roll. The TLE row's element set is chosen past that line for
+exactly this reason, and the comment in the row says so.
+
+One camera and one tracker get POV windows even if the vehicle carries more:
+more would be more windows than frames per second, and the rows aim exactly one
+instrument and fuse exactly one tracker.
 
 > **A detumble row does not end at zero rate, and that is the physics.** B-dot
 > damps the body rate *perpendicular* to the field; the component along the

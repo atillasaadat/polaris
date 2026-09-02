@@ -82,7 +82,8 @@ class StreamTap {
       out_ << (i > 0 ? "," : "") << "{\"name\":\"" << c.name << "\",\"boresight_body\":["
            << c.boresight_body.x() << ',' << c.boresight_body.y() << ',' << c.boresight_body.z()
            << "],\"half_fov_x_deg\":" << c.half_fov_x_deg
-           << ",\"half_fov_y_deg\":" << c.half_fov_y_deg << '}';
+           << ",\"half_fov_y_deg\":" << c.half_fov_y_deg
+           << ",\"star_tracker\":" << (c.is_star_tracker ? 1 : 0) << '}';
     }
     out_ << "],\"targets\":[";
     for (std::size_t i = 0; i < target_names.size(); ++i) {
@@ -513,6 +514,19 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
       const auto& spec = p.model.spec();
       c.half_fov_x_deg = spec.half_fov_x_rad * 180.0 / M_PI;
       c.half_fov_y_deg = spec.half_fov_y_rad * 180.0 / M_PI;
+      cameras.push_back(c);
+    }
+    // Star trackers ride the same list. Their field is conic, so the half-angle
+    // goes on both axes; the viewer does not have to know which kind it is
+    // drawing, only that one of them is the instrument being aimed.
+    for (const auto& t : vehicle_.star_trackers) {
+      CameraOverlay c;
+      c.name = t.name;
+      c.boresight_body = t.model.boresightBody();
+      const double half_deg = t.model.spec().fov_rad * 0.5 * 180.0 / M_PI;
+      c.half_fov_x_deg = half_deg;
+      c.half_fov_y_deg = half_deg;
+      c.is_star_tracker = true;
       cameras.push_back(c);
     }
     std::vector<std::string> names;

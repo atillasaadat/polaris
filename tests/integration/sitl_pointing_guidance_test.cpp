@@ -833,9 +833,27 @@ TEST(SitlPointingGuidance, TracksAnUploadedStateVectorTarget) {
   upload << "0," << kEpochTaiNs << "," << p0.x() << "," << p0.y() << "," << p0.z() << "," << v0.x()
          << "," << v0.y() << "," << v0.z() << ",50.0";
 
-  // ALIGN camera 0 (+Z) with SAT_STATE_0, CONSTRAIN +X toward J2000_Z.
-  const std::string spec = guidanceSpec(kCamera, 0, false, kSatState, 0, false, 0.0, 0.0, kBodyX, 0,
-                                        false, kJ2000Z, 0, false, 0.0, 0.0);
+  // ALIGN camera 0 (+Z) with SAT_STATE_0, CONSTRAIN the king star tracker toward
+  // **zenith** (NADIR, negated).
+  //
+  // The constraint is the roll about the camera axis, and roll is the only
+  // freedom left once the camera is aimed — so spending it on an arbitrary
+  // inertial axis wastes the one degree of freedom that decides whether the
+  // vehicle can see any stars. This vehicle's trackers sit 45 deg off body -Z,
+  // and the camera on +Z means -Z points away from the target; with the target
+  // above, that is Earthward. Measured with the old `+X toward J2000_Z`
+  // constraint: both trackers inside the Earth keep-out on **100%** of settled
+  // samples, so the vehicle flew the whole row on the coarse sun+mag pair and
+  // the pointing error was a knowledge error.
+  //
+  // Rolling the king tracker as far from nadir as the geometry allows is the
+  // operational answer and it is one command, which is the whole point of
+  // align/constrain: body -Z sits 78.9 deg from nadir here, an ST rides a
+  // 45 deg cone about it, so roll can place the king at up to 123.9 deg against
+  // a 90.1 deg keep-out — a 33.9 deg margin where there was none.
+  const std::string spec = guidanceSpec(kCamera, 0, false, kSatState, 0, false, 0.0, 0.0,
+                                        kStarTracker, kKingTrackerUnit, false, kNadir, 0,
+                                        /*negate=*/true, 0.0, 0.0);
   // The same state, handed to the truth side so the viewer has something to
   // draw — and drawn from the *sim's* full spherical-harmonic field rather than
   // the onboard two-body + J2 that aims the camera. That is what makes the
@@ -909,9 +927,20 @@ TEST(SitlPointingGuidance, TracksAnUploadedStateVectorTarget) {
 //
 // The element set is synthetic (catalogue number 99001) and carries **valid**
 // checksums, so the row flies with `verifyChecksum` on — the operational
-// configuration. A 12 011 km semi-major axis at 51.6 deg keeps the range above
-// 5 000 km for the whole run, which bounds the line-of-sight rate: a near
-// conjunction would turn this into an unannounced slew-rate test.
+// configuration. An 8 535 km semi-major axis at 51.6 deg holds the range
+// between 8 700 and 9 200 km for the whole run, which bounds the line-of-sight
+// rate: a near conjunction would turn this into an unannounced slew-rate test.
+//
+// The mean anomaly is **chosen, not arbitrary**, and the reason is the star
+// trackers. The camera is on +Z, so aiming it puts body -Z anti-target, and the
+// trackers ride a 45 deg cone about -Z. A target near the vehicle's zenith
+// therefore sweeps both trackers across the Earth, and **no roll can fix it** —
+// roll moves a tracker around the cone but cannot change the angle between -Z
+// and nadir. The first version of this row had a 12 011 km target 36 deg from
+// zenith and flew the whole run with both trackers inside the keep-out on 100%
+// of settled samples, on the coarse sun+mag pair, at 1.6 deg. The rule the
+// probe found: the target must be at least (keep-out - 45) = **45 deg from
+// zenith** for roll to have any chance. This one is well past that.
 // ======================================================================
 namespace {
 
@@ -921,7 +950,7 @@ namespace {
 constexpr const char* kSatTleLine1 =
     "1 99001U 26001A   26001.00000000  .00000000  00000-0  00000-0 0  9997";
 constexpr const char* kSatTleLine2 =
-    "2 99001  51.6000  30.0000 0001000  90.0000 270.0000  6.60000000    07";
+    "2 99001  51.6000  30.0000 0001000  90.0000 180.0000 11.00000000    07";
 
 /// Truth line of sight to the TLE target. Shares the propagator with the flight
 /// side by necessity; see the row comment for what that does and does not leave
@@ -967,9 +996,14 @@ TEST(SitlPointingGuidance, TracksAnUploadedTleTarget) {
   const std::string upload =
       std::string("0|") + kSatTleLine1 + "|" + kSatTleLine2 + "|1";  // checksums verified
 
-  // ALIGN camera 0 (+Z) with SAT_TLE_0, CONSTRAIN +X toward J2000_Z.
-  const std::string spec = guidanceSpec(kCamera, 0, false, kSatTle, 0, false, 0.0, 0.0, kBodyX, 0,
-                                        false, kJ2000Z, 0, false, 0.0, 0.0);
+  // Same king-tracker-to-zenith constraint as row 6, and for the same reason:
+  // the roll is the only freedom left once the camera is aimed, and spending it
+  // on the trackers is what decides whether the vehicle can see any stars at
+  // all. This target's geometry gives the king a ~70 deg margin on the Earth
+  // keep-out (see the element-set comment for why the mean anomaly is chosen).
+  const std::string spec = guidanceSpec(kCamera, 0, false, kSatTle, 0, false, 0.0, 0.0,
+                                        kStarTracker, kKingTrackerUnit, false, kNadir, 0,
+                                        /*negate=*/true, 0.0, 0.0);
   const GuidanceRun r = flyGuidance(
       "sat-tle", orbit, spec, /*ctrlMode=*/3, /*stateVectorSpec=*/"", upload,
       [](const world::SphericalHarmonicGravity*) {

@@ -228,6 +228,12 @@ struct CameraOverlay {
   Eigen::Vector3d boresight_body = Eigen::Vector3d::UnitZ();
   double half_fov_x_deg = 0.0;
   double half_fov_y_deg = 0.0;
+  /// True for a star tracker rather than a payload camera. They are drawn the
+  /// same way and answer different questions: the camera's field says whether
+  /// the vehicle is looking at what it was told to, the trackers' say whether it
+  /// can *know* where it is looking. A row where the second is blocked explains
+  /// a pointing error the first cannot.
+  bool is_star_tracker = false;
 };
 
 class ClosedLoop {

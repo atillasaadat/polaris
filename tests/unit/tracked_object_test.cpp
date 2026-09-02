@@ -150,7 +150,7 @@ TEST(TrackedObject, TheTleBranchHandsBackWhatSgp4AndTemeToEciSaid) {
   // The AIAA-style synthetic set the SITL guidance row flies, epoched at the
   // fixture epoch so the propagation span is minutes rather than decades.
   const char* l1 = "1 99001U 26001A   26001.00000000  .00000000  00000-0  00000-0 0  9997";
-  const char* l2 = "2 99001  51.6000  30.0000 0001000  90.0000 270.0000  6.60000000    07";
+  const char* l2 = "2 99001  51.6000  30.0000 0001000  90.0000 180.0000 11.00000000    07";
   const auto leap = pt::LeapSecondTable::historical();
   const auto obj = TrackedObject::fromTle("t", l1, l2, leap);
   ASSERT_TRUE(obj.valid());

@@ -139,6 +139,24 @@ Polaris.AddSensor("{sensor}");
 Polaris.Sensors[{index}].ConeHalfAngle = {cone};
 """
 
+_VIZ_STVIEW = """
+// Through-the-king-star-tracker view. The camera window answers "is it looking
+// at the right thing"; this one answers "can it know where it is looking",
+// which on this vehicle is the question that actually limits pointing. The
+// trackers sit 45 deg off body -Z, so aiming the payload on +Z at a target near
+// the vehicle's zenith sweeps them across the Earth -- and the Earth filling
+// this window is what a coarse-mode knowledge error looks like from outside.
+ViewWindow stView({{Polaris}});
+stView.WindowTitle = "Polaris - king star tracker POV ({sensor})";
+Viewpoint stPov;
+stPov.ViewpointName = "StPOV";
+stPov.ViewpointType = "sensorview";
+stPov.SensorView.Source = Polaris.Sensors[{index}].ObjectId;
+stPov.SensorView.FieldOfView = {view_fov};
+stView.AddViewpoint(stPov);
+stView.ActivateViewpoint(stPov.ViewpointName);
+"""
+
 _VIZ_CAMVIEW = """
 // Through-the-camera view. This is the window that answers the question the
 // pointing rows exist to ask: the target should sit at the centre of the frame
@@ -183,25 +201,32 @@ def _build_script(view: str, meta: dict | None = None) -> str:
         parts.append(_VIZ_TARGET.format(name=name))
     # One camera gets a POV window: more than one would be more windows than
     # frames-per-second, and the pointing rows aim exactly one instrument.
-    cam_index = 0
-    if cameras:
-        c = cameras[cam_index]
-        bx, by, bz = c["boresight_body"]
-        hx = c.get("half_fov_x_deg", 0.0)
-        hy = c.get("half_fov_y_deg", 0.0)
-        cone = max(hx, hy) or 5.0
+    # Every sensor in the meta is declared, in the meta's order, because that
+    # order *is* the Sensors[] index the POV windows reference. The sim emits
+    # payload cameras first, then star trackers.
+    for i, cam in enumerate(cameras):
+        bx, by, bz = cam["boresight_body"]
+        hx = cam.get("half_fov_x_deg", 0.0)
+        hy = cam.get("half_fov_y_deg", 0.0)
         parts.append(
             _VIZ_CAMERA.format(
-                sensor=c["name"],
-                index=cam_index,
+                sensor=cam["name"],
+                index=i,
                 bx=bx,
                 by=by,
                 bz=bz,
                 hx=hx,
                 hy=hy,
-                cone=cone,
+                cone=max(hx, hy) or 5.0,
             )
         )
+    cam_index = next(
+        (i for i, cam in enumerate(cameras) if not cam.get("star_tracker")), None
+    )
+    st_index = next(
+        (i for i, cam in enumerate(cameras) if cam.get("star_tracker")), None
+    )
+
     updates = []
     added = "".join(f", {n}" for n in target_names)
     if view in ("orbit", "both"):
@@ -216,7 +241,7 @@ def _build_script(view: str, meta: dict | None = None) -> str:
     if view in ("close", "both"):
         parts.append(_VIZ_CLOSE)
         updates.append("\tUpdate closeView;")
-    if cameras and view in ("camera", "orbit", "close", "both"):
+    if cam_index is not None:
         c = cameras[cam_index]
         view_fov = (
             max(c.get("half_fov_x_deg", 0.0), c.get("half_fov_y_deg", 0.0), 5.0) * 6.0
@@ -227,6 +252,16 @@ def _build_script(view: str, meta: dict | None = None) -> str:
             )
         )
         updates.append("\tUpdate camView;")
+    if st_index is not None:
+        c = cameras[st_index]
+        # Drawn far wider than the tracker's own field, because the question
+        # this window answers is what is *in the way* — the Earth limb arriving
+        # — not how the star field looks.
+        view_fov = max(c.get("half_fov_x_deg", 0.0), 10.0) * 6.0
+        parts.append(
+            _VIZ_STVIEW.format(sensor=c["name"], index=st_index, view_fov=view_fov)
+        )
+        updates.append("\tUpdate stView;")
     if not updates:
         raise ValueError(f"unknown view {view!r} (orbit, close, or both)")
     parts.append(
