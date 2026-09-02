@@ -44,8 +44,27 @@ fprime = [
     "gcovr==8.2",
     # F´ tooling imports the deprecated `pkg_resources` (setuptools) and `pip`
     # directly; uv's minimal venvs ship neither by default (classic venvs do),
-    # so pin them explicitly.
-    "setuptools==78.1.1",
+    # so they are declared explicitly.
+    #
+    # The setuptools ceiling is load-bearing, not caution.
+    # `fprime.util.versioning` imports `pkg_resources` unconditionally, so the
+    # F' toolchain lives or dies by whether setuptools still ships it. Measured,
+    # not assumed:
+    #
+    #   78.1.1 .. 81.0.0  ships it (and has emitted the deprecation warning the
+    #                     whole way — the warning is not a version signal, it
+    #                     fired on the previously pinned 78.1.1 too)
+    #   >= 82.0.0         REMOVED: `fprime-util` dies at import with
+    #                     `ModuleNotFoundError: No module named 'pkg_resources'`,
+    #                     taking the whole F' build with it
+    #
+    # A **range** rather than an exact pin, so security fixes inside the line
+    # still land automatically. The exact pin is what let a Dependabot bump to
+    # 83.0.0 break CI: there was no expressed constraint for it to respect, only
+    # a number to replace. Lifting the ceiling requires an fprime-tools release
+    # that no longer imports `pkg_resources` — check
+    # `fprime/util/versioning.py` in the *installed* package, not the changelog.
+    "setuptools>=78.1.1,<82",
     "pip>=24",
 ]
 
