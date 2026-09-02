@@ -44,7 +44,7 @@ inline constexpr std::uint32_t kMagic = 0x50534954u;  ///< "PSIT"
 /// compatibility mechanism — there is deliberately no version negotiation.
 /// Bumped to 3 in Push 70: HELLO declares the thruster count and the STEP_REPLY
 /// carries per-thruster throttle records for the §17 finite burns.
-inline constexpr std::uint16_t kVersion = 3;
+inline constexpr std::uint16_t kVersion = 4;
 
 /// Bounded unit counts per sensor/actuator type (wire arrays are sized to the
 /// HELLO-declared counts, never these maxima; these bound validation).
@@ -233,9 +233,34 @@ struct StepReplyHeader {
   /// quiet window the magnetometer is judged against to disagree with itself.
   /// Zero or negative leaves the rods off for the whole step.
   double mtq_on_window_s = 0.0;
+
+  /// The FSW's own attitude estimate, Body<-ECI, JPL scalar-first (§8.1).
+  ///
+  /// **Diagnostic only. The plant must never read this.** Everything else on
+  /// this wire is a *command* the vehicle acts on; this is the flight software's
+  /// belief about where it is pointing, carried back so a test can ask the one
+  /// question truth alone cannot answer: is the vehicle pointing badly, or
+  /// pointing exactly where it believes while the belief is wrong? Those are
+  /// different faults with different fixes, and without this a SITL row can only
+  /// report an angle with no owner.
+  ///
+  /// REQ-SIM-004 is not weakened by it. That boundary is about what reaches the
+  /// **flight side** — only measurements may, and that direction is unchanged.
+  /// This travels FSW->sim, like the actuator commands beside it, and
+  /// `io::ClosedLoop` keeps it out of the wrench path structurally by handing it
+  /// to the trace rather than to the plant: nothing the vehicle does can depend
+  /// on it, which is what makes a comparison against truth meaningful rather
+  /// than circular.
+  double est_q_body_eci[4] = {1.0, 0.0, 0.0, 0.0};
+  /// Non-zero when the estimate above is usable. Separate from the quaternion
+  /// because "no estimate" and "identity attitude" are different states, and a
+  /// consumer that could not tell them apart would score a filter that had
+  /// nothing as a filter that was perfectly wrong.
+  std::uint8_t est_valid = 0;
+  std::uint8_t pad_[7] = {};
 };
 
-static_assert(sizeof(StepReplyHeader) == 24);
+static_assert(sizeof(StepReplyHeader) == 64);
 
 /// Largest possible STEP_REQ payload — sizes receive buffers on both ends.
 inline constexpr std::size_t kMaxStepReqBytes =

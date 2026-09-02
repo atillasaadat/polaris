@@ -168,6 +168,10 @@ module flight {
       # is the period this cycle's magnetometer sample was taken in — the correct
       # pairing, not a staleness bug (see GncPorts.MtqActuation).
       attitudeEstimator.estimateOut[0]    -> attitudeController.estimateIn
+      # Diagnostic echo to the sim on the STEP_REPLY, so a SITL row can tell
+      # "pointed badly" from "pointed where it believed". SITL-only; the plant
+      # never reads it (SitlBridge.fpp).
+      attitudeEstimator.estimateOut[2]    -> PolarisSitl.sitlBridge.attitudeEstimateIn
       # The §8.4 seam: a commanded attitude and a feedforward rate, and nothing
       # about which pointing mode produced them.
       pointingGuidance.guidanceOut        -> attitudeController.guidanceIn

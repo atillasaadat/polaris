@@ -308,7 +308,7 @@ module flight {
     @ The published attitude estimate (§8.0), for guidance/control/FDIR. Emitted
     @ every cycle the estimator runs, with validity flags set — a consumer gates
     @ on those, never on the mere arrival of the port call.
-    output port estimateOut: [2] AttitudeEstimatePort
+    output port estimateOut: [3] AttitudeEstimatePort
 
     # ----------------------------------------------------------------------
     # Commands

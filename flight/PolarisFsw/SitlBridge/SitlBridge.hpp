@@ -58,6 +58,7 @@ class SitlBridge final : public SitlBridgeComponentBase {
                         F64 onWindowSec) override;
 
   //! Latch the burn executor's thruster throttles for the next reply.
+  void attitudeEstimateIn_handler(FwIndexType portNum, const AttitudeEstimate& estimate) override;
   void thrusterCmdIn_handler(FwIndexType portNum, const flight::ThrusterThrottleSet& cmds) override;
 
   // ----------------------------------------------------------------------
@@ -95,6 +96,14 @@ class SitlBridge final : public SitlBridgeComponentBase {
   polaris::sitl::WheelCommandRecord latest_wheel_[polaris::sitl::kMaxUnits] = {};
   polaris::sitl::MtqCommandRecord latest_mtq_[polaris::sitl::kMaxUnits] = {};
   polaris::sitl::ThrusterCommandRecord latest_thruster_[polaris::sitl::kMaxUnits] = {};
+
+  //! Latest attitude estimate (Body<-ECI, scalar-first), echoed on the
+  //! STEP_REPLY for diagnosis only — see SitlBridge.fpp and
+  //! `sitl::StepReplyHeader`. Not latched across an invalid estimate: an
+  //! estimator that has lost the attitude must read as "no estimate", not as
+  //! the last good one, or a test would score a stale belief as a current one.
+  double latest_est_q_[4] = {1.0, 0.0, 0.0, 0.0};
+  bool latest_est_valid_ = false;
 
   //! §7 MTQ-on window [s] for the next step, latched with the dipoles. Zero
   //! until the rate group commands, which is the rods-off schedule.

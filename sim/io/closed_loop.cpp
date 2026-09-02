@@ -597,7 +597,12 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
     }
 
     if (trace != nullptr) {
-      trace->push_back({static_cast<double>(t_ns) / 1.0e9, s, mass_kg_, thruster_tlm});
+      // The FSW's estimate rides along for diagnosis only — recorded here and
+      // handed to nothing else, so the plant above cannot have depended on it.
+      MacroSample sample{static_cast<double>(t_ns) / 1.0e9, s, mass_kg_, thruster_tlm};
+      sample.estimate_attitude = commands.estimate_attitude;
+      sample.estimate_valid = commands.estimate_valid;
+      trace->push_back(sample);
     }
     stream.write(static_cast<double>(t_ns) / 1.0e9, s);
   }

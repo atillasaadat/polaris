@@ -69,6 +69,19 @@ module flight {
     @ next STEP_REPLY and held by the plant for the whole macro step
     sync input port thrusterCmdIn: ThrusterThrottleCmd
 
+    @ The §8.1 attitude estimate, carried back to the sim on the STEP_REPLY for
+    @ **diagnosis only** (see `sitl::StepReplyHeader`).
+    @
+    @ Every other input here is a command the plant acts on; this is the flight
+    @ software's belief about where it is pointing, and the plant must never read
+    @ it. It exists so a SITL row can separate "the vehicle pointed badly" from
+    @ "the vehicle pointed exactly where it believed, and the belief was wrong" —
+    @ different faults, different fixes, and indistinguishable from truth alone.
+    @
+    @ This is a SITL-only port on a SITL-only component; nothing on a hardware
+    @ build carries it.
+    sync input port attitudeEstimateIn: AttitudeEstimatePort
+
     # ----------------------------------------------------------------------
     # Sensor measurement outputs (the SITL end of the GncPorts seam, §8.0)
     # ----------------------------------------------------------------------

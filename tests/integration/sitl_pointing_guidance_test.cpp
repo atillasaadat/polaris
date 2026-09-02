@@ -38,6 +38,7 @@
 #include <unistd.h>
 
 #include <cmath>
+#include <cstdio>
 #include <string>
 
 #include "sensors/occlusion.hpp"
@@ -407,13 +408,113 @@ double trackerAvailabilityFraction(const GuidanceRun& r, const scenario::Vehicle
   return counted == 0 ? 0.0 : static_cast<double>(available) / static_cast<double>(counted);
 }
 
+/// Worst angle [deg] between what the vehicle *believed* its attitude was and
+/// what it actually was, over the settled tail.
+///
+/// The second half of the claim, and the half truth alone cannot make. A row
+/// that only bounds the truth pointing error cannot separate "pointed badly"
+/// from "pointed exactly where it believed, and the belief was wrong" — so the
+/// FSW's estimate rides back on the STEP_REPLY for diagnosis only (never fed to
+/// the plant; see `sitl::StepReplyHeader`) and the two errors are asserted
+/// apart. A row where truth is on target and this is small is a vehicle that
+/// achieved the command *and knew it had*, which is what an operator needs.
+///
+/// Samples with no valid estimate are skipped rather than scored: an estimator
+/// that reports having lost the attitude is not wrong about it, and counting
+/// that as a large error would blame it for its own honesty. The count is
+/// returned so a caller can refuse a tail that was mostly blind.
+/// @param rms_deg receives the RMS knowledge error, which is what gets asserted.
+/// @return the worst single-sample error, which gets reported.
+///
+/// **RMS is asserted and the worst is only reported**, and the distinction is
+/// not pedantry. REQ-ADET-002's 3 deg is a **3-sigma** figure — a statement
+/// about the distribution — while the worst of 300 samples taken 0.1 s apart is
+/// one draw from a strongly autocorrelated window. Comparing that maximum
+/// against a 3-sigma spec is not a like-for-like test: it fails a conforming
+/// estimator on an excursion the requirement explicitly allows, and it does so
+/// with a number that looks damning. RMS is the statistic the requirement is
+/// written about.
+double estimateErrorDeg(const GuidanceRun& r, std::size_t& counted, double& rms_deg,
+                        std::size_t tail_samples = 300) {
+  double worst = 0.0;
+  double sum_sq = 0.0;
+  counted = 0;
+  const std::size_t start = r.trace.size() - std::min(tail_samples, r.trace.size());
+  for (std::size_t i = start; i < r.trace.size(); ++i) {
+    const io::MacroSample& m = r.trace[i];
+    if (!m.estimate_valid) {
+      continue;
+    }
+    // The rotation taking truth to the estimate; its angle is the knowledge error.
+    const pm::Quaternion err = m.estimate_attitude.core() * m.state.attitude.core().inverse();
+    const double vec = std::sqrt(err.x() * err.x() + err.y() * err.y() + err.z() * err.z());
+    const double deg = 2.0 * std::asin(std::min(1.0, vec)) * kRadToDeg;
+    worst = std::max(worst, deg);
+    sum_sq += deg * deg;
+    ++counted;
+  }
+  rms_deg = counted == 0 ? 0.0 : std::sqrt(sum_sq / static_cast<double>(counted));
+  return worst;
+}
+
+/// Assert the vehicle both achieved the command and knew it had.
+void expectPointedAndKnew(const GuidanceRun& r, const char* row, double truth_err_deg,
+                          double bound_deg, double trackers) {
+  EXPECT_LT(truth_err_deg, bound_deg)
+      << row << ": truth says the commanded vector is " << truth_err_deg << " deg off, against a "
+      << bound_deg << " deg bound; star-tracker availability over the tail was " << trackers
+      << " (>0.99 means a fusable fine-mode source was available)";
+
+  std::size_t counted = 0;
+  double knowledge_rms_deg = 0.0;
+  const double knowledge_deg = estimateErrorDeg(r, counted, knowledge_rms_deg);
+  std::size_t valid_anywhere = 0;
+  for (const io::MacroSample& m : r.trace) {
+    valid_anywhere += m.estimate_valid ? 1u : 0u;
+  }
+  std::printf(
+      "  [%s] truth %.4f deg | knowledge rms %.4f worst %.4f deg | estimate valid %zu/%zu\n", row,
+      truth_err_deg, knowledge_rms_deg, knowledge_deg, valid_anywhere, r.trace.size());
+  EXPECT_GT(counted, 0u) << row << ": the vehicle reported no valid attitude over the tail ("
+                         << valid_anywhere << " of " << r.trace.size()
+                         << " samples valid across the whole run — zero here means the echo is "
+                         << "not wired, non-zero means the estimator really lost it)";
+  // The knowledge bound is NOT the pointing bound, and conflating them was
+  // tempting and wrong. Pointing error is knowledge error plus control error, so
+  // they are different quantities answering to different requirements:
+  //
+  //   fusable tracker  -> fine mode, where the knowledge owed is far tighter
+  //                       than the control-class pointing bound; 2 deg is
+  //                       generous.
+  //   no tracker       -> the vector-pair mode, REQ-ADET-005: <= 5 deg (3-sigma).
+  //
+  // Deliberately **not** REQ-ADET-006's tighter 3 deg. That applies to the same
+  // sensor suite but carries two further conditions — the DE440 ephemeris tables
+  // serving `kPrecise`, and a sun/field separation of 45 deg or more — and this
+  // row verifies neither. Asserting the tighter band without its conditions
+  // would fail a conforming estimator on geometry the requirement never promised
+  // to cover: the same mistake the tracker-availability check made twice before
+  // it counted only *fusable* units.
+  //
+  // Asserting the two together is what makes a failure attributable: truth off
+  // with knowledge small means the controller missed; both off means the
+  // estimator did.
+  const double knowledge_bound = trackers > 0.99 ? 2.0 : 5.0;
+  EXPECT_LT(knowledge_rms_deg, knowledge_bound)
+      << row << ": the vehicle's attitude estimate disagrees with truth by " << knowledge_rms_deg
+      << " deg RMS (worst sample " << knowledge_deg << ") over " << counted
+      << " samples, against a " << knowledge_bound
+      << " deg bound — it pointed where it believed, and the belief was wrong";
+}
+
 /// The pointing bound the vehicle's *available* attitude knowledge justifies
 /// [deg], given the tracker availability measured from truth.
 ///
-/// Fine mode is bounded well above REQ-ADET-003's 0.05 deg because a pointing
-/// error is the attitude error plus the control error, and this is the latter's
-/// class bound — the same 2 deg the existing acquisition rows use. Coarse is
-/// REQ-ADET-002's 3 deg plus margin.
+/// This is the *pointing* bound (attitude error plus control error), not the
+/// knowledge bound — see `expectPointedAndKnew` for why the two differ. Fine
+/// mode uses the 2 deg control class the existing acquisition rows use; without
+/// a fusable tracker the vehicle is on the vector pairs and 3.5 deg is the
+/// coarse band with margin.
 double justifiedBoundDeg(double tracker_availability) {
   return tracker_availability > 0.99 ? 2.0 : 3.5;
 }
@@ -448,10 +549,12 @@ TEST(SitlPointingGuidance, AlignsASunSensorWithTheTrueSun) {
   EXPECT_GT(initial_deg, 20.0) << "the row started already on target; it proves nothing";
 
   const double worst = worstTailDeg(r, body, truthSunDirection);
+  const double trackers = trackerAvailabilityFraction(r, r.vehicle);
+  const double bound = justifiedBoundDeg(trackers);
   RecordProperty("sun_initial_deg", std::to_string(initial_deg));
   RecordProperty("sun_tail_worst_deg", std::to_string(worst));
-  EXPECT_LT(worst, 2.0) << "commanded the sun sensor at the Sun and truth says it is " << worst
-                        << " deg off";
+  RecordProperty("sun_tracker_availability", std::to_string(trackers));
+  expectPointedAndKnew(r, "sun", worst, bound, trackers);
 }
 
 // ======================================================================
@@ -489,8 +592,7 @@ TEST(SitlPointingGuidance, HoldsNadirAgainstTruthWhileTheTargetMoves) {
   const double trackers = trackerAvailabilityFraction(r, r.vehicle);
   const double bound = justifiedBoundDeg(trackers);
   RecordProperty("nadir_tracker_availability", std::to_string(trackers));
-  EXPECT_LT(worst, bound) << "nadir hold is " << worst << " deg off in truth, against a " << bound
-                          << " deg bound; star-tracker availability over the tail was " << trackers;
+  expectPointedAndKnew(r, "nadir", worst, bound, trackers);
 }
 
 // ======================================================================
@@ -545,10 +647,7 @@ TEST(SitlPointingGuidance, HoldsAnInertialAxisAgainstTruth) {
   // source means *fusable*, not merely unobstructed. An availability check that
   // stops at geometry will convict correct flight software, confidently and with
   // a plausible number to show for it.
-  EXPECT_LT(worst, bound) << "inertial hold is " << worst << " deg off in truth, against a "
-                          << bound << " deg bound; star-tracker availability over the tail was "
-                          << trackers
-                          << " (>0.99 means a fine-mode source was geometrically available)";
+  expectPointedAndKnew(r, "inertial", worst, bound, trackers);
 }
 
 // ======================================================================
@@ -579,9 +678,7 @@ TEST(SitlPointingGuidance, TheNegateFlagPointsTheVehicleTheOtherWay) {
   const double bound = justifiedBoundDeg(trackers);
   RecordProperty("antisun_tail_worst_deg", std::to_string(worst_anti));
   RecordProperty("antisun_tracker_availability", std::to_string(trackers));
-  EXPECT_LT(worst_anti, bound) << "anti-sun pointing is " << worst_anti
-                               << " deg off in truth, against a " << bound
-                               << " deg bound; star-tracker availability was " << trackers;
+  expectPointedAndKnew(r, "anti-sun", worst_anti, bound, trackers);
   EXPECT_GT(worst_sun, 170.0) << "the negate flag was ignored: the vehicle is sun-pointing";
 }
 

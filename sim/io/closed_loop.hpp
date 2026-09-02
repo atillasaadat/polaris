@@ -140,6 +140,23 @@ struct FswOutputs {
   /// (§17 finite burns: the FSW holds a throttle for a duration, the plant
   /// integrates what the thruster delivers). Short = zero-padded (off).
   std::vector<double> thruster_throttles;
+
+  /// The flight software's own attitude estimate, Body<-ECI, echoed back for
+  /// **diagnosis only**.
+  ///
+  /// Everything else in this struct is a command the plant acts on. This is not
+  /// one, and the plant must never read it: `ClosedLoop` records it in the trace
+  /// and passes it nowhere else, so nothing the vehicle does can depend on it.
+  /// That separation is what makes a later comparison against truth meaningful
+  /// rather than circular.
+  ///
+  /// It exists because truth alone cannot distinguish "the vehicle pointed
+  /// badly" from "the vehicle pointed exactly where it believed, and the belief
+  /// was wrong" — different faults, different fixes. `estimate_valid` false
+  /// means the FSW had no usable attitude, which is a different state from an
+  /// identity quaternion and must not be confused with one.
+  math::Quat<math::frames::Body, math::frames::ECI> estimate_attitude{};
+  bool estimate_valid{false};
 };
 
 /// The flight side of the macro-step handshake. Phase 3's F´ SITL transport
@@ -169,6 +186,13 @@ struct MacroSample {
   /// and SRP keep the build-time mass (see `ClosedLoop::massKg`).
   double mass_kg{0.0};
   std::vector<ThrusterTelemetry> thrusters;
+  /// The FSW's attitude estimate at this step, and whether it had one — see
+  /// `FswOutputs`. Truth-vs-estimate is the one comparison a SITL row cannot
+  /// make from the plant alone, and it is the difference between reporting a
+  /// pointing error and attributing it. Kept last so the positional aggregate
+  /// initialisers that build a sample stay valid.
+  math::Quat<math::frames::Body, math::frames::ECI> estimate_attitude{};
+  bool estimate_valid{false};
 };
 
 /// The §2.4 closed loop. Build a `SimRunner` **with this loop's wrench** (see
