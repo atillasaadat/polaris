@@ -1,0 +1,31 @@
+# Dependabot configuration (design doc §23.2).
+#
+# Added after a version bump broke CI: `setuptools` was declared as an exact pin
+# (`==78.1.1`) with a comment explaining that F´ tooling needs `pkg_resources`,
+# and Dependabot replaced the number with 83.0.0 — which removed that module and
+# took the whole F´ build down. A comment is not a constraint. The pin is now a
+# range in `pyproject.toml`, which is the real fix; this file makes the intent
+# visible to the bot as well as to a reader.
+version: 2
+
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      uv:
+        patterns:
+          - "*"
+    ignore:
+      # `fprime.util.versioning` imports `pkg_resources`, removed in setuptools
+      # 82.0.0. The range in pyproject.toml already blocks it; this stops the bot
+      # proposing a bump it can only ever break, week after week. Remove both
+      # when an fprime-tools release drops the import.
+      - dependency-name: "setuptools"
+        versions: [">=82"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
