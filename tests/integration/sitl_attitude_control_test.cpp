@@ -321,10 +321,22 @@ TEST(SitlAttitudeControl, DetumblesFromFiveDegreesPerSecond) {
   // orbit, which is a ~1e-3 rad/s process against a spin of ~5e-2 rad/s — so the
   // vehicle settles into a slow spin about the local field line and unwinds it
   // over *orbits*, not minutes. Measured on this vehicle: 3.14 deg/s 200 s after
-  // the law engages, then a decay of order 1% per 500 s — several orbits to reach
-  // the 0.5 deg/s handover rate. That is the textbook behaviour, not a
-  // defect (Avanzini & Giulietti's convergence is asymptotic), and a requirement
-  // written against a few hundred seconds of it would have been fiction.
+  // the law engages, then a decay of order 1% per 500 s. That is the textbook
+  // behaviour, not a defect (Avanzini & Giulietti's convergence is asymptotic),
+  // and a requirement written against a few hundred seconds of it would have
+  // been fiction.
+  //
+  // **How far the tail has to run is set by the handover threshold, and that
+  // threshold is a momentum statement.** `DetumbleExitRadps` is 75 % of the
+  // wheel array's certified momentum envelope expressed as a body rate — 2.58
+  // deg/s (Push 84) — because the handover's job is to leave the wheels able to
+  // point immediately rather than desaturate first. The vehicle is already at
+  // 3.14 deg/s at the 200 s mark, so the crossing is near the end of the fast
+  // phase rather than several orbits into the tail, which is what the older
+  // 1.9 deg/s threshold implied. That threshold sat 11 % over B-dot's own
+  // 1.71 deg/s sensing floor; below and near it the law commands on
+  // magnetometer noise, so *whether* a run confirmed was decided by field
+  // geometry rather than by the time it was given.
   //
   // REQ-ACTL-001 is therefore written on the fast phase — the one that decides
   // controllability — and asserted here: below 3.8 deg/s within 200 s of the law

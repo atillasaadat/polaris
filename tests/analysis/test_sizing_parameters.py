@@ -197,7 +197,7 @@ def test_the_detumble_exit_recommendation_refuses_to_go_below_the_noise_floor(ve
     parameter = _derived(analysis, "DetumbleExitRadps")
     floor = analysis.mtq.noise_floor.rate_worst_radps
     momentum_bound = (
-        0.5
+        SizingAssumptions().detumble_exit_fraction
         * analysis.wheels.usable_momentum_nms
         / float(np.max(vehicle.principal_moments_kgm2))
     )
@@ -220,11 +220,47 @@ def test_a_quiet_magnetometer_lets_the_momentum_bound_govern_instead(vehicle):
     analysis = sizing_analysis(quiet)
     parameter = _derived(analysis, "DetumbleExitRadps")
     assert parameter.derived == pytest.approx(
-        0.5
+        SizingAssumptions().detumble_exit_fraction
         * analysis.wheels.usable_momentum_nms
         / float(np.max(vehicle.principal_moments_kgm2))
     )
     assert "governs" in parameter.reasoning
+
+
+def test_the_detumble_thresholds_are_two_fractions_of_one_envelope(vehicle):
+    """Entry and exit are both ``f * usable_momentum / J_max``, and entry is larger.
+
+    The pair is a single design statement -- the vehicle is tumbling when its
+    body momentum exceeds what the wheels are certified to hold, and detumbled
+    when the rods have taken it to a fraction of that -- so what is asserted is
+    that both come off the *same* envelope and that the ordering holds. Pinning
+    the fractions themselves would make this a copy of the assumptions module.
+
+    The ordering is not decoration: an exit at or above entry is a mode that
+    cannot complete, and the two were independently tuned rates until Push 84,
+    which is exactly the arrangement that lets such a pair drift into it.
+    """
+    analysis = sizing_analysis(vehicle)
+    assumptions = SizingAssumptions()
+    j_max = float(np.max(vehicle.principal_moments_kgm2))
+    usable = analysis.wheels.usable_momentum_nms
+
+    enter = _derived(analysis, "DetumbleEnterRadps")
+    exit_ = _derived(analysis, "DetumbleExitRadps")
+    assert enter.derived == pytest.approx(
+        assumptions.detumble_enter_fraction * usable / j_max
+    )
+    assert exit_.derived > 0.0
+    assert (
+        enter.derived > exit_.derived
+    ), "detumble entry must sit above the exit or the mode can never complete"
+
+    # And the envelope is the *certified* one, not the hardware capacity. The
+    # distinction is the whole reason the fraction is safe to raise: on the
+    # reference vehicle the certified envelope is a small fraction of what the
+    # array physically stores, and a handover sized against the hardware would
+    # land outside the regime the pointing margins were computed for.
+    assert usable <= analysis.wheels.momentum.inscribed
 
 
 def test_the_desaturation_thresholds_are_derived_as_fractions_of_the_envelope(vehicle):
