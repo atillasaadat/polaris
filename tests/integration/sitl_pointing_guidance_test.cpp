@@ -983,17 +983,22 @@ constexpr const char* kSatTleLine2 =
 /// side by necessity; see the row comment for what that does and does not leave
 /// covered.
 Eigen::Vector3d truthSatTleDirection(const TruthState& s) {
-  static polaris::gnc::Sgp4 sgp4;
-  static polaris::time::Tai tle_epoch;
-  static bool ready = false;
-  if (!ready) {
-    polaris::gnc::TleElements elements;
-    EXPECT_EQ(polaris::gnc::parseTle(kSatTleLine1, kSatTleLine2, elements),
-              polaris::gnc::TleStatus::kOk);
-    EXPECT_EQ(sgp4.initialise(elements), polaris::gnc::Sgp4Status::kOk);
-    EXPECT_TRUE(elements.epochTai(pt::LeapSecondTable::historical(), tle_epoch));
-    ready = true;
-  }
+  // Built per call rather than cached in a function-local static. The cache
+  // that used to live here latched on a `ready` flag keyed to nothing — not the
+  // element set, not the epoch — so a second row calling this helper with a
+  // different TLE would have silently been handed the first row's propagator
+  // and checked the wrong satellite. Re-parsing costs microseconds against a
+  // 70 s row, which is not a trade worth a latent wrong answer.
+  polaris::gnc::TleElements elements;
+  EXPECT_EQ(polaris::gnc::parseTle(kSatTleLine1, kSatTleLine2, elements),
+            polaris::gnc::TleStatus::kOk);
+  polaris::gnc::Sgp4 sgp4;
+  EXPECT_EQ(sgp4.initialise(elements), polaris::gnc::Sgp4Status::kOk);
+  pt::Tai tle_epoch;
+  // The same historical table the flight side now uses. These two disagreeing
+  // is what hid the leap-second defect: the row's own truth was correct while
+  // the software under test was 37 s out, and the row still passed.
+  EXPECT_TRUE(elements.epochTai(pt::LeapSecondTable::historical(), tle_epoch));
   const double minutes =
       static_cast<double>(s.epoch.nanosecondsSinceEpoch() - tle_epoch.nanosecondsSinceEpoch()) *
       1.0e-9 / 60.0;
