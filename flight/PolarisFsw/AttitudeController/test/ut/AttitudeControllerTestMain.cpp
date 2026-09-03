@@ -17,6 +17,12 @@ TEST(AttitudeController, PointRefusalPaths) {
   tester.testPointRefusalPaths();
 }
 
+TEST(AttitudeController, SaturationIsCountedAndReportedUnclipped) {
+  RecordProperty("verifies", "REQ-ACTL-002");
+  flight::AttitudeControllerTester tester;
+  tester.testSaturationIsCountedAndReportedUnclipped();
+}
+
 TEST(AttitudeController, PointEngagesAndReducesError) {
   RecordProperty("verifies", "REQ-ACTL-002");
   flight::AttitudeControllerTester tester;

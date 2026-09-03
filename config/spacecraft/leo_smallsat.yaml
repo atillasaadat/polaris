@@ -1130,33 +1130,48 @@ spacecraft:
     # never worse, whereas over-compensating reverses the residual's sign and
     # past k = 2 makes it larger than doing nothing.
     #
-    # 0.5 IS A MEASURED CHOICE, NOT A ROUND ONE, and the measurement says
-    # something the open-loop argument above does not. Flown on the two rows that
-    # bracket the operating range (worst pointing, deg) **on the RW-X vehicle**,
-    # whose friction was 1.0e-4 N·m — the trim sweep has not been re-flown on
-    # RW-X, where the whole term is an order of magnitude smaller, so 0.5 is
-    # carried forward on the argument rather than on a fresh measurement:
+    # 0.5 SURVIVES A RE-FLOWN SWEEP, BUT NOT FOR ITS ORIGINAL REASON. The sweep
+    # that first set it was flown on the **RW04** vehicle (1.0e-4 N·m Coulomb
+    # friction, 1.0e-4 N·m drive LSB) and was carried forward on argument when
+    # Push 60 took the RW-X wheel, whose friction and LSB are both 8e-6 N·m — an
+    # order of magnitude smaller. Re-flown on RW-X, on the same two rows that
+    # bracket the operating range (worst pointing, deg):
     #
     #                              k = 0    k = 0.5   k = 1.0
-    #   loaded array (desat row)    2.77      1.38      1.52
-    #   near-empty array (hold row) 0.12      0.25      1.09  <- 1.0 deg bound
+    #   loaded array (desat row)   0.0597    0.0406    0.0402   <- 0.05 deg bound
+    #   near-empty array (hold row) 0.0131    0.0129    0.0134   <- 1.0 deg bound
     #
-    # The loaded case is what the feedforward is for and it improves by half a
-    # degree. The near-empty case gets *worse* with it, monotonically in k, and
-    # at k = 1 it breaks REQ-ACTL-002's own verification row. The mechanism is
-    # that a near-empty array runs its wheels at the speeds where the
-    # compensation's sign is least trustworthy — inside and around the blend
-    # band, one control period stale — and where the friction the feedforward
-    # removes was also passively damping the stored momentum. Half compensation
-    # keeps most of the loaded-array gain, stays a factor of four inside the
-    # near-empty bound, and is conservative in the direction the policy above
-    # says to be conservative in. **This is a closed-loop trade the open-loop
-    # "partial is never worse" argument does not cover, and it is why the trim is
-    # a flight parameter rather than a constant.**
+    # (RW04, for comparison, read 2.77 / 1.38 / 1.52 loaded and 0.12 / 0.25 /
+    # 1.09 near-empty.)
     #
-    # The catalog entry labels its friction "representative (unit calibration)",
-    # so a measured rundown re-opens this number; that is a per-unit uplink,
-    # which is why the trim is per-unit here and not one scalar.
+    # **The closed-loop argument that chose 0.5 is gone.** On RW04 the near-empty
+    # row degraded monotonically in k and broke its bound at k = 1; on RW-X that
+    # penalty does not reproduce — the spread across the whole sweep is 3.6 %, on
+    # a number sitting 75x inside its bound. The mechanism explains its own
+    # disappearance: the sign ambiguity lived inside and around the 5.0e-3 rad/s
+    # blend band, and the RW04 vehicle ran its wheels at 0.05 to 0.55 rad/s,
+    # i.e. *in* the band. Push 60's vehicle runs 10 to 33 rad/s, three orders
+    # above it, and never visits the regime the penalty came from.
+    #
+    # What still argues for k < 1 is the friction magnitude itself. The catalog
+    # entry labels its number "representative (unit calibration)", and the trim
+    # multiplies that number, not the true one: at k = 1 against a catalog value
+    # 2x low the vehicle is compensating at an effective k = 2, which the policy
+    # above is precisely about. 0.5 tolerates a catalog value up to 2x low and
+    # still lands at or below 1 against reality. **The measured cost of that
+    # conservatism is now 0.9 % of the loaded row's error** (0.0406 vs 0.0402),
+    # which is what makes it cheap enough to keep rather than a trade.
+    #
+    # STILL OWED, and unchanged by this sweep: a measured rundown of the flight
+    # unit. That is what would collapse the magnitude uncertainty and let k go to
+    # 1; it is a per-unit uplink, which is why the trim is per-unit here and not
+    # one scalar. The sweep above removes the *stale* justification, not the
+    # hardware measurement.
+    #
+    # Reproduce with POLARIS_FSW_CONFIG (tests/integration/sitl_harness.hpp)
+    # pointed at a copy of this file with the block below edited, against
+    # SitlAttitudeControl.DesaturationDumpsMomentumWhilePointingHolds and
+    # .InertialHoldConvergesUnderThePointingBound.
     flight.attitudeController.WheelFrictionDeadbandRadps: 5.0e-3
     flight.attitudeController.WheelFrictionScale: [
       0.5,   # 0: rw_1

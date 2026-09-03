@@ -572,6 +572,14 @@ void AttitudeController ::setMode(CtrlMode::T next) {
   }
   this->log_ACTIVITY_HI_ModeChanged(CtrlMode(this->mode_), CtrlMode(next));
   this->mode_ = next;
+  // Saturation is counted per mode: a DETUMBLE that saturated its rods for
+  // minutes says nothing about the POINT that follows it, and a counter that
+  // spanned both would be unreadable.
+  this->saturated_cycles_ = 0;
+  // Written, not merely reset: only the POINT path writes this channel, so a
+  // reset that stayed in memory would leave the previous mode's total standing
+  // on the downlink for the whole of a DETUMBLE.
+  this->tlmWrite_CyclesSaturated(this->saturated_cycles_);
   // Every mode entry starts from a clean law: an integrator or a stored field
   // sample from the last time this mode ran describes a vehicle that has since
   // moved. The momentum manager and the disturbance observer are deliberately
@@ -937,13 +945,16 @@ bool AttitudeController ::runPoint(double dtSec, double* wheelTorque, CtrlRefusa
 
   if (pid.saturated || alloc.saturated) {
     ++this->saturation_streak_;
+    ++this->saturated_cycles_;
     if (this->alertDue(this->saturation_streak_)) {
-      this->log_WARNING_LO_TorqueSaturated(pid.torque_nm.eigen().norm(), this->pid_max_torque_nm_,
-                                           alloc.scale);
+      // The **unsaturated** demand, not the command: the command is the limit on
+      // a saturated cycle, so reporting it says only that saturation happened.
+      this->log_WARNING_LO_TorqueSaturated(pid.demand_nm, this->pid_max_torque_nm_, alloc.scale);
     }
   } else {
     this->saturation_streak_ = 0;
   }
+  this->tlmWrite_CyclesSaturated(this->saturated_cycles_);
 
   this->tlmWrite_TorqueCmd(toVec3F64(pid.torque_nm.eigen()));
   this->tlmWrite_PointingErrorRad(pid.error_angle_rad);

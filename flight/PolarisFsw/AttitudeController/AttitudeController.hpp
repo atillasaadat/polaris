@@ -405,6 +405,9 @@ class AttitudeController final : public AttitudeControllerComponentBase {
   U32 refusal_streak_{0};
   CtrlRefusal::T refusal_reason_{CtrlRefusal::NOT_CONFIGURED};
   U32 saturation_streak_{0};
+  //! Control cycles saturated since the last mode entry — the count the
+  //! cadence-throttled TorqueSaturated event cannot convey.
+  U32 saturated_cycles_{0};
   U32 dipole_saturation_streak_{0};
 
   //! §7 stuck-on latch and its persistence counters. `stuck_mask_` is the set of
