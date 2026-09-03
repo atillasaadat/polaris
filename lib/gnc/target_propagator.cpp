@@ -186,11 +186,20 @@ PropagationStatus TargetPropagator::advanceGridTo(const time::Tai& t,
   // 0.4 m and never recovered, because the pollution rides the cursor forward.
   const bool using_eop = model_.needsEarthOrientation() && eop != nullptr;
 
-  // A request behind the cursor re-seeds, and so does a change of effective
-  // model. Stepping on from where the cursor happens to sit would make the
-  // answer a function of the call history, which is precisely the property this
-  // file promises not to have.
-  if (!cursor_valid_ || cursor_used_eop_ != using_eop || target_step < cursor_step_) {
+  // The retained state at step N means "N steps from the seed, taken in the
+  // direction of sign(N)". Continuing is therefore only legitimate when the
+  // request is *further from the seed in the same direction*; anything else
+  // re-seeds. A plain `target_step < cursor_step_` got this wrong for negative
+  // spans, which a look-ahead upload makes routine: a walk to step -10 followed
+  // by a request at -5 satisfied -5 > -10 and integrated forward from -10
+  // instead of re-seeding and walking back 5. RK4 is not time-reversible, so
+  // the two paths disagreed — measured at 8.9e-7 m, against a file that
+  // promises bit-identical. A change of effective model re-seeds for the same
+  // reason: the cursor's identity is (steps, direction, model).
+  const bool continues = cursor_valid_ && cursor_used_eop_ == using_eop &&
+                         (cursor_step_ == 0 || (target_step >= cursor_step_ && cursor_step_ > 0) ||
+                          (target_step <= cursor_step_ && cursor_step_ < 0));
+  if (!continues) {
     cursor_step_ = 0;
     cursor_position_m_ = slot_.position_m.eigen();
     cursor_velocity_m_s_ = slot_.velocity_m_s.eigen();
@@ -198,7 +207,16 @@ PropagationStatus TargetPropagator::advanceGridTo(const time::Tai& t,
     cursor_used_eop_ = using_eop;
   }
 
+  // Bounded at the loop, not merely by the caller's span check two frames up
+  // (§3.6). `kMaxSteps` is the constant that expresses the bound and was
+  // previously defined and never used; a `!=` condition with no counter spins
+  // forever rather than overshooting once if the cursor ever leaves range.
+  int guard = 0;
   while (cursor_step_ != target_step) {
+    if (++guard > kMaxSteps) {
+      resetCursor();
+      return PropagationStatus::kSpanTooLong;
+    }
     const double h = target_step > cursor_step_ ? kStepSec : -kStepSec;
     const time::Tai from = time::Tai::fromNanosecondsSinceEpoch(
         slot_.epoch.nanosecondsSinceEpoch() +

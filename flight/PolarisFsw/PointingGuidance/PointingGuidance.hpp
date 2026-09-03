@@ -119,6 +119,10 @@ class PointingGuidance final : public PointingGuidanceComponentBase {
   polaris::frames::EopValue eop_{};
   bool eop_valid_ = false;
 
+  /// Whether the missing-parameter warning has already been raised for the
+  /// current configuration gap. Cleared when the parameters do arrive.
+  bool config_warned_ = false;
+
   polaris::gnc::GuidanceCommand command_{};
   bool commanded_ = false;
 

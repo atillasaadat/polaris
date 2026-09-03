@@ -235,7 +235,23 @@ void PointingGuidance::reloadMountingParameters() {
   install(pg::BodyVectorKind::kCamera, cam, cam_ok);
 
   max_orbit_age_s_ = age_ok ? age : 0.0;
-  configured_ = age_ok;
+  // Every group, not just the scalar. With `configured_ = age_ok` alone, a run
+  // where MaxOrbitStateAgeSec loaded but the boresight table did not would stop
+  // retrying with the table still empty, and every command naming a
+  // STAR_TRACKER / SUN_SENSOR / CAMERA would be refused BODY_VECTOR_UNKNOWN —
+  // "the unit is not installed" — which is a configuration failure wearing a
+  // geometry failure's name, the exact thing the retry above exists to prevent.
+  const bool all_ok = age_ok && st_ok && ss_ok && cam_ok && degree_ok && order_ok;
+  if (!all_ok && !config_warned_) {
+    // Once, not per cycle: the retry runs every cycle until it succeeds, and an
+    // event per cycle would bury the transition.
+    config_warned_ = true;
+    this->log_WARNING_LO_GuidanceCommandRefused(GuidanceRefusal::BAD_PARAMETERS);
+  }
+  if (all_ok) {
+    config_warned_ = false;
+  }
+  configured_ = all_ok;
 }
 
 void PointingGuidance::parameterUpdated(FwPrmIdType) {
@@ -389,7 +405,19 @@ void PointingGuidance::run_handler(FwIndexType, U32) {
   }
 
   if (!commanded_) {
-    publishNoTarget(now, pg::GuidanceStatus::kOk);
+    // Uncommanded is the flight *default* — a pointing command arrives by
+    // uplink — so this publishes the invalid target and says so in telemetry
+    // without raising an operator alert. It used to route through
+    // publishNoTarget, which fires WARNING_HI on the transition: a
+    // high-severity event announcing that nothing is wrong, on every boot,
+    // which is how a channel earns the filter that later hides the real one.
+    AttitudeTarget out;
+    out.set_epochTaiNs(now.nanosecondsSinceEpoch());
+    out.set_valid(false);
+    if (this->isConnected_guidanceOut_OutputPort(0)) {
+      this->guidanceOut_out(0, out);
+    }
+    this->tlmWrite_GuidanceValid(false);
     this->tlmWrite_LastRefusal(GuidanceRefusal::NOT_COMMANDED);
     return;
   }

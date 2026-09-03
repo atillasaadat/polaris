@@ -470,6 +470,12 @@ TEST(TargetPropagator, TheCursorDoesNotMakeTheAnswerDependOnCallOrder) {
   pg::TargetPropagator walked;
   ASSERT_TRUE(walked.setState(s));
   pm::Vec3<pmf::ECI> r, v;
+  // Negative spans included deliberately. The earlier version of this test used
+  // only non-negative times, which never visits the backward branch — and that
+  // branch was the asymmetric one: a walk to step -10 followed by a request at
+  // -5 integrated forward from -10 instead of re-seeding, and RK4 is not
+  // time-reversible. A look-ahead upload makes negative spans routine, so this
+  // is not an exotic path.
   for (const double t : {7.0, 33.0, 100.0, 617.25, 1000.0, 1234.5}) {
     ASSERT_EQ(walked.propagate(s.epoch + pt::Duration::fromSecondsF(t), &eop, r, v),
               pg::PropagationStatus::kOk);
@@ -531,6 +537,45 @@ TEST(TargetPropagator, AMomentaryEopGapDoesNotPoisonEveryLaterAnswer) {
       << "a momentary EOP gap left " << (after_gap - r_direct.eigen()).norm()
       << " m of permanent offset";
   EXPECT_EQ(after_gap.z(), r_direct.eigen().z());
+}
+
+TEST(TargetPropagator, BackwardsPropagationIsOrderIndependentToo) {
+  const pg::StateVectorSlot s = issLikeSlot();
+  const polaris::frames::EopValue eop{0.0, 0.0, 0.0};
+  const pt::Tai target = s.epoch - pt::Duration::fromSecondsF(50.0);
+
+  pg::TargetPropagator direct;
+  ASSERT_TRUE(direct.setState(s));
+  pm::Vec3<pmf::ECI> r_direct, v;
+  ASSERT_EQ(direct.propagate(target, &eop, r_direct, v), pg::PropagationStatus::kOk);
+
+  // Deeper into the past first, then back toward the epoch — the ordering that
+  // used to integrate forward from the deeper cursor instead of re-seeding.
+  pg::TargetPropagator walked;
+  ASSERT_TRUE(walked.setState(s));
+  pm::Vec3<pmf::ECI> r;
+  for (const double t : {-100.0, -50.0, -300.0, -50.0, -7.5, -50.0}) {
+    ASSERT_EQ(walked.propagate(s.epoch + pt::Duration::fromSecondsF(t), &eop, r, v),
+              pg::PropagationStatus::kOk);
+  }
+  EXPECT_EQ(r.eigen().x(), r_direct.eigen().x());
+  EXPECT_EQ(r.eigen().y(), r_direct.eigen().y());
+  EXPECT_EQ(r.eigen().z(), r_direct.eigen().z());
+
+  // And crossing zero: forward, then backward, then forward again.
+  pg::TargetPropagator crossing;
+  ASSERT_TRUE(crossing.setState(s));
+  for (const double t : {120.0, -50.0, 300.0}) {
+    ASSERT_EQ(crossing.propagate(s.epoch + pt::Duration::fromSecondsF(t), &eop, r, v),
+              pg::PropagationStatus::kOk);
+  }
+  pg::TargetPropagator plain;
+  ASSERT_TRUE(plain.setState(s));
+  pm::Vec3<pmf::ECI> r_plain;
+  ASSERT_EQ(plain.propagate(s.epoch + pt::Duration::fromSecondsF(300.0), &eop, r_plain, v),
+            pg::PropagationStatus::kOk);
+  EXPECT_EQ(r.eigen().x(), r_plain.eigen().x());
+  EXPECT_EQ(r.eigen().z(), r_plain.eigen().z());
 }
 
 TEST(TargetPropagator, ChangingTheFieldResetsTheCursor) {
