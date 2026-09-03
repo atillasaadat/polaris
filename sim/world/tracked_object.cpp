@@ -88,39 +88,23 @@ void TrackedObject::stepTo(const pt::Tai& t) const {
 
   // The gravity model answers on a TruthState; only epoch and position are read
   // for an acceleration, so the attitude and rate fields stay at their defaults.
-  const auto accel = [this](const pt::Tai& at, const Eigen::Vector3d& r) {
-    state::TruthState probe;
-    probe.epoch = at;
-    probe.position = pm::Vec3<pm::frames::ECI>(r);
-    return gravity_->acceleration(probe).eigen();
-  };
-
   while (cursor_step_ != target_step) {
     const double h = target_step > cursor_step_ ? kStepSec : -kStepSec;
-    const Eigen::Vector3d& r = position_m_;
-    const Eigen::Vector3d& v = velocity_m_s_;
-    const pt::Tai t0 = cursor_;
-    const pt::Tai th = advanced(t0, 0.5 * h);
-    const pt::Tai t1 = advanced(t0, h);
-
-    const Eigen::Vector3d k1r = v;
-    const Eigen::Vector3d k1v = accel(t0, r);
-    const Eigen::Vector3d k2r = v + 0.5 * h * k1v;
-    const Eigen::Vector3d k2v = accel(th, r + 0.5 * h * k1r);
-    const Eigen::Vector3d k3r = v + 0.5 * h * k2v;
-    const Eigen::Vector3d k3v = accel(th, r + 0.5 * h * k2r);
-    const Eigen::Vector3d k4r = v + h * k3v;
-    const Eigen::Vector3d k4v = accel(t1, r + h * k3r);
-
-    position_m_ += (h / 6.0) * (k1r + 2.0 * k2r + 2.0 * k3r + k4r);
-    velocity_m_s_ += (h / 6.0) * (k1v + 2.0 * k2v + 2.0 * k3v + k4v);
-    cursor_ = t1;
+    // One integrator, called twice — not two copies of the same eight lines.
+    // The grid walk and the unretained tail step must agree exactly or the
+    // retained state and the answer built from it describe different
+    // trajectories, and duplicated arithmetic is how that starts.
+    const Step advancedState = rk4(cursor_, h, Step{position_m_, velocity_m_s_});
+    position_m_ = advancedState.position_m;
+    velocity_m_s_ = advancedState.velocity_m_s;
+    cursor_ = advanced(cursor_, h);
     cursor_step_ += target_step > cursor_step_ ? 1 : -1;
   }
 }
 
-Eigen::Vector3d TrackedObject::rk4(const pt::Tai& t0, double h, const Eigen::Vector3d& r_in,
-                                   const Eigen::Vector3d& v_in, Eigen::Vector3d& v_out) const {
+TrackedObject::Step TrackedObject::rk4(const pt::Tai& t0, double h, const Step& from) const {
+  const Eigen::Vector3d& r_in = from.position_m;
+  const Eigen::Vector3d& v_in = from.velocity_m_s;
   const auto accel = [this](const pt::Tai& at, const Eigen::Vector3d& r) {
     state::TruthState probe;
     probe.epoch = at;
@@ -137,8 +121,8 @@ Eigen::Vector3d TrackedObject::rk4(const pt::Tai& t0, double h, const Eigen::Vec
   const Eigen::Vector3d k3v = accel(th, r_in + 0.5 * h * k2r);
   const Eigen::Vector3d k4r = v_in + h * k3v;
   const Eigen::Vector3d k4v = accel(t1, r_in + h * k3r);
-  v_out = v_in + (h / 6.0) * (k1v + 2.0 * k2v + 2.0 * k3v + k4v);
-  return r_in + (h / 6.0) * (k1r + 2.0 * k2r + 2.0 * k3r + k4r);
+  return Step{r_in + (h / 6.0) * (k1r + 2.0 * k2r + 2.0 * k3r + k4r),
+              v_in + (h / 6.0) * (k1v + 2.0 * k2v + 2.0 * k3v + k4v)};
 }
 
 bool TrackedObject::positionAt(const pt::Tai& t, pm::Vec3<pm::frames::ECI>& position_m) const {
@@ -162,15 +146,14 @@ bool TrackedObject::positionAt(const pt::Tai& t, pm::Vec3<pm::frames::ECI>& posi
   // retained — what is kept must depend only on the seed and the step count.
   const double grid_s = static_cast<double>(cursor_step_) * kStepSec;
   const double tail = secondsBetween(t, seed_epoch_) - grid_s;
-  Eigen::Vector3d r = position_m_;
-  Eigen::Vector3d v = velocity_m_s_;
+  Step answer{position_m_, velocity_m_s_};
   if (tail != 0.0) {
-    r = rk4(advanced(seed_epoch_, grid_s), tail, position_m_, velocity_m_s_, v);
+    answer = rk4(advanced(seed_epoch_, grid_s), tail, answer);
   }
-  if (!r.allFinite()) {
+  if (!answer.position_m.allFinite()) {
     return false;
   }
-  position_m = pm::Vec3<pm::frames::ECI>(r);
+  position_m = pm::Vec3<pm::frames::ECI>(answer.position_m);
   return true;
 }
 
