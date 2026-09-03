@@ -75,6 +75,7 @@ void AttitudeController ::guidanceIn_handler(FwIndexType, const AttitudeTarget& 
   }
   this->guidance_target_ = polaris::math::Quat<Body, ECI>(core.canonical());
   this->guidance_rate_ = rate;
+  this->guidance_epoch_ns_ = target.get_epochTaiNs();
   this->guidance_valid_ = true;
 }
 
@@ -830,9 +831,33 @@ bool AttitudeController ::runPoint(double dtSec, double* wheelTorque, CtrlRefusa
   // law, two sources — the PID already takes a target rate, so tracking is a
   // change of argument rather than a second controller.
   const bool tracking = this->mode_ == CtrlMode::TRACK;
-  if (tracking && !this->guidance_valid_) {
-    reason = CtrlRefusal::NO_GUIDANCE;
-    return false;
+  if (tracking) {
+    if (!this->guidance_valid_) {
+      reason = CtrlRefusal::NO_GUIDANCE;
+      return false;
+    }
+    // Age-gated on the target's own epoch, the same shape as the estimate gate
+    // above. `guidance_valid_` alone only clears when a target *arrives* saying
+    // invalid — nothing clears it when a target fails to arrive at all, so the
+    // only thing preventing a stale attitude being flown was rate-group member
+    // ordering, one line in topology.fpp. `AttitudeTarget` carries epochTaiNs
+    // precisely so this is checkable; ignoring it while age-gating the estimate
+    // on the adjacent port was an asymmetry with no reason behind it.
+    //
+    // Measured against the *estimate's* epoch rather than wall time, which is
+    // the more meaningful comparison and needs no clock plumbed in here: both
+    // are inputs to this one cycle and must describe the same instant. The
+    // estimate is itself wall-time gated a few lines above, so the guidance is
+    // transitively gated too. The bound is the estimate's for the same reason —
+    // both answer "how stale may an input to this cycle be", and a second knob
+    // would be one more thing to get inconsistent.
+    const I64 guidance_age_ns = this->estimate_.get_epochTaiNs() - this->guidance_epoch_ns_;
+    const double guidance_age_s =
+        static_cast<double>(guidance_age_ns < 0 ? -guidance_age_ns : guidance_age_ns) / 1.0e9;
+    if (guidance_age_s > this->max_estimate_age_s_) {
+      reason = CtrlRefusal::NO_GUIDANCE;
+      return false;
+    }
   }
   const polaris::math::Quat<Body, ECI>& commanded_att =
       tracking ? this->guidance_target_ : this->target_;

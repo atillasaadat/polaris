@@ -312,9 +312,42 @@ bool PointingGuidance::buildContext(pt::Tai now, pg::GuidanceContext& ctx,
     ctx.moon_position_m = pm::Vec3<pmf::ECI>(moon.get_x(), moon.get_y(), moon.get_z());
     ctx.moon_valid = ctx.moon_position_m.isFinite();
   }
-  // Third-body velocities are not served by OnboardTables, so the Sun/Moon
-  // line-of-sight rate carries only the parallax term and says so through
-  // ResolvedDirection::rate_known. See GuidanceContext.
+  // Third-body **velocities**, by central difference on the same port.
+  //
+  // OnboardTables serves positions only, so the Sun/Moon line-of-sight rate
+  // used to carry the parallax term alone — the vehicle's own motion — and omit
+  // the body's. `attitude_guidance.hpp` puts that at 0.04 deg over a
+  // three-minute observation and said it was reported through
+  // `ResolvedDirection::rate_known`; nothing read that flag, so it was reported
+  // to no one. Differencing closes the gap instead of announcing it.
+  //
+  // +/-60 s, and the interval is a conditioning choice rather than an accuracy
+  // one: the truncation error of a central difference on a body this smooth is
+  // ~(dt^2/6)|d3r/dt3|, which is under a micrometre per second for both bodies,
+  // while a *shorter* interval would difference two positions ~1.5e11 m apart
+  // and lose the signal to double precision. Two extra evaluations per body per
+  // cycle, of a Chebyshev fit.
+  constexpr I64 kHalfStepNs = 60LL * 1000000000LL;
+  const auto bodyVelocity = [&](OnboardBody::T body, pm::Vec3<pmf::ECI>& out) {
+    PosEciMeters before;
+    PosEciMeters after;
+    if (!this->isConnected_getBodyPosition_OutputPort(0) ||
+        !this->getBodyPosition_out(0, body, now.nanosecondsSinceEpoch() - kHalfStepNs, before) ||
+        !this->getBodyPosition_out(0, body, now.nanosecondsSinceEpoch() + kHalfStepNs, after)) {
+      return false;
+    }
+    const double dt_s = 2.0 * static_cast<double>(kHalfStepNs) * 1.0e-9;
+    out = pm::Vec3<pmf::ECI>((after.get_x() - before.get_x()) / dt_s,
+                             (after.get_y() - before.get_y()) / dt_s,
+                             (after.get_z() - before.get_z()) / dt_s);
+    return out.isFinite();
+  };
+  if (ctx.sun_valid) {
+    ctx.sun_velocity_valid = bodyVelocity(OnboardBody::SUN, ctx.sun_velocity_m_s);
+  }
+  if (ctx.moon_valid) {
+    ctx.moon_velocity_valid = bodyVelocity(OnboardBody::MOON, ctx.moon_velocity_m_s);
+  }
 
   // ---- Earth orientation, needed only by ECEF_TARGET.
   // Earth orientation. ECEF_TARGET needs the rotation at `now`; the

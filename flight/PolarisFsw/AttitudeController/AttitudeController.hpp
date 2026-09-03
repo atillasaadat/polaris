@@ -314,12 +314,18 @@ class AttitudeController final : public AttitudeControllerComponentBase {
   bool have_target_{false};
 
   //! The §8.4 guidance solution for this cycle, consumed only in TRACK.
-  //! Refreshed every cycle and *not* latched: `guidance_valid_` false means the
-  //! cycle is refused with NO_GUIDANCE rather than flown against a stale
-  //! attitude, because a frozen target is indistinguishable from a held one
-  //! right up until the vehicle is pointing somewhere nobody asked for.
+  //!
+  //! `guidance_valid_` is set when a target arrives and cleared when one
+  //! arrives saying invalid — it is **not** cleared by a target failing to
+  //! arrive, which is why the flag alone is not a freshness test. The freshness
+  //! test is `guidance_epoch_ns_` against `max_estimate_age_s_`, checked in
+  //! runControl: a frozen target is indistinguishable from a held one right up
+  //! until the vehicle is pointing somewhere nobody asked for, and the only
+  //! thing that had been preventing it was rate-group member ordering.
   polaris::math::Quat<polaris::math::frames::Body, polaris::math::frames::ECI> guidance_target_{};
   polaris::math::Vec3<polaris::math::frames::Body> guidance_rate_{};
+  //! TAI epoch the guidance solution was computed for, as the target carried it.
+  I64 guidance_epoch_ns_{0};
   bool guidance_valid_{false};
 
   //! Cached tuning the cycle reads directly.

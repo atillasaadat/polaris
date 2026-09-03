@@ -19,6 +19,17 @@ module flight {
   @ Passive: the query ports are lock-free bounded reads of the active slot (the
   @ swap is a single atomic index flip), so no queue is needed. Not a SITL
   @ component — it ships to hardware and has no lib/sitl dependency.
+  @ **Every port here is `guarded`, not `sync`, and that is a concurrency
+  @ requirement rather than a preference.** A `sync` port on a passive component
+  @ runs on the *caller's* thread (F´ user manual, autocoded-functions), and this
+  @ component is reached from three: the GNC rate group (the estimators and the
+  @ pointing guidance read tables), rateGroup3 (`run`), and the command
+  @ dispatcher, where `RELOAD_TABLES` rebuilds those same tables underneath the
+  @ readers. With `sync` throughout, a reload landing inside a reader's call
+  @ returns a torn EOP or ephemeris record — a pointing or navigation error with
+  @ no signature in any validity flag, because every individual field is
+  @ well-formed. `guarded` serialises them on the component mutex; the cost is
+  @ one uncontended lock per read, ~10 per 10 Hz cycle.
   passive component OnboardTables {
 
     # ----------------------------------------------------------------------
@@ -26,14 +37,14 @@ module flight {
     # ----------------------------------------------------------------------
 
     @ EOP at a TAI epoch (UT1-TAI, polar motion), for the ECI<->ECEF reduction.
-    sync input port getEopAt: GetEopAt
+    guarded input port getEopAt: GetEopAt
 
     @ Geocentric ECI position [m] of the Sun or Moon at a TAI epoch, for the
     @ sun-vector reference and third-body models.
-    sync input port getBodyPosition: GetBodyPosition
+    guarded input port getBodyPosition: GetBodyPosition
 
     @ TAI - UTC (delta-AT) [s] at a TAI epoch, for UTC-facing output.
-    sync input port getTaiUtcOffset: GetTaiUtcOffset
+    guarded input port getTaiUtcOffset: GetTaiUtcOffset
 
     # ----------------------------------------------------------------------
     # Scheduler: coverage-expiry check on a wall-clock rate group
@@ -41,7 +52,7 @@ module flight {
 
     @ Rate-group entry: check the current time is still inside the EOP and
     @ ephemeris coverage and warn (throttled) if it has run past either.
-    sync input port run: Svc.Sched
+    guarded input port run: Svc.Sched
 
     # ----------------------------------------------------------------------
     # Commands
@@ -49,7 +60,7 @@ module flight {
 
     @ Reload all tables from their configured paths (upload -> activate). Safe:
     @ restages into an inactive buffer and swaps only on full success.
-    sync command RELOAD_TABLES
+    guarded command RELOAD_TABLES
 
     # ----------------------------------------------------------------------
     # Telemetry (health: counts, coverage spans, load state)
