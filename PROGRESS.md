@@ -60,14 +60,20 @@ notes — this tracker stays a rollup so it cannot rot the way a narrative does.
 | Onboard position source for the magnetic reference (§8.3) — the `OrbitEstimator` F´ component (member 0 of the GNC rate group) serves its solution to the attitude estimator once per cycle; the receiver no longer reaches the attitude component | ✅ done + tested (Push 65; REQ-ODP-007, two SITL GNSS-outage rows on each side of the coast horizon; Push 66 added the spoof-step, stale-clock, `OD_RESET`, second-receiver and one-orbit rows — `sitl_od_fault_test.cpp`; Push 67 closed the fixture debt: every SITL row now orbits) |
 | **Attitude control (§8.5) + the MTQ/MAG duty-cycle interlock (§7)** — B-dot detumble, quaternion-error PID, L2/L-∞ wheel allocation, the F´ `AttitudeController` on the 10 Hz GNC cycle, and the four-layer interlock with its stuck-on rod monitor | ✅ **done + tested (Push 54)** — three laws in `lib/gnc`, one passive F´ component (30 no-default parameters, `PrmDb` raised 64 → 128 for 85 in use), the interlock schedule published to every magnetometer consumer and enforced at the estimator's single ingest point, and the near-field/settle fidelity on the sim side that makes a violation visible. New **REQ-ACTL-001, -002, -004, -005**; four SITL rows, eight component tests, 23 `lib/gnc` unit tests. The Phase-4 placeholder `ScriptedCmdSource` and `lib/sitl/scripted_profile.hpp` were deleted — the rate group's commands are a control law's now. Momentum management, MTQ desaturation, CMG steering and the disturbance feedforward remain |
 
-**Test gates (all green):** 766 C++ lib unit (ASan/UBSan) · 96 F´ component unit
-(62 estimator + 16 controller + 12 orbit estimator + 6 burn executor) · 66
-integration (11 SITL attitude fault-matrix rows + 8 SITL orbit-filter rows + 4
-SITL burn/coast rows + 9 SITL attitude-control rows + 1 open-loop burn) · 6 GMAT
-golden · Python suite
-(config compiler, PrmDb emitter, GMAT harness, space weather, orbit) ·
-docs `-W` (bibliography + requirements traceability) · pre-commit
-(clang-format + ruff) · F´ flight build.
+| **Orbit propagation products (§8.3, §3.1)** — SGP4/SDP4 over the full AIAA verification set, the TLE parser that feeds it, and TEME→ECI (IAU-76/80 + `eraBp00` frame bias) | ✅ done + tested (Pushes 80–81; REQ-ODP-003 first half, REQ-CONV-002). Cross-validated **three ways** against lineages sharing no code — Vallado here, USSF AstroStds in FreeFlyer, NAIF SPICE in GMAT — agreeing to **1.1–8.3 m, under 0.06 arcsec**. Bands stated in *angle*, which is what showed the residual is one frame rotation rather than two propagators diverging |
+| **§8.4 align/constrain pointing guidance** — every pointing mode as `ALIGN <body vector> with <inertial target>` + `CONSTRAIN <body vector> toward <inertial target>`; `PointingGuidance` on the GNC rate group, `AttitudeController` TRACK, the onboard target catalogue (5 TLE + 5 state-vector slots, 30 geodetic ground points, 10 operator body vectors) | ✅ done + tested (Pushes 82–83; **REQ-AGN-004/-005**, REQ-ODP-002). A new mission mode is an operator command rather than new flight software. Target propagation defaults to **8×8 EGM2008** with J2 (degree 2 / order 0) kept as the EOP-free setting, since order *is* the EOP dependency. Seven SITL rows asserting against sim truth, never against the guidance. ⬜ Ground-station auto-selection (which stored station, when) is deliberately deferred |
+| **FreeFlyer visualization + independent V&V (§23.1)** — every SITL row renderable, truth-side propagation of tracked secondary objects, payload-camera and star-tracker POV windows | ✅ done + tested (Pushes 57, 75, 79, 82–83). Renders on the Windows GPU with the sim staying in WSL; FreeFlyer **propagates nothing** (measured: both objects hold bit-exact written values across an epoch advance) — it draws Polaris truth, so the window cannot flatter the sim. The tracker POV is what found that both trackers were Earth-blocked 100% of the settled window in the catalogue rows, which was the actual cause of a pointing error attributed elsewhere |
+**Test gates (all green, counted at Push 83):** **896** C++ lib unit
+(ASan/UBSan) · **101** F´ component unit (65 estimator + 16 controller + 14
+orbit estimator + 6 burn executor, in four separate executables that **only
+`ctest` builds and runs** — see "Build & verify locally") · **73** integration
+(11 SITL attitude fault-matrix rows + 8 SITL orbit-filter rows + 7 SITL pointing
+rows + 4 SITL burn/coast rows + 9 SITL attitude-control rows + 1 open-loop
+burn) · **15** golden (GMAT + FreeFlyer fixtures) · **582** collected Python
+(config compiler, PrmDb emitter, GMAT harness, space weather, orbit, FreeFlyer
+V&V and viewer) · docs `-W` (bibliography + requirements traceability) ·
+pre-commit (clang-format + ruff) · F´ flight build · FreeFlyer V&V on
+`pre-push`.
 
 ---
 
@@ -196,8 +202,19 @@ Phase 2 — Sensor & actuator models
    raw pseudorange/Doppler path and the receiver-clock states it makes
    observable (which is also what would retire the tuned `R` inflation); the accelerometer as a second acceleration source (bias state +
    burn-active gate); the FreeFlyer OD cross-check (§23.1);
-   and the rest of the phase — multi-object propagation, SGP4/OEM products,
-   the ground batch least-squares (REQ-ODP-002/-003/-004).
+   and the rest of the phase — the ground batch least-squares
+   (REQ-ODP-004). **SGP4/SDP4 and multi-object propagation landed in Pushes
+   80–82** (three-way cross-validated, and the catalogue now flies as a pointing
+   target); the **CCSDS OEM/OMM product is the piece of REQ-ODP-003 still
+   owed**, carried since Push 80.
+
+   Two items owed against the §8.4 guidance that Push 82 built: **ground-station
+   auto-selection** (the 30 geodetic slots exist to hold stations; deciding
+   *which* and *when* is deferred by design), and moving onboard ΔAT from the
+   compiled historical table to the **uploaded** one `OnboardTables` already
+   serves over `getTaiUtcOffset` — §3.2 makes it an uploaded quantity, and Push
+   83 fixed the empty-table defect with the compiled table as a floor, not a
+   destination.
 2. **§9 FDIR beyond the attitude sensors.** Push 53 opened the §23.1.1 case
    library on SS/MAG/IMU/ST; Pushes 65–66 flew the GNSS rows against the orbit
    filter (outage, spoof step, stale clock, reset, failover, one orbit) — the
