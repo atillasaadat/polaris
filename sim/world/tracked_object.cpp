@@ -69,17 +69,21 @@ TrackedObject TrackedObject::fromState(std::string name, const pt::Tai& epoch,
 }
 
 void TrackedObject::stepTo(const pt::Tai& t) const {
-  // A request at or before where the integration stands re-seeds, so a
-  // backwards or repeated query is correct rather than merely cheap. Forward
-  // requests continue, which is what a sim run does for every sample after the
-  // first.
-  if (secondsBetween(t, cursor_) <= 0.0) {
+  // Advance to the last whole sub-step at or before @p t, and retain **only**
+  // that. The cursor is anchored on a grid at the seed epoch rather than landing
+  // wherever it was asked, and the difference is not bookkeeping: a cursor that
+  // stopped at each query time would make the retained state a function of the
+  // sampling rate, so the same scenario drawn at 10 Hz and at 1 Hz would report
+  // different truth. Measured before this was fixed: 0.78 mm, which is nothing
+  // to look at and still a truth side that is not bit-reproducible from
+  // {config, seed} — the rule in sim/CLAUDE.md.
+  const int target_step = static_cast<int>(std::floor(secondsBetween(t, seed_epoch_) / kStepSec));
+  if (!cursor_valid_ || target_step < cursor_step_) {
+    cursor_step_ = 0;
     cursor_ = seed_epoch_;
     position_m_ = seed_position_m_;
     velocity_m_s_ = seed_velocity_m_s_;
-    if (secondsBetween(t, cursor_) <= 0.0) {
-      return;
-    }
+    cursor_valid_ = true;
   }
 
   // The gravity model answers on a TruthState; only epoch and position are read
@@ -91,9 +95,8 @@ void TrackedObject::stepTo(const pt::Tai& t) const {
     return gravity_->acceleration(probe).eigen();
   };
 
-  double remaining = secondsBetween(t, cursor_);
-  while (remaining > 0.0) {
-    const double h = remaining < kStepSec ? remaining : kStepSec;
+  while (cursor_step_ != target_step) {
+    const double h = target_step > cursor_step_ ? kStepSec : -kStepSec;
     const Eigen::Vector3d& r = position_m_;
     const Eigen::Vector3d& v = velocity_m_s_;
     const pt::Tai t0 = cursor_;
@@ -112,8 +115,30 @@ void TrackedObject::stepTo(const pt::Tai& t) const {
     position_m_ += (h / 6.0) * (k1r + 2.0 * k2r + 2.0 * k3r + k4r);
     velocity_m_s_ += (h / 6.0) * (k1v + 2.0 * k2v + 2.0 * k3v + k4v);
     cursor_ = t1;
-    remaining -= h;
+    cursor_step_ += target_step > cursor_step_ ? 1 : -1;
   }
+}
+
+Eigen::Vector3d TrackedObject::rk4(const pt::Tai& t0, double h, const Eigen::Vector3d& r_in,
+                                   const Eigen::Vector3d& v_in, Eigen::Vector3d& v_out) const {
+  const auto accel = [this](const pt::Tai& at, const Eigen::Vector3d& r) {
+    state::TruthState probe;
+    probe.epoch = at;
+    probe.position = pm::Vec3<pm::frames::ECI>(r);
+    return gravity_->acceleration(probe).eigen();
+  };
+  const pt::Tai th = advanced(t0, 0.5 * h);
+  const pt::Tai t1 = advanced(t0, h);
+  const Eigen::Vector3d k1r = v_in;
+  const Eigen::Vector3d k1v = accel(t0, r_in);
+  const Eigen::Vector3d k2r = v_in + 0.5 * h * k1v;
+  const Eigen::Vector3d k2v = accel(th, r_in + 0.5 * h * k1r);
+  const Eigen::Vector3d k3r = v_in + 0.5 * h * k2v;
+  const Eigen::Vector3d k3v = accel(th, r_in + 0.5 * h * k2r);
+  const Eigen::Vector3d k4r = v_in + h * k3v;
+  const Eigen::Vector3d k4v = accel(t1, r_in + h * k3r);
+  v_out = v_in + (h / 6.0) * (k1v + 2.0 * k2v + 2.0 * k3v + k4v);
+  return r_in + (h / 6.0) * (k1r + 2.0 * k2r + 2.0 * k3r + k4r);
 }
 
 bool TrackedObject::positionAt(const pt::Tai& t, pm::Vec3<pm::frames::ECI>& position_m) const {
@@ -133,10 +158,19 @@ bool TrackedObject::positionAt(const pt::Tai& t, pm::Vec3<pm::frames::ECI>& posi
     return frames::eciFromTeme(t, pm::Vec3<pm::frames::TEME>(p_teme.eigen() * 1000.0), position_m);
   }
   stepTo(t);
-  if (!position_m_.allFinite()) {
+  // The remainder to @p t, taken from the grid state and deliberately not
+  // retained — what is kept must depend only on the seed and the step count.
+  const double grid_s = static_cast<double>(cursor_step_) * kStepSec;
+  const double tail = secondsBetween(t, seed_epoch_) - grid_s;
+  Eigen::Vector3d r = position_m_;
+  Eigen::Vector3d v = velocity_m_s_;
+  if (tail != 0.0) {
+    r = rk4(advanced(seed_epoch_, grid_s), tail, position_m_, velocity_m_s_, v);
+  }
+  if (!r.allFinite()) {
     return false;
   }
-  position_m = pm::Vec3<pm::frames::ECI>(position_m_);
+  position_m = pm::Vec3<pm::frames::ECI>(r);
   return true;
 }
 

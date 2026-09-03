@@ -226,6 +226,13 @@ class TargetPropagator {
   // Grid-anchored, so `cursor_step_` whole steps from the slot epoch is the only
   // state that is ever retained.
   mutable bool cursor_valid_ = false;
+  /// Whether the retained state was integrated *with* the Earth orientation
+  /// applied. The effective model is the configured one only when EOP was
+  /// available, so this is part of the cursor's identity: carrying state
+  /// forward across a change would make the trajectory a history of table
+  /// availability rather than the result of a model — the same defect
+  /// `setForceModel` resets the cursor to avoid, arriving by a different door.
+  mutable bool cursor_used_eop_ = false;
   mutable int cursor_step_ = 0;
   mutable Eigen::Vector3d cursor_position_m_{Eigen::Vector3d::Zero()};
   mutable Eigen::Vector3d cursor_velocity_m_s_{Eigen::Vector3d::Zero()};

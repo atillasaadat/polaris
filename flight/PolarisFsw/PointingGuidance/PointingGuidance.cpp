@@ -6,6 +6,7 @@
 #include "flight/PolarisFsw/PointingGuidance/PointingGuidance.hpp"
 
 #include <cmath>
+#include <cstring>
 
 #include "frames/eci_ecef.hpp"
 #include "frames/eop.hpp"
@@ -122,21 +123,52 @@ void PointingGuidance ::commandStateVectorAtStartup(U32 slot, I64 epochTaiNs, co
   }
 }
 
+namespace {
+
+/// Join two command-string halves into a fixed 69-column buffer.
+///
+/// Returns false unless the pieces reassemble to exactly `kTleLineColumns`,
+/// which is the check that turns an uplink truncation into a named refusal
+/// instead of a parse error several fields downstream. No allocation: the
+/// flight path must not call operator new after init.
+bool joinTleLine(const Fw::CmdStringArg& a, const Fw::CmdStringArg& b,
+                 char (&out)[PointingGuidance::kTleLineColumns + 1]) {
+  const FwSizeType na = a.length();
+  const FwSizeType nb = b.length();
+  if (na + nb != PointingGuidance::kTleLineColumns) {
+    return false;
+  }
+  std::memcpy(out, a.toChar(), na);
+  std::memcpy(out + na, b.toChar(), nb);
+  out[PointingGuidance::kTleLineColumns] = '\0';
+  return true;
+}
+
+}  // namespace
+
 void PointingGuidance ::commandTleAtStartup(U32 slot, const char* line1, const char* line2,
                                             bool verifyChecksum) {
   if (line1 == nullptr || line2 == nullptr) {
     return;
   }
-  const std::string l1(line1);
-  const std::string l2(line2);
-  if (l1.size() != kTleLineColumns || l2.size() != kTleLineColumns) {
+  if (std::strlen(line1) != kTleLineColumns || std::strlen(line2) != kTleLineColumns) {
     return;  // the handler would refuse it; do not spend an opcode saying so
   }
-  // The same split the ground tool performs, for the same reason.
-  const Fw::CmdStringArg l1a(l1.substr(0, kTleSplitColumn).c_str());
-  const Fw::CmdStringArg l1b(l1.substr(kTleSplitColumn).c_str());
-  const Fw::CmdStringArg l2a(l2.substr(0, kTleSplitColumn).c_str());
-  const Fw::CmdStringArg l2b(l2.substr(kTleSplitColumn).c_str());
+  // The same split the ground tool performs, for the same reason. Fixed buffers
+  // rather than substr for the same reason as the handler: no allocation.
+  constexpr std::size_t kTail = kTleLineColumns - kTleSplitColumn;
+  char h1a[kTleSplitColumn + 1] = {};
+  char h1b[kTail + 1] = {};
+  char h2a[kTleSplitColumn + 1] = {};
+  char h2b[kTail + 1] = {};
+  std::memcpy(h1a, line1, kTleSplitColumn);
+  std::memcpy(h1b, line1 + kTleSplitColumn, kTail);
+  std::memcpy(h2a, line2, kTleSplitColumn);
+  std::memcpy(h2b, line2 + kTleSplitColumn, kTail);
+  const Fw::CmdStringArg l1a(h1a);
+  const Fw::CmdStringArg l1b(h1b);
+  const Fw::CmdStringArg l2a(h2a);
+  const Fw::CmdStringArg l2b(h2b);
   Fw::CmdArgBuffer args;
   const auto ok = [](Fw::SerializeStatus s) { return s == Fw::FW_SERIALIZE_OK; };
   if (ok(args.serializeFrom(static_cast<U8>(slot))) && ok(args.serializeFrom(l1a)) &&
@@ -410,7 +442,13 @@ void PointingGuidance::run_handler(FwIndexType, U32) {
     const pg::TargetKind k = command_.align_target.kind == pg::PointingTargetKind::kSatTle
                                  ? pg::TargetKind::kTle
                                  : pg::TargetKind::kStateVector;
-    if (catalog_.positionAt(k, static_cast<int>(command_.align_target.index), now, st) ==
+    // ctx.eop, the same Earth orientation the solve above used. Passing nullptr
+    // here would report a range computed at a *different* fidelity from the
+    // attitude actually commanded — and, since the propagator re-seeds its
+    // cursor when the effective model changes, would additionally re-walk the
+    // whole span twice per cycle: 2 x the measured 141 ms cold catch-up inside
+    // a 100 ms frame.
+    if (catalog_.positionAt(k, static_cast<int>(command_.align_target.index), now, st, ctx.eop) ==
         pg::TargetStatus::kOk) {
       range_m = (st.position_m.eigen() - ctx.observer_position_m.eigen()).norm();
       sigma_m = st.sigma_m;
@@ -524,6 +562,12 @@ void PointingGuidance::SET_GUIDANCE_cmdHandler(
 
   command_ = cmd;
   commanded_ = true;
+  // Retire the startup latch. Without this, a latched startup command that
+  // could not validate yet (parameters not loaded) stays pending, and the cycle
+  // after the parameters arrive it silently overwrites whatever the ground
+  // commanded in the meantime — the operator sees OK, then the vehicle slews
+  // back to the old target with only a duplicate-looking EVR to show for it.
+  pending_ = false;
   this->log_ACTIVITY_HI_GuidanceCommanded(alignVecKind, alignVecIndex, alignTgtKind, alignTgtIndex);
   this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::OK);
 }
@@ -545,16 +589,23 @@ void PointingGuidance::LOAD_TLE_cmdHandler(FwOpcodeType opCode, U32 cmdSeq, U8 s
   // parses far enough to fail somewhere specific and misleading, and the first
   // time this happened the reported cause was a checksum error four fields
   // downstream of the actual loss.
-  const std::string l1 = std::string(line1a.toChar()) + line1b.toChar();
-  const std::string l2 = std::string(line2a.toChar()) + line2b.toChar();
-  if (l1.size() != kTleLineColumns || l2.size() != kTleLineColumns) {
+  // Fixed buffers, not std::string: 69 columns is past any small-string
+  // optimisation, so concatenating would call operator new on the command
+  // thread in steady state — the allocation-in-flight rule, not a style note.
+  // The catalogue takes string_view, so nothing downstream wanted an owning
+  // string in the first place.
+  char l1[kTleLineColumns + 1] = {};
+  char l2[kTleLineColumns + 1] = {};
+  const bool joined = joinTleLine(line1a, line1b, l1) && joinTleLine(line2a, line2b, l2);
+  if (!joined) {
     this->log_WARNING_LO_TargetLoadRefused(true, slot, TargetRefusal::LINE_LENGTH);
     this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::VALIDATION_ERROR);
     return;
   }
   const pg::TleChecksumPolicy policy =
       verifyChecksum ? pg::TleChecksumPolicy::kVerify : pg::TleChecksumPolicy::kIgnore;
-  const pg::TargetStatus s = catalog_.loadTle(static_cast<int>(slot), l1, l2, leap_, policy);
+  const pg::TargetStatus s = catalog_.loadTle(static_cast<int>(slot), std::string_view(l1),
+                                              std::string_view(l2), leap_, policy);
   if (s != pg::TargetStatus::kOk) {
     this->log_WARNING_LO_TargetLoadRefused(true, slot, toRefusal(s));
     this->cmdResponse_out(opCode, cmdSeq, Fw::CmdResponse::VALIDATION_ERROR);

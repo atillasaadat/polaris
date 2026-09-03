@@ -109,6 +109,12 @@ class TrackedObject {
 
   void stepTo(const time::Tai& t) const;
 
+  /// One RK4 step of @p h from (r_in, v_in) at @p t0; returns the new position
+  /// and writes the new velocity. Shared by the grid walk and the unretained
+  /// tail step so the two cannot drift apart.
+  Eigen::Vector3d rk4(const time::Tai& t0, double h, const Eigen::Vector3d& r_in,
+                      const Eigen::Vector3d& v_in, Eigen::Vector3d& v_out) const;
+
   std::string name_;
   Kind kind_ = Kind::kStateVector;
   bool valid_ = false;
@@ -123,6 +129,8 @@ class TrackedObject {
   time::Tai seed_epoch_;
   Eigen::Vector3d seed_position_m_ = Eigen::Vector3d::Zero();
   Eigen::Vector3d seed_velocity_m_s_ = Eigen::Vector3d::Zero();
+  mutable bool cursor_valid_ = false;
+  mutable int cursor_step_ = 0;
   mutable time::Tai cursor_;
   mutable Eigen::Vector3d position_m_ = Eigen::Vector3d::Zero();
   mutable Eigen::Vector3d velocity_m_s_ = Eigen::Vector3d::Zero();

@@ -908,6 +908,23 @@ TEST(SitlPointingGuidance, TracksAnUploadedStateVectorTarget) {
   RecordProperty("sat_state_tail_worst_deg", std::to_string(worst));
   RecordProperty("sat_state_los_from_nadir_deg", std::to_string(from_nadir));
   RecordProperty("sat_state_tracker_availability", std::to_string(trackers));
+
+  // A target-epoch guard, and it is not a round number for its own sake. The
+  // catalogue rows are the only ones whose target position comes from an
+  // *uploaded* epoch, so they are the only ones that can be wrong about *when*
+  // the target is rather than where the vehicle is pointing. The empty
+  // leap-second table this component shipped with put a TLE epoch 37 s early —
+  // ~278 km along-track, 1.2 deg at this range — and the row passed, because
+  // the fine-mode pointing bound is 2 deg and nothing here was tighter than
+  // that. The vehicle pointed exactly where it was told, at a position that was
+  // half a minute stale.
+  //
+  // 0.5 deg is comfortably above what the rows achieve (0.007-0.008 deg) and
+  // comfortably below what any plausible epoch error produces, so it fails on
+  // the defect and not on the weather.
+  EXPECT_LT(worst, 0.5) << "settled pointing error of " << worst
+                        << " deg is too large for a correctly-epoched target; a target-epoch "
+                           "error of one leap-second offset lands near 1.2 deg here";
   expectPointedAndKnew(r, "sat-state", worst, bound, trackers);
 }
 
@@ -1049,6 +1066,23 @@ TEST(SitlPointingGuidance, TracksAnUploadedTleTarget) {
   RecordProperty("sat_tle_tail_worst_deg", std::to_string(worst));
   RecordProperty("sat_tle_los_from_nadir_deg", std::to_string(from_nadir));
   RecordProperty("sat_tle_tracker_availability", std::to_string(trackers));
+
+  // A target-epoch guard, and it is not a round number for its own sake. The
+  // catalogue rows are the only ones whose target position comes from an
+  // *uploaded* epoch, so they are the only ones that can be wrong about *when*
+  // the target is rather than where the vehicle is pointing. The empty
+  // leap-second table this component shipped with put a TLE epoch 37 s early —
+  // ~278 km along-track, 1.2 deg at this range — and the row passed, because
+  // the fine-mode pointing bound is 2 deg and nothing here was tighter than
+  // that. The vehicle pointed exactly where it was told, at a position that was
+  // half a minute stale.
+  //
+  // 0.5 deg is comfortably above what the rows achieve (0.007-0.008 deg) and
+  // comfortably below what any plausible epoch error produces, so it fails on
+  // the defect and not on the weather.
+  EXPECT_LT(worst, 0.5) << "settled pointing error of " << worst
+                        << " deg is too large for a correctly-epoched target; a target-epoch "
+                           "error of one leap-second offset lands near 1.2 deg here";
   expectPointedAndKnew(r, "sat-tle", worst, bound, trackers);
 }
 

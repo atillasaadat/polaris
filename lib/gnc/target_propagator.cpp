@@ -98,6 +98,7 @@ math::Vec3<math::frames::ECI> targetAcceleration(const math::Vec3<math::frames::
 
 void TargetPropagator::resetCursor() const {
   cursor_valid_ = false;
+  cursor_used_eop_ = false;
   cursor_step_ = 0;
 }
 
@@ -178,14 +179,23 @@ PropagationStatus TargetPropagator::advanceGridTo(const time::Tai& t,
   // is not a special case.
   const int target_step = static_cast<int>(std::floor(span_s / kStepSec));
 
-  // A request behind the cursor re-seeds. Stepping backwards from where the
-  // cursor happens to sit would make the answer a function of the call history,
-  // which is precisely the property this file promises not to have.
-  if (!cursor_valid_ || target_step < cursor_step_) {
+  // The effective model for this call: the configured one, degraded to order 0
+  // when no Earth orientation is available. Retained state integrated under a
+  // different effective model must not be continued — measured before this
+  // guard existed, a single 10 s cycle without EOP moved every later answer by
+  // 0.4 m and never recovered, because the pollution rides the cursor forward.
+  const bool using_eop = model_.needsEarthOrientation() && eop != nullptr;
+
+  // A request behind the cursor re-seeds, and so does a change of effective
+  // model. Stepping on from where the cursor happens to sit would make the
+  // answer a function of the call history, which is precisely the property this
+  // file promises not to have.
+  if (!cursor_valid_ || cursor_used_eop_ != using_eop || target_step < cursor_step_) {
     cursor_step_ = 0;
     cursor_position_m_ = slot_.position_m.eigen();
     cursor_velocity_m_s_ = slot_.velocity_m_s.eigen();
     cursor_valid_ = true;
+    cursor_used_eop_ = using_eop;
   }
 
   while (cursor_step_ != target_step) {

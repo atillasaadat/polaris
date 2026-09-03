@@ -486,6 +486,53 @@ TEST(TargetPropagator, TheCursorDoesNotMakeTheAnswerDependOnCallOrder) {
   EXPECT_EQ(r.eigen().z(), r_direct.eigen().z());
 }
 
+TEST(TargetPropagator, AMomentaryEopGapDoesNotPoisonEveryLaterAnswer) {
+  // The cursor carries integration state forward, and the *effective* model is
+  // the configured one only while Earth orientation is available. Continuing a
+  // cursor across that change makes the trajectory a history of table
+  // availability rather than the result of a model — measured at 0.4 m of
+  // permanent offset from a single 10 s cycle without EOP, and it never
+  // recovers, because the pollution rides the cursor forward.
+  //
+  // Both sequences below ask for the same final time with EOP available on that
+  // call; only the middle of the run differs.
+  const pg::StateVectorSlot s = issLikeSlot();
+  const polaris::frames::EopValue eop{0.0, 0.0, 0.0};
+  const pt::Tai t_end = s.epoch + pt::Duration::fromSecondsF(600.0);
+
+  pg::TargetPropagator clean;
+  ASSERT_TRUE(clean.setState(s));
+  pm::Vec3<pmf::ECI> r, v;
+  for (double t = 10.0; t <= 600.0; t += 10.0) {
+    ASSERT_EQ(clean.propagate(s.epoch + pt::Duration::fromSecondsF(t), &eop, r, v),
+              pg::PropagationStatus::kOk);
+  }
+  const Eigen::Vector3d after_clean = r.eigen();
+
+  pg::TargetPropagator gapped;
+  ASSERT_TRUE(gapped.setState(s));
+  for (double t = 10.0; t <= 600.0; t += 10.0) {
+    const bool have_eop = !(t > 295.0 && t < 305.0);  // one step without tables
+    ASSERT_EQ(
+        gapped.propagate(s.epoch + pt::Duration::fromSecondsF(t), have_eop ? &eop : nullptr, r, v),
+        pg::PropagationStatus::kOk);
+  }
+  const Eigen::Vector3d after_gap = r.eigen();
+
+  pg::TargetPropagator direct;
+  ASSERT_TRUE(direct.setState(s));
+  pm::Vec3<pmf::ECI> r_direct, v_direct;
+  ASSERT_EQ(direct.propagate(t_end, &eop, r_direct, v_direct), pg::PropagationStatus::kOk);
+
+  // Bit-identical in both cases: the gap re-seeds rather than being carried.
+  EXPECT_EQ(after_clean.x(), r_direct.eigen().x());
+  EXPECT_EQ(after_clean.z(), r_direct.eigen().z());
+  EXPECT_EQ(after_gap.x(), r_direct.eigen().x())
+      << "a momentary EOP gap left " << (after_gap - r_direct.eigen()).norm()
+      << " m of permanent offset";
+  EXPECT_EQ(after_gap.z(), r_direct.eigen().z());
+}
+
 TEST(TargetPropagator, ChangingTheFieldResetsTheCursor) {
   // Otherwise a slot would carry a trajectory that is the history of a setting
   // rather than the result of a model.
