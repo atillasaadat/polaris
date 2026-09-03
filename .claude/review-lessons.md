@@ -1114,3 +1114,38 @@ is there a test that exercises the *component*, or only the library it calls?
 A declared size that nothing asserts is a comment. The fix pairs with the
 guard: the handler now refuses anything that does not reassemble to exactly 69
 columns, so the next truncation is a named refusal rather than a mystery.
+
+---
+
+## P82c — Running a subset and reporting it as the suite
+
+Two CI failures on a branch reported as locally verified, from one cause: the
+three `polaris_*` gtest binaries were run directly and called the gate. They are
+not the gate. The F´ per-component tests live beside their components and are
+separate executables that only `ctest` builds and runs — 101 cases CI runs and
+that recipe never touches.
+
+The first attempt to reproduce one of them locally *passed*, which nearly buried
+it a second time: `ctest` does not build. It ran the previous commit's binary
+and reported green.
+
+Both failures were themselves informative rather than incidental:
+
+  - the PrmDb record-count guard fired because two parameters were added, which
+    is precisely the change it exists to catch;
+  - a component test counted every port of an output array, so widening
+    `orbitStateOut` from `[1]` to `[2]` for an unrelated feature turned "the
+    component published once this cycle" into 2. The count was a statement
+    about the component's behaviour and had quietly become a statement about
+    how many consumers were wired.
+
+**Why it belongs here:** P82b was a test suite that looked like coverage because
+it never crossed the boundary the bug lived on. This is the same shape one level
+up — a *test run* that looks like verification because it never ran the tier the
+bug lived in. Both end in a confident "verified" over an untested gap.
+
+**How to apply:** verify with the command CI uses, not a command that resembles
+it. `ctest` after a build, not hand-picked binaries; and when a test does not
+fail where you expect it to, check the binary's timestamp before concluding the
+code is fine. Any assertion that counts port invocations should count one port,
+or the number becomes a function of the topology rather than of the component.

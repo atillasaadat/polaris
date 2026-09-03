@@ -257,11 +257,22 @@ PYTHONPATH=tools uv run python -m configc \
 # appends -g, no NDEBUG): unoptimized Eigen makes the SITL rows ~30x slower,
 # which is hours of ctest. Omit the flags only when single-stepping a test.
 #   uv run fprime-util generate --ut -DCMAKE_CXX_FLAGS=-O2 -DCMAKE_Fortran_FLAGS=-O2
-uv run cmake --build build-fprime-automatic-native-ut \
-    --target polaris_unit_tests polaris_integration_tests polaris_golden_tests -j4
-./build-fprime-automatic-native-ut/bin/Linux/polaris_unit_tests
-./build-fprime-automatic-native-ut/bin/Linux/polaris_integration_tests
-./build-fprime-automatic-native-ut/bin/Linux/polaris_golden_tests
+uv run cmake --build build-fprime-automatic-native-ut -j"$(nproc)"
+uv run ctest --test-dir build-fprime-automatic-native-ut -j"$(nproc)" --output-on-failure
+
+# Two traps, both of which have produced a red CI run on a "verified" branch:
+#
+#  1. `ctest` does NOT build. Running it against a stale tree is a green result
+#     for the previous commit. Always build first -- the line above does.
+#  2. The three polaris_* binaries are NOT the whole suite. The F´ per-component
+#     tests (flight/PolarisFsw/<C>/test/ut/, 101 cases in 4 executables) are
+#     separate exes that only ctest builds and runs, and CI runs them. Running
+#     the three binaries directly and calling it verified is how a component
+#     test fails in CI having passed "locally".
+#
+# For a debugging loop, one binary and one filter is still the right tool:
+./build-fprime-automatic-native-ut/bin/Linux/polaris_integration_tests \
+    --gtest_filter='SitlPointingGuidance.*'
 
 # Python suites. `--group analysis` pulls numpy/scipy/matplotlib for the
 # tests/analysis/ linear control-analysis suite (REQ-ACTL-006/007/008); without
