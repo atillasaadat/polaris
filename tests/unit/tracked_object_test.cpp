@@ -117,10 +117,16 @@ TEST(TrackedObject, TheAnswerDoesNotDependOnTheOrderItWasAsked) {
                                     Eigen::Vector3d(0.0, 7000.0, 500.0), &field);
   };
 
-  // Forward-only, which is what a sim run does.
+  // Forward-only, which is what a sim run does. The sample times are
+  // deliberately **not** multiples of the 10 s sub-step: an earlier version of
+  // this test walked 100 s multiples, which land exactly on the grid and so
+  // agreed with a direct jump no matter how the cursor was implemented. It
+  // passed while the cursor stopped wherever it was asked, which made the
+  // retained state a function of the sampling rate — 0.78 mm between a 10 Hz
+  // and a 1 Hz reader of the same run. Aligned samples cannot see that.
   const auto sequential = make();
   pm::Vec3<pm::frames::ECI> stepped;
-  for (double t = 100.0; t <= 1200.0; t += 100.0) {
+  for (const double t : {7.0, 33.0, 100.0, 617.25, 1000.0, 1103.5, 1200.0}) {
     ASSERT_TRUE(sequential.positionAt(at(t), stepped));
   }
 
@@ -129,10 +135,11 @@ TEST(TrackedObject, TheAnswerDoesNotDependOnTheOrderItWasAsked) {
   pm::Vec3<pm::frames::ECI> jumped;
   ASSERT_TRUE(direct.positionAt(at(1200.0), jumped));
 
-  // Bit-identical, not merely close: the step sequence is the same either way
-  // because the stepper lands exactly on each request. If it ever stops being
-  // identical, the integration has become path-dependent and a viewer's picture
-  // would depend on its own frame rate.
+  // Bit-identical, not merely close: retained state only ever sits on a grid
+  // anchored at the seed epoch, so the steps taken to reach a given time are the
+  // same whatever was asked before. If this stops being identical the truth side
+  // has become sampling-dependent, and a run is no longer bit-reproducible from
+  // {config, seed} — the rule sim/CLAUDE.md states.
   EXPECT_EQ(stepped.eigen().x(), jumped.eigen().x());
   EXPECT_EQ(stepped.eigen().y(), jumped.eigen().y());
   EXPECT_EQ(stepped.eigen().z(), jumped.eigen().z());

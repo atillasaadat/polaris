@@ -119,6 +119,10 @@ class PointingGuidance final : public PointingGuidanceComponentBase {
   polaris::frames::EopValue eop_{};
   bool eop_valid_ = false;
 
+  /// Whether the missing-parameter warning has already been raised for the
+  /// current configuration gap. Cleared when the parameters do arrive.
+  bool config_warned_ = false;
+
   polaris::gnc::GuidanceCommand command_{};
   bool commanded_ = false;
 
@@ -145,7 +149,18 @@ class PointingGuidance final : public PointingGuidanceComponentBase {
   double max_orbit_age_s_ = 0.0;
   bool configured_ = false;
 
-  polaris::time::LeapSecondTable leap_{};
+  /// Leap seconds, for the one place a TLE's **UTC** epoch becomes TAI
+  /// (`TleElements::epochTai`). Seeded from the historical table, as
+  /// `AttitudeEstimator` already is — a default-constructed table is empty,
+  /// which `leap_seconds.hpp` defines as ΔAT = 0 everywhere, and that is not a
+  /// degraded answer but a silently wrong one: the epoch lands 37 s early, SGP4
+  /// propagates the target ~278 km past where it is, `epochTai` still returns
+  /// true, and the vehicle tracks a plausible position confidently.
+  ///
+  /// Owed: §3.2 makes onboard ΔAT an *uploaded* quantity, and `OnboardTables`
+  /// already serves it over `getTaiUtcOffset`. This compiled table is the floor,
+  /// not the destination.
+  polaris::time::LeapSecondTable leap_{polaris::time::LeapSecondTable::historical()};
 };
 
 }  // namespace flight

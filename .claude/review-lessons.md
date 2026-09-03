@@ -1149,3 +1149,44 @@ it. `ctest` after a build, not hand-picked binaries; and when a test does not
 fail where you expect it to, check the binary's timestamp before concluding the
 code is fine. Any assertion that counts port invocations should count one port,
 or the number becomes a function of the topology rather than of the component.
+
+---
+
+## P83a — Attribution by elimination, without checking the third quantity
+
+A pointing row settled 1.23 deg off target. Knowledge error was 0.0045 deg and
+the body rate tracked the line-of-sight rate, so the miss was reported as a
+control-loop question and deferred to a later push.
+
+It was not a control-loop question. `PointingGuidance` held a
+default-constructed `LeapSecondTable`, which `leap_seconds.hpp` defines as
+ΔAT = 0 everywhere. A TLE epoch is UTC, so every uploaded element set was stored
+37 s early and SGP4 propagated the target ~278 km along-track. Seeding the table
+took the row to 0.0072 deg — 170x.
+
+Two things made a wrong answer feel like a measured one:
+
+  - **Elimination over two quantities, not three.** Pointing error decomposes
+    into knowledge, control, *and whether the target is where you think it is*.
+    The first two were measured; the third was assumed. "It knows its attitude
+    and it is turning at the right rate, therefore control" only follows if the
+    target position is known good.
+  - **A constant offset looks like a lag.** The residual was near-constant while
+    the vehicle tracked at the right rate, which reads as latency — it divided
+    out to "19.6 s of tracking delay", a number that sounded like a control
+    property. A stale *target* produces exactly the same signature.
+
+The tell was in the file the whole time: the row computed its own truth line of
+sight with `LeapSecondTable::historical()` while the flight software under test
+used an empty one. Two different answers to the same question, ten lines apart.
+
+**Why it belongs here:** the earlier P81/P82 entries are about a *measurement*
+that looks like evidence. This is about an *inference* that looks like evidence
+— the numbers were all correct, and the conclusion drawn from them was not.
+
+**How to apply:** before attributing a residual to the last term standing,
+enumerate the terms and name which ones you measured. If a quantity was assumed
+rather than measured, say so in the report instead of concluding around it. And
+when a test computes its own reference for something the flight software also
+computes, check that both sides were configured the same way — a differently
+seeded table on the two sides is a silent disagreement about ground truth.

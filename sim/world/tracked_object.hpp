@@ -109,6 +109,18 @@ class TrackedObject {
 
   void stepTo(const time::Tai& t) const;
 
+  /// Position and velocity together — the two halves of one state, which is
+  /// why they are returned as one thing rather than one returned and one
+  /// written through an out-parameter (C++ Core Guidelines F.20/F.21).
+  struct Step {
+    Eigen::Vector3d position_m;
+    Eigen::Vector3d velocity_m_s;
+  };
+
+  /// One RK4 step of @p h from @p from at @p t0. Shared by the grid walk and
+  /// the unretained tail step so the two cannot drift apart.
+  Step rk4(const time::Tai& t0, double h, const Step& from) const;
+
   std::string name_;
   Kind kind_ = Kind::kStateVector;
   bool valid_ = false;
@@ -123,6 +135,8 @@ class TrackedObject {
   time::Tai seed_epoch_;
   Eigen::Vector3d seed_position_m_ = Eigen::Vector3d::Zero();
   Eigen::Vector3d seed_velocity_m_s_ = Eigen::Vector3d::Zero();
+  mutable bool cursor_valid_ = false;
+  mutable int cursor_step_ = 0;
   mutable time::Tai cursor_;
   mutable Eigen::Vector3d position_m_ = Eigen::Vector3d::Zero();
   mutable Eigen::Vector3d velocity_m_s_ = Eigen::Vector3d::Zero();
