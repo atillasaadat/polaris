@@ -169,9 +169,18 @@ TEST(SitlWire, RecordSizesAreTheFrozenLayout) {
   // The wire contract: any change here is a version bump, not a silent edit.
   // Version 2 (Push 56) added WheelTachRecord to the STEP_REQ; version 3 (Push
   // 70) added the thruster count to HELLO (in its former pad, same size) and
-  // ThrusterCommandRecord after the MTQ records in the STEP_REPLY; every earlier
-  // record is unchanged, which is what the sizes below pin.
-  EXPECT_EQ(sitl::kVersion, 3);
+  // ThrusterCommandRecord after the MTQ records in the STEP_REPLY; version 4
+  // (Push 82) grew StepReplyHeader by the FSW attitude estimate and its validity
+  // flag, 40 -> 64 bytes. Every earlier record is unchanged, which is what the
+  // sizes below pin.
+  //
+  // StepReplyHeader is pinned here as well as by the static_assert in wire.hpp,
+  // because the two catch different mistakes: the static_assert catches a
+  // *size* change, and this catches a size change that was made without moving
+  // the version — which is exactly what happened when the estimate was added
+  // and this line still read 3.
+  EXPECT_EQ(sitl::kVersion, 4);
+  EXPECT_EQ(sizeof(sitl::StepReplyHeader), 64u);
   EXPECT_EQ(sizeof(sitl::ThrusterCommandRecord), 8u);
   EXPECT_EQ(sizeof(sitl::HelloMsg), 48u);
   EXPECT_EQ(sizeof(sitl::ImuRecord), 64u);

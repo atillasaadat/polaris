@@ -81,3 +81,35 @@ FreeFlyer visualization client (`python -m freeflyer viz --stream <file>
 [--follow]`, `tools/freeflyer/viz.py`). Pure output: nothing reads it back, so
 determinism and the sim-time clock are untouched, and it works identically under
 any harness (unit rows, the SITL integration suite, a long local run).
+
+**Two things ride the stream besides the vehicle (Push 82).**
+
+A single `{"meta":1,...}` record leads the file, carrying what a reader needs
+and cannot derive from a truth sample: the run's planned `duration_s` and
+`rate_hz` (so a runner can show *progress* rather than a spinner — the sim is
+the only party that knows how long the run is, and a reader that had to guess
+would either invent a denominator or show none), plus what a viewer needs to
+build its scene: the payload cameras'
+as-mounted boresights and field half-angles (read off `Vehicle::payload_sensors`,
+so the drawn instrument is the one the sim models rather than a second
+definition of it), and the names of the tracked objects. It is written once
+because none of it varies over a run, and as its own record kind so a reader
+that predates it skips a line rather than misparsing a sample. `follow()` must
+never coalesce it away — it is the one line that is not a sample.
+
+Each sample then carries `targets_eci_m`, the truth positions of the secondary
+objects a scenario is tracking (`ClosedLoop::setTrackedObjects`,
+`sim/world/tracked_object.hpp`). They ride the *same* record as the vehicle
+state so a viewer never correlates two streams by time: the target drawn in a
+frame is the one that was true at the vehicle state drawn in that frame, by
+construction. The truth side propagates them itself — SGP4 + TEME→ECI for a
+TLE, RK4 over the scenario's own spherical-harmonic field for a state vector —
+and deliberately **not** with the onboard `lib/gnc/target_propagator` the flight
+software aims the camera by. Drawing the onboard position would make the picture
+circular in the way an assertion computed from the guidance is circular: the
+camera would appear to track perfectly however wrong the onboard propagation
+was. Drawing the truth position means an onboard model error shows up as the
+target drifting off the boresight.
+
+Still pure output. Tracked objects never reach the plant, the sensor models or
+the flight software, so registering one cannot change what a run does.

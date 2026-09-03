@@ -89,6 +89,12 @@ module flight {
   # destination of its commands is SITL today.
   instance attitudeController: flight.AttitudeController base id 0x10040000
 
+  # Align/constrain pointing guidance (design doc §8.4). Owns the TLE,
+  # state-vector, ground-point and custom-body-vector stores, and turns the
+  # active pointing command into the attitude and feedforward rate the
+  # controller tracks. A flight component.
+  instance pointingGuidance: flight.PointingGuidance base id 0x10070000
+
   instance rateGroupDriver: Svc.RateGroupDriver base id 0x10011000
 
   instance systemResources: Svc.SystemResources base id 0x10012000

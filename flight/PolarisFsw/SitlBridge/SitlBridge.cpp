@@ -122,6 +122,26 @@ void SitlBridge ::mtqCmdIn_handler(FwIndexType portNum, const flight::MtqDipoleS
   }
 }
 
+void SitlBridge ::attitudeEstimateIn_handler(FwIndexType portNum,
+                                             const AttitudeEstimate& estimate) {
+  static_cast<void>(portNum);
+  // Diagnostic echo only; nothing the vehicle does depends on this value, and
+  // the plant never reads it (see SitlBridge.fpp).
+  //
+  // Not latched across an invalid estimate: an estimator that has lost the
+  // attitude must read as "no estimate", not as the last good one, or a test
+  // would score a stale belief as a current one.
+  if (!estimate.get_attitudeValid()) {
+    this->latest_est_valid_ = false;
+    return;
+  }
+  const QuatF64& q = estimate.get_qBodyEci();
+  for (U32 i = 0; i < 4; ++i) {
+    this->latest_est_q_[i] = q[i];
+  }
+  this->latest_est_valid_ = true;
+}
+
 void SitlBridge ::thrusterCmdIn_handler(FwIndexType portNum,
                                         const flight::ThrusterThrottleSet& cmds) {
   static_cast<void>(portNum);
@@ -151,7 +171,8 @@ void SitlBridge ::runStepCycle(const polaris::sitl::HandleResult& result,
 
   const FwSizeType reply_len = this->handler_.buildStepReply(
       result.macro_step, this->latest_wheel_, this->latest_mtq_, this->latest_mtq_on_window_s_,
-      this->reply_, sizeof(this->reply_), this->latest_thruster_);
+      this->reply_, sizeof(this->reply_), this->latest_thruster_,
+      this->latest_est_valid_ ? this->latest_est_q_ : nullptr);
   if (reply_len == 0) {
     // Reply would overflow the fixed buffer (never in flight sizing) — treat as
     // a malformed exchange rather than sending a truncated frame.

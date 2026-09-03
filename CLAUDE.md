@@ -156,9 +156,12 @@ This is a C++/CMake/F´ + Python repo — there is no `npm`. Dependencies come f
 
 ```bash
 uv run fprime-util build                      # F´ core + PolarisFsw deployment
-uv run cmake --build build-fprime-automatic-native-ut \
-    --target polaris_unit_tests polaris_integration_tests polaris_golden_tests -j4
-./build-fprime-automatic-native-ut/bin/Linux/polaris_unit_tests          # and the other two
+# Build FIRST, then ctest: ctest does not build, and the three polaris_* binaries
+# are not the whole suite — the F´ per-component tests are separate exes that
+# only ctest builds and runs, and CI runs them. Both traps have produced a red
+# CI run on a branch that was "verified locally".
+uv run cmake --build build-fprime-automatic-native-ut -j"$(nproc)"
+uv run ctest --test-dir build-fprime-automatic-native-ut -j"$(nproc)" --output-on-failure
 uv run --group analysis pytest                # Python tooling + analysis suite
 uv run --only-group docs bash tools/dev/build_docs.sh    # docs gate (warnings are errors)
 uv run --only-group dev pre-commit run --all-files       # lint (git-add first)

@@ -74,6 +74,21 @@ PYTHONPATH=tools python -m freeflyer run \
   --scenario SitlAttitudeControl.DetumblesThenAcquiresSunPointing
 ```
 
+The simulate phase shows a **progress bar**:
+
+```
+[run] [####################################--]  94.7%  853/900 s sim eta 0:03
+```
+
+It reads the truth stream the sim is already writing, so nothing is attached to
+the simulation and it cannot be slowed by being watched. The denominator is
+exact rather than guessed — the stream's `meta` record carries the run's planned
+`duration_s`, because the sim is the only party that knows how long the row is.
+Before the first macro step (config compilation and table loading, minutes on a
+SITL row) it shows a spinner saying so, which beats a bar that looks stuck at
+zero. **On a non-TTY it prints nothing at all**: a carriage-return bar in a CI
+log is thousands of lines of noise around the one line that mattered.
+
 `run` starts the SITL row with `POLARIS_SIM_STREAM` pointed at a fresh stream,
 follows it live in the windows, and cleans the simulation up on the way out
 (including on Ctrl-C — a SITL binary left running holds ports and a PrmDb). The
@@ -118,10 +133,83 @@ PYTHONPATH=tools python -m freeflyer viz --stream $STREAM --pace 20
 | Every source at once | `SitlFaultMatrix.GeometryMakesEverySourceAvailableAtOnce` | sun, mag and both trackers live |
 | Dark start | `SitlFaultMatrix.DarkStartSeedsFromATrackerAndSurvivesSunrise` | eclipse start, sunrise transition |
 | Both trackers lost | `SitlFaultMatrix.BothTrackersLostFallsToSunMagAndClimbsBackOnReturn` | the demotion and the climb back |
+| **Point a sun sensor at the Sun** | `SitlPointingGuidance.AlignsASunSensorWithTheTrueSun` | the §8.4 align/constrain command end to end: an arbitrary start attitude, a slew, and the named body vector arriving on the Sun — **the row to watch first if you want to see pointing get commanded** |
+| Nadir hold, moving target | `SitlPointingGuidance.HoldsNadirAgainstTruthWhileTheTargetMoves` | the vehicle turning once per orbit to keep -Z down; the feedforward at work, not repeated repointing — use `--replay` |
+| Inertial hold | `SitlPointingGuidance.HoldsAnInertialAxisAgainstTruth` | the same machinery with a *stationary* target: the vehicle stops turning while the orbit carries on beneath it |
+| Anti-sun (the negate flag) | `SitlPointingGuidance.TheNegateFlagPointsTheVehicleTheOtherWay` | the same command as the first row with one flag set, and the vehicle ends up 180° from it |
+| **Track an uploaded state vector** | `SitlPointingGuidance.TracksAnUploadedStateVectorTarget` | the target satellite drawn beside the vehicle, a **camera POV** and a **king-star-tracker POV**: the target arrives at the centre of the camera frame and stays (0.0076° truth pointing, 0.0045° knowledge) while the tracker window shows clear sky; use `--replay` |
+| **Track an uploaded TLE** | `SitlPointingGuidance.TracksAnUploadedTleTarget` | the same from a two-line element set, SGP4 + TEME→ECI on the truth side. Knowledge 0.0045°, so the residual 1.23° in the camera window is the **control loop**, not the estimator — which is the point of having both windows |
 | GNSS outage | `SitlOdFault.GnssOutagePastTheFineHorizonIsDegradedNotDropped` | the orbit filter coasting |
 | Burn in an outage | `SitlOdBurn.BurnInsideAnOutageIsCoastedOnTheCommandedThrust` | a finite burn flown blind on thrust |
 | One orbit | `SitlOdFault.OneOrbitPeriodHoldsOneSolution` | a full period, one solution |
 | **Full orbit + eclipse** | `ClosedLoopOrbit.SensorsAgreeWithIndependentlyRecomputedGeometry` | a complete 94-min orbit through eclipse and back into sunlight — use `--replay` |
+
+### Watching the camera track another satellite
+
+The two `SitlPointingGuidance` catalogue rows open a **third window**: the view
+through the payload imager. It is the window that answers the question those
+rows exist to ask — not "is the pointing error small" but "is the thing it was
+told to point at actually in the frame".
+
+Three pieces make that picture honest rather than decorative:
+
+- **The camera is the one the sim models.** Its boresight and field half-angles
+  come off `Vehicle::payload_sensors` through the stream's `meta` record, not
+  from a number typed into the viewer. FreeFlyer's sensor cone is conic and the
+  imager's field is rectangular (5° × 4° half-angles), so the drawn cone is the
+  circumscribing one: it over-states the corners and never under-states the
+  field, which is the safe direction for an "is it inside?" glance. The view is
+  drawn wider than the instrument so a target *outside* the field is still
+  visible approaching it — a view clipped to the field shows an empty frame for
+  a near miss and an empty frame for a wild miss, which are the two cases most
+  worth telling apart.
+- **The target is propagated by the truth side, not by the flight software.**
+  `sim/world/tracked_object.hpp`: SGP4 + TEME→ECI for a TLE, RK4 over the
+  scenario's own spherical-harmonic field for a state vector. The onboard model
+  is two-body + J2 with no EOP. Drawing the *onboard* position would make the
+  picture circular — the camera would appear to track perfectly however wrong
+  the propagation was, because both halves came from it. Drawing the truth
+  position means an onboard model error shows as the target drifting off the
+  boresight. (Measured: the two models differ by ~13 m over 900 s at 8 000 km,
+  which at these ranges is far under a pixel. The mechanism is there for when it
+  is not.)
+- **FreeFlyer still propagates nothing.** The target is a bare `Spacecraft`
+  whose position this client writes every frame from the stream, exactly as
+  Polaris is. Same rule, same reason.
+
+```bash
+PYTHONPATH=tools python -m freeflyer run --replay --pace 100 \
+  --scenario SitlPointingGuidance.TracksAnUploadedTleTarget
+```
+
+### And the star trackers, which are usually the real limit
+
+Every modelled instrument with a boresight gets a cone — the payload camera and
+both star trackers — and the **king tracker gets its own POV window**. That
+window is not decoration. On this vehicle the trackers sit 45° off body **-Z**
+while the payload is on **+Z**, so aiming the camera at a target above the
+vehicle sweeps both trackers across the Earth, and the Earth filling the tracker
+window is what a coarse-mode knowledge error looks like from the outside.
+
+It found exactly that. The catalogue rows originally constrained `+X toward
+J2000_Z` — an arbitrary inertial roll — and flew with **both trackers inside the
+Earth keep-out on 100% of settled samples**, on the coarse sun+mag pair, at
+3.05° and 1.65°. The roll is the only freedom left once the camera is aimed, so
+spending it on an arbitrary axis wastes the one degree of freedom that decides
+whether the vehicle can see any stars. Constraining the **king tracker toward
+zenith** instead — one command, `CONSTRAIN STAR_TRACKER_0 toward NADIR negated`
+— puts it 68.5° clear of the keep-out and takes the state-vector row from 3.05°
+to **0.0076°**.
+
+There is a geometric limit worth knowing, and it is not a roll problem: roll
+moves a tracker *around* the 45° cone but cannot change the angle between -Z and
+nadir. A target within about **45° of the vehicle's zenith** therefore cannot be
+cleared by any roll. The TLE row's element set is chosen past that line for
+exactly this reason, and the comment in the row says so.
+
+One camera and one tracker get POV windows even if the vehicle carries more:
+more would be more windows than frames per second, and the rows aim exactly one
+instrument and fuse exactly one tracker.
 
 > **A detumble row does not end at zero rate, and that is the physics.** B-dot
 > damps the body rate *perpendicular* to the field; the component along the

@@ -75,6 +75,21 @@ module flight {
     @ instead would be a second opinion about which unit the vehicle believes.
     guarded input port estimateIn: AttitudeEstimatePort
 
+    @ The §8.4 pointing solution: the commanded attitude and the feedforward body
+    @ rate, from PointingGuidance. Consumed only in TRACK.
+    @
+    @ Deliberately carries no hint of *which* pointing mode produced it. A
+    @ controller that knew it was tracking a satellite rather than holding nadir
+    @ would eventually behave differently in the two cases, which is the coupling
+    @ the align/constrain design exists to avoid: there is one control law and it
+    @ follows whatever attitude arrives.
+    @
+    @ `valid` false is not a stale-target licence. TRACK refuses the cycle with
+    @ NO_GUIDANCE rather than flying the last good attitude, because a frozen
+    @ target is indistinguishable from a held one right up until the vehicle is
+    @ pointing somewhere nobody asked for.
+    guarded input port guidanceIn: AttitudeTargetPort
+
     @ Per-wheel tachometer readings (§8.5 momentum management). Guarded for the
     @ same reason `estimateIn` is: they are written on the producer's thread and
     @ read by `run`, and half a guarded pair is no mutual exclusion at all.
@@ -111,6 +126,7 @@ module flight {
       IDLE = 0 @< zero on every actuator; the mode a refusal falls back to
       DETUMBLE = 1 @< B-dot rate reduction on the magnetorquers
       POINT = 2 @< quaternion-error PID on the reaction wheels
+      TRACK = 3 @< the same PID, following the attitude and rate PointingGuidance streams (§8.4)
     }
 
     @ Which allocation the wheel array is driven with (§8.5).
@@ -131,6 +147,7 @@ module flight {
       ALLOCATION = 7 @< the wheel allocation refused this cycle
       BAD_COMMAND = 9 @< a command was formed but is not finite — a numerics fault rather than a sensing one, so it is reported apart from NO_FIELD
       FIELD_INTERVAL = 8 @< a field sample arrived but no derivative could be formed from it (first sample of a pair, or a spacing outside the configured band); distinct from NO_FIELD because the causes and the fixes differ
+      NO_GUIDANCE = 10 @< TRACK with no valid guidance target this cycle. Distinct from NO_TARGET, which means no target was ever *commanded*: here one was, and the guidance could not solve it — the fix is in the pointing command or the sky, not in the controller
     }
 
     @ Ground override of the autonomous desaturation decision (§8.5). AUTO is the
@@ -165,9 +182,10 @@ module flight {
 
     @ Set the control mode. POINT is refused — with a ModeRefused event, leaving
     @ the current mode in place — unless the estimate meets the configured
-    @ quality floor and a target has been set; DETUMBLE is refused without an
-    @ admissible field. IDLE is always accepted, because the way out of a bad
-    @ state must never itself have a precondition.
+    @ quality floor and a target has been set; TRACK is refused unless the
+    @ guidance is currently solving; DETUMBLE is refused without an admissible
+    @ field. IDLE is always accepted, because the way out of a bad state must
+    @ never itself have a precondition.
     guarded command CTRL_MODE_SET(
                                    $mode: CtrlMode @< requested control mode
                                  ) \

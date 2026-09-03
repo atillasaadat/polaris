@@ -1687,8 +1687,9 @@ void AttitudeEstimator ::emitEstimate(const Eigen::Matrix3d& cov, double age_s) 
   estimate.set_magFieldValid(this->pub_mag_valid_);
   estimate.set_magModelValid(this->pub_mag_model_valid_);
   estimate.set_magRawValid(this->pub_mag_raw_valid_);
-  // Every connected consumer: index 0 the controller, index 1 the burn
-  // executor (§17), both the same estimate.
+  // Every connected consumer, all the same estimate: index 0 the controller,
+  // index 1 the burn executor (§17), index 2 the SITL bridge — which echoes it
+  // to the sim for diagnosis only and is absent on a hardware build.
   for (FwIndexType i = 0; i < NUM_ESTIMATEOUT_OUTPUT_PORTS; ++i) {
     if (this->isConnected_estimateOut_OutputPort(i)) {
       this->estimateOut_out(i, estimate);

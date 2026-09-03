@@ -18,6 +18,7 @@ add_library(polaris::dynamics ALIAS polaris_dynamics)
 # --- World: environment models (gravity, ... ) (REQ-SIM-002) -----------------
 add_library(polaris_world
   world/gravity_field.cpp
+  world/tracked_object.cpp
   world/gravity_gradient.cpp
   world/egm2008.cpp
   world/third_body.cpp
@@ -34,6 +35,12 @@ target_include_directories(polaris_world PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(polaris_world
   PUBLIC Eigen3::Eigen polaris_dynamics polaris_math polaris_state polaris_time polaris_constants
          polaris_ephemeris polaris_environment polaris_frames
+         # SGP4 and the TLE parser, for the truth-side propagation of tracked
+         # secondary objects (world/tracked_object.cpp). The truth side reaches
+         # into lib/gnc here for the same reason the flight side does: SGP4 is
+         # the definition of where a TLE says an object is, and a second
+         # implementation would be a different answer, not a check.
+         polaris_gnc
   PRIVATE polaris_flags)
 add_library(polaris::world ALIAS polaris_world)
 

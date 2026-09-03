@@ -212,6 +212,32 @@ void setupTopology(const TopologyState& state) {
   // same reason — it dispatches the flight opcodes through the component's own
   // command port, and it must follow loadParameters() because an unconfigured
   // controller refuses every mode but IDLE.
+  // The §8.4 pointing command must be issued *before* the mode latch, because
+  // TRACK is refused unless the guidance is already solving. Same placement rule
+  // as the line below: after loadParameters(), since the guidance resolves body
+  // vectors through the mounting parameters and would otherwise refuse a
+  // perfectly good command for want of a boresight.
+  // Catalogue uploads must precede the pointing command, and the ordering is
+  // load-bearing rather than tidy: SET_GUIDANCE validates slot *occupancy* on
+  // arrival (§8.4 — a target that cannot be resolved is refused at uplink, not
+  // discovered mid-slew), so a row naming SAT_STATE_0 before the slot is filled
+  // is refused for exactly the right reason at exactly the wrong time.
+  if (state.satStateSlot >= 0) {
+    pointingGuidance.commandStateVectorAtStartup(static_cast<U32>(state.satStateSlot),
+                                                 state.satStateEpochTaiNs, state.satStatePosM,
+                                                 state.satStateVelMps, state.satStateSigmaM);
+  }
+  if (state.satTleSlot >= 0) {
+    pointingGuidance.commandTleAtStartup(static_cast<U32>(state.satTleSlot), state.satTleLine1,
+                                         state.satTleLine2, state.satTleVerifyChecksum);
+  }
+  if (state.guidanceSet) {
+    pointingGuidance.commandGuidanceAtStartup(
+        state.alignVecKind, state.alignVecIndex, state.alignVecNegate, state.alignTgtKind,
+        state.alignTgtIndex, state.alignTgtNegate, state.alignTgtParam0, state.alignTgtParam1,
+        state.conVecKind, state.conVecIndex, state.conVecNegate, state.conTgtKind,
+        state.conTgtIndex, state.conTgtNegate, state.conTgtParam0, state.conTgtParam1);
+  }
   attitudeController.commandModeAtStartup(state.ctrlMode, state.ctrlTargetQ);
   // Feedforward override, same rule and same reason: it must follow
   // loadParameters(), which would otherwise overwrite the values it sets.

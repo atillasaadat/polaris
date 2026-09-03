@@ -395,7 +395,14 @@ void OrbitEstimator ::publish(I64 nowNs) {
                                       r[0], r[1], r[2]);
   }
   if (this->isConnected_orbitStateOut_OutputPort(0)) {
-    this->orbitStateOut_out(0, est);
+    // Fan out to every consumer: the attitude estimator and the §8.4 pointing
+    // guidance. Looped rather than written twice so adding a consumer is a
+    // topology change alone.
+    for (FwIndexType i = 0; i < NUM_ORBITSTATEOUT_OUTPUT_PORTS; ++i) {
+      if (this->isConnected_orbitStateOut_OutputPort(i)) {
+        this->orbitStateOut_out(i, est);
+      }
+    }
   }
   this->tlmWrite_OrbitQualityTlm(est.get_quality());
 

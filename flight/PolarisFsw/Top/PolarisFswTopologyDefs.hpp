@@ -82,6 +82,40 @@ struct TopologyState {
   //! the ground or, from Phase 7, from the mode manager (design doc §8.5, §10).
   U32 ctrlMode;
   F64 ctrlTargetQ[4];
+  //! SITL/bench only: an align/constrain pointing command to issue at startup
+  //! (§8.4). `guidanceSet` false leaves the guidance uncommanded, which is the
+  //! flight default — on a real vehicle this arrives by uplink. The fields are
+  //! the SET_GUIDANCE arguments in order; see PointingGuidance.fpp.
+  bool guidanceSet;
+  U32 alignVecKind;
+  U32 alignVecIndex;
+  bool alignVecNegate;
+  U32 alignTgtKind;
+  U32 alignTgtIndex;
+  bool alignTgtNegate;
+  F64 alignTgtParam0;
+  F64 alignTgtParam1;
+  U32 conVecKind;
+  U32 conVecIndex;
+  bool conVecNegate;
+  U32 conTgtKind;
+  U32 conTgtIndex;
+  bool conTgtNegate;
+  F64 conTgtParam0;
+  F64 conTgtParam1;
+  //! SITL/bench only: a target-catalogue slot to fill at startup, so a
+  //! `SAT_STATE_n` or `SAT_TLE_n` row can be flown with no ground link. Both are
+  //! off by default (`< 0` / null), which is the flight default: a catalogue
+  //! slot is uplinked, never born full.
+  I32 satStateSlot;  //!< < 0 = do not load a state vector
+  I64 satStateEpochTaiNs;
+  F64 satStatePosM[3];
+  F64 satStateVelMps[3];
+  F64 satStateSigmaM;
+  I32 satTleSlot;  //!< < 0 = do not load a TLE
+  const char* satTleLine1;
+  const char* satTleLine2;
+  bool satTleVerifyChecksum;
   U16 sitlPort;                       //!< SITL lockstep port (0 = SITL disabled, §2.2)
   const char* onboardEopPath;         //!< Onboard IERS EOP table file (§11.3, §22)
   const char* onboardEphemPath;       //!< Onboard Chebyshev ephemeris fixture (§11.3, §22)

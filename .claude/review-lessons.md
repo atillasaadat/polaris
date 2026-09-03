@@ -1045,3 +1045,107 @@ removing it (39.7/57.0 m becomes 81.7/60.1 m, test red), not assumed.
 conventions, a passing test that would also pass with the other choice is not
 covering it. Look for a reference that distinguishes them, and confirm the test
 fails when the choice is inverted.
+
+## P82 — "available" is not "usable"
+
+**Class:** a resource check that stops one gate short of the one that matters,
+and convicts working code with a plausible number.
+
+A SITL row bounded its pointing accuracy by whether a star tracker was
+available, computed from truth geometry: boresight unobstructed, Sun and Earth
+keep-outs applied. It reported availability 1.0 while the estimator fused zero
+trackers, which looked like a clear estimator defect and was reported as one.
+
+Strengthening the check did not help, and that is the interesting part. Adding
+the model's acquisition rate and acceleration envelopes — the tighter gate a
+lost tracker must pass to re-acquire — felt like ruling out the innocent
+explanation. The number stayed at 1.0, which read as confirmation. It had ruled
+out *an* innocent explanation while leaving the real one untouched.
+
+The real one: the estimator fuses **king-only** until `ST_ALIGN_CAL` has run,
+because a non-king unit's as-mounted reading carries the two units' bias
+difference. The unobstructed tracker was the non-king one. The king was inside
+the Earth keep-out. No fine-mode source was ever available, the coarse fallback
+was correct, and the 3 deg result was the requirement being met.
+
+**Why it belongs here:** this is the P81 class one turn further on. There the
+harness's own precision was read as the measured quantity; here the harness's
+own *model of eligibility* was. Both produce a number that is plausible, stable
+under strengthening, and wrong — and both survive review because the number
+looks like evidence.
+
+**How to apply:** when a check says a resource is available, ask what the
+consumer additionally requires before it can use it — calibration state,
+ownership, mode, a latch. Availability that stops at physics will pass a
+resource the software is correctly declining. And when strengthening a check
+leaves the answer unchanged, treat that as *weak* evidence, not confirmation:
+ask what the strengthening could not have detected.
+
+---
+
+## P82b — A test that never crosses the boundary the bug lives on
+
+`LOAD_TLE` declared its two lines as `string size 72`. The F´ autocoder emits
+`Fw::CmdStringArg` for every command string regardless, and its capacity is the
+framework-wide `FW_CMD_STRING_MAX_SIZE` — 40. Every 69-column line was
+truncated to 40 characters. The command could never have loaded a TLE, from the
+day it was written.
+
+The library beneath it was correct and well covered: `TargetCatalog::loadTle`
+takes `std::string_view`, and the unit suite fed it good lines, garbage lines
+and a deliberately corrupted checksum. Every one of those tests passed, and
+none of them could have failed, because none crossed the command boundary where
+the loss happened. The FPP's `size 72` read as a specification and was
+decoration.
+
+The symptom, when a SITL row finally flew the uplink path, pointed away from
+the cause: a truncated line still parses far enough to fail on a *specific*
+field, so the first report was a checksum error four fields downstream.
+
+**Why it belongs here:** the P81/P82a class is a measurement that looks like
+evidence. This is its structural sibling — a *test suite* that looks like
+coverage. Both leave a defect standing behind something green.
+
+**How to apply:** for any value that crosses a framework boundary — a command
+argument, a telemetry channel, a parameter, a port struct — find the concrete
+type the autocoder actually emits and its capacity, and do not trust the width
+written in the model. Then ask of any component whose library is well tested:
+is there a test that exercises the *component*, or only the library it calls?
+A declared size that nothing asserts is a comment. The fix pairs with the
+guard: the handler now refuses anything that does not reassemble to exactly 69
+columns, so the next truncation is a named refusal rather than a mystery.
+
+---
+
+## P82c — Running a subset and reporting it as the suite
+
+Two CI failures on a branch reported as locally verified, from one cause: the
+three `polaris_*` gtest binaries were run directly and called the gate. They are
+not the gate. The F´ per-component tests live beside their components and are
+separate executables that only `ctest` builds and runs — 101 cases CI runs and
+that recipe never touches.
+
+The first attempt to reproduce one of them locally *passed*, which nearly buried
+it a second time: `ctest` does not build. It ran the previous commit's binary
+and reported green.
+
+Both failures were themselves informative rather than incidental:
+
+  - the PrmDb record-count guard fired because two parameters were added, which
+    is precisely the change it exists to catch;
+  - a component test counted every port of an output array, so widening
+    `orbitStateOut` from `[1]` to `[2]` for an unrelated feature turned "the
+    component published once this cycle" into 2. The count was a statement
+    about the component's behaviour and had quietly become a statement about
+    how many consumers were wired.
+
+**Why it belongs here:** P82b was a test suite that looked like coverage because
+it never crossed the boundary the bug lived on. This is the same shape one level
+up — a *test run* that looks like verification because it never ran the tier the
+bug lived in. Both end in a confident "verified" over an untested gap.
+
+**How to apply:** verify with the command CI uses, not a command that resembles
+it. `ctest` after a build, not hand-picked binaries; and when a test does not
+fail where you expect it to, check the binary's timestamp before concluding the
+code is fine. Any assertion that counts port invocations should count one port,
+or the number becomes a function of the topology rather than of the component.

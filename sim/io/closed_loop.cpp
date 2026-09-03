@@ -63,7 +63,45 @@ class StreamTap {
     }
   }
 
-  void write(double t_s, const state::TruthState& s) {
+  bool open() const { return out_.is_open(); }
+
+  /// One `"meta"` line ahead of the samples, carrying what the viewer needs to
+  /// draw but cannot derive from a truth state: which body vectors are
+  /// instrument boresights, how wide their fields are, and what the tracked
+  /// objects are called. Written once because none of it varies over a run, and
+  /// as its own record kind so a reader that does not know about it can skip a
+  /// line rather than misparse a sample.
+  void writeMeta(const std::vector<CameraOverlay>& cameras,
+                 const std::vector<std::string>& target_names, double duration_s, double rate_hz) {
+    if (!out_.is_open()) {
+      return;
+    }
+    // The planned duration is here so a reader can show *progress* rather than
+    // a spinner: the sim is the only party that knows how long the run is, and
+    // a viewer that had to guess would either invent a denominator or show
+    // none. Written per phase — a scenario that runs several ClosedLoop phases
+    // in one process emits one meta record each, and the last one is the phase
+    // currently being written.
+    out_ << "{\"meta\":1,\"duration_s\":" << duration_s << ",\"rate_hz\":" << rate_hz
+         << ",\"cameras\":[";
+    for (std::size_t i = 0; i < cameras.size(); ++i) {
+      const CameraOverlay& c = cameras[i];
+      out_ << (i > 0 ? "," : "") << "{\"name\":\"" << c.name << "\",\"boresight_body\":["
+           << c.boresight_body.x() << ',' << c.boresight_body.y() << ',' << c.boresight_body.z()
+           << "],\"half_fov_x_deg\":" << c.half_fov_x_deg
+           << ",\"half_fov_y_deg\":" << c.half_fov_y_deg
+           << ",\"star_tracker\":" << (c.is_star_tracker ? 1 : 0) << '}';
+    }
+    out_ << "],\"targets\":[";
+    for (std::size_t i = 0; i < target_names.size(); ++i) {
+      out_ << (i > 0 ? "," : "") << '"' << target_names[i] << '"';
+    }
+    out_ << "]}\n";
+    out_.flush();
+  }
+
+  void write(double t_s, const state::TruthState& s,
+             const std::vector<Eigen::Vector3d>* target_positions_m = nullptr) {
     if (!out_.is_open()) {
       return;
     }
@@ -74,7 +112,19 @@ class StreamTap {
          << s.velocity.eigen().y() << ',' << s.velocity.eigen().z() << "],\"q_body_eci\":[" << q.w()
          << ',' << q.x() << ',' << q.y() << ',' << q.z() << "],\"w_body_radps\":["
          << s.body_rate.eigen().x() << ',' << s.body_rate.eigen().y() << ','
-         << s.body_rate.eigen().z() << "]}\n";
+         << s.body_rate.eigen().z() << "]";
+    // Tracked objects ride the same record so a viewer never has to correlate
+    // two streams by time — the target position drawn in a frame is the one
+    // that was true at the vehicle state drawn in that frame, by construction.
+    if (target_positions_m != nullptr && !target_positions_m->empty()) {
+      out_ << ",\"targets_eci_m\":[";
+      for (std::size_t i = 0; i < target_positions_m->size(); ++i) {
+        const Eigen::Vector3d& r = (*target_positions_m)[i];
+        out_ << (i > 0 ? "," : "") << '[' << r.x() << ',' << r.y() << ',' << r.z() << ']';
+      }
+      out_ << ']';
+    }
+    out_ << "}\n";
     out_.flush();
   }
 
@@ -456,10 +506,81 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
   const auto macro_count =
       static_cast<std::uint64_t>(std::floor(prop.duration_s * prop.fsw_rate_hz + 1.0e-9));
   StreamTap stream;
+  // The overlay and the target names are constant over a run, so they go out
+  // once ahead of the samples. The camera geometry is read off the vehicle's own
+  // payload-sensor models rather than restated here: a viewer drawing a field of
+  // view the sim does not model would be drawing a claim, not a measurement.
+  std::vector<Eigen::Vector3d> target_positions;
+  if (stream.open()) {
+    std::vector<CameraOverlay> cameras;
+    cameras.reserve(vehicle_.payload_sensors.size());
+    for (const auto& p : vehicle_.payload_sensors) {
+      CameraOverlay c;
+      c.name = p.name;
+      c.boresight_body = p.model.boresightBody();
+      const auto& spec = p.model.spec();
+      c.half_fov_x_deg = spec.half_fov_x_rad * 180.0 / M_PI;
+      c.half_fov_y_deg = spec.half_fov_y_rad * 180.0 / M_PI;
+      cameras.push_back(c);
+    }
+    // Star trackers ride the same list. Their field is conic, so the half-angle
+    // goes on both axes; the viewer does not have to know which kind it is
+    // drawing, only that one of them is the instrument being aimed.
+    for (const auto& t : vehicle_.star_trackers) {
+      CameraOverlay c;
+      c.name = t.name;
+      c.boresight_body = t.model.boresightBody();
+      const double half_deg = t.model.spec().fov_rad * 0.5 * 180.0 / M_PI;
+      c.half_fov_x_deg = half_deg;
+      c.half_fov_y_deg = half_deg;
+      c.is_star_tracker = true;
+      cameras.push_back(c);
+    }
+    std::vector<std::string> names;
+    if (tracked_ != nullptr) {
+      for (const auto& o : *tracked_) {
+        // An invalid object is not named. Naming it would put a spacecraft in
+        // the viewer's scene that never receives a position, i.e. one drawn at
+        // the centre of the Earth — a picture of a bug that reads as a picture
+        // of a scene (world/tracked_object.hpp says so; this is where it is
+        // enforced).
+        if (o.valid()) {
+          names.push_back(o.name());
+        }
+      }
+    }
+    stream.writeMeta(cameras, names, prop.duration_s, prop.fsw_rate_hz);
+  }
+  // Sample the tracked objects at a truth epoch. An object that refuses the
+  // epoch keeps its previous position rather than jumping to the origin, and
+  // an object that has never answered is simply not drawn.
+  const auto sampleTargets = [this, &target_positions](const state::TruthState& at) {
+    if (tracked_ == nullptr || tracked_->empty()) {
+      return;
+    }
+    // Indexed by *valid* object, matching the names in the meta record. An
+    // object that refuses this epoch keeps its previous position rather than
+    // jumping to the origin.
+    std::size_t slot = 0;
+    for (const auto& o : *tracked_) {
+      if (!o.valid()) {
+        continue;
+      }
+      if (target_positions.size() <= slot) {
+        target_positions.emplace_back(Eigen::Vector3d::Zero());
+      }
+      math::Vec3<math::frames::ECI> r;
+      if (o.positionAt(at.epoch, r)) {
+        target_positions[slot] = r.eigen();
+      }
+      ++slot;
+    }
+  };
   if (trace != nullptr) {
     trace->push_back({0.0, s, mass_kg_, thruster_tlm});
   }
-  stream.write(0.0, s);
+  sampleTargets(s);
+  stream.write(0.0, s, &target_positions);
 
   std::int64_t t_ns = 0;
   std::vector<dynamics::RigidBody6Dof::Node> nodes;
@@ -597,9 +718,15 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
     }
 
     if (trace != nullptr) {
-      trace->push_back({static_cast<double>(t_ns) / 1.0e9, s, mass_kg_, thruster_tlm});
+      // The FSW's estimate rides along for diagnosis only — recorded here and
+      // handed to nothing else, so the plant above cannot have depended on it.
+      MacroSample sample{static_cast<double>(t_ns) / 1.0e9, s, mass_kg_, thruster_tlm};
+      sample.estimate_attitude = commands.estimate_attitude;
+      sample.estimate_valid = commands.estimate_valid;
+      trace->push_back(sample);
     }
-    stream.write(static_cast<double>(t_ns) / 1.0e9, s);
+    sampleTargets(s);
+    stream.write(static_cast<double>(t_ns) / 1.0e9, s, &target_positions);
   }
   return true;
 }

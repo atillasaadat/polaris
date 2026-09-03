@@ -10,6 +10,7 @@
 # for it alone at the end of the run.
 add_executable(polaris_integration_tests
   sitl_attitude_control_test.cpp
+  sitl_pointing_guidance_test.cpp
   sitl_fault_matrix_test.cpp
   sitl_od_fault_test.cpp
   sitl_od_burn_test.cpp
@@ -26,6 +27,10 @@ target_link_libraries(polaris_integration_tests
     polaris::scenario
     polaris::io
     polaris::constants
+    # SGP4, the TLE parser and TEME->ECI: the SAT_TLE_n guidance row forms its
+    # expected direction from them (sitl_pointing_guidance_test).
+    polaris::gnc
+    polaris::frames
     polaris::ephemeris
     polaris::math
     polaris::state

@@ -956,6 +956,70 @@ def _check_orbit_parameters(body: dict[str, Any]) -> None:
         )
 
 
+#: The mounting vectors the pointing guidance duplicates from the estimator.
+#:
+#: A boresight is a *physical* fact about the vehicle, so there can only be one
+#: right answer — but it is read by two components for two different reasons
+#: (the estimator builds a measurement covariance about it; the guidance points
+#: it at things), and F´ parameters are per-component. Two copies of a physical
+#: constant maintained by hand is the failure class this repository keeps
+#: rediscovering, and here it is especially quiet: a guidance copy that has
+#: drifted points the instrument a few degrees off with the estimator, the
+#: controller and the telemetry all agreeing that it is exactly on target.
+#:
+#: Equality, not tolerance. There is no legitimate reason for the two to differ
+#: by any amount — they are the same number — so a near-match is a typo, not a
+#: calibration.
+_GUIDANCE_MIRRORED_PARAMS = (
+    (
+        "flight.pointingGuidance.StBoresightsBody",
+        "flight.attitudeEstimator.StBoresightsBody",
+    ),
+    (
+        "flight.pointingGuidance.SunSensorBoresightsBody",
+        "flight.attitudeEstimator.SunAlbedoBoresightsBody",
+    ),
+)
+
+
+def _check_guidance_mounting_mirrors(body: dict[str, Any]) -> None:
+    """The guidance's mounting copies must equal the estimator's, exactly."""
+    fsw = body.get("spacecraft", {}).get("fsw_parameters", {})
+    if not isinstance(fsw, dict):
+        return
+    for guidance_key, estimator_key in _GUIDANCE_MIRRORED_PARAMS:
+        if guidance_key not in fsw:
+            continue
+        if estimator_key not in fsw:
+            raise ConfigError(
+                f"{guidance_key} is declared but {estimator_key} is not.\n"
+                f"The guidance copy exists to mirror the estimator's mounting "
+                f"data; with nothing to mirror it is an independent second "
+                f"definition of a physical constant."
+            )
+        mine = list(fsw[guidance_key])
+        theirs = list(fsw[estimator_key])
+        if len(mine) != len(theirs):
+            raise ConfigError(
+                f"{guidance_key} has {len(mine)} components but {estimator_key} "
+                f"has {len(theirs)}. They describe the same mounting hardware and "
+                f"must have the same shape."
+            )
+        for i, (a, b) in enumerate(zip(mine, theirs)):
+            if float(a) != float(b):
+                unit = i // 3
+                axis = "xyz"[i % 3]
+                raise ConfigError(
+                    f"{guidance_key} disagrees with {estimator_key} at unit "
+                    f"{unit}, {axis}: {a} vs {b}.\n"
+                    f"These are two copies of one physical mounting vector. A "
+                    f"guidance copy that has drifted from the estimator's points "
+                    f"the instrument off-target while the estimator, the "
+                    f"controller and the telemetry all agree it is on target — "
+                    f"so they are compared by equality, not by tolerance."
+                )
+
+
 def _check_gnss_correlated_split(body: dict[str, Any]) -> None:
     """Refuse a filter told a different error spectrum than its receiver has (§19.3).
 
@@ -1126,6 +1190,7 @@ def resolve(
     _check_control_parameters(body)
     _check_orbit_parameters(body)
     _check_gnss_correlated_split(body)
+    _check_guidance_mounting_mirrors(body)
     _check_star_tracker_latency(body)
     _check_burn_parameters(body)
     _check_catalog_pairs(body["spacecraft"])

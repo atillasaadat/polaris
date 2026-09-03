@@ -811,6 +811,8 @@ def test_albedo_tuning_contradicting_the_catalog_is_refused(
 
 
 _BORESIGHTS = "flight.attitudeEstimator.SunAlbedoBoresightsBody"
+_GUIDANCE_SS_BORESIGHTS = "flight.pointingGuidance.SunSensorBoresightsBody"
+_GUIDANCE_ST_BORESIGHTS = "flight.pointingGuidance.StBoresightsBody"
 
 
 def test_reference_vehicle_sun_suite_covers_the_whole_sky(tmp_path):
@@ -886,6 +888,12 @@ def test_albedo_boresight_zero_slot_is_allowed(tmp_path):
     boresights = list(config["spacecraft"]["fsw_parameters"][_BORESIGHTS])
     boresights[9:12] = [0.0, 0.0, 0.0]
     config["spacecraft"]["fsw_parameters"][_BORESIGHTS] = boresights
+    # The pointing guidance mirrors this mounting vector, and the two are
+    # compared by equality (a boresight is one physical fact). Un-characterising
+    # a unit therefore means un-characterising it in both places — moving one
+    # copy alone is the mismatch _check_guidance_mounting_mirrors exists to
+    # catch, and is covered by its own test below.
+    config["spacecraft"]["fsw_parameters"][_GUIDANCE_SS_BORESIGHTS] = boresights
     path = tmp_path / "one_uncharacterised.yaml"
     path.write_text(yaml.safe_dump(config), encoding="utf-8")
 
@@ -1435,3 +1443,49 @@ def test_flight_fraction_disagreeing_with_the_receiver_is_refused(tmp_path):
     message = str(exc.value)
     assert "gps_a" in message
     assert "0.25" in message
+
+
+def test_guidance_mounting_copy_must_equal_the_estimators(tmp_path):
+    """A drifted guidance copy of a boresight is caught at compile time.
+
+    The failure it prevents is quiet by construction: the guidance points the
+    instrument using its copy while the estimator, the controller and every
+    telemetry channel use theirs, so the vehicle reports being exactly on target
+    while looking somewhere else. Nothing downstream can detect it, which is why
+    it has to be caught here.
+    """
+    config = yaml.safe_load(_TEMPLATE.read_text(encoding="utf-8"))
+    guidance = list(config["spacecraft"]["fsw_parameters"][_GUIDANCE_ST_BORESIGHTS])
+    # One component, small enough to look like a rounding difference rather than
+    # a typo — precisely the case a tolerance-based check would wave through.
+    guidance[0] += 1e-6
+    config["spacecraft"]["fsw_parameters"][_GUIDANCE_ST_BORESIGHTS] = guidance
+    path = tmp_path / "drifted_guidance_copy.yaml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="disagrees with"):
+        resolve(load_config(path), load_hardware_library(_HARDWARE))
+
+
+def test_guidance_mounting_copy_without_its_estimator_source_is_refused(tmp_path):
+    """A guidance copy with nothing to mirror is an independent definition."""
+    config = yaml.safe_load(_TEMPLATE.read_text(encoding="utf-8"))
+    del config["spacecraft"]["fsw_parameters"][
+        "flight.attitudeEstimator.StBoresightsBody"
+    ]
+    path = tmp_path / "orphan_guidance_copy.yaml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="is declared but"):
+        resolve(load_config(path), load_hardware_library(_HARDWARE))
+
+
+def test_guidance_mounting_check_is_silent_when_guidance_declares_nothing(tmp_path):
+    """A vehicle with no pointing guidance compiles unchanged."""
+    config = yaml.safe_load(_TEMPLATE.read_text(encoding="utf-8"))
+    for key in (_GUIDANCE_ST_BORESIGHTS, _GUIDANCE_SS_BORESIGHTS):
+        config["spacecraft"]["fsw_parameters"].pop(key, None)
+    path = tmp_path / "no_guidance.yaml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    resolve(load_config(path), load_hardware_library(_HARDWARE))  # must not raise

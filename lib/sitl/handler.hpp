@@ -105,10 +105,16 @@ class SitlHandler {
   /// warning EVR — never overruns). Requires a prior HELLO (`helloSeen()`).
   /// @p thrusters points to at least `nThruster()` `ThrusterCommandRecord`s
   /// (throttles for the §17 burn executor); `nullptr` fills zeros (off).
+  /// @p est_q_body_eci, when non-null, is the FSW's attitude estimate
+  /// (Body<-ECI, scalar-first) carried back for diagnosis only — see
+  /// `StepReplyHeader` on why it exists and why the plant must not read it.
+  /// Null leaves the reply's `est_valid` clear, which is the honest state for a
+  /// deployment with no estimator running.
   std::size_t buildStepReply(std::uint64_t macro_step, const WheelCommandRecord* wheels,
                              const MtqCommandRecord* mtqs, double mtq_on_window_s,
                              std::uint8_t* out, std::size_t out_cap,
-                             const ThrusterCommandRecord* thrusters = nullptr) {
+                             const ThrusterCommandRecord* thrusters = nullptr,
+                             const double* est_q_body_eci = nullptr) {
     if (!hello_seen_) {
       return 0;  // STEP_REPLY before HELLO breaks the handshake order
     }
@@ -116,6 +122,12 @@ class SitlHandler {
     StepReplyHeader rhdr;
     rhdr.macro_step = macro_step;            // barrier echo (§2.4)
     rhdr.mtq_on_window_s = mtq_on_window_s;  // §7 duty-cycle schedule
+    if (est_q_body_eci != nullptr) {
+      for (int i = 0; i < 4; ++i) {
+        rhdr.est_q_body_eci[i] = est_q_body_eci[i];
+      }
+      rhdr.est_valid = 1;
+    }
     if (!writeRecord(out, out_cap, woff, rhdr)) {
       return 0;  // reply would overflow the caller buffer
     }

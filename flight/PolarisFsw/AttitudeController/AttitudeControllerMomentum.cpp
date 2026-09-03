@@ -257,10 +257,22 @@ void AttitudeController ::updateDisturbance(I64 nowNs) {
 }
 
 bool AttitudeController ::desatDue() const {
-  // Concurrent with POINT, excluded everywhere else. DETUMBLE is the exclusion
-  // that matters: B-dot owns the rods there, and the two laws would otherwise
-  // sum onto one set of coils with no schedule that describes either.
-  if (!this->configured_ || this->mode_ != CtrlMode::POINT) {
+  // Concurrent with the two wheel-pointing modes, POINT and TRACK, and excluded
+  // everywhere else. DETUMBLE is the exclusion that matters: B-dot owns the rods
+  // there, and the two laws would otherwise sum onto one set of coils with no
+  // schedule that describes either.
+  //
+  // TRACK belongs here for the same reason POINT does, and leaving it out was a
+  // real defect rather than a conservative default: a tracking vehicle absorbs
+  // secular disturbance torque into its wheels exactly as a pointing one does,
+  // so with no desaturation the momentum climbs until the allocation saturates
+  // and the attitude error grows with the length of the run. It was measured as
+  // a pointing error that got *worse* with a longer scenario (2.2 deg at 400 s,
+  // 3.0 deg at 900 s on an inertial hold) — the signature of an accumulating
+  // quantity rather than of a control-law or geometry error, which is what
+  // separated it from the guidance itself.
+  const bool wheel_pointing_mode = this->mode_ == CtrlMode::POINT || this->mode_ == CtrlMode::TRACK;
+  if (!this->configured_ || !wheel_pointing_mode) {
     return false;
   }
   if (this->desat_override_ == DesatOverride::INHIBIT) {

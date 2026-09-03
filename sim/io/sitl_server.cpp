@@ -343,6 +343,20 @@ bool SitlServer::exchange(const FswInputs& in, FswOutputs& out) {
   // loop clamps it to the macro step; a value the FSW never set arrives as zero,
   // which is the rods-off schedule.
   out.mtq_on_window_s = rhdr.mtq_on_window_s;
+  // The FSW's own attitude estimate, for diagnosis only — never fed to the
+  // plant (see FswOutputs). A non-finite or null-norm quaternion is treated as
+  // "no estimate" rather than normalised into something plausible: this channel
+  // exists to report what the flight software believed, and repairing it here
+  // would report something it did not.
+  out.estimate_valid = false;
+  if (rhdr.est_valid != 0) {
+    const math::Quaternion q(rhdr.est_q_body_eci[0], rhdr.est_q_body_eci[1], rhdr.est_q_body_eci[2],
+                             rhdr.est_q_body_eci[3]);
+    if (q.isFinite() && q.coeffs().norm() > 0.0) {
+      out.estimate_attitude = math::Quat<math::frames::Body, math::frames::ECI>(q);
+      out.estimate_valid = true;
+    }
+  }
   ++steps_;
   return true;
 }
