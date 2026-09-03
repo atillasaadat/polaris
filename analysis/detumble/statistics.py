@@ -274,12 +274,21 @@ class DetumbleStatistics:
         long it is.
     total_wall_s : float
         Summed per-run wall clock, for sizing the next campaign.
+    n_below_entry : int
+        Runs whose dispersed initial rate was below the deployment's
+        ``DetumbleEnterRadps``. These never tumbled — the mode manager would not
+        have engaged B-dot — so they measure nothing and must be zero for the
+        campaign to be about detumble at all. Non-zero means the tip-off
+        dispersion and the flight entry threshold have come apart, which is how
+        11 of the first 18 runs of the Push 84 campaign came to report a
+        completion time for a vehicle that arrived detumbled.
     """
 
     n_records: int
     n_healthy: int
     n_converged: int
     n_censored: int
+    n_below_entry: int
     duration_s: float
     median_s: float
     p95_empirical_s: float
@@ -400,6 +409,13 @@ def summarise(
 
     return DetumbleStatistics(
         n_records=len(records),
+        n_below_entry=sum(
+            1
+            for r in records
+            # NaN compares false, so a shard predating the recorded threshold is
+            # not counted as a violation it cannot be judged for.
+            if r.rate_initial_deg_s < r.enter_threshold_deg_s
+        ),
         n_healthy=len(healthy),
         n_converged=len(converged),
         n_censored=len(censored),

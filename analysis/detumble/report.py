@@ -109,6 +109,20 @@ def detumble_report(stats: DetumbleStatistics, records_path: str) -> AnalysisRep
             ),
         ),
         Criterion(
+            name="runs that were tumbling when B-dot engaged",
+            requirement="",
+            threshold=0.0,
+            measured=float(stats.n_below_entry),
+            units="runs",
+            sense="max",
+            note=(
+                "a run starting below DetumbleEnterRadps never tumbled, so its "
+                "completion time describes a vehicle that arrived detumbled; "
+                "non-zero means the tip-off dispersion floor and the flight "
+                "entry threshold have come apart"
+            ),
+        ),
+        Criterion(
             name="runs the harness completed",
             requirement="",
             threshold=float(stats.n_records),

@@ -34,6 +34,11 @@ from analysis.detumble.statistics import (
 ORBIT_S = 5677.0
 
 
+def _mkdir(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def make_record(
     index: int,
     *,
@@ -42,6 +47,7 @@ def make_record(
     fast_phase_deg_s: float = 3.0,
     peak_after_deg_s: float = 3.0,
     rate_initial_deg_s: float = 5.0,
+    enter_threshold_deg_s: float = 3.4377,
     spin_field_deg: float = 30.0,
     arc_s: float = 8.0 * ORBIT_S,
 ) -> dict:
@@ -49,6 +55,7 @@ def make_record(
     profile_t = np.arange(0.0, arc_s, 600.0)
     return {
         "exit_threshold_deg_s": 0.4984,
+        "enter_threshold_deg_s": enter_threshold_deg_s,
         "confirm_cycles": 50,
         "run_index": index,
         "seed": 1000 + index,
@@ -232,7 +239,13 @@ def healthy_campaign(tmp_path: Path) -> Path:
                 i,
                 t_exit_s=float(t),
                 spin_field_deg=float(90.0 - 60.0 * (t / times.max())),
-                rate_initial_deg_s=float(rng.uniform(2.0, 5.0)),
+                # Over the *tumbling* band. This fixture drew from [2, 5] --
+                # the driver's old hardcoded tip-off band -- and so quietly
+                # contained 41 runs that never tumbled, which is the same
+                # transcription defect the driver had: a campaign constant that
+                # happened to equal a flight parameter. The floor is the entry
+                # threshold because a run below it is not a detumble run.
+                rate_initial_deg_s=float(rng.uniform(3.4377, 5.0)),
             )
             for i, t in enumerate(times)
         ],
@@ -449,3 +462,49 @@ def test_re_excitation_is_counted_and_warned_but_does_not_fail(tmp_path: Path) -
     assert stats.n_re_excited == 4
     assert any("triggered by" in w for w in report.warnings)
     assert report.passes
+
+
+def test_a_run_that_started_below_the_entry_threshold_fails_the_campaign(
+    tmp_path: Path,
+) -> None:
+    """A run that was never tumbling is not a slow detumble — it is not a detumble.
+
+    Below ``DetumbleEnterRadps`` the mode manager does not engage B-dot, so the
+    recorded completion time describes a vehicle that arrived detumbled. Pooling
+    such runs with real ones biases every quantile downward, and the tolerance
+    bound is a quantile.
+
+    This is a regression test for a live defect rather than a hypothetical. The
+    tip-off dispersion floor was a hardcoded 2.0 deg/s that silently *was* the
+    entry threshold; when Push 84 derived entry from the wheel momentum envelope
+    and it rose to 3.44 deg/s, 11 of the first 18 runs started below it and the
+    report happily quoted a median completion time computed over them.
+    """
+    below = [make_record(i, t_exit_s=-29.2, rate_initial_deg_s=2.2) for i in range(3)]
+    above = [
+        make_record(i + 3, t_exit_s=200.0, rate_initial_deg_s=4.5) for i in range(60)
+    ]
+    stats = summarise(
+        load_records(write_campaign(tmp_path, below + above)), orbit_period_s=ORBIT_S
+    )
+    assert stats.n_below_entry == 3
+
+    report = detumble_report(stats, "synthetic")
+    assert not report.passes
+    offending = [c for c in report.criteria if "tumbling when B-dot engaged" in c.name]
+    assert len(offending) == 1
+    assert not offending[0].passes
+
+    # And the all-tumbling campaign is clean on this criterion, so the check is
+    # discriminating rather than always-on.
+    clean = summarise(
+        load_records(write_campaign(_mkdir(tmp_path / "clean"), above)),
+        orbit_period_s=ORBIT_S,
+    )
+    assert clean.n_below_entry == 0
+    clean_criterion = [
+        c
+        for c in detumble_report(clean, "synthetic").criteria
+        if "tumbling when B-dot engaged" in c.name
+    ][0]
+    assert clean_criterion.passes
