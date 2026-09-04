@@ -160,6 +160,15 @@ struct AttitudePidResult {
   /// The unsaturated demand exceeded `max_torque_nm` and was scaled down.
   bool saturated = false;
 
+  /// Magnitude of the demand **before** saturation [N·m].
+  ///
+  /// Carried because @ref torque_nm is the scaled-down command, so on a
+  /// saturated cycle its norm is `max_torque_nm` by construction — reporting it
+  /// tells an operator that the limit was reached and nothing about *how far
+  /// over* the vehicle was asked to go, which is the whole diagnostic content.
+  /// Equal to `torque_nm.norm()` when not saturated.
+  double demand_nm = 0.0;
+
   /// The commanded rate `(kp/kd)·δθ` exceeded `max_slew_rate_radps` and was
   /// saturated: this cycle is a rate-limited eigenaxis slew, not a PID cycle.
   bool rate_limited = false;

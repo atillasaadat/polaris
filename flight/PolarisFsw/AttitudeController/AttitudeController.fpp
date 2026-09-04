@@ -585,6 +585,15 @@ module flight {
     @ operator can read without a ground model.
     telemetry WheelFrictionNm: F64PerUnit
 
+    @ Control cycles on which the PID demand or the wheel allocation saturated,
+    @ since the last mode entry. A **count**, because the paired event is
+    @ cadence-throttled: sustained saturation is exactly the case the throttle
+    @ suppresses, so the event stream cannot distinguish "briefly, once" from
+    @ "continuously for an hour" and this channel is what does. Written on every
+    @ POINT cycle and zeroed on mode entry, so a mode that cannot saturate this
+    @ way reads 0 rather than leaving the last POINT's total standing.
+    telemetry CyclesSaturated: U32
+
     @ Largest |wheel torque| in this cycle's allocation [N*m] — the quantity the
     @ L-infinity allocation minimises, so the two methods are comparable in flight.
     telemetry MaxWheelTorque: F64
@@ -703,6 +712,10 @@ module flight {
       severity activity high \
       format "Wheel-speed bias engaged: {} N*m*s on wheel 0, null-space dimension {}"
 
+    @ `demandNm` is the demand **before** saturation. It used to be the commanded
+    @ torque, which on a saturated cycle is the limit by construction — the event
+    @ said "the limit was reached" and could not say how far over the vehicle was
+    @ asked to go, which is the only part an operator can act on.
     event TorqueSaturated(demandNm: F64, limitNm: F64, allocScale: F64) \
       severity warning low \
       format "Torque saturated: demand {} N*m against limit {} N*m, allocation scale {}"

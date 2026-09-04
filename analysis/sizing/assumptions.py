@@ -86,12 +86,30 @@ class SizingAssumptions:
         ``None`` — the default — means the config declares no slew requirement,
         and the tool reports the slew rate the design *supports* as a diagnostic
         instead of judging one it was never given.
-    detumble_exit_fraction : float
-        Fraction of the usable wheel momentum envelope the body momentum must be
-        below before detumble hands over to wheel control [-]. Default 0.5: the
-        wheels must absorb the residual body momentum *and* retain authority
-        afterwards, so handing over at half the envelope leaves as much again
-        for the disturbance environment and the pointing transient.
+    detumble_enter_fraction, detumble_exit_fraction : float
+        Fractions of the usable wheel momentum envelope that bracket the B-dot
+        detumble mode, as body momentum :math:`|J\omega|` [-].
+
+        Entry defaults to **1.0**: the vehicle is tumbling, for the purposes of
+        this control system, exactly when its body momentum exceeds what the
+        wheel array is *certified* to hold. Below that the wheels are inside the
+        regime the pointing loop's margins were computed for and there is
+        nothing for the rods to do.
+
+        Exit defaults to **0.75**: the handover leaves the wheels a quarter of
+        the envelope for the disturbance environment and the pointing transient
+        that follows. Note which envelope — ``usable_momentum_nms`` is
+        ``min(inscribed hardware capacity, MomentumEnvelopeNms)``, and on the
+        reference vehicle the second is 15 % of the first. Handing over at 75 %
+        of the *hardware* capacity would be 3.2x outside the SISO validity
+        boundary: the array would physically hold the momentum, the certified
+        margins would describe a different vehicle, and the first thing the
+        wheels would have to do is desaturate rather than point.
+
+        The 33 % band between them is the hysteresis. It is wide because the
+        alternative is worse in both directions: too narrow and the momentum
+        estimate's own noise walks the vehicle across it, and a mode that
+        re-engages the rods on noise runs them continuously.
     secular_fraction_gg, secular_fraction_aero, secular_fraction_srp,
     secular_fraction_mag : float
         Fraction of each disturbance torque treated as **secular** (accumulating
@@ -116,7 +134,8 @@ class SizingAssumptions:
     desat_interval_s: float | None = None
     detumble_budget_s: float | None = None
     slew_rate_radps: float | None = None
-    detumble_exit_fraction: float = 0.5
+    detumble_enter_fraction: float = 1.0
+    detumble_exit_fraction: float = 0.75
     secular_fraction_gg: float = 0.0
     secular_fraction_aero: float = 0.0
     secular_fraction_srp: float = 1.0
@@ -194,8 +213,9 @@ class SizingAssumptions:
             "direction (secular). An inertially-pointing vehicle inverts this.",
             f"Magnetic control efficiency {self.mtq_efficiency:.3g} — the "
             "orbit-average of the cross-product law's (I - b b^T) projection.",
-            f"Detumble hands over at {100.0 * self.detumble_exit_fraction:.0f}% of "
-            "the usable wheel momentum envelope.",
+            f"Detumble engages at {100.0 * self.detumble_enter_fraction:.0f}% and "
+            f"hands over at {100.0 * self.detumble_exit_fraction:.0f}% of the usable "
+            "wheel momentum envelope, as body momentum |J*omega|.",
             f"An actuator more than {self.max_oversizing:g}x its largest driver is "
             "reported as oversized: past that it is the wrong unit class rather "
             "than a conservative choice.",

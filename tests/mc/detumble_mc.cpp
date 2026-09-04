@@ -102,7 +102,19 @@ struct Options {
   int runs = 4;
   int first_run = 0;
   std::uint64_t seed = 20260101;  ///< master seed; the vehicle config's own
-  double duration_s = 45416.0;    ///< 8 orbits at 5677 s
+  double duration_s = 45416.0;    ///< 8 orbits at 5677 s — the *ceiling*, not the plan
+  /// Arc flown past a confirmed completion before the run is stopped [s]. One
+  /// orbit by default: the requirement's "shall not subsequently rise" clause is
+  /// about the rate coming back while B-dot is active, and a full lap is the
+  /// period over which the field geometry that could re-excite it turns over.
+  /// Past that the run is simulating a mode the vehicle would already have left
+  /// — the mode manager hands over to the wheels on this very predicate — so the
+  /// arc buys nothing and costs the great majority of the campaign.
+  ///
+  /// Zero stops at confirmation. A run that never confirms is never stopped
+  /// early, because proving it did not converge inside `duration_s` is what
+  /// makes it a right-censored observation instead of a missing one.
+  double settle_s = 5677.0;
   double profile_step_s = 60.0;
   /// Control mode latched in the deployment: 1 = DETUMBLE (the campaign), 0 =
   /// IDLE. The IDLE setting flies the identical dispersed scenario with the
@@ -116,12 +128,22 @@ struct Options {
 
 /// Tip-off rate magnitude band [deg/s]. REQ-ACTL-001 is written against a 5 deg/s
 /// separation tip-off, which is the demanding end; a dispenser delivers less than
-/// its specified maximum most of the time. Uniform over [2, 5] rather than
-/// clustered at 5 so the campaign can *test* whether magnitude drives the tail at
-/// all — the physics argument says it should not (the fast phase removes the
-/// perpendicular rate in minutes regardless), and a correlation reported against
-/// an actual spread is worth more than an assumption.
-constexpr double kTipoffMinDegS = 2.0;
+/// its specified maximum most of the time. Dispersed rather than clustered at 5 so
+/// the campaign can *test* whether magnitude drives the tail at all — the physics
+/// argument says it should not (the fast phase removes the perpendicular rate in
+/// minutes regardless), and a correlation reported against an actual spread is
+/// worth more than an assumption.
+///
+/// **The floor is the deployment's own `DetumbleEnterRadps`, not a constant**, and
+/// that is the load-bearing part. A vehicle below the entry threshold is not
+/// tumbling: the mode manager will not engage B-dot, so the run measures nothing
+/// and its "time to detumble" is a negative number describing a vehicle that
+/// arrived detumbled. This was a hardcoded 2.0 deg/s, which was silently the old
+/// entry threshold — when Push 84 derived entry from the wheel momentum envelope
+/// and it became 3.44 deg/s, 48 % of the band fell below it and 11 of the first 18
+/// runs never tumbled. A campaign constant that happens to equal a flight
+/// parameter is the same defect the thresholds below are read from the config to
+/// avoid; it just took a change in the flight value to expose it.
 constexpr double kTipoffMaxDegS = 5.0;
 
 // ----------------------------------------------------------------------
@@ -162,7 +184,7 @@ struct Draw {
 /// campaign's size changes, so the stream is derived from `{master seed, run
 /// index}` rather than taken from a single walked generator (the review-lessons
 /// rule on paired comparisons).
-Draw drawFor(std::uint64_t master_seed, int run_index) {
+Draw drawFor(std::uint64_t master_seed, int run_index, double tipoff_min_deg_s) {
   std::seed_seq seq{static_cast<std::uint32_t>(master_seed & 0xffffffffu),
                     static_cast<std::uint32_t>(master_seed >> 32),
                     static_cast<std::uint32_t>(run_index)};
@@ -172,7 +194,7 @@ Draw drawFor(std::uint64_t master_seed, int run_index) {
 
   Draw d;
   d.seed = rng();
-  d.rate_deg_s = kTipoffMinDegS + (kTipoffMaxDegS - kTipoffMinDegS) * unit(rng);
+  d.rate_deg_s = tipoff_min_deg_s + (kTipoffMaxDegS - tipoff_min_deg_s) * unit(rng);
   do {
     d.rate_axis = Eigen::Vector3d(gauss(rng), gauss(rng), gauss(rng));
   } while (d.rate_axis.norm() < 1.0e-9);
@@ -275,6 +297,10 @@ struct Record {
   /// means body rate is being traded with rotor momentum and |omega| stops being
   /// a statement about how detumbled the vehicle is.
   double peak_wheel_torque_nm = 0.0;
+  /// Arc actually flown [s]. Not the configured duration: a run that completes
+  /// stops one settle window later, so a censoring judgement made against
+  /// `duration_s` would be judging against arc the run never had.
+  double arc_s = 0.0;
   /// Rotational kinetic energy 0.5*w'Jw [J] at engagement, at its minimum, and at
   /// the end. B-dot's guarantee is dissipativity in *energy*, not monotonicity in
   /// |omega|, and with a near-isotropic inertia the two can only differ by
@@ -390,11 +416,12 @@ std::size_t engage_index_or_zero(double origin_s, double dt_s, std::size_t size)
 }
 
 Record flyOne(int run_index, const Options& opt, const scenario::SimConfig& reference,
-              const std::string& prm_path, double exit_radps, std::uint32_t confirm_cycles) {
+              const std::string& prm_path, double exit_radps, std::uint32_t confirm_cycles,
+              double tipoff_min_deg_s) {
   const auto started = std::chrono::steady_clock::now();
   Record rec;
   rec.run_index = run_index;
-  rec.draw = drawFor(opt.seed, run_index);
+  rec.draw = drawFor(opt.seed, run_index, tipoff_min_deg_s);
 
   scenario::SimConfig config = reference;
   std::string error;
@@ -452,8 +479,43 @@ Record flyOne(int run_index, const Options& opt, const scenario::SimConfig& refe
     return out;
   };
 
+  // **Stop when the run has nothing left to say.** The vehicle detumbles in
+  // minutes and the arc is eight orbits, so an unconditional march spends
+  // 96-99.6 % of its compute after the answer is known — and on a vehicle the
+  // CONOPS does not fly, since the mode manager hands over to the wheels on this
+  // very predicate rather than holding B-dot for the rest of the day.
+  //
+  // What is *not* cut: a run that never completes still marches the whole arc,
+  // because proving a run did not converge inside the arc is exactly what makes
+  // it a right-censored observation rather than a missing one. And the settle
+  // window past completion is kept, because the requirement's second clause is
+  // about the rate not coming back while the law is active.
+  //
+  // The predicate is the same one `completionOf` applies to the finished trace,
+  // run incrementally, so a stopped run's trace is the prefix of the long run's
+  // and the two agree on every quantity either can report.
+  const auto settle_steps =
+      static_cast<std::uint64_t>(std::llround(opt.settle_s * config.propagation.fsw_rate_hz));
+  std::uint32_t below_streak = 0;
+  std::int64_t confirmed_step = -1;
+  std::int64_t sample_step = -1;
+  const io::ClosedLoop::StepPredicate keep_going = [&](const io::MacroSample& sample) -> bool {
+    ++sample_step;
+    if (confirmed_step < 0) {
+      if (sample.state.body_rate.eigen().norm() < exit_radps) {
+        if (++below_streak >= confirm_cycles) {
+          confirmed_step = sample_step;
+        }
+      } else {
+        below_streak = 0;
+      }
+      return true;
+    }
+    return static_cast<std::uint64_t>(sample_step - confirmed_step) < settle_steps;
+  };
+
   std::vector<io::MacroSample> trace;
-  const bool ran = loop.run(watched, &trace, &error);
+  const bool ran = loop.run(watched, &trace, &error, keep_going);
   rec.healthy = ran && server.healthy();
   server.stop();
   reapFsw(pid);
@@ -542,6 +604,7 @@ Record flyOne(int run_index, const Options& opt, const scenario::SimConfig& refe
     rec.profile_rate_deg_s.push_back(deg(trace[i].state.body_rate.eigen().norm()));
   }
 
+  rec.arc_s = trace.empty() ? 0.0 : trace.back().t_s;
   rec.wall_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
   // The deployment's event stream is kept only when it is evidence: a run in
   // which B-dot never commanded a rod is a run whose event log is the only thing
@@ -555,13 +618,18 @@ Record flyOne(int run_index, const Options& opt, const scenario::SimConfig& refe
 }
 
 nlohmann::json toJson(const Record& r, const scenario::SimConfig& reference, double exit_radps,
-                      std::uint32_t confirm_cycles) {
+                      double enter_radps, std::uint32_t confirm_cycles) {
   nlohmann::json j;
   // The completion thresholds travel *with* the record. Downstream then draws
   // and reports the threshold the runs were actually judged against instead of
   // a transcribed one, so a figure cannot quietly outlive a change to the
   // committed value.
   j["exit_threshold_deg_s"] = exit_radps * 180.0 / M_PI;
+  // The *entry* threshold travels too, and it is not decoration: it is the
+  // campaign's own precondition. A run that began below it never tumbled, so its
+  // completion time describes a vehicle that arrived detumbled, and the analysis
+  // refuses the sample rather than averaging such a run in with the rest.
+  j["enter_threshold_deg_s"] = enter_radps * 180.0 / M_PI;
   j["confirm_cycles"] = confirm_cycles;
   j["run_index"] = r.run_index;
   j["seed"] = r.draw.seed;
@@ -592,6 +660,10 @@ nlohmann::json toJson(const Record& r, const scenario::SimConfig& reference, dou
   j["energy_min_j"] = r.energy_min_j;
   j["energy_final_j"] = r.energy_final_j;
   j["wall_s"] = r.wall_s;
+  // The arc this run actually flew, which is no longer the configured duration:
+  // a completed run stops a settle window past completion. Recorded so a
+  // censoring judgement is made against the arc the run really had.
+  j["arc_s"] = r.arc_s;
   j["profile_t_s"] = r.profile_t_s;
   j["profile_rate_deg_s"] = r.profile_rate_deg_s;
   return j;
@@ -605,7 +677,9 @@ bool parseArgs(int argc, char** argv, Options& opt) {
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     const auto next = [&]() { return (i + 1 < argc) ? std::string(argv[++i]) : std::string(); };
-    if (a == "--runs") {
+    if (a == "--settle-s") {
+      opt.settle_s = std::stod(next());
+    } else if (a == "--runs") {
       opt.runs = std::stoi(next());
     } else if (a == "--first-run") {
       opt.first_run = std::stoi(next());
@@ -630,7 +704,7 @@ bool parseArgs(int argc, char** argv, Options& opt) {
       return false;
     }
   }
-  return opt.runs > 0 && opt.duration_s > 0.0;
+  return opt.runs > 0 && opt.duration_s > 0.0 && opt.settle_s >= 0.0;
 }
 
 }  // namespace
@@ -669,19 +743,34 @@ int main(int argc, char** argv) {
   // the review-lessons catalog names: a harness that restates a flight value
   // drifts toward passing while the committed value moves underneath it.
   double exit_radps = 0.0;
+  double enter_radps = 0.0;
   std::uint32_t confirm_cycles = 0;
   try {
     std::ifstream params(cfg_dir + "/fprime_params.json");
     const nlohmann::json fsw = nlohmann::json::parse(params).at("fsw_parameters");
     exit_radps = fsw.at("flight.attitudeController.DetumbleExitRadps").get<double>();
+    enter_radps = fsw.at("flight.attitudeController.DetumbleEnterRadps").get<double>();
     confirm_cycles = fsw.at("flight.attitudeController.DetumbleConfirmCycles").get<std::uint32_t>();
   } catch (const std::exception& e) {
     std::cerr << "could not read the detumble thresholds from fprime_params.json: " << e.what()
               << "\n";
     return 1;
   }
-  if (!(exit_radps > 0.0) || confirm_cycles == 0) {
+  if (!(exit_radps > 0.0) || confirm_cycles == 0 || !(enter_radps > exit_radps)) {
     std::cerr << "the compiled detumble thresholds are not usable\n";
+    return 1;
+  }
+  // Every run must start *tumbling*, or it measures nothing: below the entry
+  // threshold the mode manager does not engage B-dot and the recorded time to
+  // detumble describes a vehicle that arrived detumbled. The floor is therefore
+  // the flight value, not a constant that has to be remembered when the flight
+  // value moves.
+  const double tipoff_min_deg_s = enter_radps * 180.0 / M_PI;
+  if (!(tipoff_min_deg_s < kTipoffMaxDegS)) {
+    std::cerr << "DetumbleEnterRadps (" << tipoff_min_deg_s << " deg/s) is at or above the "
+              << kTipoffMaxDegS
+              << " deg/s tip-off ceiling: the design tip-off no longer "
+                 "engages detumble, so there is no campaign to fly\n";
     return 1;
   }
 
@@ -692,8 +781,10 @@ int main(int argc, char** argv) {
   }
   std::cerr << "detumble MC: " << opt.runs << " runs x " << opt.duration_s << " s ("
             << (opt.duration_s / 5677.0) << " orbits), seed " << opt.seed << ", mode "
-            << opt.ctrl_mode << "\n  exit " << (exit_radps * 180.0 / M_PI) << " deg/s held "
-            << confirm_cycles << " cycles; config " << reference.config_hash.substr(0, 16) << "\n";
+            << opt.ctrl_mode << "\n  enter " << tipoff_min_deg_s << " deg/s, exit "
+            << (exit_radps * 180.0 / M_PI) << " deg/s held " << confirm_cycles
+            << " cycles; tip-off uniform over [" << tipoff_min_deg_s << ", " << kTipoffMaxDegS
+            << "] deg/s; config " << reference.config_hash.substr(0, 16) << "\n";
 
   // **Sequential, and parallelised by sharding the process rather than
   // threading it.** An in-process worker pool has to `fork` the deployment from
@@ -706,8 +797,9 @@ int main(int argc, char** argv) {
   const auto campaign_started = std::chrono::steady_clock::now();
   const std::string prm_path = cfg_dir + "/PrmDb.dat";
   for (int index = opt.first_run; index < opt.first_run + opt.runs; ++index) {
-    const Record rec = flyOne(index, opt, reference, prm_path, exit_radps, confirm_cycles);
-    out << toJson(rec, reference, exit_radps, confirm_cycles).dump() << "\n";
+    const Record rec =
+        flyOne(index, opt, reference, prm_path, exit_radps, confirm_cycles, tipoff_min_deg_s);
+    out << toJson(rec, reference, exit_radps, enter_radps, confirm_cycles).dump() << "\n";
     out.flush();
     std::cerr << "  [" << (index - opt.first_run + 1) << "/" << opt.runs << "] run " << index
               << ": " << (rec.healthy ? "ok" : ("FAILED " + rec.note)) << ", t_exit "

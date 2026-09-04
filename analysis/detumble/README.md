@@ -66,9 +66,31 @@ seq 0 $((N-1)) | xargs -P $JOBS -I{} \
 ```
 
 `--duration-s 45416` is eight orbits at the reference vehicle's 5677 s period.
-Size it above the longest tail you expect: a run whose arc ends first is
-**right-censored**, and the analysis fails the campaign rather than quoting a
-bound that points the wrong way.
+It is a **ceiling, not a plan**: size it above the longest tail you expect,
+because a run whose arc ends first is **right-censored** and the analysis fails
+the campaign rather than quoting a bound that points the wrong way.
+
+A run that *completes* does not fly the ceiling. It stops `--settle-s` after the
+completion predicate confirms — one orbit by default, the period over which the
+field geometry that could re-excite the vehicle turns over, which is what the
+requirement's "shall not subsequently rise" clause needs to see. Past that the
+run is simulating a mode the vehicle has already left: the mode manager hands
+over to the wheels on this very predicate rather than holding B-dot for the rest
+of the day.
+
+This matters more than it sounds. The vehicle detumbles in minutes and the
+ceiling is eight orbits, so an unconditional march spent **96–99.6 % of its
+compute after the answer was known** — measured at 4.1x real time, a run cost
+about three hours of wall clock to answer a question settled in the first two
+minutes of it. Runs that never converge are never stopped early, because proving
+a run did not converge inside the arc is precisely what makes it a censored
+observation rather than a missing one.
+
+Stopping early is a measurement decision and not a modelling one: a stopped
+run's trace is a **bit-exact prefix** of the same run flown to the ceiling —
+asserted by `ClosedLoop.AnEarlyStoppedRunIsABitExactPrefixOfTheFullOne` in
+`tests/unit/sim_io_closed_loop_test.cpp`. `--settle-s 0` stops at confirmation; a very large value
+restores the old unconditional march.
 
 **Reading the result.** The analysis takes the shard directory directly.
 

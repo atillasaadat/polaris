@@ -976,25 +976,55 @@ spacecraft:
     # law re-acquires from the next pair instead.
     flight.attitudeController.BdotMinSampleDtSec: 0.05
     flight.attitudeController.BdotMaxSampleDtSec: 1.0
-    # Tumbling above 2 deg/s; detumble complete below 1.9 deg/s held for 5 s.
-    # Nothing acts on this yet — it is the predicate the Phase-7 mode manager
-    # reads (§10).
+    # BOTH EDGES OF THE DETUMBLE MODE ARE ONE NUMBER: the wheel array's usable
+    # momentum envelope, expressed as the body rate that fills it. Derived and
+    # gated by `analysis.sizing` (`detumble_enter_fraction`, 1.00 and
+    # `detumble_exit_fraction`, 0.75); nothing acts on the predicate yet — it is
+    # what the Phase-7 mode manager reads (§10).
     #
-    # 1.9 deg/s CLEARS TWO INDEPENDENT BOUNDS THAT USED TO BE UNSATISFIABLE
-    # TOGETHER, and both are computed by `analysis.sizing`:
-    #   * the wheels must absorb whatever body momentum survives the handover and
-    #     still have authority left: 0.5 * MomentumEnvelopeNms / J_max =
-    #     0.5*7.2e-3/0.12 = 0.030 rad/s = 1.72 deg/s;
-    #   * B-dot cannot resolve a rate below its own measurement floor
-    #     sigma*sqrt(2)/(dt*|B|_min) = 1.71 deg/s at 50 nT and 0.1 s. Below it the
-    #     law commands on magnetometer noise rather than on dB/dt.
-    # The two agree within 1 % on this vehicle and 0.033161 rad/s clears both by
-    # 11 %. Before Push 60 the committed value was 0.0087 rad/s (0.5 deg/s) —
-    # *below* the sensing floor — and the momentum bound sat above it, so no
-    # threshold satisfied both; the wheel and the loop bandwidth are what closed
-    # the gap, not a re-tuned threshold.
-    flight.attitudeController.DetumbleEnterRadps: 0.0349
-    flight.attitudeController.DetumbleExitRadps: 0.033161
+    #   enter = 1.00 * MomentumEnvelopeNms / J_max = 7.2e-3/0.12 = 0.060 rad/s
+    #   exit  = 0.75 * MomentumEnvelopeNms / J_max = 5.4e-3/0.12 = 0.045 rad/s
+    #
+    # The vehicle is *tumbling* exactly when its body momentum exceeds what the
+    # array is certified to hold, and *detumbled* when the rods have taken it to
+    # 75 % of that — leaving the wheels a quarter of the envelope for the
+    # disturbance environment and the pointing transient they inherit. The
+    # handover is then immediate: the wheels come up already inside the regime
+    # REQ-ACTL-006's margins were computed for, and go straight to coarse sun
+    # pointing rather than having to desaturate first.
+    #
+    # NOTE WHICH ENVELOPE. `usable_momentum_nms` is min(inscribed hardware
+    # capacity, MomentumEnvelopeNms) = min(0.049, 7.2e-3) — the second is 15 % of
+    # the first. Handing over at 75 % of the *hardware* capacity would be
+    # 0.0368 N·m·s, 3.2x outside the SISO validity boundary (1.16e-2): the array
+    # would physically hold it, the certified margins would describe a vehicle
+    # this is not, the §9 envelope monitor would alarm on arrival, and the first
+    # thing the wheels would have to do is dump momentum. That is the opposite of
+    # a fast handover, and it is why the fraction is taken against the certified
+    # envelope and not against the hardware.
+    #
+    # THE OTHER BOUND IS FROM BELOW and the exit must clear it: B-dot cannot
+    # resolve a rate under its own measurement floor
+    # sigma*sqrt(2)/(dt*|B|_min) = 1.71 deg/s at 50 nT and 0.1 s, below which the
+    # law commands on magnetometer noise rather than on dB/dt. 2.58 deg/s clears
+    # it by 51 %. The previous 1.9 deg/s cleared it by only 11 %, and that margin
+    # was the problem: with the threshold that close to the floor, whether a run
+    # confirms at all is decided by field geometry rather than by how long the
+    # law is given, so a handover *time* written on it would have been a bound on
+    # luck. (Before Push 60 the value was 0.5 deg/s — *below* the floor — and the
+    # momentum bound sat above it, so no threshold satisfied both at all.)
+    #
+    # The 33 % hysteresis band is wide on purpose. The momentum estimate carries
+    # observer noise, and a narrow band lets that noise walk the vehicle across
+    # the boundary — a mode that re-engages the rods on noise runs them
+    # continuously. The old pair was 2.00/1.90 deg/s, a 5 % band.
+    #
+    # Sanity check the design closes on: a 5 deg/s tip-off is |J*omega| =
+    # 0.0105 N·m·s = 1.45x the envelope, so a nominal separation does engage
+    # detumble. If that ratio ever falls to 1.0 the design tip-off stops
+    # tripping its own detumble mode, which `analysis.sizing` reports.
+    flight.attitudeController.DetumbleEnterRadps: 0.060
+    flight.attitudeController.DetumbleExitRadps: 0.045
     flight.attitudeController.DetumbleConfirmCycles: 50
 
     # --- Pointing PID --------------------------------------------------
@@ -1130,33 +1160,48 @@ spacecraft:
     # never worse, whereas over-compensating reverses the residual's sign and
     # past k = 2 makes it larger than doing nothing.
     #
-    # 0.5 IS A MEASURED CHOICE, NOT A ROUND ONE, and the measurement says
-    # something the open-loop argument above does not. Flown on the two rows that
-    # bracket the operating range (worst pointing, deg) **on the RW-X vehicle**,
-    # whose friction was 1.0e-4 N·m — the trim sweep has not been re-flown on
-    # RW-X, where the whole term is an order of magnitude smaller, so 0.5 is
-    # carried forward on the argument rather than on a fresh measurement:
+    # 0.5 SURVIVES A RE-FLOWN SWEEP, BUT NOT FOR ITS ORIGINAL REASON. The sweep
+    # that first set it was flown on the **RW04** vehicle (1.0e-4 N·m Coulomb
+    # friction, 1.0e-4 N·m drive LSB) and was carried forward on argument when
+    # Push 60 took the RW-X wheel, whose friction and LSB are both 8e-6 N·m — an
+    # order of magnitude smaller. Re-flown on RW-X, on the same two rows that
+    # bracket the operating range (worst pointing, deg):
     #
     #                              k = 0    k = 0.5   k = 1.0
-    #   loaded array (desat row)    2.77      1.38      1.52
-    #   near-empty array (hold row) 0.12      0.25      1.09  <- 1.0 deg bound
+    #   loaded array (desat row)   0.0597    0.0406    0.0402   <- 0.05 deg bound
+    #   near-empty array (hold row) 0.0131    0.0129    0.0134   <- 1.0 deg bound
     #
-    # The loaded case is what the feedforward is for and it improves by half a
-    # degree. The near-empty case gets *worse* with it, monotonically in k, and
-    # at k = 1 it breaks REQ-ACTL-002's own verification row. The mechanism is
-    # that a near-empty array runs its wheels at the speeds where the
-    # compensation's sign is least trustworthy — inside and around the blend
-    # band, one control period stale — and where the friction the feedforward
-    # removes was also passively damping the stored momentum. Half compensation
-    # keeps most of the loaded-array gain, stays a factor of four inside the
-    # near-empty bound, and is conservative in the direction the policy above
-    # says to be conservative in. **This is a closed-loop trade the open-loop
-    # "partial is never worse" argument does not cover, and it is why the trim is
-    # a flight parameter rather than a constant.**
+    # (RW04, for comparison, read 2.77 / 1.38 / 1.52 loaded and 0.12 / 0.25 /
+    # 1.09 near-empty.)
     #
-    # The catalog entry labels its friction "representative (unit calibration)",
-    # so a measured rundown re-opens this number; that is a per-unit uplink,
-    # which is why the trim is per-unit here and not one scalar.
+    # **The closed-loop argument that chose 0.5 is gone.** On RW04 the near-empty
+    # row degraded monotonically in k and broke its bound at k = 1; on RW-X that
+    # penalty does not reproduce — the spread across the whole sweep is 3.6 %, on
+    # a number sitting 75x inside its bound. The mechanism explains its own
+    # disappearance: the sign ambiguity lived inside and around the 5.0e-3 rad/s
+    # blend band, and the RW04 vehicle ran its wheels at 0.05 to 0.55 rad/s,
+    # i.e. *in* the band. Push 60's vehicle runs 10 to 33 rad/s, three orders
+    # above it, and never visits the regime the penalty came from.
+    #
+    # What still argues for k < 1 is the friction magnitude itself. The catalog
+    # entry labels its number "representative (unit calibration)", and the trim
+    # multiplies that number, not the true one: at k = 1 against a catalog value
+    # 2x low the vehicle is compensating at an effective k = 2, which the policy
+    # above is precisely about. 0.5 tolerates a catalog value up to 2x low and
+    # still lands at or below 1 against reality. **The measured cost of that
+    # conservatism is now 0.9 % of the loaded row's error** (0.0406 vs 0.0402),
+    # which is what makes it cheap enough to keep rather than a trade.
+    #
+    # STILL OWED, and unchanged by this sweep: a measured rundown of the flight
+    # unit. That is what would collapse the magnitude uncertainty and let k go to
+    # 1; it is a per-unit uplink, which is why the trim is per-unit here and not
+    # one scalar. The sweep above removes the *stale* justification, not the
+    # hardware measurement.
+    #
+    # Reproduce with POLARIS_FSW_CONFIG (tests/integration/sitl_harness.hpp)
+    # pointed at a copy of this file with the block below edited, against
+    # SitlAttitudeControl.DesaturationDumpsMomentumWhilePointingHolds and
+    # .InertialHoldConvergesUnderThePointingBound.
     flight.attitudeController.WheelFrictionDeadbandRadps: 5.0e-3
     flight.attitudeController.WheelFrictionScale: [
       0.5,   # 0: rw_1

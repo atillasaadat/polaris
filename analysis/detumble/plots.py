@@ -41,7 +41,7 @@ from analysis.common.plotting import (
     verdict_title,
 )
 from analysis.detumble.records import RunRecord
-from analysis.detumble.report import FAST_PHASE_BOUND_DEG_S, FAST_PHASE_WINDOW_S
+from analysis.detumble.report import FAST_PHASE_WINDOW_S, HANDOVER_BOUND_S
 from analysis.detumble.statistics import DetumbleStatistics
 
 __all__ = ["write_all"]
@@ -114,13 +114,17 @@ def _ensemble(
             alpha=0.45,
             color=NEUTRAL_COLOR,
         )
-    threshold_line(
-        ax,
-        FAST_PHASE_BOUND_DEG_S,
-        f"REQ-ACTL-001 fast phase {FAST_PHASE_BOUND_DEG_S} deg/s",
-    )
+    # The requirement's bound is a *time*, so it is drawn on the time axis.
+    # Until Push 84 this plot carried a horizontal rate line at 3.8 deg/s, which
+    # is the clause the campaign retired as unachievable across geometry.
     threshold_line(
         ax, exit_deg_s, f"DetumbleExitRadps {exit_deg_s:.2f} deg/s", color="#8a5a00"
+    )
+    threshold_line(
+        ax,
+        HANDOVER_BOUND_S / stats.orbit_period_s,
+        f"REQ-ACTL-001 handover {HANDOVER_BOUND_S / stats.orbit_period_s:.0f} orbits",
+        orientation="v",
     )
     threshold_line(
         ax,
@@ -130,12 +134,16 @@ def _ensemble(
         color="#555555",
         ls=":",
     )
+    # The judged quantity is the tolerance bound on the completion time, so that
+    # is what is annotated; the fast-phase rate stays as the dotted guide above
+    # because it is the most legible read on how much authority the geometry gave
+    # the law, but it is no longer a pass/fail line.
     annotate_measurement(
         ax,
-        FAST_PHASE_WINDOW_S / stats.orbit_period_s,
-        stats.worst_fast_phase_deg_s,
-        f"worst {stats.worst_fast_phase_deg_s:.2f} deg/s",
-        stats.worst_fast_phase_deg_s <= FAST_PHASE_BOUND_DEG_S,
+        stats.tolerance_bound_s / stats.orbit_period_s,
+        exit_deg_s,
+        f"95/95 bound {stats.tolerance_bound_s:.0f} s",
+        stats.tolerance_bound_s <= HANDOVER_BOUND_S,
     )
     ax.set_yscale("log")
     ax.set_xlabel("time from B-dot engagement [orbits]")

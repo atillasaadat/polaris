@@ -25,9 +25,74 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    duty factor — is the value the control gain demands, and **shall** be
    saturated per rod.
 
-   From a 5 deg/s tip-off rate the law **shall** reduce the body-rate magnitude
-   below **3.8 deg/s within 200 s of engaging**, and the rate **shall not**
-   subsequently rise above that bound while the law is active.
+   From a tip-off anywhere between ``DetumbleEnterRadps`` and 5 deg/s, with
+   arbitrary spin direction and orbit phase, the law **shall** reduce the
+   body-rate magnitude below ``DetumbleExitRadps`` within **2 orbits (11354 s)
+   of engaging**, at the 95th percentile with 95 % confidence. The rotational
+   kinetic energy **shall** be non-increasing on every cycle the law commands,
+   saturated or not.
+
+   Safe-mode handover to wheel control **shall** be triggered by the completion
+   predicate itself, and **shall not** be scheduled at a fixed time after
+   engagement.
+
+   *What the law can and cannot promise, measured.* A B-dot law damps only the
+   body-rate components perpendicular to the field: the component along it
+   produces no ``dB/dt`` in body axes and is invisible to the law. What
+   eventually removes it is the field direction turning over the orbit, a
+   ~1e-3 rad/s process against a spin of ~5e-2 rad/s, so a vehicle whose spin
+   arrives nearly along the local field line settles into a slow spin about it
+   and unwinds over **orbits**, not minutes — the asymptotic convergence
+   Avanzini & Giulietti prove, not a defect.
+
+   *The 93-run campaign (Push 84), which is what the numbers above come from.*
+   Tip-off uniform over [3.44, 5] deg/s, uniformly-random attitude and spin
+   axis, dispersed RAAN, argument of latitude and epoch, 500 km SSO. All 93 runs
+   converged and none was right-censored, so the tolerance bound is a bound and
+   not a lower bound on itself. Median time to completion **503 s**, empirical
+   p95 **2677 s**, worst **6399 s** (1.13 orbits). The distribution-free Wilks
+   bound on the 95th percentile at 95 % confidence is **4988 s**, read from the
+   *second* order statistic — so it survives a single pathological run rather
+   than being set by one. 11354 s is that bound plus 20 % margin, rounded up to
+   a whole orbit. B-dot's achieved floor is a median 0.75 deg/s against the
+   2.58 deg/s predicate, 3.5x of headroom, so completion is a time and not a
+   coin flip on geometry.
+
+   *A previous clause was retired here, and it was retired as unachievable
+   rather than merely unmet.* Until Push 84 this requirement read "from a 5
+   deg/s tip-off the law shall reduce the body rate below 3.8 deg/s within 200 s
+   of engaging". That number came from a single run at a single geometry
+   (3.14 deg/s at 200 s, given 21 % margin). Across 93 dispersed geometries
+   **22 of them — 24 % — exceed it**, the worst at 4.917 deg/s, which is a run
+   that removed essentially *no* rate in its first 200 s.
+
+   No B-dot design meets such a clause, because the failure is an absence of
+   information rather than an absence of authority: with the spin along **B**
+   the body-frame ``dB/dt`` is only the orbital term, the law correctly commands
+   almost nothing, and no gain or dipole recovers a signal that is not there.
+   The campaign shows it quantitatively — the driver is the **perpendicular
+   spin fraction** :math:`|\sin\theta|` between the spin axis and the field,
+   which ranks at **-0.65** against the rate 200 s after engagement while the
+   raw angle :math:`\theta` ranks at -0.07. (Both 0 and 180 degrees are fully
+   aligned, so the relationship is not monotone in the angle and a rank
+   correlation on it sees nothing. The campaign's own report made exactly that
+   mistake until this push and therefore reported that geometry did not matter.)
+   Runs near :math:`\theta = 90^\circ` shed 49–67 % of their rate in 200 s;
+   runs near 0 or 180 shed 0–13 %.
+
+   The clause was also redundant. What it existed to protect — that the vehicle
+   becomes controllable — is exactly what the time-to-handover bound above
+   states, and states achievably: the worst of 93 runs completes at 6399 s
+   against an 11354 s handover. A fast-phase rate bound guards nothing the
+   handover bound does not already guard, and it fails a quarter of the sky.
+
+   *Why the handover must be predicate-triggered.* 5 of the 93 runs ended their
+   arc back **above** the completion threshold, having already crossed it. The
+   campaign holds the vehicle in DETUMBLE for a full orbit past completion and
+   the flown CONOPS does not, so this is not a failure of the law — it is the
+   measurement that says staying in B-dot past completion is harmful, and
+   therefore that the mode manager must hand over on the predicate rather than
+   on a timer set from it.
 
    The window opens at *engagement*, not at boot, because B-dot's only input is
    the voted magnetometer field and that field does not exist until the vehicle
@@ -35,38 +100,66 @@ Attitude control law requirements. Source: design doc §8.5 (control), §7
    receiver quotes a 34 s cold start. Charging the control law for the receiver's
    datasheet would make the requirement a statement about the wrong component.
 
-   *Why the bound is where it is.* A B-dot law damps only the body-rate
-   components perpendicular to the field: the component along it produces no
-   ``dB/dt`` in body axes and is invisible to the law. What eventually removes it
-   is the field direction turning over the orbit, a ~1e-3 rad/s process against a
-   spin of ~5e-2 rad/s, so the vehicle settles into a slow spin about the local
-   field line and unwinds it over **orbits**, not minutes — the asymptotic
-   convergence Avanzini & Giulietti prove, not a defect. The requirement is
-   therefore written on the fast phase, which is the one that decides
-   controllability; the reference vehicle measures 3.14 deg/s 200 s after
-   engaging, so the 3.8 deg/s bound carries 21 % margin. **Owed:** a Monte Carlo campaign over
-   several orbits to characterise the residual-spin tail and set a Safe-mode
-   handover time. The ``DetumbleExitRadps`` completion predicate exists and is
-   telemetered, but no requirement is written on the time to reach it until that
-   campaign has run.
+   *Both edges of the mode are one number (Push 84).* The vehicle is **tumbling**
+   exactly when its body momentum :math:`|J\omega|` exceeds what the wheel array
+   is certified to hold, and **detumbled** when the rods have taken it to 75 % of
+   that — so ``DetumbleEnterRadps`` and ``DetumbleExitRadps`` are 100 % and 75 %
+   of ``usable_momentum_nms`` divided by :math:`J_{\max}`, or **3.44 deg/s** and
+   **2.58 deg/s** (0.060 and 0.045 rad/s). Both are derived and gated by
+   ``analysis/sizing`` rather than tuned. The exit fraction is what makes the
+   handover fast: the wheels come up already inside the regime REQ-ACTL-006's
+   margins were computed for, with a quarter of the envelope left for the
+   disturbance environment and the pointing transient, so Safe mode goes straight
+   to coarse sun pointing instead of desaturating first.
 
-   *The completion predicate itself moved in Push 60, and the two bounds on it
-   now agree.* ``analysis/sizing`` measures B-dot's own measurement noise floor
+   *Which envelope, and why not the hardware.* ``usable_momentum_nms`` is
+   :math:`\min(` inscribed hardware capacity, ``MomentumEnvelopeNms`` :math:`)`
+   = :math:`\min(0.049,\ 7.2\times10^{-3})` N·m·s — the certified envelope is
+   15 % of what the array physically stores. Handing over at 75 % of the
+   *hardware* capacity would be 0.0368 N·m·s, **3.2× outside the SISO validity
+   boundary**: the wheels would hold it, REQ-ACTL-006's margins would describe a
+   vehicle this is not, the §9 envelope monitor would alarm on arrival, and the
+   first thing the wheels would have to do is dump momentum. 75 % is also the
+   largest exit fraction the 30 % sizing-margin convention admits —
+   :math:`0.75 \times 1.3 = 0.975` — so the D1b post-handover criterion passes
+   with 2.6 % to spare and would fail above it.
+
+   *The bound from below, and the margin that matters.* ``analysis/sizing``
+   measures B-dot's own measurement noise floor
    :math:`\sigma\sqrt2/(\Delta t\,\|B\|)` at **1.71 deg/s** at the orbit's
    weakest field — below it the law commands on magnetometer noise rather than
-   on :math:`\dot{\mathbf B}` — while the wheels' side of the handover requires
-   the array to absorb :math:`J\omega` at whatever rate the rods hand over at,
-   which against the committed envelope puts the threshold at **1.72 deg/s**.
-   The committed ``DetumbleExitRadps`` is **0.033161 rad/s = 1.9 deg/s**, clearing
-   both by 11 %. On the pre-Push-60 vehicle it was 0.5 deg/s — *below* the sensing
-   floor — and the two bounds were mutually unsatisfiable; they now agree within
-   1 %, which is a property of the wheel and the loop bandwidth the vehicle took
-   in Push 60 rather than of a re-tuned threshold.
+   on :math:`\dot{\mathbf B}`. The 2.58 deg/s exit clears it by **51 %**. The
+   previous threshold, 1.9 deg/s, cleared it by only 11 %, and that margin was
+   the defect rather than a tight fit: with the predicate that close to the
+   sensing floor, whether a run confirms at all is decided by field geometry
+   rather than by how long the law is given, so a handover *time* written on it
+   would have been a bound on luck. On the pre-Push-60 vehicle the value was
+   0.5 deg/s — *below* the floor — while the momentum bound sat above it, so no
+   threshold satisfied both at all.
 
-   Verified by ``tests/integration/sitl_attitude_control_test.cpp``
-   (``DetumblesFromFiveDegreesPerSecond``), with the law's dissipativity — the
-   rotational kinetic energy non-increasing on every cycle it commands, saturated
-   or not — pinned in ``tests/unit/gnc_control_test.cpp``
+   *The hysteresis is wide on purpose.* The 100 %/75 % pair is a 33 % band,
+   against the 5 % of the old 2.00/1.90 deg/s pair. The momentum estimate carries
+   observer noise, and a narrow band lets that noise walk the vehicle across the
+   boundary — a mode that re-engages the rods on noise runs them continuously.
+   The design closes on the tip-off it is sized for: a 5 deg/s separation is
+   :math:`|J\omega| = 0.0105` N·m·s, **1.45×** the envelope, so a nominal
+   tip-off does engage detumble.
+
+   Verified by the **93-run Monte Carlo campaign** (``tests/mc/detumble_mc.cpp``
+   driving the real deployment over the SITL wire, analysed by
+   ``analysis/detumble``), which is what supports the time bound and the
+   confidence attached to it — a single row cannot, since the quantity bounded
+   is a quantile over geometry. The campaign gates itself on being able to
+   support the claim: it fails if any run is right-censored by its arc, if fewer
+   runs converged than the Wilks order the bound is read at needs, or if any run
+   began below ``DetumbleEnterRadps`` and so never tumbled.
+
+   ``tests/integration/sitl_attitude_control_test.cpp``
+   (``DetumblesFromFiveDegreesPerSecond``) remains the single-geometry row, and
+   ``DetumblesThenAcquiresSunPointing`` flies the handover the second clause is
+   about. The law's dissipativity — the rotational kinetic energy non-increasing
+   on every cycle it commands, saturated or not — is pinned in
+   ``tests/unit/gnc_control_test.cpp``
    (``Bdot.RateEnergyDecreasesMonotonicallyOverADetumbleSnippet``) and the
    duty-factor scaling in ``Bdot.DipoleScalesInverselyWithTheDutyFactor``.
 

@@ -223,6 +223,9 @@ def derived_parameters(
     momentum_exit = (
         assumptions.detumble_exit_fraction * wheels.usable_momentum_nms / inertia_max
     )
+    momentum_enter = (
+        assumptions.detumble_enter_fraction * wheels.usable_momentum_nms / inertia_max
+    )
     floor = mtq.noise_floor.rate_worst_radps
     recommended_exit = max(momentum_exit, floor)
 
@@ -331,6 +334,38 @@ def derived_parameters(
                 "the vehicle re-engages on the next disturbance cycle and the rods "
                 "run continuously. A 3.3x band is wide enough that the observer's "
                 "noise on the momentum estimate cannot walk the state across it."
+            ),
+        ),
+        DerivedParameter(
+            name="DetumbleEnterRadps",
+            derived=momentum_enter,
+            committed=vehicle.detumble_enter_radps,
+            units="rad/s",
+            formula="f_enter * h_usable / J_max",
+            formula_tex=(
+                r"\omega_{\mathrm{enter}} = "
+                r"\frac{f_{\mathrm{enter}}\,h_{\mathrm{usable}}}{J_{\max}}"
+            ),
+            inputs=(
+                f"f_enter = {assumptions.detumble_enter_fraction:g}, "
+                f"h_usable = {wheels.usable_momentum_nms:.3g} N.m.s, "
+                f"J_max = {inertia_max:g} kg.m^2 -> "
+                f"{np.degrees(momentum_enter):.3g} deg/s"
+            ),
+            reasoning=(
+                "The vehicle is tumbling, for this control system's purposes, "
+                "exactly when its body momentum exceeds what the wheel array is "
+                "certified to hold — below that the wheels are inside the regime "
+                "the pointing margins were computed for and the rods have nothing "
+                "to do. Both edges of the mode therefore come off one number, "
+                f"which is what makes the {100.0 * assumptions.detumble_enter_fraction:.0f}% / "
+                f"{100.0 * assumptions.detumble_exit_fraction:.0f}% pair a design "
+                "statement rather than two independently tuned rates. The "
+                f"{np.degrees(momentum_enter):.3g} deg/s here is "
+                f"{np.degrees(momentum_enter) / np.degrees(assumptions.tipoff_rate_radps):.2f}x "
+                "the tip-off rate the vehicle is sized for, so a nominal "
+                "separation engages detumble; if that ratio ever reaches 1 the "
+                "design tip-off no longer trips its own detumble mode."
             ),
         ),
         DerivedParameter(

@@ -83,6 +83,23 @@ inline std::string dictionaryPath() {
                "build-artifacts/Linux/flight_PolarisFsw/dict/PolarisFswTopologyDictionary.json");
 }
 
+/// Vehicle the *flight software* is parameterised from. The reference vehicle by
+/// default, which is what every row in CI flies.
+///
+/// Overridable because a parameter trade — "what does this row measure at k =
+/// 0, 0.5, 1.0?" — is a question about one number in the ParameterDb, and the
+/// alternatives are worse: editing the committed YAML in place makes the sweep
+/// unrunnable in parallel and leaves the tree dirty, and a per-parameter command
+/// flag on the deployment adds flight-side surface for a ground-side question.
+///
+/// It moves the **flight** side only. The truth plant is built programmatically
+/// by each row (`faultMatrixOrbit` and friends), so a swept parameter changes
+/// what the controller believes and not what the wheel physically does — which
+/// is the distinction a feedforward-trim sweep is entirely about.
+inline std::string vehicleConfigPath() {
+  return envOr("POLARIS_FSW_CONFIG", "config/spacecraft/leo_smallsat.yaml");
+}
+
 /// Run the config compiler over the reference vehicle, writing PrmDb.dat (and
 /// the JSON artifacts) into @p out_dir. Returns the exit status; diagnostics go
 /// to @p err_path. The caller has already established the interpreter exists, so
@@ -93,7 +110,7 @@ inline int compileConfig(const std::string& out_dir, const std::string& err_path
   // configc creates out_dir itself, but the shell opens the stderr redirect
   // first, so the directory has to exist before the command runs.
   cmd << "mkdir -p '" << out_dir << "' && PYTHONPATH=tools '" << pythonPath() << "' -m configc"
-      << " --config config/spacecraft/leo_smallsat.yaml"
+      << " --config '" << vehicleConfigPath() << "'"
       << " --hardware config/hardware"
       << " --dictionary '" << dictionaryPath() << "' --out '" << out_dir << "'"
       << " >/dev/null 2>'" << err_path << "'";

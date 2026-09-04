@@ -30,8 +30,8 @@ constexpr F64 kBdotGainNms = 4.0e-3;
 constexpr F64 kBdotMaxDipoleAm2 = 15.0;
 constexpr F64 kBdotMinSampleDtSec = 0.05;
 constexpr F64 kBdotMaxSampleDtSec = 1.0;
-constexpr F64 kDetumbleEnterRadps = 0.0349;
-constexpr F64 kDetumbleExitRadps = 0.0087;
+constexpr F64 kDetumbleEnterRadps = 0.060;  // 100% of the momentum envelope, as the vehicle flies
+constexpr F64 kDetumbleExitRadps = 0.045;   // 75% of it — the flown handover
 constexpr U32 kDetumbleConfirmCycles = 5;
 constexpr F64 kPidKp = 4.4e-3;
 constexpr F64 kPidKi = 2.0e-4;
@@ -392,6 +392,62 @@ void AttitudeControllerTester ::testPointRefusalPaths() {
   this->sendCmd_CTRL_MODE_SET(0, 0, AttitudeController::CtrlMode::IDLE);
   ASSERT_EVENTS_ModeRefused_SIZE(0);
   ASSERT_EVENTS_ModeChanged_SIZE(1);
+}
+
+void AttitudeControllerTester ::testSaturationIsCountedAndReportedUnclipped() {
+  this->setValidParameters();
+  // Squeeze the torque limit rather than inflate the demand. The alternatives
+  // both change what is being tested: a rate large enough to saturate the kd
+  // term is a rate that demotes POINT to DETUMBLE, and the largest attainable
+  // angle error (pi) still falls short of the flown limit against the flown kp.
+  // Saturation is a demand/limit comparison, so moving either side of it is the
+  // same experiment.
+  constexpr F64 kTightLimitNm = 1.0e-4;
+  this->paramSet_PidMaxTorqueNm(kTightLimitNm, Fw::ParamValid::VALID);
+  this->paramSet_AlertCycles(1, Fw::ParamValid::VALID);  // every cycle, not one in 100
+  this->component.loadParameters();
+
+  const double angle = 10.0 * M_PI / 180.0;
+  const pm::Quaternion attitude =
+      pm::Quaternion::FromAxisAngle(Eigen::Vector3d::UnitX(), angle).canonical();
+  this->setEstimate(attitude, Eigen::Vector3d::Zero(), 1.0e-4, kStartTaiNs);
+  this->runCycleAt(kStartTaiNs);
+  this->sendCmd_CTRL_SET_TARGET_Q(0, 0, 1.0, 0.0, 0.0, 0.0);
+  this->sendCmd_CTRL_MODE_SET(0, 0, AttitudeController::CtrlMode::POINT);
+  this->clearHistory();
+
+  // Three saturated cycles. The estimate is re-stamped each time and the
+  // attitude held, so every cycle sees the same over-demand.
+  for (U32 i = 1; i <= 3; ++i) {
+    const I64 when = kStartTaiNs + static_cast<I64>(i) * kPeriodNs;
+    this->setEstimate(attitude, Eigen::Vector3d::Zero(), 1.0e-4, when);
+    this->runCycleAt(when);
+  }
+
+  // The count rises once per saturated cycle. This is the half the event stream
+  // cannot carry: the alert is cadence-throttled, so sustained saturation --
+  // exactly the case worth knowing about -- is the case the throttle hides.
+  ASSERT_TLM_CyclesSaturated_SIZE(3);
+  for (U32 i = 0; i < 3; ++i) {
+    ASSERT_TLM_CyclesSaturated(i, i + 1);
+  }
+
+  // And the event reports the demand *before* the clip. Reporting the command
+  // instead -- which is what this used to do -- makes demandNm equal limitNm by
+  // construction on every saturated cycle, so the operator learns that the limit
+  // was reached and nothing about how far over the vehicle was asked to go.
+  ASSERT_EVENTS_TorqueSaturated_SIZE(3);
+  const F64 reported = this->eventHistory_TorqueSaturated->at(0).demandNm;
+  EXPECT_GT(reported, kTightLimitNm);
+  EXPECT_NEAR(reported, kPidKp * 2.0 * std::sin(0.5 * angle), 1.0e-12);
+
+  // A mode change zeroes the count *on the downlink*, not merely in memory:
+  // only the POINT path writes this channel, so a reset that stayed internal
+  // would leave the previous mode's total standing for the whole of a DETUMBLE.
+  this->clearHistory();
+  this->sendCmd_CTRL_MODE_SET(0, 0, AttitudeController::CtrlMode::IDLE);
+  ASSERT_TLM_CyclesSaturated_SIZE(1);
+  ASSERT_TLM_CyclesSaturated(0, 0);
 }
 
 void AttitudeControllerTester ::testPointEngagesAndReducesError() {

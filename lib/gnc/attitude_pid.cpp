@@ -112,6 +112,7 @@ bool AttitudePid::update(const math::Quat<math::frames::Body, math::frames::ECI>
   Eigen::Vector3d demand = proportional + integral_term + derivative + feedforward_nm.eigen();
 
   const double demand_norm = demand.norm();
+  out.demand_nm = demand_norm;
   const bool saturated = demand_norm > config_.max_torque_nm;
   if (saturated) {
     // One scale factor for the whole vector: an over-demand becomes a slower

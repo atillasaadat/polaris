@@ -230,6 +230,55 @@ TEST(ClosedLoop, IsBitReproducibleAcrossRuns) {
   }
 }
 
+TEST(ClosedLoop, AnEarlyStoppedRunIsABitExactPrefixOfTheFullOne) {
+  // Stopping early must be a decision about how much to *measure*, never about
+  // what is being modelled. The campaign driver leans on exactly this: the
+  // detumble Monte Carlo stops a settle window after the completion predicate
+  // confirms, and its records are only comparable with a full-arc run's if the
+  // short trace is the long trace's opening samples and not merely close to
+  // them. Approximate agreement would be a different vehicle measured twice.
+  auto fly = [](const io::ClosedLoop::StepPredicate& keep_going,
+                std::vector<io::MacroSample>& trace) {
+    scenario::SimConfig config = freeSpace(1.0);
+    scenario::Vehicle vehicle;
+    std::string error;
+    ASSERT_TRUE(scenario::buildVehicle(suite({imuUnit("imu_a", 100.0)}, {}), 42, vehicle, &error))
+        << error;
+    scenario::SimRunner runner;
+    io::ClosedLoop loop(runner, vehicle);
+    loop.setDataPaths(scenario::DataPaths::under(POLARIS_GOLDEN_DIR));
+    ASSERT_TRUE(
+        runner.build(config, scenario::DataPaths::under(POLARIS_GOLDEN_DIR), &error, loop.wrench()))
+        << error;
+    auto fsw = [](const io::FswInputs&) { return io::FswOutputs{}; };
+    ASSERT_TRUE(loop.run(fsw, &trace, &error, keep_going)) << error;
+  };
+
+  std::vector<io::MacroSample> full;
+  fly({}, full);  // no predicate at all: the whole configured duration
+  ASSERT_GT(full.size(), 5u);
+
+  // Stop after a fixed number of boundaries, which is the same shape as the
+  // driver's "confirmed, then settle" rule without importing its thresholds.
+  const std::size_t stop_after = full.size() / 2;
+  std::size_t seen = 0;
+  std::vector<io::MacroSample> partial;
+  fly([&](const io::MacroSample&) { return ++seen < stop_after; }, partial);
+
+  // The predicate is asked *after* the boundary is published, so the sample it
+  // refuses on is still in the trace: N calls leave N samples past the seed.
+  ASSERT_LT(partial.size(), full.size());
+  ASSERT_GT(partial.size(), 1u);
+  for (std::size_t i = 0; i < partial.size(); ++i) {
+    EXPECT_EQ(partial[i].t_s, full[i].t_s) << i;
+    EXPECT_EQ(partial[i].state.position.eigen(), full[i].state.position.eigen()) << i;
+    EXPECT_EQ(partial[i].state.velocity.eigen(), full[i].state.velocity.eigen()) << i;
+    EXPECT_EQ(partial[i].state.body_rate.eigen(), full[i].state.body_rate.eigen()) << i;
+    EXPECT_EQ(partial[i].state.attitude.core().coeffs(), full[i].state.attitude.core().coeffs())
+        << i;
+  }
+}
+
 TEST(ClosedLoop, GnssFaultScheduleAppliesAtSampleTime) {
   // A scheduled outage window must invalidate exactly the fixes inside it —
   // the deferred §9.2 binding, now live in the loop.

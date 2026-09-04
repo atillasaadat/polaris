@@ -23,7 +23,7 @@ import numpy as np
 import pytest
 
 from analysis.detumble.records import load_records
-from analysis.detumble.report import FAST_PHASE_BOUND_DEG_S, detumble_report
+from analysis.detumble.report import HANDOVER_BOUND_S, detumble_report
 from analysis.detumble.statistics import (
     spearman,
     summarise,
@@ -34,6 +34,11 @@ from analysis.detumble.statistics import (
 ORBIT_S = 5677.0
 
 
+def _mkdir(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def make_record(
     index: int,
     *,
@@ -42,6 +47,7 @@ def make_record(
     fast_phase_deg_s: float = 3.0,
     peak_after_deg_s: float = 3.0,
     rate_initial_deg_s: float = 5.0,
+    enter_threshold_deg_s: float = 3.4377,
     spin_field_deg: float = 30.0,
     arc_s: float = 8.0 * ORBIT_S,
 ) -> dict:
@@ -49,6 +55,8 @@ def make_record(
     profile_t = np.arange(0.0, arc_s, 600.0)
     return {
         "exit_threshold_deg_s": 0.4984,
+        "enter_threshold_deg_s": enter_threshold_deg_s,
+        "arc_s": arc_s,
         "confirm_cycles": 50,
         "run_index": index,
         "seed": 1000 + index,
@@ -222,9 +230,15 @@ def test_load_records_refuses_a_missing_file(tmp_path: Path) -> None:
 
 @pytest.fixture
 def healthy_campaign(tmp_path: Path) -> Path:
-    """93 converged runs with a known, deliberately skewed time distribution."""
+    """93 converged runs with a known, deliberately skewed time distribution.
+
+    Centred near the *measured* campaign (median ~500 s, tail into the low
+    thousands) rather than on two orbits. It used to sit at two orbits, which
+    Push 84 made the committed handover bound — a "healthy" fixture whose
+    tolerance bound lands exactly on the requirement it is meant to pass.
+    """
     rng = np.random.default_rng(20260807)
-    times = np.sort(rng.lognormal(mean=math.log(2.0 * ORBIT_S), sigma=0.5, size=93))
+    times = np.sort(rng.lognormal(mean=math.log(500.0), sigma=0.9, size=93))
     return write_campaign(
         tmp_path,
         [
@@ -232,7 +246,13 @@ def healthy_campaign(tmp_path: Path) -> Path:
                 i,
                 t_exit_s=float(t),
                 spin_field_deg=float(90.0 - 60.0 * (t / times.max())),
-                rate_initial_deg_s=float(rng.uniform(2.0, 5.0)),
+                # Over the *tumbling* band. This fixture drew from [2, 5] --
+                # the driver's old hardcoded tip-off band -- and so quietly
+                # contained 41 runs that never tumbled, which is the same
+                # transcription defect the driver had: a campaign constant that
+                # happened to equal a flight parameter. The floor is the entry
+                # threshold because a run below it is not a detumble run.
+                rate_initial_deg_s=float(rng.uniform(3.4377, 5.0)),
             )
             for i, t in enumerate(times)
         ],
@@ -264,9 +284,18 @@ def test_summarise_proposes_a_handover_above_the_bound_and_on_an_orbit(
 
 
 def test_summarise_recovers_the_planted_driver(healthy_campaign: Path) -> None:
-    """The synthetic campaign plants a monotone spin/field relation; find it."""
+    """The synthetic campaign plants a monotone spin/field relation; find it.
+
+    Reported against |sin(theta)| rather than theta because that is what B-dot
+    can act on, and because a rank correlation on theta is blind to it: 0 and
+    180 degrees are both fully aligned, so the true relation is not monotone in
+    the angle. The fixture plants angles in (30, 90] degrees, where |sin| is
+    monotone in theta, so a planted monotone relation survives the transform.
+    """
     stats = summarise(load_records(healthy_campaign), orbit_period_s=ORBIT_S)
-    assert stats.correlations["spin/field angle after fast phase [deg]"] < -0.9
+    assert (
+        stats.correlations["perpendicular spin fraction after fast phase |sin|"] < -0.9
+    )
     assert abs(stats.correlations["initial rate magnitude [deg/s]"]) < 0.5
 
 
@@ -303,25 +332,56 @@ def test_report_passes_a_clean_campaign(healthy_campaign: Path) -> None:
     assert report.by_requirement("REQ-ACTL-001")
 
 
-def test_report_fails_on_a_missed_fast_phase_bound(tmp_path: Path) -> None:
-    """One run over REQ-ACTL-001's bound fails the campaign, not just that run."""
-    records = [make_record(i, t_exit_s=1000.0) for i in range(93)]
-    records[7]["rate_at_fast_phase_deg_s"] = FAST_PHASE_BOUND_DEG_S + 0.1
+def test_report_fails_when_the_tolerance_bound_exceeds_the_committed_handover(
+    tmp_path: Path,
+) -> None:
+    """REQ-ACTL-001 bounds a *quantile*, so the bound is what the report judges.
+
+    Deliberately not the worst run. The worst run is a single draw; the
+    requirement names the 95th percentile at 95 % confidence, and a campaign
+    whose bound sits under the committed handover time satisfies it however
+    unlucky its slowest draw was.
+    """
+    slow = [make_record(i, t_exit_s=float(HANDOVER_BOUND_S * 1.5)) for i in range(93)]
     stats = summarise(
-        load_records(write_campaign(tmp_path, records)), orbit_period_s=ORBIT_S
+        load_records(write_campaign(tmp_path, slow)), orbit_period_s=ORBIT_S
     )
     report = detumble_report(stats, "synthetic")
+    assert stats.tolerance_bound_s > HANDOVER_BOUND_S
     assert not report.passes
     assert any(c.requirement == "REQ-ACTL-001" for c in report.failures())
 
+    # ...and a campaign comfortably inside it passes that criterion, so the
+    # check discriminates rather than always firing.
+    quick = [make_record(i, t_exit_s=500.0) for i in range(93)]
+    ok = summarise(
+        load_records(write_campaign(_mkdir(tmp_path / "quick"), quick)),
+        orbit_period_s=ORBIT_S,
+    )
+    assert ok.tolerance_bound_s < HANDOVER_BOUND_S
+    assert detumble_report(ok, "synthetic").passes
 
-def test_report_fails_on_re_excitation_after_the_fast_phase(tmp_path: Path) -> None:
-    records = [make_record(i, t_exit_s=1000.0) for i in range(93)]
-    records[3]["peak_rate_after_fast_phase_deg_s"] = FAST_PHASE_BOUND_DEG_S + 1.0
+
+def test_a_slow_single_run_does_not_by_itself_fail_the_campaign(
+    tmp_path: Path,
+) -> None:
+    """The retired fast-phase clause failed on one unlucky geometry; this must not.
+
+    Until Push 84 the report judged the worst run's rate 200 s after engagement
+    against 3.8 deg/s. The 93-run campaign showed 24 % of geometries miss that
+    and that no B-dot design can meet it — with the spin along B the body-frame
+    dB/dt carries no signal. The replacement is a quantile bound, and this pins
+    the difference: one slow draw inside an otherwise quick campaign is a fact
+    about the tail, not a failure.
+    """
+    records = [make_record(i, t_exit_s=400.0) for i in range(92)]
+    records.append(make_record(92, t_exit_s=float(HANDOVER_BOUND_S * 1.2)))
     stats = summarise(
         load_records(write_campaign(tmp_path, records)), orbit_period_s=ORBIT_S
     )
-    assert not detumble_report(stats, "synthetic").passes
+    assert stats.worst_s > HANDOVER_BOUND_S
+    assert stats.tolerance_bound_s <= HANDOVER_BOUND_S
+    assert detumble_report(stats, "synthetic").passes
 
 
 def test_report_fails_and_warns_on_a_censored_campaign(tmp_path: Path) -> None:
@@ -350,11 +410,22 @@ def test_report_fails_an_undersized_campaign(tmp_path: Path) -> None:
 def test_report_always_warns_that_the_handover_is_a_proposal(
     healthy_campaign: Path,
 ) -> None:
-    """The number must never read as a requirement it has not been made into."""
+    """The recomputed number must never be mistaken for the committed one.
+
+    The report prints what *this* campaign's bound would support and separately
+    judges the committed REQ-ACTL-001 value. Keeping them apart is what lets a
+    campaign that has drifted say so, instead of silently redefining the
+    requirement to whatever it just measured.
+    """
     stats = summarise(load_records(healthy_campaign), orbit_period_s=ORBIT_S)
     report = detumble_report(stats, "synthetic")
-    assert any("proposal, not a requirement" in w for w in report.warnings)
+    assert any("committed bound" in w for w in report.warnings)
     assert not any(c.name.startswith("Safe-mode handover") for c in report.criteria)
+    # The committed value is judged, and as a time rather than a rate.
+    judged = [c for c in report.criteria if c.requirement == "REQ-ACTL-001"]
+    assert len(judged) == 1
+    assert judged[0].units == "s"
+    assert judged[0].threshold == pytest.approx(HANDOVER_BOUND_S)
 
 
 def test_report_renders_self_contained_text(healthy_campaign: Path) -> None:
@@ -449,3 +520,79 @@ def test_re_excitation_is_counted_and_warned_but_does_not_fail(tmp_path: Path) -
     assert stats.n_re_excited == 4
     assert any("triggered by" in w for w in report.warnings)
     assert report.passes
+
+
+def test_a_run_that_started_below_the_entry_threshold_fails_the_campaign(
+    tmp_path: Path,
+) -> None:
+    """A run that was never tumbling is not a slow detumble — it is not a detumble.
+
+    Below ``DetumbleEnterRadps`` the mode manager does not engage B-dot, so the
+    recorded completion time describes a vehicle that arrived detumbled. Pooling
+    such runs with real ones biases every quantile downward, and the tolerance
+    bound is a quantile.
+
+    This is a regression test for a live defect rather than a hypothetical. The
+    tip-off dispersion floor was a hardcoded 2.0 deg/s that silently *was* the
+    entry threshold; when Push 84 derived entry from the wheel momentum envelope
+    and it rose to 3.44 deg/s, 11 of the first 18 runs started below it and the
+    report happily quoted a median completion time computed over them.
+    """
+    below = [make_record(i, t_exit_s=-29.2, rate_initial_deg_s=2.2) for i in range(3)]
+    above = [
+        make_record(i + 3, t_exit_s=200.0, rate_initial_deg_s=4.5) for i in range(60)
+    ]
+    stats = summarise(
+        load_records(write_campaign(tmp_path, below + above)), orbit_period_s=ORBIT_S
+    )
+    assert stats.n_below_entry == 3
+
+    report = detumble_report(stats, "synthetic")
+    assert not report.passes
+    offending = [c for c in report.criteria if "tumbling when B-dot engaged" in c.name]
+    assert len(offending) == 1
+    assert not offending[0].passes
+
+    # And the all-tumbling campaign is clean on this criterion, so the check is
+    # discriminating rather than always-on.
+    clean = summarise(
+        load_records(write_campaign(_mkdir(tmp_path / "clean"), above)),
+        orbit_period_s=ORBIT_S,
+    )
+    assert clean.n_below_entry == 0
+    clean_criterion = [
+        c
+        for c in detumble_report(clean, "synthetic").criteria
+        if "tumbling when B-dot engaged" in c.name
+    ][0]
+    assert clean_criterion.passes
+
+
+def test_the_censoring_horizon_is_the_censored_runs_arc_not_the_shortest(
+    tmp_path: Path,
+) -> None:
+    """A fast run's short arc must not be reported as the campaign's horizon.
+
+    The driver stops a settle window after completion, so the shortest arc in a
+    campaign belongs to the *fastest* run. The horizon is the arc given to the
+    runs that failed to converge — the only runs it censors. Reading it off the
+    whole population instead would report a horizon of minutes for a campaign
+    whose censored runs each flew eight orbits.
+    """
+    long_arc = 8.0 * ORBIT_S
+    quick = [make_record(i, t_exit_s=120.0, arc_s=ORBIT_S + 120.0) for i in range(60)]
+    stuck = [make_record(i + 60, t_exit_s=-1.0, arc_s=long_arc) for i in range(3)]
+    stats = summarise(
+        load_records(write_campaign(tmp_path, quick + stuck)), orbit_period_s=ORBIT_S
+    )
+    assert stats.n_censored == 3
+    assert stats.duration_s == pytest.approx(long_arc)
+
+    # With nothing censored the horizon never bound, and the longest arc flown is
+    # what the campaign can speak to -- not the shortest.
+    clean = summarise(
+        load_records(write_campaign(_mkdir(tmp_path / "clean"), quick)),
+        orbit_period_s=ORBIT_S,
+    )
+    assert clean.n_censored == 0
+    assert clean.duration_s == pytest.approx(ORBIT_S + 120.0)

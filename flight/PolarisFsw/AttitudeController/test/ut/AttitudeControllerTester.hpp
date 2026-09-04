@@ -50,6 +50,10 @@ class AttitudeControllerTester : public AttitudeControllerGTestBase {
   //! With a fine-quality estimate and a target, POINT engages, the pointing
   //! error falls, and the allocated wheel torques reproduce the commanded body
   //! torque.
+  //! Saturation is counted per mode and the paired event carries the
+  //! pre-clip demand (Push 69 follow-on).
+  void testSaturationIsCountedAndReportedUnclipped();
+
   void testPointEngagesAndReducesError();
 
   //! DETUMBLE commands a dipole whose components oppose the measured field

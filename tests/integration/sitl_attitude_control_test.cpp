@@ -321,10 +321,22 @@ TEST(SitlAttitudeControl, DetumblesFromFiveDegreesPerSecond) {
   // orbit, which is a ~1e-3 rad/s process against a spin of ~5e-2 rad/s — so the
   // vehicle settles into a slow spin about the local field line and unwinds it
   // over *orbits*, not minutes. Measured on this vehicle: 3.14 deg/s 200 s after
-  // the law engages, then a decay of order 1% per 500 s — several orbits to reach
-  // the 0.5 deg/s handover rate. That is the textbook behaviour, not a
-  // defect (Avanzini & Giulietti's convergence is asymptotic), and a requirement
-  // written against a few hundred seconds of it would have been fiction.
+  // the law engages, then a decay of order 1% per 500 s. That is the textbook
+  // behaviour, not a defect (Avanzini & Giulietti's convergence is asymptotic),
+  // and a requirement written against a few hundred seconds of it would have
+  // been fiction.
+  //
+  // **How far the tail has to run is set by the handover threshold, and that
+  // threshold is a momentum statement.** `DetumbleExitRadps` is 75 % of the
+  // wheel array's certified momentum envelope expressed as a body rate — 2.58
+  // deg/s (Push 84) — because the handover's job is to leave the wheels able to
+  // point immediately rather than desaturate first. The vehicle is already at
+  // 3.14 deg/s at the 200 s mark, so the crossing is near the end of the fast
+  // phase rather than several orbits into the tail, which is what the older
+  // 1.9 deg/s threshold implied. That threshold sat 11 % over B-dot's own
+  // 1.71 deg/s sensing floor; below and near it the law commands on
+  // magnetometer noise, so *whether* a run confirmed was decided by field
+  // geometry rather than by the time it was given.
   //
   // REQ-ACTL-001 is therefore written on the fast phase — the one that decides
   // controllability — and asserted here: below 3.8 deg/s within 200 s of the law
@@ -749,7 +761,13 @@ TEST(SitlAttitudeControl, DesaturationDumpsMomentumWhilePointingHolds) {
   // costs is the wheel *drive*, in two separate terms this row measured by
   // ablation rather than by narrative:
   //
-  //   worst pointing on a loaded array [deg], same orbit and same seed:
+  //   worst pointing on a loaded array [deg], same orbit and same seed.
+  //   **This ablation was flown on the RW04 vehicle** (1e-4 N.m drive LSB and
+  //   1e-4 N.m Coulomb friction), which is not the wheel this row now flies —
+  //   Push 60 took RW-X, whose LSB and friction are both 8e-6 N.m. It is kept
+  //   because the *mechanism* it separates is what the row's assertions are
+  //   written on, and the magnitudes are labelled with the vehicle that produced
+  //   them rather than silently reused:
   //     drive LSB   Coulomb friction   friction feedforward   worst
   //     1e-4 N.m    1e-4 N.m           off                    2.77
   //     1e-4 N.m    1e-4 N.m           ON at k=0.5 (as flown) 1.38
@@ -758,6 +776,15 @@ TEST(SitlAttitudeControl, DesaturationDumpsMomentumWhilePointingHolds) {
   //     none        1e-4 N.m           off                    1.85
   //     none        1e-4 N.m           ON at k=1.0            0.17
   //     none        none               off                    0.18
+  //
+  //   The trim column alone has been re-flown on RW-X (Push 84), and the
+  //   feedforward's benefit survives the wheel change while the k=1 penalty does
+  //   not: 0.0597 / 0.0406 / 0.0402 deg at k = 0 / 0.5 / 1.0, against this row's
+  //   own 0.05 deg bound — which k = 0 fails. The two LSB rows have **not** been
+  //   re-flown; separating them needs the truth-side wheel model swept, not a
+  //   flight parameter, so they stay RW04-vintage evidence for the mechanism and
+  //   are not quantitative claims about the current vehicle.
+  //   `config/spacecraft/leo_smallsat.yaml` carries the trim sweep in full.
   //
   // Read down the column: the **friction feedforward** (REQ-ACTL-010, this
   // push's `lib/gnc/rw_friction`) removes essentially the whole friction

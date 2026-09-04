@@ -76,6 +76,16 @@ class RunRecord:
         field resolver had no value there. B-dot is blind to the rate component
         along **B**, so the second of these is the geometric quantity the tail
         duration should track; the first is the draw, which it should not.
+    arc_s : float
+        The arc this run actually flew [s]. Not the configured duration: a run
+        that completes is stopped one settle window later, so a censoring
+        judgement made against the configured duration would be judging against
+        arc the run never had.
+    enter_threshold_deg_s : float
+        The deployment's ``DetumbleEnterRadps`` for this run [deg/s]. The
+        campaign's own precondition: a run whose initial rate is below it never
+        tumbled, so its completion time describes a vehicle that arrived
+        detumbled rather than one the law brought down.
     exit_threshold_deg_s : float
         The deployment's committed ``DetumbleExitRadps`` the run was judged
         against [deg/s], carried with the record so nothing downstream has to
@@ -103,6 +113,8 @@ class RunRecord:
     peak_rate_after_fast_phase_deg_s: float
     initial_spin_field_angle_deg: float
     fast_phase_spin_field_angle_deg: float
+    arc_s: float
+    enter_threshold_deg_s: float
     exit_threshold_deg_s: float
     confirm_cycles: int
     wall_s: float
@@ -188,6 +200,15 @@ def _from_json(raw: dict) -> RunRecord:
         fast_phase_spin_field_angle_deg=float(
             raw.get("fast_phase_spin_field_angle_deg", -1.0)
         ),
+        # Required, deliberately. Defaulting it to NaN was tried and is worse:
+        # NaN comparisons are false, so the precondition criterion *passes* on a
+        # shard it cannot judge, which is the silent-success shape this project
+        # keeps finding. A shard without this field predates the fix that ties
+        # the tip-off floor to the flight entry threshold, so it was flown under
+        # a different dispersion band and must not be pooled with runs that were
+        # not — a loud KeyError is the correct outcome.
+        arc_s=float(raw["arc_s"]),
+        enter_threshold_deg_s=float(raw["enter_threshold_deg_s"]),
         exit_threshold_deg_s=float(raw["exit_threshold_deg_s"]),
         confirm_cycles=int(raw["confirm_cycles"]),
         wall_s=float(raw.get("wall_s", 0.0)),

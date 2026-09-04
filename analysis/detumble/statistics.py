@@ -274,12 +274,21 @@ class DetumbleStatistics:
         long it is.
     total_wall_s : float
         Summed per-run wall clock, for sizing the next campaign.
+    n_below_entry : int
+        Runs whose dispersed initial rate was below the deployment's
+        ``DetumbleEnterRadps``. These never tumbled — the mode manager would not
+        have engaged B-dot — so they measure nothing and must be zero for the
+        campaign to be about detumble at all. Non-zero means the tip-off
+        dispersion and the flight entry threshold have come apart, which is how
+        11 of the first 18 runs of the Push 84 campaign came to report a
+        completion time for a vehicle that arrived detumbled.
     """
 
     n_records: int
     n_healthy: int
     n_converged: int
     n_censored: int
+    n_below_entry: int
     duration_s: float
     median_s: float
     p95_empirical_s: float
@@ -358,11 +367,24 @@ def summarise(
     censored = [r for r in healthy if not r.converged]
     times = np.array([r.t_exit_s for r in converged], dtype=float)
 
-    # The censoring horizon is the shortest arc any run actually flew past
-    # engagement: with a dispersed engagement instant the arcs differ slightly,
-    # and the horizon the bound is censored at is the earliest of them.
-    horizons = [r.profile_t_s[-1] for r in healthy if r.profile_t_s.size > 0]
-    duration_s = float(min(horizons)) if horizons else 0.0
+    # The censoring horizon is the arc the runs that *failed* to converge were
+    # given, because those are the only runs the horizon censors. It is a
+    # minimum over the censored runs alone, not over all of them.
+    #
+    # Taking the minimum over every healthy run was correct only while the
+    # driver flew a fixed arc. It now stops a settle window after completion, so
+    # the shortest arc in a campaign is the *fastest* run's — and using that as
+    # the horizon would report a censoring bound of a few hundred seconds for a
+    # campaign whose censored runs each flew eight orbits, understating the arc
+    # by two orders and making an uncensored campaign look severely censored.
+    censored_arcs = [r.arc_s for r in censored if r.arc_s > 0.0]
+    if censored_arcs:
+        duration_s = float(min(censored_arcs))
+    else:
+        # Nothing was censored, so the horizon never bound. Report the longest
+        # arc flown: it is the span over which the campaign can say anything.
+        flown = [r.arc_s for r in healthy if r.arc_s > 0.0]
+        duration_s = float(max(flown)) if flown else 0.0
 
     bound, order = (
         wilks_bound(times, quantile, confidence) if times.size else (float("nan"), 0)
@@ -378,11 +400,27 @@ def summarise(
         "rate at end of fast phase [deg/s]": [
             r.rate_at_fast_phase_deg_s for r in converged
         ],
-        "spin/field angle at engagement [deg]": [
-            r.initial_spin_field_angle_deg for r in converged
+        # **|sin| of the spin/field angle, not the angle.** B-dot's torque is
+        # m x B with m proportional to the body-frame dB/dt, so what the law can
+        # remove is the component of omega *perpendicular* to B — and the
+        # perpendicular fraction is |sin(theta)|, which is symmetric about 90
+        # degrees. A rank correlation against the raw angle is therefore
+        # structurally blind to the effect: 0 and 180 degrees are both fully
+        # aligned and both terrible, so the relationship is not monotone in
+        # theta and Spearman reports approximately nothing.
+        #
+        # Measured on the 93-run campaign, against the rate 200 s after
+        # engagement: raw angle -0.07, |sin| of the same angle **-0.65**. The
+        # report existed to say what sets the tail and was reporting that
+        # geometry did not, because it asked in a coordinate the physics is not
+        # monotone in.
+        "perpendicular spin fraction at engagement |sin|": [
+            abs(math.sin(math.radians(r.initial_spin_field_angle_deg)))
+            for r in converged
         ],
-        "spin/field angle after fast phase [deg]": [
-            r.fast_phase_spin_field_angle_deg for r in converged
+        "perpendicular spin fraction after fast phase |sin|": [
+            abs(math.sin(math.radians(r.fast_phase_spin_field_angle_deg)))
+            for r in converged
         ],
         "RAAN offset [deg]": [
             float(r.dispersion.get("delta_raan_deg", math.nan)) for r in converged
@@ -400,6 +438,13 @@ def summarise(
 
     return DetumbleStatistics(
         n_records=len(records),
+        n_below_entry=sum(
+            1
+            for r in records
+            # NaN compares false, so a shard predating the recorded threshold is
+            # not counted as a violation it cannot be judged for.
+            if r.rate_initial_deg_s < r.enter_threshold_deg_s
+        ),
         n_healthy=len(healthy),
         n_converged=len(converged),
         n_censored=len(censored),

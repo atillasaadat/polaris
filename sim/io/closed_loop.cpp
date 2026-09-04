@@ -137,7 +137,8 @@ class StreamTap {
 ClosedLoop::ClosedLoop(scenario::SimRunner& runner, scenario::Vehicle& vehicle)
     : runner_(runner), vehicle_(vehicle), paths_(scenario::DataPaths::under("tests/golden")) {}
 
-bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, std::string* error) {
+bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, std::string* error,
+                     const StepPredicate& keep_going) {
   if (trace != nullptr) {
     trace->clear();
   }
@@ -727,6 +728,18 @@ bool ClosedLoop::run(const FswCallback& fsw, std::vector<MacroSample>* trace, st
     }
     sampleTargets(s);
     stream.write(static_cast<double>(t_ns) / 1.0e9, s, &target_positions);
+
+    // Asked last, so a run that stops here has already published this boundary
+    // everywhere an uninterrupted run would have — trace, targets and stream.
+    // The prefix is therefore identical, not merely similar.
+    if (keep_going) {
+      MacroSample sample{static_cast<double>(t_ns) / 1.0e9, s, mass_kg_, thruster_tlm};
+      sample.estimate_attitude = commands.estimate_attitude;
+      sample.estimate_valid = commands.estimate_valid;
+      if (!keep_going(sample)) {
+        break;
+      }
+    }
   }
   return true;
 }
