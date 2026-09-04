@@ -367,11 +367,24 @@ def summarise(
     censored = [r for r in healthy if not r.converged]
     times = np.array([r.t_exit_s for r in converged], dtype=float)
 
-    # The censoring horizon is the shortest arc any run actually flew past
-    # engagement: with a dispersed engagement instant the arcs differ slightly,
-    # and the horizon the bound is censored at is the earliest of them.
-    horizons = [r.profile_t_s[-1] for r in healthy if r.profile_t_s.size > 0]
-    duration_s = float(min(horizons)) if horizons else 0.0
+    # The censoring horizon is the arc the runs that *failed* to converge were
+    # given, because those are the only runs the horizon censors. It is a
+    # minimum over the censored runs alone, not over all of them.
+    #
+    # Taking the minimum over every healthy run was correct only while the
+    # driver flew a fixed arc. It now stops a settle window after completion, so
+    # the shortest arc in a campaign is the *fastest* run's — and using that as
+    # the horizon would report a censoring bound of a few hundred seconds for a
+    # campaign whose censored runs each flew eight orbits, understating the arc
+    # by two orders and making an uncensored campaign look severely censored.
+    censored_arcs = [r.arc_s for r in censored if r.arc_s > 0.0]
+    if censored_arcs:
+        duration_s = float(min(censored_arcs))
+    else:
+        # Nothing was censored, so the horizon never bound. Report the longest
+        # arc flown: it is the span over which the campaign can say anything.
+        flown = [r.arc_s for r in healthy if r.arc_s > 0.0]
+        duration_s = float(max(flown)) if flown else 0.0
 
     bound, order = (
         wilks_bound(times, quantile, confidence) if times.size else (float("nan"), 0)

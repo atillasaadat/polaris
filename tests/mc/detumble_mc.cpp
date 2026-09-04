@@ -102,7 +102,19 @@ struct Options {
   int runs = 4;
   int first_run = 0;
   std::uint64_t seed = 20260101;  ///< master seed; the vehicle config's own
-  double duration_s = 45416.0;    ///< 8 orbits at 5677 s
+  double duration_s = 45416.0;    ///< 8 orbits at 5677 s — the *ceiling*, not the plan
+  /// Arc flown past a confirmed completion before the run is stopped [s]. One
+  /// orbit by default: the requirement's "shall not subsequently rise" clause is
+  /// about the rate coming back while B-dot is active, and a full lap is the
+  /// period over which the field geometry that could re-excite it turns over.
+  /// Past that the run is simulating a mode the vehicle would already have left
+  /// — the mode manager hands over to the wheels on this very predicate — so the
+  /// arc buys nothing and costs the great majority of the campaign.
+  ///
+  /// Zero stops at confirmation. A run that never confirms is never stopped
+  /// early, because proving it did not converge inside `duration_s` is what
+  /// makes it a right-censored observation instead of a missing one.
+  double settle_s = 5677.0;
   double profile_step_s = 60.0;
   /// Control mode latched in the deployment: 1 = DETUMBLE (the campaign), 0 =
   /// IDLE. The IDLE setting flies the identical dispersed scenario with the
@@ -285,6 +297,10 @@ struct Record {
   /// means body rate is being traded with rotor momentum and |omega| stops being
   /// a statement about how detumbled the vehicle is.
   double peak_wheel_torque_nm = 0.0;
+  /// Arc actually flown [s]. Not the configured duration: a run that completes
+  /// stops one settle window later, so a censoring judgement made against
+  /// `duration_s` would be judging against arc the run never had.
+  double arc_s = 0.0;
   /// Rotational kinetic energy 0.5*w'Jw [J] at engagement, at its minimum, and at
   /// the end. B-dot's guarantee is dissipativity in *energy*, not monotonicity in
   /// |omega|, and with a near-isotropic inertia the two can only differ by
@@ -463,8 +479,43 @@ Record flyOne(int run_index, const Options& opt, const scenario::SimConfig& refe
     return out;
   };
 
+  // **Stop when the run has nothing left to say.** The vehicle detumbles in
+  // minutes and the arc is eight orbits, so an unconditional march spends
+  // 96-99.6 % of its compute after the answer is known — and on a vehicle the
+  // CONOPS does not fly, since the mode manager hands over to the wheels on this
+  // very predicate rather than holding B-dot for the rest of the day.
+  //
+  // What is *not* cut: a run that never completes still marches the whole arc,
+  // because proving a run did not converge inside the arc is exactly what makes
+  // it a right-censored observation rather than a missing one. And the settle
+  // window past completion is kept, because the requirement's second clause is
+  // about the rate not coming back while the law is active.
+  //
+  // The predicate is the same one `completionOf` applies to the finished trace,
+  // run incrementally, so a stopped run's trace is the prefix of the long run's
+  // and the two agree on every quantity either can report.
+  const auto settle_steps =
+      static_cast<std::uint64_t>(std::llround(opt.settle_s * config.propagation.fsw_rate_hz));
+  std::uint32_t below_streak = 0;
+  std::int64_t confirmed_step = -1;
+  std::int64_t sample_step = -1;
+  const io::ClosedLoop::StepPredicate keep_going = [&](const io::MacroSample& sample) -> bool {
+    ++sample_step;
+    if (confirmed_step < 0) {
+      if (sample.state.body_rate.eigen().norm() < exit_radps) {
+        if (++below_streak >= confirm_cycles) {
+          confirmed_step = sample_step;
+        }
+      } else {
+        below_streak = 0;
+      }
+      return true;
+    }
+    return static_cast<std::uint64_t>(sample_step - confirmed_step) < settle_steps;
+  };
+
   std::vector<io::MacroSample> trace;
-  const bool ran = loop.run(watched, &trace, &error);
+  const bool ran = loop.run(watched, &trace, &error, keep_going);
   rec.healthy = ran && server.healthy();
   server.stop();
   reapFsw(pid);
@@ -553,6 +604,7 @@ Record flyOne(int run_index, const Options& opt, const scenario::SimConfig& refe
     rec.profile_rate_deg_s.push_back(deg(trace[i].state.body_rate.eigen().norm()));
   }
 
+  rec.arc_s = trace.empty() ? 0.0 : trace.back().t_s;
   rec.wall_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
   // The deployment's event stream is kept only when it is evidence: a run in
   // which B-dot never commanded a rod is a run whose event log is the only thing
@@ -608,6 +660,10 @@ nlohmann::json toJson(const Record& r, const scenario::SimConfig& reference, dou
   j["energy_min_j"] = r.energy_min_j;
   j["energy_final_j"] = r.energy_final_j;
   j["wall_s"] = r.wall_s;
+  // The arc this run actually flew, which is no longer the configured duration:
+  // a completed run stops a settle window past completion. Recorded so a
+  // censoring judgement is made against the arc the run really had.
+  j["arc_s"] = r.arc_s;
   j["profile_t_s"] = r.profile_t_s;
   j["profile_rate_deg_s"] = r.profile_rate_deg_s;
   return j;
@@ -621,7 +677,9 @@ bool parseArgs(int argc, char** argv, Options& opt) {
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     const auto next = [&]() { return (i + 1 < argc) ? std::string(argv[++i]) : std::string(); };
-    if (a == "--runs") {
+    if (a == "--settle-s") {
+      opt.settle_s = std::stod(next());
+    } else if (a == "--runs") {
       opt.runs = std::stoi(next());
     } else if (a == "--first-run") {
       opt.first_run = std::stoi(next());
@@ -646,7 +704,7 @@ bool parseArgs(int argc, char** argv, Options& opt) {
       return false;
     }
   }
-  return opt.runs > 0 && opt.duration_s > 0.0;
+  return opt.runs > 0 && opt.duration_s > 0.0 && opt.settle_s >= 0.0;
 }
 
 }  // namespace

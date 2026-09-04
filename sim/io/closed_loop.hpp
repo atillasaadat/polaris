@@ -249,9 +249,27 @@ class ClosedLoop {
   /// The actuator-feedback model to pass to `SimRunner::build`.
   const dynamics::CommandedWrench* wrench() const { return &wrench_; }
 
+  /// Asked at each macro boundary whether the run still has something to learn.
+  ///
+  /// Receives the truth sample just taken and returns false to end the run
+  /// early. Truth, not measurements, because the questions worth stopping on —
+  /// "has the body rate stayed under the completion threshold?" — are questions
+  /// about the plant; a stop condition read from the flight software's own
+  /// estimate would end the run when the vehicle *believed* it was done.
+  ///
+  /// Ending early is a **measurement** decision, never a modelling one: the
+  /// samples produced are identical to the first N of an uninterrupted run, so
+  /// a run stopped at its own completion is bit-for-bit the prefix of the long
+  /// one. What changes is only how much arc past the answer is paid for.
+  using StepPredicate = std::function<bool(const MacroSample&)>;
+
   /// March the configured duration in macro-steps, invoking @p fsw at each
   /// boundary. @p trace receives the truth state at every macro boundary
   /// (cleared first); pass nullptr to discard.
+  ///
+  /// @p keep_going, when set, is consulted after each boundary's sample and
+  /// ends the march early when it returns false. Empty (the default) marches the
+  /// whole configured duration, which is what every SITL row does.
   ///
   /// When the environment variable `POLARIS_SIM_STREAM` names a file, the same
   /// per-boundary truth samples are also appended there as line-flushed JSONL
@@ -262,7 +280,7 @@ class ClosedLoop {
   ///         ready / wrench not composed / a data product the vehicle needs is
   ///         missing). @p error receives the reason.
   bool run(const FswCallback& fsw, std::vector<MacroSample>* trace = nullptr,
-           std::string* error = nullptr);
+           std::string* error = nullptr, const StepPredicate& keep_going = {});
 
   /// Secondary objects the truth side should propagate and stream (§8.4.1).
   ///

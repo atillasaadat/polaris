@@ -56,6 +56,7 @@ def make_record(
     return {
         "exit_threshold_deg_s": 0.4984,
         "enter_threshold_deg_s": enter_threshold_deg_s,
+        "arc_s": arc_s,
         "confirm_cycles": 50,
         "run_index": index,
         "seed": 1000 + index,
@@ -508,3 +509,33 @@ def test_a_run_that_started_below_the_entry_threshold_fails_the_campaign(
         if "tumbling when B-dot engaged" in c.name
     ][0]
     assert clean_criterion.passes
+
+
+def test_the_censoring_horizon_is_the_censored_runs_arc_not_the_shortest(
+    tmp_path: Path,
+) -> None:
+    """A fast run's short arc must not be reported as the campaign's horizon.
+
+    The driver stops a settle window after completion, so the shortest arc in a
+    campaign belongs to the *fastest* run. The horizon is the arc given to the
+    runs that failed to converge — the only runs it censors. Reading it off the
+    whole population instead would report a horizon of minutes for a campaign
+    whose censored runs each flew eight orbits.
+    """
+    long_arc = 8.0 * ORBIT_S
+    quick = [make_record(i, t_exit_s=120.0, arc_s=ORBIT_S + 120.0) for i in range(60)]
+    stuck = [make_record(i + 60, t_exit_s=-1.0, arc_s=long_arc) for i in range(3)]
+    stats = summarise(
+        load_records(write_campaign(tmp_path, quick + stuck)), orbit_period_s=ORBIT_S
+    )
+    assert stats.n_censored == 3
+    assert stats.duration_s == pytest.approx(long_arc)
+
+    # With nothing censored the horizon never bound, and the longest arc flown is
+    # what the campaign can speak to -- not the shortest.
+    clean = summarise(
+        load_records(write_campaign(_mkdir(tmp_path / "clean"), quick)),
+        orbit_period_s=ORBIT_S,
+    )
+    assert clean.n_censored == 0
+    assert clean.duration_s == pytest.approx(ORBIT_S + 120.0)
