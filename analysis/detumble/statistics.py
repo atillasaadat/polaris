@@ -400,11 +400,27 @@ def summarise(
         "rate at end of fast phase [deg/s]": [
             r.rate_at_fast_phase_deg_s for r in converged
         ],
-        "spin/field angle at engagement [deg]": [
-            r.initial_spin_field_angle_deg for r in converged
+        # **|sin| of the spin/field angle, not the angle.** B-dot's torque is
+        # m x B with m proportional to the body-frame dB/dt, so what the law can
+        # remove is the component of omega *perpendicular* to B — and the
+        # perpendicular fraction is |sin(theta)|, which is symmetric about 90
+        # degrees. A rank correlation against the raw angle is therefore
+        # structurally blind to the effect: 0 and 180 degrees are both fully
+        # aligned and both terrible, so the relationship is not monotone in
+        # theta and Spearman reports approximately nothing.
+        #
+        # Measured on the 93-run campaign, against the rate 200 s after
+        # engagement: raw angle -0.07, |sin| of the same angle **-0.65**. The
+        # report existed to say what sets the tail and was reporting that
+        # geometry did not, because it asked in a coordinate the physics is not
+        # monotone in.
+        "perpendicular spin fraction at engagement |sin|": [
+            abs(math.sin(math.radians(r.initial_spin_field_angle_deg)))
+            for r in converged
         ],
-        "spin/field angle after fast phase [deg]": [
-            r.fast_phase_spin_field_angle_deg for r in converged
+        "perpendicular spin fraction after fast phase |sin|": [
+            abs(math.sin(math.radians(r.fast_phase_spin_field_angle_deg)))
+            for r in converged
         ],
         "RAAN offset [deg]": [
             float(r.dispersion.get("delta_raan_deg", math.nan)) for r in converged

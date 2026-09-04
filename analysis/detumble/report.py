@@ -32,12 +32,26 @@ import math
 from analysis.common.report import AnalysisReport, Criterion
 from analysis.detumble.statistics import DetumbleStatistics
 
-__all__ = ["FAST_PHASE_BOUND_DEG_S", "FAST_PHASE_WINDOW_S", "detumble_report"]
+__all__ = ["HANDOVER_BOUND_S", "FAST_PHASE_WINDOW_S", "detumble_report"]
 
 #: REQ-ACTL-001's fast-phase bound [deg/s] and its window [s], from the
 #: requirement text. Requirement values, not measurements — the campaign is
 #: judged against them, never the other way round.
-FAST_PHASE_BOUND_DEG_S = 3.8
+#: REQ-ACTL-001's committed time-to-handover bound [s] — two orbits at the
+#: reference vehicle's 5677 s period. The requirement bounds the 95th percentile
+#: of the time to ``DetumbleExitRadps`` at 95 % confidence, so what is judged is
+#: the campaign's *tolerance bound*, not its worst run: the worst run is one draw
+#: and the quantity the requirement names is a property of the distribution.
+HANDOVER_BOUND_S = 11354.0
+
+#: Window the retired fast-phase clause used [s]. Kept because the rate at this
+#: instant is still reported as a diagnostic — it is the single most legible
+#: number for how much authority the geometry gave the law — but it is no longer
+#: judged. Until Push 84 REQ-ACTL-001 required the rate below 3.8 deg/s here,
+#: which the 93-run campaign showed 24 % of geometries miss and which no B-dot
+#: design can meet: with the spin along **B** the body-frame dB/dt carries no
+#: signal, so the law correctly commands almost nothing and no gain recovers it.
+#: See the requirement for the retirement argument and the evidence.
 FAST_PHASE_WINDOW_S = 200.0
 
 
@@ -60,25 +74,18 @@ def detumble_report(stats: DetumbleStatistics, records_path: str) -> AnalysisRep
     """
     criteria = (
         Criterion(
-            name=f"worst body rate {FAST_PHASE_WINDOW_S:.0f} s after engagement",
+            name="time to DetumbleExitRadps, 95th percentile at 95% confidence",
             requirement="REQ-ACTL-001",
-            threshold=FAST_PHASE_BOUND_DEG_S,
-            measured=stats.worst_fast_phase_deg_s,
-            units="deg/s",
+            threshold=HANDOVER_BOUND_S,
+            measured=stats.tolerance_bound_s,
+            units="s",
             sense="max",
             note=(
-                f"worst of {stats.n_healthy} dispersed runs; the requirement was "
-                "previously verified at a single geometry"
+                f"distribution-free Wilks bound from order statistic "
+                f"{max(stats.tolerance_order, 1)} of {stats.n_converged}; the "
+                "requirement bounds a quantile, so this and not the worst run is "
+                "the quantity judged"
             ),
-        ),
-        Criterion(
-            name="worst body rate at or after that instant",
-            requirement="REQ-ACTL-001",
-            threshold=FAST_PHASE_BOUND_DEG_S,
-            measured=stats.worst_peak_after_fast_phase_deg_s,
-            units="deg/s",
-            sense="max",
-            note="the requirement's 'shall not subsequently rise' clause",
         ),
         Criterion(
             name="runs right-censored by the flown arc",
@@ -193,9 +200,11 @@ def detumble_report(stats: DetumbleStatistics, records_path: str) -> AnalysisRep
     )
 
     warnings = [
-        "The proposed handover time is a proposal, not a requirement. "
-        "REQ-ACTL-001 carries no bound on the time to DetumbleExitRadps, and this "
-        "report does not create one — it supplies the evidence for writing it.",
+        "The PROPOSED line is what this campaign's own bound would support, "
+        "recomputed every run. REQ-ACTL-001's committed bound is "
+        f"{HANDOVER_BOUND_S:.0f} s and is what the criterion above judges — the "
+        "two are separate on purpose, so a campaign that drifts away from the "
+        "committed number says so instead of quietly redefining it.",
     ]
     if stats.floor_margin < 2.0:
         warnings.append(
